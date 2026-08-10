@@ -1,0 +1,48 @@
+Add missing Vitipsexpress raw statuses to ORDER_STATUSES in client/src/components/ui/status-badge.tsx
+
+These Vitipsexpress statuses appear in orders but have no color entry — they fall back to generic blue:
+- "Reçu par livreur" 
+- "Expédié" (already exists as capital-E blue — keep it)
+- "Programmé" (already exists as sky — keep it)
+- "En attente ramassage"
+- "Collecté"
+
+BUT the real fix is: make sure these raw Vitipsexpress statuses NEVER reach the database.
+The sync must save mapped platform statuses ONLY:
+- "Reçu par livreur" → must be saved as "transit"
+- "Expédié" → must be saved as "transit"  
+- "Programmé" → must be saved as "unreachable"
+- "En attente ramassage" → must be saved as "Attente De Ramassage"
+
+In server/routes.ts POST /api/shipping/vitips/sync background loop:
+Add strict guard — if result.status is null or undefined, log and skip:
+
+if (!result.status || result.status === 'null') {
+  console.warn(`[VITIPS-SYNC] ⚠️ No mapping found for "${result.rawStatus}" — order #${(order as any).orderNumber} skipped`);
+  continue;
+}
+
+// Only save if status actually changed
+if (result.status !== order.status) {
+  await storage.updateOrderStatus(order.id, result.status);
+  console.log(`[VITIPS-SYNC] ✅ #${(order as any).orderNumber}: "${order.status}" → "${result.status}"`);
+  updated++;
+}
+
+Also add a one-time fix: POST /api/vitips/fix-raw-statuses
+Fix orders that already have wrong raw statuses saved:
+Find all orders where shippingProvider = "vitipsexpress" AND status IN:
+('Reçu par livreur', 'Recu par livreur', 'Expédié', 'Expedié', 'Programmé', 'Programme',
+ 'En attente ramassage', 'En attente de ramassage', 'Collecté', 'Collecte',
+ 'Livré', 'Livre', 'Refusé', 'Refuse')
+
+Map and fix each one:
+'Reçu par livreur' OR 'Recu par livreur' → 'transit'
+'Expédié' OR 'Expedié' → 'transit'
+'Programmé' OR 'Programme' → 'unreachable'
+'En attente ramassage' OR 'En attente de ramassage' → 'Attente De Ramassage'
+'Collecté' OR 'Collecte' → 'Attente De Ramassage'
+'Livré' OR 'Livre' → 'delivered'
+'Refusé' OR 'Refuse' → 'refused'
+
+Call POST /api/vitips/fix-raw-statuses once after deploy to clean up all historical wrong statuses.

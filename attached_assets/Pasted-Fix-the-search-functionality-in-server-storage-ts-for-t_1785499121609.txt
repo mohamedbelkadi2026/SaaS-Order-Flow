@@ -1,0 +1,69 @@
+Fix the search functionality in server/storage.ts for the orders filter.
+
+Current code (around line 536):
+if (filters.search) {
+  const term = `%${filters.search}%`;
+  conditions.push(or(
+    like(orders.customerName, term),
+    like(orders.customerPhone, term),
+    like(orders.orderNumber, term),
+    like(orders.customerCity, term)
+  ));
+}
+
+Problems:
+1. Phone search fails — if DB has "+212612345678" and user types "0612345678" or "612345678", no match
+2. Product name not searched at all
+3. like() is case-sensitive — use ilike() instead
+
+Replace that block with this:
+
+if (filters.search) {
+  const raw = filters.search.trim();
+  const term = `%${raw}%`;
+
+  // Normalize phone: strip all non-digits, then match last 9 digits
+  const digitsOnly = raw.replace(/\D/g, '');
+  const phoneSuffix = digitsOnly.length >= 6 ? `%${digitsOnly.slice(-9)}` : null;
+
+  const searchConditions: any[] = [
+    ilike(orders.customerName, term),
+    ilike(orders.orderNumber, term),
+    ilike(orders.customerCity, term),
+    ilike(orders.customerAddress, term),
+    ilike(orders.trackNumber, term),
+  ];
+
+  // Phone: match by suffix of digits (handles +212, 06, 6 prefixes)
+  if (phoneSuffix) {
+    searchConditions.push(
+      sql`regexp_replace(${orders.customerPhone}, '[^0-9]', '', 'g') LIKE ${phoneSuffix}`
+    );
+  } else {
+    searchConditions.push(ilike(orders.customerPhone, term));
+  }
+
+  // Product name: search in order_items joined with products
+  // Use a subquery to find orderIds that have a matching product
+  const matchingOrderIds = db
+    .select({ orderId: orderItems.orderId })
+    .from(orderItems)
+    .innerJoin(products, eq(orderItems.productId, products.id))
+    .where(ilike(products.name, term));
+
+  searchConditions.push(sql`${orders.id} IN (${matchingOrderIds})`);
+
+  conditions.push(or(...searchConditions));
+}
+
+Make sure to import ilike from drizzle-orm if not already imported.
+Also make sure orderItems and products tables are imported from the schema.
+
+This fix allows searching by:
+- Customer name (case-insensitive)
+- Phone in any format: +212612345678, 0612345678, 612345678
+- Order number
+- City
+- Address  
+- Tracking number
+- Product name (searches inside order items)

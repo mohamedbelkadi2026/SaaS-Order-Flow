@@ -1,0 +1,75 @@
+# Replit Prompt — Make the ad-spend importer work end to end (Publicités → Importer les dépenses)
+
+Goal: the ad-spend importer must work 100%. Apply every step below. After finishing, run the testing checklist and confirm each item passes. Use French for all user-facing strings. Do not break the manual "Nouvelle dépense" flow or the "Par Source" tab.
+
+## STEP 0 — Create the missing DB table (this is the current blocker)
+The import currently 500s with: `relation "ad_campaign_product_map" does not exist` (Postgres 42P01), thrown by `upsertCampaignMap` on `POST /api/publicites/import`. The table is defined in `shared/schema.ts` but was never created in the database.
+- Run `npm run db:push` (runs `drizzle-kit push`). Confirm any prompt to **create** the `ad_campaign_product_map` table. Verify the table exists afterward.
+- The table must be:
+  ```ts
+  export const adCampaignProductMap = pgTable("ad_campaign_product_map", {
+    id:           serial("id").primaryKey(),
+    storeId:      integer("store_id").notNull().references(() => stores.id, { onDelete: 'cascade' }),
+    campaignName: text("campaign_name").notNull(),   // stored normalized lowercase
+    productId:    integer("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
+    createdAt:    timestamp("created_at").defaultNow().notNull(),
+  });
+  ```
+
+## STEP 1 — Correct column detection (never grab a metric column)
+Spend column must resolve to Facebook's `Amount spent (USD)`, never `Cost per results`/CPM/CPC.
+```ts
+function findSpendColumn(headers: string[]): string | null {
+  const n = (h: string) => h.toLowerCase().trim();
+  let h = headers.find(x => n(x).includes("amount spent")); if (h) return h;
+  h = headers.find(x => n(x).includes("montant dépensé") || n(x).includes("montant depense")); if (h) return h;
+  h = headers.find(x => /total\s*(cost|spent|spend)/.test(n(x))); if (h) return h;
+  h = headers.find(x => ["spend","dépenses","depenses"].includes(n(x))); if (h) return h;
+  h = headers.find(x => { const s = n(x); return s.includes("cost") && !s.includes("per") && !s.includes("cpm") && !s.includes("cpc"); });
+  return h ?? null;
+}
+```
+Always show the detected Campagne / Montant / Date columns as dropdowns the user can override; recompute amounts on change. Apply the same `per`/`cpm`/`cpc` exclusion so campaign/date detection never grabs a metric column.
+
+## STEP 2 — Currency + integer centimes (fixes the 500)
+`montant_DH = montant_USD × taux` (taux from the "Taux USD → MAD" field; try live `https://open.er-api.com/v6/latest/USD` → `rates.MAD`, fallback `10.0`, user-editable).
+When storing, ALWAYS round to an integer number of centimes:
+```ts
+const cents = Math.round(amountDh * 100); // never amountDh * 100 alone — fractional values crash the integer column
+```
+
+## STEP 3 — Dates (never an Excel serial like 46143.0414)
+- Parse the file with `XLSX.read(buf, { type:"array", cellDates:true })` and `XLSX.utils.sheet_to_json(sheet, { raw:false, dateNF:"yyyy-mm-dd" })`.
+- Make the date column optional; default option `— Aucune (utiliser la date choisie) —`. Use the manual "Date" field for all rows unless a valid date column is chosen.
+- Guard converter so a serial number never reaches the DB:
+  ```ts
+  function toISODate(v:any, fallback:string){ if(v==null||v==="")return fallback;
+    if(typeof v==="number"){const d=new Date(Math.round((v-25569)*86400*1000));return isNaN(+d)?fallback:d.toISOString().slice(0,10);}
+    const d=new Date(v); return isNaN(+d)?fallback:d.toISOString().slice(0,10); }
+  ```
+- Send `date` to the backend only as `YYYY-MM-DD`.
+
+## STEP 4 — Product mapping dropdown (string values)
+shadcn `Select` needs string values. Hold mapping in `Record<string, number|null>` keyed by a stable per-row key. Ignore option uses `value="none"` (never `""`). Each `SelectItem value={String(p.id)}`. `value={mapping[key]!=null?String(mapping[key]):"none"}`; `onValueChange={v=>setMapping(p=>({...p,[key]:v==="none"?null:Number(v)}))}`. Pre-fill from saved mappings (`GET /api/publicites/campaign-map`) then fuzzy auto-suggest by product name.
+
+## STEP 5 — Aggregate spend PER PRODUCT (sum campaigns → same product)
+The ad-spend table has no campaign column, so consolidate. On import:
+1. Keep only rows with a product selected (skip "Aucun produit").
+2. Group by `productId` (within same `source` + `date`), **sum** the DH amounts.
+3. Insert ONE ad-spend entry per product: `{ source, date, productId, magasinId, amount=summedDh }` storing `Math.round(summedDh*100)` centimes.
+Example: `mini 9tara`→قطرات العسل والزيت (2000) + `mini 9tara news`→قطرات العسل والزيت (1000) ⇒ one entry of **3000 DH** for قطرات العسل والزيت.
+Also upsert each confirmed `(storeId, normalize(campaignName), productId)` into `ad_campaign_product_map` (skip duplicates) so future imports auto-link.
+
+## STEP 6 — Résumé par produit + robust errors
+- Under the mapping list show a read-only "Résumé par produit": each product receiving spend with its summed DH total. "Importer (N)" → N = number of products that will get an entry.
+- Backend `POST /api/publicites/import`: validate each row (`amount` finite ≥0, `date` = YYYY-MM-DD, `productId` number|null, `magasinId` owned by user). Wrap in try/catch, `console.error` the real error, and return its message. Client shows the server message instead of a generic toast. On success invalidate `["/api/publicites"]`.
+
+## Testing checklist (all must pass)
+1. `npm run db:push` created `ad_campaign_product_map`; importing no longer returns "relation does not exist".
+2. Import the Facebook CSV: `sbat zomaz` = $110.35 × 9.30 = 1026.26 DH; `mini 9tara` = $279.35 × 9.30 = 2597.96 DH. No 500, no "Erreur import".
+3. The amount comes from `Amount spent (USD)`, never `Cost per results`.
+4. DATE shows a real date (chosen 10/06/2026 or parsed 2026-05-01), never `46143.0414`.
+5. Two campaigns mapped to the same product produce ONE summed entry (3000 DH example); "Résumé par produit" shows it before import.
+6. Each campaign row keeps its own independently selected product; duplicates bug gone (rows are not all identical).
+7. Re-importing later auto-selects saved product mappings.
+8. Any remaining error shows the real server message + appears in Replit logs.

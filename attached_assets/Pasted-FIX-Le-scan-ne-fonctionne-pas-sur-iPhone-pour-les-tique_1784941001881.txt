@@ -1,0 +1,138 @@
+FIX — Le scan ne fonctionne pas sur iPhone pour les étiquettes à
+code-barres 1D (lignes verticales, pas un carré QR). Cause : jsQR ne
+décode QUE les QR codes, jamais les codes-barres 1D (Code128, Code39,
+EAN...). Sur Android ça marchait car BarcodeDetector (API native, essayée
+en premier) gère les deux formats — sur iOS Safari cette API n'existe pas
+du tout, donc jsQR seul (QR uniquement) ne peut structurellement pas lire
+un code-barres 1D, quelle que soit la qualité de la photo.
+
+Remplacer jsQR par **ZXing** (`@zxing/library`), une librairie pure JS qui
+décode QR codes ET codes-barres 1D (Code128, Code39, EAN-13, etc.) sur
+TOUS les navigateurs, y compris Safari/iOS — elle couvre tout ce que jsQR
+et BarcodeDetector font combinés, en pur JavaScript.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Remplacer jsQR par ZXing
+
+```bash
+npm uninstall jsqr
+npm install @zxing/library --registry=https://registry.npmjs.org/
+grep -c "replit.local" package-lock.json   # doit renvoyer 0, comme d'habitude
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Réécrire `capturePhoto` avec ZXing (garder BarcodeDetector en
+première tentative pour la rapidité sur Android, ZXing en repli universel) :
+
+```tsx
+import { BrowserMultiFormatReader } from "@zxing/library";
+
+const capturePhoto = async () => {
+  const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+  if (!videoEl || videoEl.readyState < 2) {
+    setError("Caméra pas encore prête, réessaie dans une seconde.");
+    return;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = videoEl.videoWidth;
+  canvas.height = videoEl.videoHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(videoEl, 0, 0);
+
+  // 1) BarcodeDetector natif si disponible (Chrome/Android, plus rapide).
+  // @ts-ignore
+  if ("BarcodeDetector" in window) {
+    try {
+      // @ts-ignore
+      const detector = new window.BarcodeDetector({ formats: ["qr_code", "code_128", "code_39", "ean_13"] });
+      const codes = await detector.detect(canvas);
+      if (codes.length > 0) { playSuccessBeep(); onScan(codes[0].rawValue); return; }
+    } catch { /* on retente avec ZXing ci-dessous */ }
+  }
+
+  // 2) ZXing — pur JS, QR + codes-barres 1D, fonctionne sur TOUS les
+  // navigateurs y compris Safari/iOS.
+  try {
+    const reader = new BrowserMultiFormatReader();
+    const result = await reader.decodeFromCanvas(canvas);
+    if (result?.getText()) { playSuccessBeep(); onScan(result.getText()); return; }
+  } catch (err) {
+    console.error("[CameraScanner] ZXing decode failed:", err);
+  }
+
+  setError("Aucun code détecté sur la photo — recadre le code bien au centre, à environ 15 cm, et réessaie.");
+};
+```
+
+Note : `decodeFromCanvas` peut lancer une exception `NotFoundException` quand
+aucun code n'est trouvé (comportement normal de ZXing, pas une erreur
+fatale) — c'est pourquoi elle est catchée silencieusement (juste loguée) et
+suivie du message d'erreur générique, pas d'un crash.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Faire pareil pour le flux CONTINU (pas seulement la capture
+photo) — au cas où le flux continu actuel (html5-qrcode + jsQR interne) ne
+lit lui non plus que les QR codes
+
+Vérifier la config `Html5Qrcode` : par défaut elle décode QR ET codes-barres
+1D si `Html5QrcodeSupportedFormats` n'est pas restreint. Vérifier qu'aucun
+paramètre `formatsToSupport` limité aux QR codes n'a été ajouté par erreur.
+Si le flux continu ne détecte que les QR malgré tout, envisager de passer
+aussi le flux continu par ZXing (`BrowserMultiFormatReader.decodeFromVideoDevice`)
+à la place de html5-qrcode — mais tester d'abord ÉTAPE 1/2 seules, qui
+couvrent déjà le cas signalé (capture photo).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 4 — Son de confirmation au scan réussi
+
+Ajouter un bip sonore systématique dès qu'un scan aboutit (flux continu OU
+capture photo OU soumission manuelle du champ texte), pour un feedback
+immédiat sans avoir à regarder l'écran (usage terrain, scan rapide en
+série) :
+
+```ts
+function playSuccessBeep() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880; // la5, son clair et net
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.15);
+  } catch { /* audio non disponible, pas fatal */ }
+}
+```
+
+Appeler `playSuccessBeep()` :
+- Dans `capturePhoto` (ÉTAPE 2 ci-dessus, déjà inclus).
+- Dans le callback de succès du flux continu (`onScan` du `scanner.start(...)`).
+- Dans `ReturnScanner` (le composant avec le champ texte pour douchette),
+  au moment où `POST /api/orders/confirm-return-by-code` renvoie
+  `success: true`.
+
+Un bip différent (fréquence plus basse, ex: 220Hz, ou pas de son du tout)
+peut être utilisé en cas d'ÉCHEC si souhaité, pour distinguer les deux
+retours sonores — optionnel, à ajouter seulement si utile en pratique.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+```bash
+git add -A && git commit -m "Replace jsQR with ZXing for 1D barcode + QR support on all browsers, add success beep on scan" && git push
+```
+
+VÉRIFICATION
+1. iPhone Safari : scanner l'étiquette à code-barres 1D (celle du
+   screenshot, lignes verticales) → doit maintenant se décoder correctement
+   via ZXing.
+2. Un bip sonore doit se faire entendre à chaque scan réussi (flux continu,
+   capture photo, ET douchette physique via le champ texte).
+3. Android : re-tester que ça fonctionne toujours (BarcodeDetector reste
+   tenté en premier, donc pas de régression attendue).
+4. Scanner un code invalide/flou → toujours le message d'erreur clair, pas
+   de bip, pas de crash.

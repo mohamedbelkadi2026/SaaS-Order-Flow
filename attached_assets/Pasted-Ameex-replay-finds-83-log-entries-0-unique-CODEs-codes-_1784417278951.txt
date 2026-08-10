@@ -1,0 +1,37 @@
+Ameex replay finds "83 log entries → 0 unique CODEs" → codes=0, updated=0. The stored Ameex 
+webhook events do NOT contain the CODE field, which means the webhook receiver is not parsing 
+Ameex's payload correctly (Ameex sends application/x-www-form-urlencoded, not JSON), so CODE and 
+STATUT are saved empty. Fix the RECEIVER first, then the replay works automatically.
+
+STEP 1 — SHOW me the raw stored payload (CRITICAL):
+ - Print the FULL raw body of the 3 most recent Ameex webhook events exactly as stored in 
+   integration_logs (all keys/values). Also add, in the live Ameex webhook route, a log line 
+   that dumps the raw request: Content-Type header + the parsed req.body (all keys) + the raw 
+   text body. I need to see the ACTUAL field names Ameex sends.
+ - Paste both to me before/with the fix.
+
+STEP 2 — PARSE CORRECTLY:
+ - The Ameex webhook route MUST accept application/x-www-form-urlencoded. Ensure 
+   express.urlencoded({ extended: true }) applies to that route (Ameex may also send 
+   multipart or a JSON string — handle all: if req.body is empty, read the raw body and 
+   URL-decode/parse it). 
+ - Read fields case-insensitively: CODE, STATUT, STATUT_S, STATUT_NAME, DATE. Store the FULL 
+   parsed payload (with CODE + STATUT) in integration_logs so future replays have the data.
+
+STEP 3 — MATCH + MAP (as before):
+ - Match order by CODE == trackNumber; fallback by customer phone; backfill real CODE onto 
+   order.trackNumber when the stored one is a "AMEEX-PENDING-" placeholder.
+ - Map STATUT/STATUT_S via AMEEX_STATUS_MAP (DELIVERED->delivered, DISTRIBUTION->in_progress, 
+   IN_PROGRESS[+POSTPONED/NO_ANSWER_TEAM]->in_progress, RETURNED->retourné, REFUSED->refused, 
+   unknown->in_progress). Store STATUT_NAME in commentStatus.
+
+STEP 4 — REPLAY:
+ - Re-run replay over integration_logs by CODE. Since old events have empty CODE (saved before 
+   the parse fix), they can't be recovered — that's expected; NEW webhooks will store CODE and 
+   match. Say so in the result. Going forward, live webhooks update status immediately.
+
+VERIFY: trigger/receive one Ameex webhook after the fix → the log shows the real CODE + STATUT, 
+the order matches, status updates (DELIVERED -> "Livré"). Paste me the raw payload dump + the 
+matched result.
+
+Deploy to main.

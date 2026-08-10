@@ -1,0 +1,120 @@
+FIX DÉFINITIF — Éliminer "produit invalide" pour de bon, en automatisant
+l'enregistrement des produits chez Vitips (au lieu de devoir les ajouter à
+la main un par un dans leur dashboard "Products → + New product").
+
+CONTEXTE (rappel des faits confirmés jusqu'ici)
+- Le dashboard Vitips du compte a une liste "Products" VIDE.
+- Vitips exige apparemment que chaque produit soit connu de LEUR système
+  avant d'accepter une commande le référençant par nom (`"produit invalide"`
+  sinon), et ceci de façon quasi-systématique.
+- Il n'existe pas d'endpoint de LISTING des produits (`/api/client/produits`
+  etc. → tous 404, déjà testé).
+- L'endpoint de création de colis existe et fonctionne :
+  `POST https://app.vitipsexpress.com/api/client/post/colis/add-colis`.
+
+HYPOTHÈSE À TESTER — Vitips a probablement, PAR SYMÉTRIE, un endpoint de
+CRÉATION de produit (même si aucun endpoint de LISTING n'existe) — c'est
+courant dans ce genre d'API rudimentaire : on peut créer sans pouvoir
+lister. Cette étape teste plusieurs URLs plausibles.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Endpoint de diagnostic : tester la création d'un produit via API
+
+```ts
+app.post("/api/debug/vitips-try-create-product", requireAuth, requireAdmin, async (req: any, res: any) => {
+  const storeId = req.user!.storeId!;
+  const accts = await db.select().from(carrierAccounts)
+    .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+  if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+  const apiKey = accts[0].apiKey;
+  const testProductName = String(req.body.productName || "Produit Test API");
+
+  const axios = (await import("axios")).default;
+  const candidates = [
+    { url: "https://app.vitipsexpress.com/api/client/post/produit/add-produit", body: { title: testProductName, code: "TEST-API-001" } },
+    { url: "https://app.vitipsexpress.com/api/client/post/produit/add-produit", body: { name: testProductName, code: "TEST-API-001" } },
+    { url: "https://app.vitipsexpress.com/api/client/post/product/add-product", body: { title: testProductName, reference: "TEST-API-001" } },
+    { url: "https://app.vitipsexpress.com/api/client/produit/add", body: { title: testProductName } },
+    { url: "https://app.vitipsexpress.com/api/client/product/add", body: { title: testProductName } },
+  ];
+
+  const results: any[] = [];
+  for (const c of candidates) {
+    try {
+      const resp = await axios.post(c.url, c.body, {
+        headers: { "api-token": apiKey, "Accept": "application/json", "Content-Type": "application/json" },
+        timeout: 10_000, validateStatus: () => true,
+      });
+      results.push({ url: c.url, sentBody: c.body, status: resp.status, response: resp.data });
+    } catch (err: any) {
+      results.push({ url: c.url, sentBody: c.body, error: err.message });
+    }
+  }
+  res.json({ results });
+});
+```
+
+Appeler une fois déployé (console navigateur) :
+```js
+fetch('/api/debug/vitips-try-create-product', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ productName: 'Produit Test API' }) })
+  .then(r => r.json()).then(d => console.log(JSON.stringify(d, null, 2)));
+```
+
+Coller-moi la réponse. Un `status: 200` ou `201` avec une réponse qui
+ressemble à une confirmation de création (pas un `{"message":"...could not
+be found"}`) indiquera lequel de ces endpoints fonctionne réellement.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 (À FAIRE UNE FOIS L'ÉTAPE 1 CONFIRMÉE) — Auto-enregistrer le produit
+AVANT chaque tentative d'expédition, si Vitips le rejette
+
+Dans le flux d'expédition Vitips (`buildVitipsPayload` / l'appel vers
+`add-colis`), quand la réponse est `{"code":"ko","error":"produit
+invalide"}` :
+1. Appeler l'endpoint de création de produit découvert à l'ÉTAPE 1 avec le
+   nom exact du produit de la commande.
+2. Si la création réussit, RÉESSAYER immédiatement l'envoi du colis (une
+   seule fois, pas de boucle infinie).
+3. Si la création échoue aussi, laisser l'échec remonter normalement
+   (comme aujourd'hui).
+
+```ts
+async function shipToVitipsWithAutoRegister(payload: any, apiKey: string): Promise<any> {
+  let resp = await axios.post("https://app.vitipsexpress.com/api/client/post/colis/add-colis", payload, {
+    headers: { "api-token": apiKey, "Content-Type": "application/json" }, validateStatus: () => true,
+  });
+  if (resp.data?.code === "ko" && resp.data?.error === "produit invalide") {
+    console.log(`[VITIPS-AUTO-REGISTER] Produit "${payload.product}" invalide — tentative de création automatique...`);
+    try {
+      await axios.post("<URL_CONFIRMÉE_ÉTAPE_1>", { title: payload.product /* + champs confirmés étape 1 */ }, {
+        headers: { "api-token": apiKey, "Content-Type": "application/json" }, validateStatus: () => true,
+      });
+      console.log(`[VITIPS-AUTO-REGISTER] Produit créé, nouvel essai d'expédition...`);
+      resp = await axios.post("https://app.vitipsexpress.com/api/client/post/colis/add-colis", payload, {
+        headers: { "api-token": apiKey, "Content-Type": "application/json" }, validateStatus: () => true,
+      });
+    } catch (regErr: any) {
+      console.error("[VITIPS-AUTO-REGISTER] Échec création produit:", regErr.message);
+    }
+  }
+  return resp;
+}
+```
+
+Remplacer l'appel direct `axios.post(".../add-colis", ...)` par
+`shipToVitipsWithAutoRegister(payload, apiKey)` aux 2 endroits d'expédition
+(bulk-ship et expédition individuelle).
+
+────────────────────────────────────────────────────────────────────────────
+SI L'ÉTAPE 1 NE TROUVE AUCUN ENDPOINT VALIDE (dernier recours)
+
+Alors il n'existe vraiment aucune voie API pour enregistrer des produits —
+la seule option restante est un enregistrement manuel via leur dashboard
+("Products → + New product"), un par un, pour chaque produit vendu. Dans ce
+cas, je peux te préparer une LISTE de tous tes produits actifs (nom exact
+tel qu'envoyé à Vitips) à copier-coller un par un dans leur formulaire — dis
+-le-moi et je génère cette liste depuis ta base de produits.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT (ÉTAPE 1 uniquement pour l'instant)
+git add -A && git commit -m "Add diagnostic endpoint to discover Vitips product-creation API" && git push

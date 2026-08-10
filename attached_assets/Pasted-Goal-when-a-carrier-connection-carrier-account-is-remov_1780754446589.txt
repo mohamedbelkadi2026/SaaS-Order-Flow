@@ -1,0 +1,58 @@
+Goal: when a carrier connection (carrier account) is removed, its webhook must also stop —
+no more incoming events processed, and the "Webhook actif" badge must turn off. This currently
+fails for Express Coursier (and any push-webhook carrier): the EC webhook route doesn't check
+for an active account, and the badge is computed only from recent logs.
+
+FIX 1 — Backend: ignore carrier webhooks when no active account (server/routes.ts).
+In the Express Coursier webhook receiver
+  app.post("/api/webhooks/shipping/expresscoursier/:storeId", ...)
+right after resolving `storeId` (before logging the event and before any order lookup/update),
+add an active-account guard:
+    const ecAccounts = await storage.getCarrierAccounts(storeId, "expresscoursier");
+    if (!ecAccounts || ecAccounts.length === 0) {
+      console.log(`[EC-WEBHOOK] store=${storeId} ignored — no active Express Coursier account`);
+      return res.json({ success: true, ignored: true, reason: "no_active_account" });
+    }
+Do the SAME guard in the other push-webhook receivers that take a storeId/token and a known
+provider (e.g. the Ameex receiver and the generic /api/webhook/carrier/:token after the
+provider+store are resolved): if the resolved store has no active carrier account for that
+provider, return early WITHOUT creating any integration log and WITHOUT updating any order.
+
+FIX 2 — On delete, clear that provider's webhook activity (server/routes.ts).
+In app.delete("/api/carrier-accounts/:id", ...), after `await storage.deleteCarrierAccount(id)`,
+also clear the integration logs for that store + provider so the activity feed and badge reset
+immediately:
+    await storage.clearIntegrationLogsByProvider(storeId, acct.carrierName); // see FIX 2b
+(use the deleted account's provider/carrierName, normalized to lowercase).
+
+FIX 2b — Add the storage method (server/storage.ts):
+    async clearIntegrationLogsByProvider(storeId: number, provider: string) {
+      const p = (provider || "").toLowerCase().trim();
+      await db.delete(integrationLogs).where(and(
+        eq(integrationLogs.storeId, storeId),
+        sql`lower(${integrationLogs.provider}) = ${p}`
+      ));
+    }
+(import `and`, `eq`, `sql` if not already imported.)
+
+FIX 3 — Frontend badge requires an active account (client/src/pages/shipping-integrations.tsx).
+The page already loads the list of carrier accounts. Build a Set of connected provider ids
+(normalized) from that list, and pass it to getWebhookIndicator. Change the function signature:
+    function getWebhookIndicator(providerId, logs, connectedProviderIds: Set<string>)
+and at the TOP of the function add:
+    if (!connectedProviderIds.has(normalizeCarrierName(providerId))) {
+      return { label: "🟡 En attente", className: "bg-amber-50 text-amber-700 border-amber-200" };
+    }
+Update every call site to pass the connected set. So a provider with no active account always
+shows "En attente", never "Webhook actif", regardless of leftover logs.
+
+VERIFY:
+- Delete the Express Coursier account → its card immediately shows "En attente" (not "Webhook
+  actif"), the EC activity feed for it is cleared, and any further EC webhook POSTs are ignored
+  (logged as ignored, no order status changes).
+- Re-connecting Express Coursier makes the webhook active again normally.
+- App compiles.
+
+NOTE: this stops the app from PROCESSING the webhook. Express Coursier will still keep POSTing
+to the old URL until you also remove the webhook from your Express Coursier dashboard (their
+side). The app cannot unregister it remotely unless EC exposes an API for that.

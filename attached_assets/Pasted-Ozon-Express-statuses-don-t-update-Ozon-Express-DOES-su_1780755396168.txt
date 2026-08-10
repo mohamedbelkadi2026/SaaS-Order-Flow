@@ -1,0 +1,96 @@
+Ozon Express statuses don't update. Ozon Express DOES support webhooks (the "Notifications
+(Webhooks)" page). Its webhook payload is:
+  { "orderId": "<tracking code>", "orderStatus": "<STATUS_CODE>", "situation": "...", "note": "..." }
+where orderStatus is one of Ozon's status CODES (DELIVERED, RETURNED, REFUSE, SENT, ...).
+Fix BOTH the automatic webhook path and the manual "Synchroniser Ozon Express" (polling) path,
+using the same status-code map.
+
+STEP 1 — server/services/carrier-service.ts: real Ozon status-code map.
+Replace the placeholder OZON_STATUS_MAP + mapOzonStatus with a CODE→internal map (Ozon sends
+codes, not French text). Use the platform's existing carrier-status targets (same ones Ameex
+uses: delivered, refused, "Retour Recu", "En Cours De Retour", "transit", "Attente De Ramassage",
+"unreachable") plus annule / confirme_reporte:
+  export const OZON_STATUS_MAP: Record<string,string> = {
+    DELIVERED: "delivered", PAID: "delivered",
+    RETURNED: "Retour Recu",
+    REFUSE: "refused",
+    CANCELED: "annule",
+    NEW_PARCEL: "Attente De Ramassage", WAITING_PICKUP: "Attente De Ramassage", PRE_PICKED_UP: "Attente De Ramassage",
+    PICKED_UP: "transit", SENT: "transit", SENT_TO_AGENCY: "transit",
+    RECEIVED: "transit", RECEIVED_IN_AGENCY: "transit",
+    DISTRIBUTION: "transit", IN_PROGRESS: "transit", DELAYED: "transit", VLMN: "transit", PROGRAMED: "transit",
+    NOANSWER: "unreachable", NOANSWER_DAY_2: "unreachable", NOANSWER_DAY_3: "unreachable",
+    DEPLA: "unreachable", DEPLA_DAY_2: "unreachable", DEPLA_DAY_3: "unreachable",
+    POSTPONED: "confirme_reporte", RPO: "confirme_reporte",
+    // intentionally UNMAPPED (financial/edge → never overwrite): INVOICED, NOT_PAID, REMBOURSED,
+    // EN, INT, SANS_ADRE, OUT_OF_AREA, SCTR, NCVRT, BAM_SEIZED, DAMAGED
+  };
+  export function mapOzonStatus(raw: string): string | null {
+    if (!raw) return null;
+    const code = raw.toString().trim().toUpperCase().replace(/[\s-]+/g, "_");
+    return OZON_STATUS_MAP[code] ?? null;   // unknown → null = keep current status, just log
+  }
+
+STEP 2 — server/services/carrier-service.ts: trackOzonExpressShipment (manual sync button path).
+Keep the raw-response console.log. Change the status extraction so it reads Ozon's status CODE
+from the parcel-info response and maps it via mapOzonStatus. Try these fields:
+   const code = b?.['PARCEL-INFOS']?.['LAST-TRACKING']?.['STATUT-CODE']
+              ?? b?.['PARCEL-INFOS']?.STATUT ?? b?.STATUT ?? b?.orderStatus ?? b?.status ?? null;
+   return { status: code ? mapOzonStatus(code) : null, rawStatus: code, rawResponse: b, error };
+(If the polling response shape differs, the console.log line still reveals it; the map above is
+already correct for the codes.)
+
+STEP 3 — server/routes.ts: ADD an Ozon Express webhook receiver (mirror the Express Coursier one,
+right after it). This is what makes statuses update AUTOMATICALLY.
+  app.post("/api/webhooks/shipping/ozonexpress/:storeId", async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      if (!storeId) return res.status(400).json({ message: "Invalid storeId" });
+      // Active-account guard (same as EC): ignore if Ozon not connected for this store
+      const accts = await storage.getCarrierAccounts(storeId, "ozonexpress");
+      if (!accts || accts.length === 0) return res.json({ success: true, ignored: true, reason: "no_active_account" });
+
+      const body = req.body || {};
+      console.log(`[OZON-WEBHOOK] store=${storeId} payload=${JSON.stringify(body)}`);
+      const trackingCode = (body.orderId || body.tracking_number || body.code || "").toString().trim();
+      const statusCode   = (body.orderStatus || body.status || "").toString().trim();
+      const note         = (body.note || "").toString();
+      if (!trackingCode) return res.json({ success: true, matched: false });
+
+      await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+        action: "webhook_received", status: "ok",
+        message: `Ozon webhook: orderId=${trackingCode} status=${statusCode}` });
+
+      const order = await storage.getOrderByTrackingNumber(storeId, trackingCode);
+      if (!order) {
+        await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+          action: "webhook_no_match", status: "ok",
+          message: `Ozon webhook: orderId=${trackingCode} not matched to any order` });
+        return res.json({ success: true, matched: false });
+      }
+
+      const mapped = mapOzonStatus(statusCode);   // import mapOzonStatus from carrier-service
+      if (mapped && mapped !== order.status) {
+        await storage.updateOrderStatus(order.id, mapped);
+        await storage.createOrderFollowUpLog({ orderId: order.id, agentId: null,
+          agentName: "Ozon Express Webhook",
+          note: `Statut via webhook: ${statusCode} → ${mapped}${note ? " · " + note : ""}` });
+        await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+          action: "status_update", status: "ok",
+          message: `Ozon: #${order.orderNumber} ${order.status} → ${mapped}` });
+      }
+      res.json({ success: true, matched: true, newStatus: mapped });
+    } catch (err: any) {
+      res.status(500).json({ message: "Ozon webhook processing failed" });
+    }
+  });
+Make sure mapOzonStatus is imported into routes.ts from server/services/carrier-service.
+
+VERIFY:
+- Register this webhook URL in the Ozon Express dashboard ("Nouveau Webhook"):
+      https://<your-app-domain>/api/webhooks/shipping/ozonexpress/<YOUR_STORE_ID>
+  Then an Ozon status change (e.g. DELIVERED) auto-updates the matching order to "delivered",
+  and the order lists/dashboard reflect it.
+- Clicking "Synchroniser Ozon Express" also updates statuses (same map).
+- Unknown/financial Ozon codes never overwrite an order's status (just logged).
+- App compiles.

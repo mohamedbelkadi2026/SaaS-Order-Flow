@@ -1,0 +1,168 @@
+FIX DÉFINITIF — Villes qui échouent en permanence pour Vitips Express
+(Oujda, Agadir, Laayoune Sidi Mellouk). Comme le matching automatique
+("City auto-corrected") ne peut pas deviner tous les cas — certaines villes
+marocaines ont des orthographes RADICALEMENT différentes selon les
+transporteurs (ex: "Laayoune Sidi Mellouk" saisi côté client correspond en
+réalité à "El Aïoun Sidi Mellouk" près d'Oujda, un nom complètement
+différent, pas juste une variante d'accent — aucun algorithme de similarité
+de texte ne peut deviner ça tout seul) — la solution durable est un tableau
+d'ALIAS MANUEL : une correspondance explicite "nom saisi → nom exact attendu
+par Vitips", éditable depuis l'interface, qui prend le dessus sur le
+matching automatique dès qu'il est renseigné.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — shared/schema.ts : table d'alias
+
+```ts
+export const vitipsCityAliases = pgTable("vitips_city_aliases", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").notNull(),
+  rawCityName: text("raw_city_name").notNull(),     // ex: "Laayoune Sidi Mellouk" (ce qui arrive dans la commande)
+  vitipsCityName: text("vitips_city_name").notNull(), // ex: "El Aioun Sidi Mellouk" (nom exact attendu par Vitips)
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  uniqueAlias: uniqueIndex("vitips_city_alias_unique").on(table.storeId, table.rawCityName),
+}));
+```
+Migration : `npm run db:push`.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — server/routes.ts : endpoints CRUD pour gérer les alias
+
+```ts
+app.get("/api/carriers/vitipsexpress/city-aliases", requireAuth, async (req: any, res: any) => {
+  const storeId = req.user!.storeId!;
+  const rows = await db.select().from(vitipsCityAliases).where(eq(vitipsCityAliases.storeId, storeId));
+  res.json(rows);
+});
+
+app.post("/api/carriers/vitipsexpress/city-aliases", requireAuth, async (req: any, res: any) => {
+  const storeId = req.user!.storeId!;
+  const { rawCityName, vitipsCityName } = req.body;
+  if (!rawCityName || !vitipsCityName) return res.status(400).json({ message: "rawCityName et vitipsCityName requis" });
+  const existing = await db.select().from(vitipsCityAliases)
+    .where(and(eq(vitipsCityAliases.storeId, storeId), eq(vitipsCityAliases.rawCityName, rawCityName)));
+  if (existing.length > 0) {
+    await db.update(vitipsCityAliases).set({ vitipsCityName }).where(eq(vitipsCityAliases.id, existing[0].id));
+  } else {
+    await db.insert(vitipsCityAliases).values({ storeId, rawCityName, vitipsCityName });
+  }
+  res.json({ success: true });
+});
+
+app.delete("/api/carriers/vitipsexpress/city-aliases/:id", requireAuth, async (req: any, res: any) => {
+  await db.delete(vitipsCityAliases).where(eq(vitipsCityAliases.id, Number(req.params.id)));
+  res.json({ success: true });
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — server/routes.ts : utiliser l'alias EN PRIORITÉ, avant le matching
+automatique existant, à l'endroit où le payload Vitips est construit
+(la ligne qui log `[BulkShip] City auto-corrected: ...` / `[VITIPS-CITY] order=X city=Y → abbr=Z`)
+
+Juste avant l'appel à `autoMatchCity(raw, bulkCityList)` (et l'équivalent
+dans le flux d'expédition individuel, même logique) :
+
+```ts
+// Priorité 1 : alias manuel explicite, s'il existe pour cette ville exacte.
+const [alias] = await db.select().from(vitipsCityAliases)
+  .where(and(eq(vitipsCityAliases.storeId, storeId), eq(vitipsCityAliases.rawCityName, raw)));
+let matched: string;
+if (alias) {
+  matched = alias.vitipsCityName;
+  console.log(`[VITIPS-CITY-ALIAS] order=${(order as any).orderNumber} city="${raw}" → alias="${matched}"`);
+} else {
+  // Priorité 2 : matching automatique existant (inchangé).
+  matched = autoMatchCity(raw, bulkCityList);
+  console.log(`[BulkShip] City auto-corrected: "${raw}" → "${matched}" (#${(order as any).orderNumber})`);
+}
+```
+
+Adapter la variable `raw`/`storeId`/`order` aux noms exacts déjà utilisés à
+cet endroit précis du fichier (2 endroits : bulk-ship ~ligne 1682, et
+expédition individuelle ~ligne 13504 — appliquer aux deux).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 4 — UI : petite page/section "Alias de villes Vitips" dans les
+réglages du compte Vitips (à côté du panneau "Tarifs de livraison par
+ville" déjà existant)
+
+```tsx
+function VitipsCityAliasesSection() {
+  const { data: aliases = [] } = useQuery<any[]>({ queryKey: ["/api/carriers/vitipsexpress/city-aliases"] });
+  const [rawCity, setRawCity] = useState("");
+  const [vitipsCity, setVitipsCity] = useState("");
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  const addMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/carriers/vitipsexpress/city-aliases", { rawCityName: rawCity, vitipsCityName: vitipsCity }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/carriers/vitipsexpress/city-aliases"] });
+      setRawCity(""); setVitipsCity("");
+      toast({ title: "Alias ajouté" });
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/carriers/vitipsexpress/city-aliases/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/carriers/vitipsexpress/city-aliases"] }),
+  });
+
+  return (
+    <div className="mt-4 rounded-xl border p-4">
+      <h4 className="font-bold text-sm mb-2">🗺️ Alias de villes (correction manuelle)</h4>
+      <p className="text-xs text-muted-foreground mb-3">
+        Si une ville échoue toujours malgré la correction automatique (ex: "Laayoune Sidi Mellouk" → en réalité "El Aioun Sidi Mellouk" chez Vitips), ajoute une correspondance manuelle ici — elle sera utilisée systématiquement.
+      </p>
+      <div className="flex gap-2 mb-3">
+        <Input placeholder="Ville reçue (ex: Laayoune Sidi Mellouk)" value={rawCity} onChange={e => setRawCity(e.target.value)} className="flex-1" />
+        <Input placeholder="Nom exact Vitips (ex: El Aioun Sidi Mellouk)" value={vitipsCity} onChange={e => setVitipsCity(e.target.value)} className="flex-1" />
+        <Button onClick={() => addMutation.mutate()} disabled={!rawCity || !vitipsCity}>Ajouter</Button>
+      </div>
+      <div className="space-y-1">
+        {aliases.map((a: any) => (
+          <div key={a.id} className="flex justify-between items-center text-sm border-b pb-1">
+            <span>{a.rawCityName} → <strong>{a.vitipsCityName}</strong></span>
+            <Button size="sm" variant="ghost" onClick={() => deleteMutation.mutate(a.id)}>🗑️</Button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 5 — Pré-remplir 3 alias connus dès maintenant (les cas déjà identifiés)
+
+Une fois déployé, ajouter directement via l'UI (ou un insert SQL ponctuel) :
+- "OUJDA" wait — Oujda est une grande ville, à tester en premier SANS alias
+  après le fix (peut-être un problème de casse/espace déjà réglé par
+  l'ÉTAPE 3-4 précédentes) ; si ça échoue encore, ajouter l'alias avec le
+  nom exact trouvé en testant plusieurs variantes dans le champ "Nom exact
+  Vitips" (ex: "Oujda", "OUJDA", "Oujda Ville").
+- "Laayoune Sidi Mellouk" → tester l'alias "El Aioun Sidi Mellouk" en
+  premier (nom probable de cette localité près d'Oujda, différent de la
+  ville de Laâyoune au Sahara).
+- "Agadir" → idem, tester en premier sans alias après ce fix ; si échec
+  persistant, contacter le support Vitips pour confirmer l'orthographe
+  exacte attendue pour Agadir dans leur système (peut être une question de
+  couverture/zone plutôt que d'orthographe, à ce stade).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add manual city-alias override table for Vitips as permanent fix for unmatched cities" && git push
+npm run db:push
+
+VÉRIFICATION
+1. Ajouter l'alias "Laayoune Sidi Mellouk" → "El Aioun Sidi Mellouk" via
+   l'UI.
+2. Réessayer une commande vers cette ville → doit maintenant passer (ou
+   donner un message d'erreur DIFFÉRENT si le nom testé n'est toujours pas
+   le bon — dans ce cas, essayer d'autres variantes dans l'alias jusqu'à
+   ce que ça passe).
+3. Répéter pour Oujda et Agadir si elles échouent encore après ce
+   déploiement.
+4. Une fois qu'un alias fonctionne, il reste actif pour TOUTES les
+   commandes futures vers cette ville — plus besoin de le refaire.

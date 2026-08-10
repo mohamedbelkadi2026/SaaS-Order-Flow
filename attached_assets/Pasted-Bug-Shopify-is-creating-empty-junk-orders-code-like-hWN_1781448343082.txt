@@ -1,0 +1,47 @@
+Bug: Shopify is creating empty junk orders (code like "hWNDK…", customer "Client Shopify",
+phone/city empty, 0.00 DH, ⚠️3). Root cause: in app.post("/api/webhooks/shopify/order/:webhookKey")
+the handler only checks `isTestPing = !payload?.id || topic === "hmac-verification"` and then
+processes ANY topic that has an id. Shopify cart/checkout topics (carts/create, carts/update,
+checkouts/create, checkouts/update) have a token id + empty customer + 0 total, so they get turned
+into empty orders. Fix: only process ORDER topics.
+
+In server/routes.ts, in app.post("/api/webhooks/shopify/order/:webhookKey"), right after:
+    const topic = (req.headers["x-shopify-topic"] as string) || "";
+add an order-topic guard:
+
+    const t = topic.toLowerCase();
+    const isOrderTopic =
+      t.startsWith("orders/") ||
+      // some setups don't send a topic header: accept only if it really looks like an order
+      (t === "" && (payload?.order_number != null ||
+                    (Array.isArray(payload?.line_items) && payload.line_items.length > 0 &&
+                     payload?.total_price != null)));
+    const isCartOrCheckout = t.startsWith("carts/") || t.startsWith("checkouts/");
+
+    if (!isTestPing && (isCartOrCheckout || !isOrderTopic)) {
+      console.log(`[SHOPIFY WEBHOOK] Ignored non-order topic "${topic}" (no order created)`);
+      try {
+        await storage.createIntegrationLog({
+          storeId, integrationId: integration.id, provider: "shopify",
+          action: "webhook_ignored", status: "success",
+          message: `Topic ignoré (non-commande): ${topic || "n/a"}`,
+        });
+      } catch (_) {}
+      return res.status(200).json({ received: true, ignored: true, topic });
+    }
+
+Keep everything else as-is (test ping handling, parsing, duplicate guard). Apply the SAME guard to
+the shopify branch of the universal route app.post("/api/webhooks/:provider/order/:webhookKey") if
+it also creates orders from the Shopify payload.
+
+ALSO add a one-time cleanup endpoint to remove the junk already created (scoped + conservative):
+POST /api/admin/shopify/cleanup-empty (requireAuth, requireAdmin). For the current store, delete
+orders where source/provider is shopify AND status = 'nouveau' AND (customerPhone is null/empty)
+AND (totalPrice = 0) AND (customerName = 'Client Shopify' OR customerName = 'Client Anonyme').
+Return the deleted count. Do NOT touch orders that have a phone or a non-zero price.
+
+VERIFY:
+- New Shopify cart/checkout events no longer create orders (logged as "Topic ignoré"); only real
+  orders/create events create orders with full customer/phone/city/price.
+- POST /api/admin/shopify/cleanup-empty removes the existing hWNDK… empty rows for that store.
+- A real Shopify order still comes through correctly (test with a real order). App compiles.

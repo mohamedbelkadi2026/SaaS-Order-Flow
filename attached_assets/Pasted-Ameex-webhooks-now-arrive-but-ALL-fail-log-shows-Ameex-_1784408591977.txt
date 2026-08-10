@@ -1,0 +1,38 @@
+Ameex webhooks now arrive but ALL fail: log shows "[Ameex] Webhook reçu mais aucune commande 
+trouvée — statut: """ (empty STATUT + no order matched). Ameex sends 
+application/x-www-form-urlencoded (NOT JSON) with fields CODE, STATUT, STATUT_S, STATUT_NAME. 
+The handler is reading the wrong body/fields. Fix parsing + matching, and make the 
+"Synchroniser les statuts" button replay stored webhooks (Ameex has NO pull endpoint — 
+webhook only).
+
+FIX 1 — PARSE THE PAYLOAD CORRECTLY:
+ - Ensure the Ameex webhook route accepts application/x-www-form-urlencoded (express.urlencoded 
+   on that route). Read fields EXACTLY: CODE, STATUT, STATUT_S, STATUT_NAME, DATE. Log the full 
+   raw parsed body so we see real keys/values.
+ - STATUT is currently coming through empty — confirm you're reading req.body.STATUT (uppercase, 
+   form-encoded), not JSON. Handle keys case-insensitively as a safety net.
+
+FIX 2 — MATCH THE ORDER:
+ - Match order by CODE == order.trackNumber. Ameex ship stored placeholder trackNumbers 
+   ("AMEEX-PENDING-..."), so also: if no trackNumber match, match by customer PHONE (from the 
+   order) and, on match, backfill the real CODE onto order.trackNumber. If still nothing, keep 
+   the "no order found" log but include the CODE so we can see it.
+
+FIX 3 — MAP STATUS (AMEEX_STATUS_MAP, STATUT[/STATUT_S] → internal):
+   DELIVERED -> delivered ; DISTRIBUTION -> in_progress ; IN_PROGRESS+POSTPONED -> in_progress 
+   (label "Reporté") ; IN_PROGRESS+NO_ANSWER_TEAM -> in_progress ; IN_PROGRESS -> in_progress ; 
+   RETURNED/RTS -> retourné ; REFUSED/REJECTED -> refused ; CANCELED -> refused/annulé. 
+   Unknown -> in_progress (never guess delivered/refused). Store STATUT_NAME in commentStatus.
+
+FIX 4 — "SYNCHRONISER LES STATUTS" = REPLAY (no pull):
+ - Ameex has no tracking API, so make the button re-read the stored Ameex webhook events 
+   (integration_logs) by CODE, re-match to orders (by trackNumber or phone), and apply the 
+   latest mapped status. Report updated/skipped counts. Remove any leftover [AMEEX-TRACK] pull 
+   calls (the 404 endpoint doesn't exist).
+
+VERIFY: an incoming Ameex webhook with STATUT=DELIVERED matches its order and sets it to 
+delivered (shows "Livré"); the previously-orphaned events, once their orders exist, get matched 
+on replay; no more empty-statut / 404 errors.
+
+Deploy to main. Paste me ONE full raw Ameex webhook body (all keys) so we confirm the field 
+names, plus the replay result counts.

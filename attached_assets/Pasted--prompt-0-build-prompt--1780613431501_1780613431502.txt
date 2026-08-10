@@ -1,0 +1,62 @@
+واضح! بعد الـ prompt الكبير كيبانو كلهم 0 — يعني الـ build فشل أو كاين خطأ فالكود. هاهو الـ prompt:
+
+FIX: Dashboard shows all zeros after last deployment — revert breaking changes
+Problem: After the last commit, all data on the dashboard shows 0 (commandes, confirmées, livrées, profit, etc.). The filters still appear but return no data. This means either:
+
+A server route broke and returns empty/error responses
+A database query was broken by schema changes
+An import error is crashing the server silently
+
+Fix steps — inspect and revert:
+
+Step 1 — Check server logs for errors
+Look at the Replit console/logs for any of these:
+
+TypeError, SyntaxError, Cannot read properties of undefined
+Database errors: column does not exist, relation does not exist
+Import errors: Cannot find module
+
+Report the exact error message.
+
+Step 2 — Revert the breaking parts from the last commit
+The last commit touched these files:
+
+server/storage.ts (added getLoyalClientsWithDeliveries + new product methods)
+server/routes.ts (added new endpoints)
+client/src/pages/stock.tsx (image + cost fields)
+client/src/pages/profit-analyzer.tsx (formula changes)
+shared/schema.ts (possibly added columns)
+
+Check each file for syntax errors or broken imports:
+bash# Run TypeScript check
+npx tsc --noEmit 2>&1 | head -50
+
+Step 3 — Most likely fixes
+A) If shared/schema.ts was changed and added a column that doesn't exist in DB:
+Revert any ALTER TABLE or new column additions in schema.ts that weren't migrated. OR add the missing column:
+sqlALTER TABLE products ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}';
+B) If a new import broke a file:
+Check server/storage.ts top imports — make sure orderItems, products, inArray, desc are all properly imported from the right places.
+C) If server/routes.ts has a syntax error:
+The entire routes file failing = all endpoints return nothing. Check for unclosed brackets {} or missing commas.
+
+Step 4 — Quick restore
+If the errors are hard to find, do a targeted revert:
+bash# See what changed in last commit
+git diff HEAD~1 HEAD --name-only
+
+# Revert only the broken file (e.g. storage.ts)
+git checkout HEAD~1 -- server/storage.ts
+git checkout HEAD~1 -- server/routes.ts
+
+# Keep the client changes (they don't affect server data)
+Then recommit and redeploy.
+
+Step 5 — Verify
+After fix, the dashboard must show real data again:
+
+GET /api/stats returns non-zero values
+GET /api/orders returns orders list
+Console shows no TypeScript/runtime errors
+
+Priority: restore the working state first, then re-apply the new features carefully one by one.

@@ -31,7 +31,8 @@
     "inProgress": "En cours",
     "tracking": "Suivi des Colis",
     "delivered": "Livrées",
-    "refused": "Refusées"
+    "refused": "Refusées",
+    "returns": "Retours"
   },
   "integrationSub": {
     "stores": "Boutiques",

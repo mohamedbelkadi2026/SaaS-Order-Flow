@@ -1,0 +1,70 @@
+FIX — Le webhook YouCan reçoit bien les commandes (POST arrive), mais la
+vérification de signature échoue systématiquement ("Invalid signature —
+rejecting", 401), donc aucune commande n'est créée.
+
+CAUSE
+Le handler calcule le HMAC sur `JSON.stringify(req.body)` — un objet JS déjà
+parsé puis re-sérialisé. L'ordre des clés, les espaces, l'encodage peuvent
+différer du JSON brut original que YouCan a signé, donc la signature ne
+matche jamais, même quand tout le reste est correct.
+
+Le projet a DÉJÀ un middleware dédié pour ce cas exact
+(server/index.ts, juste avant express.json()) : il capture les bytes bruts
+de toute requête vers `/api/webhooks/` ou `/api/webhook/` dans
+`req.webhookRawBody` (Buffer), précisément pour permettre une vérification
+de signature fiable. Le handler YouCan ne l'utilise pas encore.
+
+────────────────────────────────────────────────────────────────────────────
+FIX — server/routes.ts, dans le handler POST /api/webhooks/youcan/order/:webhookKey
+
+Remplacer :
+```ts
+const signature = req.headers["x-youcan-signature"] as string | undefined;
+const clientSecret = process.env.YOUCAN_CLIENT_SECRET!;
+if (signature) {
+  const expected = crypto.createHmac("sha256", clientSecret)
+    .update(JSON.stringify(req.body))
+    .digest("hex");
+  if (expected !== signature) {
+    console.warn("[YOUCAN-WEBHOOK] Invalid signature — rejecting");
+    return res.status(401).json({ message: "Invalid signature" });
+  }
+}
+```
+
+par :
+```ts
+const signature = req.headers["x-youcan-signature"] as string | undefined;
+const clientSecret = process.env.YOUCAN_CLIENT_SECRET!;
+const rawBody = (req as any).webhookRawBody as Buffer | undefined;
+if (signature) {
+  if (!rawBody) {
+    console.warn("[YOUCAN-WEBHOOK] No raw body captured — cannot verify signature, rejecting");
+    return res.status(401).json({ message: "Invalid signature" });
+  }
+  const expected = crypto.createHmac("sha256", clientSecret)
+    .update(rawBody)
+    .digest("hex");
+  if (expected !== signature) {
+    console.warn(`[YOUCAN-WEBHOOK] Invalid signature — expected=${expected.slice(0,12)}... received=${signature.slice(0,12)}... rejecting`);
+    return res.status(401).json({ message: "Invalid signature" });
+  }
+  console.log("[YOUCAN-WEBHOOK] Signature verified OK");
+}
+```
+
+Le reste du handler (lecture de `req.body` pour construire la commande)
+reste inchangé — `req.body` est toujours l'objet JS parsé, seule la
+vérification de signature doit utiliser les bytes bruts.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix YouCan webhook signature verification: use raw body bytes instead of re-stringified JSON" && git push
+
+VÉRIFICATION
+1. Passer une nouvelle commande test sur le store YouCan connecté.
+2. Dans les logs Railway, chercher `[YOUCAN-WEBHOOK]` — doit maintenant
+   afficher "Signature verified OK" au lieu de "Invalid signature".
+3. La commande doit apparaître dans la liste des commandes de la plateforme
+   en quelques secondes, et `GET /api/integrations/youcan/status` doit
+   montrer `ordersCount` incrémenté (plus 0).

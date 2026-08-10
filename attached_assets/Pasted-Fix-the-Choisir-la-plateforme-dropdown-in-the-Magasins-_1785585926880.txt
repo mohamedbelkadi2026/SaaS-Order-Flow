@@ -1,0 +1,68 @@
+Fix the "Choisir la plateforme" dropdown in the Magasins modal (client/src/pages/magasins.tsx).
+
+PROBLEM:
+The dropdown shows "Aucun résultat" even though YouCan and other integrations are connected.
+
+ROOT CAUSE:
+In magasins.tsx around line 530:
+  const { data: storeIntegrations } = useIntegrations("store");
+
+This fetches integrations with type="store". But the data might be empty or the items are not mapped correctly.
+
+The platformItems is built like this (line 278):
+  const platformItems = (storeIntegrationsList || []).map((s: any) => ({
+    value: s.provider,
+    label: s.provider,
+  }));
+
+TWO FIXES NEEDED:
+
+FIX 1 — Better label display:
+Change the label to show a human-readable name instead of raw provider string:
+  const PLATFORM_LABELS: Record<string, string> = {
+    youcan: "YouCan",
+    shopify: "Shopify",
+    woocommerce: "WooCommerce",
+    storeep: "Storeep",
+    lightfunnels: "LightFunnels",
+    magento: "Magento",
+    gsheets: "Google Sheets",
+  };
+
+  const platformItems = (storeIntegrationsList || []).map((s: any) => ({
+    value: s.id?.toString() || s.provider,
+    label: PLATFORM_LABELS[s.provider] || s.provider,
+  }));
+
+FIX 2 — Make sure the data is actually fetched:
+The magasins page fetches useIntegrations("store") but the YouCan integration might be stored with a different type or the query might not be returning data.
+
+Add a console.log to debug:
+  console.log("[MAGASINS] storeIntegrations:", storeIntegrations);
+
+Also check: in server/routes.ts GET /api/integrations, when type="store" is passed, does it return YouCan integrations?
+
+In getIntegrationsByStore in server/storage.ts, check the SQL WHERE clause:
+- If it filters by type = "store", make sure YouCan is stored with type = "store"
+- YouCan is created with: { provider: "youcan", type: "store", credentials: {...} } ← this is correct
+
+FIX 3 — Link magasin to platform and route orders correctly:
+When a magasin has linkedPlatforms set (e.g. ["youcan"] or [integrationId]):
+- When an order arrives via YouCan webhook, check which magasin has YouCan linked
+- Set that order's magasinId to the linked magasin's ID
+- This way the BOUTIQUE column shows the correct magasin name
+
+In server/routes.ts, find the YouCan webhook handler (POST /api/integrations/youcan/webhook or the shared webhook handler).
+When creating the order, add this logic:
+
+// Find magasin linked to this YouCan integration
+const magasins = await storage.getMagasinsByStore(storeId);
+const linkedMagasin = magasins.find((m: any) => {
+  const platforms = Array.isArray(m.linkedPlatforms) ? m.linkedPlatforms : [];
+  return platforms.some((p: any) => 
+    p === "youcan" || p === integration.id?.toString() || p === String(integration.id)
+  );
+});
+if (linkedMagasin) {
+  orderData.magasinId = linkedMagasin.id;
+}

@@ -1,0 +1,150 @@
+FIX — "Connecter ma boutique YouCan" renvoie l'utilisateur vers la page de
+login après avoir cliqué "Autoriser" sur YouCan, au lieu de compléter la
+connexion.
+
+CAUSE PROBABLE
+La vérification du paramètre `state` OAuth dépend de `req.session` (stocké
+côté serveur au moment du /oauth/start, relu au moment du /oauth/callback).
+Entre les deux, le navigateur quitte le domaine (redirection vers
+seller-area.youcan.shop puis retour), et pour une raison encore incertaine
+(cookie non transmis, nouvelle session créée entre-temps, écrasement du
+cookie de connexion existant...) la session semble se perdre, ce qui peut
+aussi faire perdre la session de connexion normale de l'utilisateur.
+
+FIX — Rendre le `state` OAuth AUTONOME (signé cryptographiquement), sans
+dépendre de `req.session` du tout. Le state contient déjà tout ce qu'il faut
+(storeId + timestamp) ; il suffit de le signer pour vérifier son authenticité
+à la place de le comparer à une valeur stockée en session. Ça élimine
+complètement le risque lié aux cookies de session pour ce flux.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/routes.ts : /oauth/start (ne plus toucher req.session)
+
+Remplacer :
+```ts
+app.get("/api/integrations/youcan/oauth/start", requireAuth, (req, res) => {
+  const clientId = process.env.YOUCAN_CLIENT_ID;
+  if (!clientId) return res.redirect("/integrations?youcan_error=not_configured");
+  const storeId = req.user!.storeId!;
+  const state = `${storeId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  (req.session as any).youcanOauthState = state;
+  const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+    `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+  const url = new URL("https://seller-area.youcan.shop/admin/oauth/authorize");
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.append("scope[]", "*");
+  url.searchParams.set("state", state);
+  res.redirect(url.toString());
+});
+```
+
+par (state signé, aucune dépendance à la session) :
+
+```ts
+import crypto from "crypto";
+
+function signYouCanState(storeId: number): string {
+  const payload = `${storeId}.${Date.now()}`;
+  const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+  const sig = crypto.createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+  return `${payload}.${sig}`;
+}
+
+function verifyYouCanState(state: string): number | null {
+  const parts = (state || "").split(".");
+  if (parts.length !== 3) return null;
+  const [storeIdStr, ts, sig] = parts;
+  const payload = `${storeIdStr}.${ts}`;
+  const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+  const expected = crypto.createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+  if (expected !== sig) return null;
+  // State valide 15 minutes maximum.
+  if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
+  const storeId = parseInt(storeIdStr, 10);
+  return isNaN(storeId) ? null : storeId;
+}
+
+app.get("/api/integrations/youcan/oauth/start", requireAuth, (req, res) => {
+  const clientId = process.env.YOUCAN_CLIENT_ID;
+  if (!clientId) return res.redirect("/integrations?youcan_error=not_configured");
+  const storeId = req.user!.storeId!;
+  const state = signYouCanState(storeId);
+  const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+    `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+  const url = new URL("https://seller-area.youcan.shop/admin/oauth/authorize");
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.append("scope[]", "*");
+  url.searchParams.set("state", state);
+  console.log(`[YOUCAN-OAUTH] start — storeId=${storeId}, redirectUri=${redirectUri}`);
+  res.redirect(url.toString());
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — server/routes.ts : /oauth/callback (ne plus lire/écrire
+req.session pour le state)
+
+Remplacer le début de la fonction :
+```ts
+app.get("/api/integrations/youcan/oauth/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) return res.redirect(`/integrations?youcan_error=${error}`);
+  const sessionState = (req.session as any).youcanOauthState;
+  if (!state || state !== sessionState) return res.redirect("/integrations?youcan_error=invalid_state");
+  delete (req.session as any).youcanOauthState;
+  const storeId = parseInt((state as string).split("-")[0]);
+  if (isNaN(storeId)) return res.redirect("/integrations?youcan_error=invalid_state");
+  ...
+```
+
+par :
+```ts
+app.get("/api/integrations/youcan/oauth/callback", async (req, res) => {
+  console.log("[YOUCAN-OAUTH] callback hit — query:", JSON.stringify(req.query));
+  const { code, state, error } = req.query;
+  if (error) {
+    console.error("[YOUCAN-OAUTH] YouCan returned error:", error);
+    return res.redirect(`/integrations?youcan_error=${error}`);
+  }
+  const storeId = verifyYouCanState(state as string);
+  if (!storeId) {
+    console.error("[YOUCAN-OAUTH] Invalid or expired state:", state);
+    return res.redirect("/integrations?youcan_error=invalid_state");
+  }
+  console.log(`[YOUCAN-OAUTH] callback verified — storeId=${storeId}`);
+  ...
+```
+
+Le reste du callback (échange du code, sauvegarde du token, abonnement
+webhook) reste identique — seule la vérification du `state` change.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Entourer TOUT le corps du callback d'un try/catch qui logue
+l'erreur complète (pas juste un message générique), pour qu'on puisse voir
+exactement où ça casse si un autre problème survient :
+
+```ts
+} catch (err: any) {
+  console.error("[YOUCAN-OAUTH] Callback error — full stack:", err);
+  res.redirect(`/integrations?youcan_error=server_error`);
+}
+```
+(remplacer le catch existant s'il logue seulement `err.message`)
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix YouCan OAuth: use signed stateless state instead of session, add logging" && git push
+
+VÉRIFICATION
+1. Cliquer "Connecter ma boutique YouCan" → autoriser sur YouCan.
+2. Ne doit PLUS renvoyer vers login — doit atterrir sur
+   `/integrations?youcan=connected` en restant connecté à la plateforme.
+3. Si ça échoue encore, regarder les logs Railway juste après le clic sur
+   "Autoriser" — chercher les lignes `[YOUCAN-OAUTH]` : elles diront
+   exactement à quelle étape ça casse (state invalide, échange de token
+   échoué, etc.). Copier-coller-moi ces lignes de log si le problème persiste,
+   ça me donnera la cause exacte au lieu de deviner.

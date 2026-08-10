@@ -1,0 +1,49 @@
+Problem: Ozon Express order statuses never update. Ozon Express does NOT push webhooks (unlike
+Express Coursier), so statuses must be PULLED via polling. The existing trackOzonExpressShipment()
+in server/services/carrier-service.ts is still a TODO placeholder (guessed endpoint + status map),
+so it returns no status.
+
+GOAL: make Ozon tracking robust, LOG the raw response so the exact shape can be confirmed, and
+auto-poll periodically so statuses update without manual clicks.
+
+1) server/services/carrier-service.ts — rewrite trackOzonExpressShipment to:
+   - Build the URL from the confirmed Ozon auth pattern (customerId + apiKey in the path, same as
+     the working add-parcel / cities calls):
+       const base = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}`;
+   - Try the parcel-info endpoint with the tracking number, sending it as form-data (Ozon uses
+     multipart/form-data elsewhere), and ALSO accept JSON:
+       POST `${base}/parcel-info`  body form field `tracking-number` = trackingNumber
+   - ALWAYS log the full raw response so we can confirm the real shape:
+       console.log(`[OZON-TRACK] ${trackingNumber} HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+   - Parse the status defensively from the common Ozon shapes (try all):
+       const b = r.data;
+       const rawStatus =
+         b?.['PARCEL-INFOS']?.['LAST-TRACKING']?.STATUT ??
+         b?.['PARCEL-INFOS']?.STATUT ??
+         b?.['PARCEL-INFO']?.STATUS ??
+         b?.PARCEL?.STATUT ?? b?.STATUT ?? b?.status ?? null;
+   - Return { status: rawStatus ? mapOzonStatus(rawStatus) : null, rawStatus, rawResponse: b, error }.
+
+2) OZON_STATUS_MAP — keep it but mark it to be finalized from the logged raw response. Pre-fill
+   the typical OzonExpress French labels → internal codes (ADJUST after seeing real values):
+       "Livré":"delivered", "Delivered":"delivered",
+       "Retourné":"refused", "Refusé par le client":"refused", "Annulé":"cancelled",
+       "Mise en distribution":"in_progress", "En cours de livraison":"in_progress",
+       "Reçu":"expedie", "Ramassé":"expedie", "Expédié":"expedie",
+       "Pas de réponse":"pas_reponse", "Reporté":"reporte",
+   mapOzonStatus should lowercase+trim both sides before matching, and return null if unknown
+   (so an unknown status never overwrites the current one — it just logs).
+
+3) Auto-poll (so it updates automatically, since Ozon has no webhook):
+   Add a cron/interval (reuse the existing cron setup pattern in server/cron) that every ~10
+   minutes calls syncCarrierOrdersInternal(storeId, 'ozonexpress') for each store that has an
+   active ozonexpress carrier account with shipped, non-terminal orders. Throttle as the existing
+   sync loop already does.
+
+4) Keep the manual "Synchroniser Ozon Express" button working (it already calls
+   /api/shipping/ozonexpress/sync → syncCarrierOrdersInternal → runSyncLoop → trackByCarrier).
+
+VERIFY / NEXT STEP:
+   - Ship/track one real Ozon Express order, click "Synchroniser Ozon Express", and copy the
+     `[OZON-TRACK] ...` line from the server logs. That raw JSON reveals the exact status field +
+     the real status strings, so OZON_STATUS_MAP and the field path can be locked precisely.

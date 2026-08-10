@@ -1,0 +1,26 @@
+# Replit Prompt — FIX: Super Admin shows no boutiques after the last change
+
+After the Import CSV change, the Super Admin panel (God Mode) shows **no boutiques** ("Aucune boutique trouvée", count 0) and all VUE PLATEFORME stats are "—". This is a regression: the admin queries now reference the new `import_csv_override` column / `csv_profit_reports` table, but the DB wasn't migrated, so the admin stores query throws (column/relation does not exist) and returns nothing.
+
+## Step 1 — Run the migration (most likely the whole fix)
+- Run `npm run db:push`. Confirm creation of the new column `subscriptions.import_csv_override` and the table `csv_profit_reports`.
+- Reload the Super Admin panel — the boutiques and platform stats should come back.
+
+## Step 2 — If still empty, check the admin endpoint
+- Look at the server logs for the request the Super Admin page makes (e.g. `GET /api/admin/stores` and the platform-overview endpoint). It is almost certainly throwing a 500 (likely `column "import_csv_override" does not exist` or a reference to `csv_profit_reports`). Send me the log if it persists.
+- Make the new feature-flag reads **null-safe** so a missing/undefined value never breaks the list:
+  ```ts
+  const importCsvOverride = sub?.importCsvOverride ?? null; // null = follow plan
+  const hasImportCsv = importCsvOverride != null ? importCsvOverride === 1 : planDefaults(sub.plan).importCsv;
+  ```
+  Do the same defensive `?? null` for `automationOverride` / `mediaBuyersOverride` so one undefined field can't blank the whole admin list.
+- Wrap the admin stores/overview handlers in try/catch that `console.error(err)` and return a clear error, instead of failing silently to an empty list.
+
+## Step 3 — Don't let the feature columns be required
+Confirm the three override columns (`automation_override`, `media_buyers_override`, `import_csv_override`) are **nullable** with no NOT NULL/!default that could break existing subscription rows. Existing stores must read fine with these columns NULL.
+
+## Testing checklist
+1. Super Admin shows all boutiques again and the VUE PLATEFORME stats (Boutiques totales, actives, MRR, Commandes, Plans expirant) are populated.
+2. The per-store feature toggles (Automation, Media Buyers, Import CSV) render with their current state and can be changed.
+3. `GET /api/admin/stores` returns 200 (no "column does not exist").
+4. A normal store user is unaffected.

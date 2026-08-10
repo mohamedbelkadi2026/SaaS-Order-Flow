@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages } from "@/hooks/use-store-data";
+import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages, useAgentComparisonByProduct } from "@/hooks/use-store-data";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { queryClient } from "@/lib/queryClient";
@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp, RotateCcw, AlertTriangle } from "lucide-react";
+import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp, RotateCcw, AlertTriangle, Trophy, Timer } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/utils";
@@ -28,6 +28,7 @@ const DEFAULT_PERMISSIONS: Record<string, boolean> = {
   show_top_products: false,
   show_inventory: false,
   show_all_orders: false,
+  can_edit_shipping_fee: false,
 };
 
 const PERMISSION_LABELS: Record<string, { label: string; description: string }> = {
@@ -38,6 +39,7 @@ const PERMISSION_LABELS: Record<string, { label: string; description: string }> 
   show_top_products: { label: "Table Produits Commandés", description: "Voir quels produits se vendent le mieux" },
   show_inventory: { label: "Accès au Stock / Inventaire", description: "Voir et gérer les niveaux de stock" },
   show_all_orders: { label: "Page Commandes (Toutes)", description: "Accéder à la vue centrale de toutes les commandes" },
+  can_edit_shipping_fee: { label: "Modifier les frais de livraison", description: "Autoriser l'agent à changer le montant des frais de livraison sur une commande" },
 };
 
 const MOROCCAN_REGIONS = [
@@ -373,6 +375,15 @@ export default function Team() {
     perfMagasinId === "all" ? null : Number(perfMagasinId),
     perfDate,
   );
+  const { data: comparisonByProduct } = useAgentComparisonByProduct();
+
+  // Auto-refresh agent online status every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, []);
 
   // When the owner narrows by magasin, also narrow the agents table to those
   // who actually have a settings row for that magasin. Otherwise the filter
@@ -637,7 +648,26 @@ export default function Team() {
 
   const getAgentStats = (agentId: number) => {
     const stats = performance?.find((p: any) => p.agentId === agentId);
-    return stats || { total: 0, confirmed: 0, delivered: 0, cancelled: 0 };
+    return stats || { total: 0, confirmed: 0, delivered: 0, cancelled: 0, avgResponseMinutes: null };
+  };
+
+  const getOnlineStatus = (lastSeenAt: string | null | undefined) => {
+    if (!lastSeenAt) return { color: "bg-gray-400", label: "Jamais connecté" };
+    const diffMs = Date.now() - new Date(lastSeenAt).getTime();
+    const diffMin = diffMs / 60_000;
+    if (diffMin <= 5)  return { color: "bg-green-500",  label: "En ligne" };
+    if (diffMin <= 30) return { color: "bg-yellow-400", label: `Actif il y a ${Math.round(diffMin)} min` };
+    const diffH = Math.floor(diffMin / 60);
+    const label = diffH < 24
+      ? `Hors ligne — il y a ${diffH}h${Math.round(diffMin % 60).toString().padStart(2, "0")}`
+      : `Hors ligne — ${new Date(lastSeenAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })}`;
+    return { color: "bg-gray-400", label };
+  };
+
+  const fmtMinutes = (min: number | null) => {
+    if (min == null || isNaN(min)) return "—";
+    if (min < 60) return `${min} min`;
+    return `${Math.floor(min / 60)}h ${(min % 60).toString().padStart(2, "0")}min`;
   };
 
   const getAgentRole = (agentId: number) => {
@@ -719,7 +749,7 @@ export default function Team() {
             Réinitialiser la distribution
           </Button>
 
-          <Dialog open={open} onOpenChange={setOpen}>
+          <Dialog open={open} onOpenChange={(v) => { if (v) setFormData(d => ({ ...d, memberType: 'agent' })); setOpen(v); }}>
           <DialogTrigger asChild>
             <Button data-testid="button-add-member" className="bg-primary hover:bg-primary/90 text-white rounded-md px-4 py-2 flex items-center gap-2">
               <UserPlus className="w-4 h-4" /> Ajouter un membre
@@ -734,20 +764,6 @@ export default function Team() {
             </div>
 
             <div className="px-7 py-5 space-y-6 max-h-[72vh] overflow-y-auto">
-              {/* Member type selector */}
-              <div className="space-y-2">
-                <Label className="text-sm font-semibold text-foreground">Type de membre</Label>
-                <div className="grid grid-cols-2 gap-2 border rounded-lg p-1 bg-muted/20">
-                  <button type="button" onClick={() => setFormData(d => ({ ...d, memberType: 'agent' }))}
-                    className={cn("h-9 rounded-md text-sm font-medium transition-all", formData.memberType === 'agent' ? "bg-white dark:bg-card shadow-sm text-primary border border-border" : "text-muted-foreground hover:text-foreground")}>
-                    Agent
-                  </button>
-                  <button type="button" onClick={() => setFormData(d => ({ ...d, memberType: 'media_buyer' }))}
-                    className={cn("h-9 rounded-md text-sm font-medium transition-all", formData.memberType === 'media_buyer' ? "bg-white dark:bg-card shadow-sm text-violet-600 border border-border" : "text-muted-foreground hover:text-foreground")}>
-                    Media Buyer
-                  </button>
-                </div>
-              </div>
 
               <div className="grid grid-cols-2 gap-5">
                 <div className="space-y-1.5">
@@ -1149,6 +1165,7 @@ export default function Team() {
               <TableHead>PAIEMENT</TableHead>
               <TableHead>RÉPARTITION</TableHead>
               <TableHead>ACTIONS DU JOUR</TableHead>
+              <TableHead>TEMPS MOY.</TableHead>
               <TableHead>STATUT</TableHead>
               <TableHead className="text-right">ACTIONS</TableHead>
             </TableRow>
@@ -1156,7 +1173,7 @@ export default function Team() {
           <TableBody>
             {!agents || agents.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
                   Aucun membre. Cliquez "Ajouter un membre" pour commencer.
                 </TableCell>
               </TableRow>
@@ -1171,10 +1188,21 @@ export default function Team() {
                 <TableRow key={agent.id} className="hover:bg-muted/5" data-testid={`row-agent-${agent.id}`}>
                   <TableCell className="py-5">
                     <div className="flex items-start gap-3">
-                      <Avatar className="w-10 h-10 rounded-full shrink-0">
-                        <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${agent.username}`} />
-                        <AvatarFallback>{agent.username[0]}</AvatarFallback>
-                      </Avatar>
+                      <div className="relative shrink-0">
+                        <Avatar className="w-10 h-10 rounded-full">
+                          <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${agent.username}`} />
+                          <AvatarFallback>{agent.username[0]}</AvatarFallback>
+                        </Avatar>
+                        {(() => {
+                          const status = getOnlineStatus(agent.lastSeenAt);
+                          return (
+                            <span
+                              title={status.label}
+                              className={cn("absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-background", status.color)}
+                            />
+                          );
+                        })()}
+                      </div>
                       <div>
                         <p className="font-bold">{agent.username}</p>
                         <p className="text-xs text-muted-foreground">{agent.email}</p>
@@ -1285,6 +1313,20 @@ export default function Team() {
                     )}
                   </TableCell>
                   <TableCell>
+                    {agent.role === 'agent' && stats.total > 0 ? (() => {
+                      const min = stats.avgResponseMinutes;
+                      const colorClass = min == null ? "text-muted-foreground" : min < 10 ? "text-green-600" : min < 30 ? "text-orange-500" : "text-red-500";
+                      return (
+                        <div className="flex items-center gap-1.5">
+                          <Timer className={cn("w-3.5 h-3.5", colorClass)} />
+                          <span className={cn("text-xs font-medium tabular-nums", colorClass)}>
+                            {fmtMinutes(min)}
+                          </span>
+                        </div>
+                      );
+                    })() : <span className="text-xs text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell>
                     <div className="flex items-center gap-2">
                       <span className={cn("w-2 h-2 rounded-full", agent.isActive ? "bg-green-500" : "bg-gray-400")}></span>
                       <span className="text-xs font-medium">{agent.isActive ? "Actif" : "Inactif"}</span>
@@ -1337,6 +1379,89 @@ export default function Team() {
 
       {/* ── Media Buyers Summary Table ── */}
       <MediaBuyersSummaryTable />
+
+      {/* ── Comparaison par Produit ── */}
+      {comparisonByProduct && comparisonByProduct.length > 0 && (() => {
+        // Build list of unique products and agents present in the data
+        const productMap = new Map<number, string>();
+        const agentSet = new Set<number>();
+        for (const r of comparisonByProduct) {
+          productMap.set(r.productId, r.productName);
+          agentSet.add(r.agentId);
+        }
+        const productList = Array.from(productMap.entries()).map(([id, name]) => ({ id, name }));
+        const agentIds = Array.from(agentSet);
+        const agentList = agentIds.map(id => (agents as any[])?.find((a: any) => a.id === id)).filter(Boolean);
+
+        // Build lookup: productId -> agentId -> { total, confirmed }
+        const lookup = new Map<string, { total: number; confirmed: number }>();
+        for (const r of comparisonByProduct) {
+          lookup.set(`${r.productId}-${r.agentId}`, { total: r.total, confirmed: r.confirmed });
+        }
+
+        // Best agent per product (highest confirmation rate with ≥1 total)
+        const bestAgentForProduct = new Map<number, number>();
+        for (const p of productList) {
+          let bestAgent: number | null = null;
+          let bestRate = -1;
+          for (const a of agentList) {
+            const cell = lookup.get(`${p.id}-${a.id}`);
+            if (!cell || cell.total === 0) continue;
+            const rate = (cell.confirmed / cell.total) * 100;
+            if (rate > bestRate) { bestRate = rate; bestAgent = a.id; }
+          }
+          if (bestAgent != null) bestAgentForProduct.set(p.id, bestAgent);
+        }
+
+        return (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Trophy className="w-5 h-5 text-amber-500" />
+              <h2 className="text-base font-bold uppercase tracking-wide">Comparaison par Produit</h2>
+            </div>
+            <div className="overflow-x-auto rounded-2xl border bg-card">
+              <table className="w-full text-xs">
+                <thead className="bg-muted/10">
+                  <tr>
+                    <th className="text-left px-4 py-3 font-bold text-muted-foreground uppercase">Produit</th>
+                    {agentList.map((a: any) => (
+                      <th key={a.id} className="px-3 py-3 font-bold text-center text-muted-foreground uppercase whitespace-nowrap">
+                        {a.username}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {productList.map((p, i) => (
+                    <tr key={p.id} className={cn("border-t", i % 2 === 0 ? "" : "bg-muted/5")}>
+                      <td className="px-4 py-3 font-medium truncate max-w-[180px]">{p.name}</td>
+                      {agentList.map((a: any) => {
+                        const cell = lookup.get(`${p.id}-${a.id}`);
+                        const isBest = bestAgentForProduct.get(p.id) === a.id;
+                        const rate = cell && cell.total > 0 ? Math.round((cell.confirmed / cell.total) * 100) : null;
+                        return (
+                          <td key={a.id} className={cn("px-3 py-3 text-center", isBest ? "bg-amber-50 dark:bg-amber-950/30" : "")}>
+                            {cell && cell.total > 0 ? (
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className={cn("font-bold", isBest ? "text-amber-600" : "text-foreground")}>
+                                  {isBest && "🏆 "}{rate}%
+                                </span>
+                                <span className="text-[10px] text-muted-foreground">{cell.total} cmd</span>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground/40">—</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Permissions Modal ── */}
       <Dialog open={!!permissionsDialogAgent} onOpenChange={(open) => { if (!open) setPermissionsDialogAgent(null); }}>

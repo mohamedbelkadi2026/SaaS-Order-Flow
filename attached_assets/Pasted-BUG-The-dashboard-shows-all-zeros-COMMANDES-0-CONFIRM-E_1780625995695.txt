@@ -1,0 +1,47 @@
+BUG: The dashboard shows all zeros (COMMANDES 0, CONFIRMÉES 0, PROFIT NET 0.00, etc.)
+because the GET /api/stats handler in server/routes.ts crashes at runtime.
+
+ROOT CAUSE: Inside that handler, the `allOrders.forEach(...)` loop that accumulates
+revenue/costs reads two variables — `emballageByPid` and `statsItemsByOrder` — to compute
+per-order packaging. But both of these `const` maps are DECLARED AFTER the loop. Because
+they are `const`, the loop hits the temporal dead zone and throws
+"ReferenceError: Cannot access 'emballageByPid' before initialization", so /api/stats
+returns 500 and the dashboard receives no data.
+
+FIX (server/routes.ts, GET /api/stats handler only):
+1. MOVE the following declarations to BEFORE the `allOrders.forEach` loop — place them right
+   after the `const statsCogsMap = await storage.computeOrdersCOGS(...)` block:
+       const storeProducts = await storage.getProductsByStore(storeId);
+       const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));
+       const emballageByPid = new Map<number, number>();
+       for (const p of storeProducts as any[]) {
+         const val = Number(p.settings?.profitDefaults?.coutEmballage ?? 0);
+         if (val > 0) emballageByPid.set(p.id, val);
+       }
+       const deliveredFilterIds = deliveredInFilter.map((o: any) => o.id);
+       const statsOrderItems = deliveredFilterIds.length > 0
+         ? await db.select({ orderId: orderItems.orderId, productId: orderItems.productId })
+             .from(orderItems).where(inArray(orderItems.orderId, deliveredFilterIds))
+         : [];
+       const statsItemsByOrder = new Map<number, { productId: number | null }[]>();
+       for (const item of statsOrderItems) {
+         const arr = statsItemsByOrder.get(item.orderId) ?? [];
+         arr.push({ productId: item.productId });
+         statsItemsByOrder.set(item.orderId, arr);
+       }
+
+2. DELETE the old copy of these exact declarations that currently appears AFTER the loop
+   (right after the line that builds `const daily = Object.entries(dailyMap)...`).
+   Do NOT leave `storeProducts`, `emballageByPid`, or `statsItemsByOrder` declared twice in
+   this handler — that causes a "Cannot redeclare block-scoped variable" error.
+
+3. Leave the loop body and the netProfit formula unchanged. Inside the loop it must still do:
+       const orderPkgDH = (statsItemsByOrder.get(o.id) ?? [])
+         .reduce((sum: number, item: any) => sum + (emballageByPid.get(item.productId ?? 0) ?? 0), 0);
+       totalPackaging += Math.round(orderPkgDH * 100);
+
+VERIFY:
+- The app compiles with no "used before declaration" or "redeclare" errors.
+- Open the dashboard: Network tab → GET /api/stats returns 200 (not 500), and all the cards
+  (COMMANDES, CONFIRMÉES, PROFIT NET, LIVRÉES…) show real numbers again.
+- A delivered order of a product with packaging fee = 3 DH subtracts 3 DH from PROFIT NET.

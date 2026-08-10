@@ -116,6 +116,11 @@ export default function Dashboard() {
     datePreset: 'all',
     dateFrom: '',
     dateTo: '',
+    // 'creation' (default) filters everything by order-creation date.
+    // 'shipping' filters the shipping/delivery KPIs (EXPÉDIÉS, LIVRÉES,
+    // EN COURS, REFUSÉES, carrier performance) by ship (pickup) date instead,
+    // so they can reconcile with a carrier's own ship-date-based count.
+    dateType: 'creation',
   });
 
   const activeFilters = useMemo(() => {
@@ -130,6 +135,7 @@ export default function Dashboard() {
     if (filters.magasinId !== 'all') f.magasinId = filters.magasinId;
     if (filters.dateFrom) f.dateFrom = filters.dateFrom;
     if (filters.dateTo) f.dateTo = filters.dateTo;
+    if (filters.dateType !== 'creation') f.dateType = filters.dateType;
     return f;
   }, [filters]);
 
@@ -401,6 +407,7 @@ export default function Dashboard() {
       source: 'all',
       shippingProvider: 'all', utmSource: 'all', utmCampaign: 'all',
       magasinId: 'all', datePreset: 'all', dateFrom: '', dateTo: '',
+      dateType: 'creation',
     });
     if (isAgent) {
       setAgentDateRange('month');
@@ -451,6 +458,44 @@ export default function Dashboard() {
   const delivered   = isAgent ? (agentMyStats?.delivered   || 0) : (stats?.delivered   || 0);
   const refused     = isAgent ? (agentMyStats?.refused     || 0) : (stats?.refused     || 0);
   const totalOrders = isAgent ? (agentMyStats?.totalOrders || 0) : (stats?.totalOrders || 0);
+
+  // ── Full status breakdown (shared by owner & agent confirmation cards) ──
+  const statusBreakdown = (() => {
+    const bd = isAgent ? agentMyStats : stats;
+    const bdTotal = bd?.totalOrders || 0;
+    const rows = [
+      { label: "✅ Confirmés",        value: bd?.confirme || 0,        color: "text-green-600 dark:text-green-400",   bg: "bg-green-50 dark:bg-green-950/40" },
+      { label: "📅 Confirmé Reporté", value: bd?.confirmeReporte || 0, color: "text-blue-600 dark:text-blue-400",     bg: "bg-blue-50 dark:bg-blue-950/40" },
+      { label: "🔁 Rappel",           value: bd?.rappel || 0,          color: "text-amber-600 dark:text-amber-400",   bg: "bg-amber-50 dark:bg-amber-950/40" },
+      { label: "📵 Injoignables",     value: bd?.injoignable || 0,     color: "text-purple-600 dark:text-purple-400", bg: "bg-purple-50 dark:bg-purple-950/40" },
+      { label: "🔕 Pas de réponse",   value: bd?.pasReponse || 0,      color: "text-slate-600 dark:text-slate-300",   bg: "bg-slate-50 dark:bg-slate-800/60" },
+      { label: "❌ Annulés",          value: bd?.cancelled || 0,       color: "text-red-600 dark:text-red-400",       bg: "bg-red-50 dark:bg-red-950/40" },
+      { label: "🆕 Nouveaux",         value: bd?.nouveau || 0,         color: "text-gray-600 dark:text-gray-300",     bg: "bg-gray-50 dark:bg-gray-800/60" },
+    ];
+    return (
+      <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800 space-y-2" data-testid="status-breakdown">
+        {rows.map(({ label, value, color, bg }) => {
+          const pct = bdTotal > 0 ? ((value / bdTotal) * 100).toFixed(1) : "0.0";
+          return (
+            <div key={label} className="flex items-center justify-between text-sm" data-testid={`row-breakdown-${label}`}>
+              <span className="text-gray-600 dark:text-gray-400">{label}</span>
+              <div className="flex items-center gap-2">
+                <div className="w-24 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%`, background: "currentColor" }} />
+                </div>
+                <span className={`font-bold w-8 text-right ${color}`}>{value}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded-full font-semibold ${bg} ${color} w-14 text-center`}>{pct}%</span>
+              </div>
+            </div>
+          );
+        })}
+        <div className="pt-2 border-t border-gray-100 dark:border-gray-800 flex justify-between text-xs text-gray-400">
+          <span>Total</span>
+          <span className="font-bold">{bdTotal} leads = 100%</span>
+        </div>
+      </div>
+    );
+  })();
 
   const confirmPct = totalOrders > 0 ? ((confirme / totalOrders) * 100).toFixed(2) : '0';
   const cancelPct = totalOrders > 0 ? ((cancelled / totalOrders) * 100).toFixed(2) : '0';
@@ -1293,6 +1338,16 @@ export default function Dashboard() {
                 />
               </div>
             )}
+
+            <Select value={filters.dateType} onValueChange={(v) => updateFilter('dateType', v)}>
+              <SelectTrigger className="w-full md:w-auto md:min-w-[155px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-type">
+                <SelectValue placeholder="Type de date" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="creation">Date de création</SelectItem>
+                <SelectItem value="shipping">Date d'expédition</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>
@@ -1436,6 +1491,17 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* ══ Agent-only: status breakdown card ══ */}
+      {isAgent && (
+        <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5">
+          <div className="flex items-center gap-2 pb-2 border-b">
+            <PhoneCall className="w-4 h-4 text-sky-500" />
+            <h2 className="text-sm font-bold uppercase tracking-wide">Taux de confirmation</h2>
+          </div>
+          {statusBreakdown}
+        </div>
+      )}
+
       {/* ══ STATS SECTION: Confirmation + Livraison ══ */}
       {!isAgent && !isMediaBuyer && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -1463,6 +1529,31 @@ export default function Dashboard() {
               ))}
             </div>
 
+            {/* Répartition — breakdown of all lead statuses over the total */}
+            <div className="pt-3 border-t">
+              <p className="text-xs font-semibold text-muted-foreground uppercase mb-2">Répartition (total = 100%)</p>
+              <div className="flex flex-wrap gap-2 text-xs" data-testid="confirmation-breakdown">
+                <span className="px-2 py-1 rounded-full font-semibold bg-green-50 text-green-700 dark:bg-green-950/40 dark:text-green-400" data-testid="rate-confirmes">
+                  ✅ Confirmés: {(stats?.confirmRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400" data-testid="rate-annules">
+                  ❌ Annulés: {(stats?.cancelRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" data-testid="rate-injoignables">
+                  📵 Injoignables: {(stats?.injoignRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-gray-50 text-gray-600 dark:bg-gray-800/60 dark:text-gray-300" data-testid="rate-pas-reponse">
+                  🔕 Pas de réponse: {(stats?.pasReponseRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-yellow-50 text-yellow-700 dark:bg-yellow-950/40 dark:text-yellow-400" data-testid="rate-nouveaux">
+                  🆕 Nouveaux: {(stats?.nouveauRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-slate-50 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300" data-testid="rate-autres">
+                  📦 Autres: {(stats?.autresRate ?? 0).toFixed(1)}%
+                </span>
+              </div>
+            </div>
+
             {/* Confirmation rate */}
             <div className="flex items-center gap-4 rounded-xl border p-4 bg-muted/10">
               <div className="relative w-20 h-20 shrink-0">
@@ -1487,6 +1578,9 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
+
+            {/* ── Full status breakdown ── */}
+            {statusBreakdown}
 
             {/* Mini evolution chart */}
             <div>

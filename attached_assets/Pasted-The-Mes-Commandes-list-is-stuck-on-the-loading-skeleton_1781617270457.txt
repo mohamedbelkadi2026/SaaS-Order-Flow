@@ -1,0 +1,33 @@
+The "Mes Commandes" list is stuck on the loading skeleton forever (data exists — sidebar shows
+"Nouveaux 13" — but the table never renders). The endpoint GET /api/orders/filtered has NO
+try/catch, so if storage.getFilteredOrders throws, the request hangs / returns an unhandled error
+and the frontend stays in isLoading forever. Add error handling + visibility, and make the UI fail
+gracefully instead of spinning.
+
+1) server/routes.ts — wrap the bodies of GET /api/orders/filtered AND GET /api/orders/all in
+   try/catch. On error: console.error with the full error + stack and the storeId/filters, then
+   res.status(500).json({ message: err?.message || "Erreur chargement commandes" }). Example:
+     app.get("/api/orders/filtered", requireAuth, async (req, res) => {
+       try {
+         ... existing logic ...
+         res.json(result);
+       } catch (err:any) {
+         console.error("[ORDERS-FILTERED-ERROR]", { storeId: req.user?.storeId, msg: err?.message, stack: err?.stack });
+         res.status(500).json({ message: err?.message || "Erreur chargement commandes" });
+       }
+     });
+
+2) client (the page that renders Mes Commandes list — likely client/src/pages/orders.tsx): the main
+   orders useQuery currently only handles isLoading (skeleton). Add an error branch: if the query
+   has isError (or data is undefined after loading), render a small error panel with the message and
+   a "Réessayer" button that calls refetch(), instead of the infinite skeleton. Also guard the table
+   render so it never crashes on undefined: default the list to [] when data is missing
+   (e.g. const orders = data?.orders ?? []), and ensure isLoading becomes false on error.
+
+3) Do not change the query logic itself — only add try/catch (server) and error/empty handling (client).
+
+VERIFY:
+- Reload "Mes Commandes": if the API errors, the page now shows an error message + Réessayer
+  (not an endless skeleton), and the server logs print [ORDERS-FILTERED-ERROR] with the real cause.
+- If the API succeeds, the list renders normally.
+- App compiles.

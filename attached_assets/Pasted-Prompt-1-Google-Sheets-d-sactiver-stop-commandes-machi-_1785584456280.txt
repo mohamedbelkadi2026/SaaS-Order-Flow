@@ -1,0 +1,67 @@
+Prompt 1 — Google Sheets: désactiver = stop commandes (machi delete)
+
+Fix Google Sheets integration behavior in the platform.
+
+Currently when a user disables (deactivates) the Google Sheets integration, new orders still come in OR the existing connection is removed.
+
+The correct behavior should be:
+- ACTIVE: sync new orders from Google Sheets automatically
+- INACTIVE (disabled): STOP syncing new orders, but keep the connection credentials saved
+- DELETE/REMOVE: remove the connection completely
+
+In server/routes.ts, find the Google Sheets integration endpoints.
+Find where isActive or enabled flag is toggled for Google Sheets integration.
+
+Make sure:
+1. When deactivated (isActive = false/0): stop the polling/sync job for that integration, but keep credentials in DB
+2. When reactivated (isActive = true/1): resume syncing from where it left off
+3. The sync job must CHECK isActive before processing each Google Sheet integration
+
+Search for the Google Sheets polling/sync logic (likely in a setInterval or cron job) and add:
+if (!integration.isActive) continue; // skip inactive integrations
+
+Prompt 2 — YouCan: afficher nom boutique sur commande
+
+Fix YouCan integration — orders coming from YouCan don't show the boutique name in the "BOUTIQUE" column.
+
+In server/routes.ts, find the YouCan webhook handler (POST /api/integrations/youcan/webhook or similar).
+
+When a YouCan order arrives, the boutique field on the order should be set to the YouCan store name.
+
+Find where YouCan orders are created in the database and make sure:
+1. The store/boutique name from the YouCan integration config is saved on the order (storeName or magasinId field)
+2. If the integration has a storeName saved, use it
+3. If not, use the YouCan shop domain or name from the webhook payload
+
+Also check the YouCan integration setup — when user connects YouCan, save the shop name:
+In the integration record, save: { provider: "youcan", storeName: shopName, ... }
+
+Then when displaying orders, the BOUTIQUE column should show this storeName.
+
+Prompt 3 — Produit: afficher stock products dans dropdown
+
+Fix the product selection in the order creation/edit modal.
+
+Currently when creating or editing an order, the "NOM DU PRODUIT" field is a free text input.
+
+Add autocomplete/dropdown that shows products from the store's stock (products table):
+
+In the order modal (client/src/components/order-modal.tsx or similar):
+
+1. Fetch products from GET /api/products when modal opens
+2. In the product name field, add a searchable dropdown/combobox:
+   - User types → filter products by name
+   - Show matching products from stock as suggestions
+   - When user selects a product: auto-fill product name, and optionally auto-fill price
+   - User can still type a custom product name if not in stock
+
+3. The dropdown should show:
+   - Product name
+   - Current stock quantity (e.g. "قطاعة الخضر — Stock: 45")
+   - Selling price
+
+4. If user selects a stock product, link the order to that product (set productId on the order)
+5. If user types a custom name not in stock, keep as free text (productId = null)
+
+Use the existing shadcn/ui Combobox or Command component for the dropdown UI.
+This should work for both new orders and editing existing orders.

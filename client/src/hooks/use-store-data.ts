@@ -80,6 +80,25 @@ export function useOrder(id: number) {
   });
 }
 
+// Patch générique : trouve toute commande d'id donné dans n'importe quel
+// cache dont la clé commence par "/api/orders", et applique `patch` dessus.
+// Gère les deux formes de données possibles : un tableau direct, ou un
+// objet { orders: [...] }. Ne casse rien si la clé/forme ne matche pas.
+function patchOrderInCaches(queryClient: ReturnType<typeof useQueryClient>, orderId: number, patch: Record<string, any>) {
+  queryClient.setQueriesData(
+    { predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/orders") },
+    (old: any) => {
+      if (!old) return old;
+      const patchArr = (arr: any[]) => arr.map((o) => (o.id === orderId ? { ...o, ...patch } : o));
+      if (Array.isArray(old)) return patchArr(old);
+      if (Array.isArray(old?.orders)) return { ...old, orders: patchArr(old.orders) };
+      return old;
+    }
+  );
+}
+
+const ordersQueryPredicate = { predicate: (q: any) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/orders") };
+
 export function useUpdateOrderStatus() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -87,7 +106,16 @@ export function useUpdateOrderStatus() {
       const res = await apiRequest("PATCH", `/api/orders/${id}/status`, { status });
       return res.json();
     },
-    onSuccess: () => {
+    onMutate: async ({ id, status }) => {
+      await queryClient.cancelQueries(ordersQueryPredicate);
+      const previous = queryClient.getQueriesData(ordersQueryPredicate);
+      patchOrderInCaches(queryClient, id, { status });
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      context?.previous?.forEach(([key, data]: any) => queryClient.setQueryData(key, data));
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
@@ -104,7 +132,16 @@ export function useAssignAgent() {
       const res = await apiRequest("PATCH", `/api/orders/${id}/assign`, { agentId });
       return res.json();
     },
-    onSuccess: () => {
+    onMutate: async ({ id, agentId }) => {
+      await queryClient.cancelQueries(ordersQueryPredicate);
+      const previous = queryClient.getQueriesData(ordersQueryPredicate);
+      patchOrderInCaches(queryClient, id, { assignedToId: agentId });
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      context?.previous?.forEach(([key, data]: any) => queryClient.setQueryData(key, data));
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
@@ -425,8 +462,9 @@ export function useUpdateProduct() {
 export function useDeleteProduct() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: number) => {
-      const res = await apiRequest("DELETE", `/api/products/${id}`);
+    mutationFn: async ({ id, force = false }: { id: number; force?: boolean }) => {
+      const qs = force ? "?force=true" : "";
+      const res = await apiRequest("DELETE", `/api/products/${id}${qs}`);
       return res.json();
     },
     onSuccess: () => {
@@ -515,6 +553,18 @@ export function useAgentPerformance(magasinId?: number | null, date?: string) {
       if (!res.ok) throw new Error("Failed to fetch agent performance");
       return res.json();
     },
+  });
+}
+
+export function useAgentComparisonByProduct() {
+  return useQuery<{ productId: number; productName: string; agentId: number; total: number; confirmed: number }[]>({
+    queryKey: ["/api/agents/comparison-by-product"],
+    queryFn: async () => {
+      const res = await fetch("/api/agents/comparison-by-product", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch agent comparison by product");
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
   });
 }
 
@@ -737,6 +787,8 @@ export function useFilteredOrders(filters: Record<string, any>) {
       if (!res.ok) throw new Error("Failed to fetch filtered orders");
       return res.json();
     },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -753,6 +805,8 @@ export function useAllOrders(filters: Record<string, any>) {
       if (!res.ok) throw new Error("Failed to fetch all orders");
       return res.json();
     },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 }
 

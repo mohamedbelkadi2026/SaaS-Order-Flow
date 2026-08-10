@@ -1,0 +1,140 @@
+FIX — Commandes "— Sans produit —" dans Rentabilité Par Produit (43 commandes /
+17 568 DH avec sourcing = "—" et marge artificiellement gonflée à 93.5%).
+
+CAUSE RACINE (confirmée dans le code, 2 endroits identiques)
+server/routes.ts, deux webhooks Google Sheets :
+  - POST /api/webhooks/gsheets/:webhookKey        (~ligne 5178)
+  - l'endpoint API push Google Sheets équivalent   (~ligne 5283)
+
+Les deux font un matching EXACT et strict :
+  const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
+  const orderItems = matched ? [{ productId: matched.id, ... }] : [];
+
+Si le nom du produit envoyé par le Sheet ne correspond pas caractère pour
+caractère au nom en catalogue (casse différente, espace en trop, suffixe de
+variante genre "Sandale En Cuir Rf210 X2 Noir - 42", accent...), `matched`
+est `undefined` → `orderItems = []` → la commande est créée SANS AUCUNE ligne
+order_item, ET avec `productCost: matched ? matched.costPrice : 0` → 0.
+Ces commandes deviennent invisibles à tout matching produit et tombent dans
+le bucket générique "— Sans produit —" (voir server/services/profit.ts,
+~ligne 322-338) avec un coût de 0 → marge artificiellement à ~93%.
+
+Le webhook Shopify (même fichier, ~ligne 4840-4864) fait ÇA BIEN : il utilise
+`resolveProductId()` (server/services/variants.ts) pour un matching flou
+(gère les variantes "Parent - Taille", accents, casse), ET il pousse quand
+même une ligne order_item même quand rien n'est trouvé
+(`productId: matchedProduct?.id ?? null`), pour que la commande reste
+rattachée à un NOM de produit visible au lieu de disparaître dans un bucket
+anonyme. C'est ce pattern qu'il faut copier dans les 2 webhooks gsheets.
+
+────────────────────────────────────────────────────────────────────────────
+FIX A — Empêcher que ça se reproduise (2 endroits)
+
+Dans server/routes.ts, webhook POST /api/webhooks/gsheets/:webhookKey
+(~ligne 5178) ET l'endpoint API push Google Sheets (~ligne 5283), remplacer :
+
+```ts
+const storeProducts = await storage.getProductsByStore(storeId);
+const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
+const orderItems = matched ? [{ productId: matched.id, rawProductName: productName || matched.name, quantity: 1, price: totalPrice, orderId: 0 }] : [];
+```
+
+par :
+
+```ts
+const storeProducts = await storage.getProductsByStore(storeId);
+let matched = storeProducts.find(p => p.sku && p.sku === productName);
+if (!matched) {
+  const resolved = resolveProductId(productName, storeProducts);
+  if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
+}
+// Toujours créer une ligne order_item — même sans match — pour que la
+// commande reste rattachée à son nom de produit brut au lieu de tomber
+// dans le bucket anonyme "— Sans produit —".
+const orderItems = productName
+  ? [{ productId: matched?.id ?? null, rawProductName: productName, quantity: 1, price: totalPrice, orderId: 0 }]
+  : [];
+```
+
+Importer `resolveProductId` depuis `./services/variants` en haut de
+server/routes.ts si pas déjà importé (déjà utilisé ailleurs dans ce fichier,
+vérifier l'import existant).
+
+Adapter aussi le `productCost` passé à `storage.createOrder(...)` juste en
+dessous, dans les DEUX endroits :
+  productCost: matched ? matched.costPrice : 0,
+→ reste correct tel quel (le vrai coût sera aussi calculé au niveau de l'item
+si `matched` existe, via computeProfitability qui lit `item.productCostPrice`
+en priorité).
+
+────────────────────────────────────────────────────────────────────────────
+FIX B — Réparer les 43 commandes déjà en base (et toute autre commande
+existante dans le même cas, tous sources confondues, pas seulement gsheets)
+
+Ajouter un endpoint one-shot dans server/routes.ts :
+
+```ts
+app.post("/api/orders/repair-unlinked", requireAuth, requireAdmin, async (req: any, res: any) => {
+  const storeId = req.user.storeId;
+  const storeProducts = await storage.getProductsByStore(storeId);
+  const allOrders = await storage.getOrdersByStore(storeId); // adapter au nom réel de la méthode storage existante
+  const itemRows = await db.select({ orderId: orderItems.orderId }).from(orderItems)
+    .innerJoin(orders, eq(orderItems.orderId, orders.id))
+    .where(eq(orders.storeId, storeId));
+  const covered = new Set(itemRows.map(r => r.orderId));
+
+  let repaired = 0, stillUnmatched: { id: number; orderNumber: string; rawProductName: string | null }[] = [];
+
+  for (const order of allOrders) {
+    if (covered.has(order.id)) continue; // déjà une ligne item, pas concerné
+    const raw = (order as any).rawProductName || '';
+    if (!raw) { stillUnmatched.push({ id: order.id, orderNumber: order.orderNumber, rawProductName: null }); continue; }
+
+    const resolved = resolveProductId(raw, storeProducts);
+    if (!resolved.productId) { stillUnmatched.push({ id: order.id, orderNumber: order.orderNumber, rawProductName: raw }); continue; }
+
+    const product = storeProducts.find(p => p.id === resolved.productId)!;
+    const qty = (order as any).rawQuantity || 1;
+    await db.insert(orderItems).values({
+      orderId: order.id,
+      productId: product.id,
+      quantity: qty,
+      price: (order as any).totalPrice || 0,
+      rawProductName: raw,
+      variantInfo: resolved.variantName || null,
+    } as any);
+    await storage.updateOrder(order.id, { productCost: product.costPrice * qty } as any);
+    repaired++;
+  }
+
+  res.json({ repaired, stillUnmatched: stillUnmatched.length, details: stillUnmatched });
+});
+```
+
+Vérifier le nom exact de la méthode storage pour "toutes les commandes du
+store" (ex. `storage.getOrdersByStore(storeId)` — l'adapter si le nom diffère
+dans server/storage.ts).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT + EXÉCUTION
+1. git add -A && git commit -m "Fix product matching in gsheets webhooks + repair unlinked orders" && git push
+2. Une fois déployé, appeler UNE FOIS :
+   POST /api/orders/repair-unlinked
+3. Lire la réponse JSON :
+   - `repaired` = nombre de commandes réparées (rattachées à un vrai produit,
+     coût recalculé) — devrait rapprocher fortement les 43 de 0.
+   - `stillUnmatched` = commandes vraiment sans info produit exploitable
+     (rawProductName vide, ou nom qui ne correspond à AUCUN produit même
+     approximativement) — celles-là restent légitimement dans
+     "— Sans produit —", il n'y a rien à déduire automatiquement ; les
+     regarder une par une (`details`) et les rattacher à la main si besoin.
+
+VÉRIFICATION
+- Rentabilité Par Produit → la ligne "— Sans produit —" doit avoir beaucoup
+  moins de commandes (idéalement proche de 0, sauf commandes vraiment sans
+  info produit).
+- Les commandes réparées apparaissent maintenant sous le nom du VRAI produit,
+  avec un SOURCING TOTAL non-nul et une marge réaliste (plus 93%).
+- BÉNÉFICE NET global doit baisser un peu (puisque du vrai coût sourcing est
+  maintenant soustrait sur ces commandes) — c'est normal et attendu, c'est le
+  chiffre correct.

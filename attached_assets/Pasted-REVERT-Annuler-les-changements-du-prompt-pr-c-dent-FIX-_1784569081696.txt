@@ -1,0 +1,116 @@
+REVERT — Annuler les changements du prompt précédent ("FIX — variantes sans
+séparateur + coût de variante non utilisé"). Remettre exactement le
+comportement d'avant ce fix, dans les 3 fichiers touchés.
+
+────────────────────────────────────────────────────────────────────────────
+1) server/services/variants.ts — remettre `resolveProductId` à sa version
+d'origine (sans l'étape 3 "trailing variant sans séparateur", sans le type
+`ProductWithVariants`) :
+
+```ts
+// Resolve a raw order item name to a catalog product.
+// Returns { productId, variantName } where variantName is the suffix (e.g. "40") or null.
+export function resolveProductId(
+  rawName: string,
+  storeProducts: { id: number; name: string }[],
+): { productId: number | null; variantName: string | null } {
+  const n = normStr;
+  const rawNorm = n(rawName);
+
+  // 1) Exact product-name match
+  const exact = storeProducts.find(p => n(p.name) === rawNorm);
+  if (exact) return { productId: exact.id, variantName: null };
+
+  // 2) Strip variant suffix and match the BASE to a parent product
+  const { base, suffix } = splitVariant(rawName);
+  if (suffix && base !== rawName) {
+    const parent = storeProducts.find(p => n(p.name) === n(base));
+    if (parent) return { productId: parent.id, variantName: suffix };
+  }
+
+  return { productId: null, variantName: null };
+}
+```
+
+Supprimer l'export du type `ProductWithVariants` s'il a été ajouté dans ce
+fichier et n'est utilisé nulle part ailleurs après ce revert.
+
+────────────────────────────────────────────────────────────────────────────
+2) server/services/profit.ts — remettre la requête `itemRows` et le calcul
+de `unitCostCents` à leur version d'origine (sans le join sur
+`productVariants`, sans `variantCostPrice`) :
+
+```ts
+import { orderItems, products, adSpendTracking } from "@shared/schema";
+// ...
+const itemRows = orderIds.length > 0 ? await db
+  .select({
+    orderId:          orderItems.orderId,
+    productId:        orderItems.productId,
+    rawProductName:   orderItems.rawProductName,
+    quantity:         orderItems.quantity,
+    price:            orderItems.price,
+    productName:      products.name,
+    productCostPrice: products.costPrice,
+    productSettings:  products.settings,
+  })
+  .from(orderItems)
+  .leftJoin(products, eq(orderItems.productId, products.id))
+  .where(inArray(orderItems.orderId, orderIds)) : [];
+```
+
+Et remettre le calcul du coût unitaire (dans la boucle `for (const item of
+itemRows)`) à :
+
+```ts
+const unitCostCents = item.productCostPrice
+  ?? costByName.get(key)
+  ?? costByName.get(norm(item.rawProductName || ''))
+  ?? (order as any).productCost
+  ?? 0;
+s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
+```
+
+Retirer `productVariants` de l'import `@shared/schema` en haut du fichier
+S'IL n'est plus utilisé ailleurs dans profit.ts après ce revert.
+
+────────────────────────────────────────────────────────────────────────────
+3) server/routes.ts — retirer l'enrichissement "storeProductsWithVariants"
+ajouté avant les appels à `resolveProductId(...)` dans :
+   - le webhook POST /api/webhooks/gsheets/:webhookKey (~ligne 5178)
+   - l'endpoint API push Google Sheets (~ligne 5283)
+   - POST /api/orders/repair-unlinked
+   - POST /api/products/backfill-variants (~ligne 7351)
+
+Dans chacun de ces endroits, remettre l'appel simple :
+```ts
+const storeProducts = await storage.getProductsByStore(storeId);
+```
+et faire en sorte que `resolveProductId(rawName, storeProducts)` reçoive à
+nouveau directement `storeProducts` (sans `.map(p => ({ ...p, variants: ... }))`),
+en supprimant le bloc qui chargeait `variantsByProduct` / appelait
+`storage.getVariantsByStore(storeId)` dans ces endroits.
+
+Si `storage.getVariantsByStore` a été ajouté dans server/storage.ts
+uniquement pour ce fix et n'est utilisé nulle part ailleurs, le supprimer
+aussi.
+
+────────────────────────────────────────────────────────────────────────────
+NE PAS TOUCHER
+- Le reste de la logique déjà en place avant ce fix (backfill du
+  "— Sans produit —", regroupement par rawProductName, tarifs Express
+  Coursier, etc.) reste inchangé — ce revert cible UNIQUEMENT les 3 fichiers
+  et blocs listés ci-dessus.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+1. git add -A && git commit -m "Revert variant-matching / variant-cost fix" && git push
+2. Vérifier que le build passe (pas d'import cassé, pas de référence à
+   `variantsByProduct` / `getVariantsByStore` qui traîne).
+
+VÉRIFICATION
+- La ligne "Sandale En Cuir Rf 1012 Noir 42 (non lié)" revient dans
+  Rentabilité Par Produit comme avant ce fix (comportement identique à la
+  capture d'écran envoyée juste avant ce fix).
+- Aucune erreur au démarrage du serveur ni dans les logs liée à
+  `productVariants` / `variantCostPrice` / `ProductWithVariants`.

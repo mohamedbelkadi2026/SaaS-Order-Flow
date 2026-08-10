@@ -1,0 +1,37 @@
+Every Express Coursier webhook is logged as "Échec" in the Journal des Intégrations — 
+including one that clearly matched an order:
+  "Commande #MAN-1783439600494: Attente De Ramassage → expedition (EC status 5)" → Échec
+So the webhook arrives, the order is found, the status change is attempted, and the 
+update FAILS. This is why no EC status ever updates. Fix this first — it blocks everything.
+
+STEP 1 — SURFACE THE REAL ERROR (do this before changing anything):
+ - Wrap the EC webhook handler and the status-update path in try/catch and log the FULL 
+   error: message + stack + the exact status string it tried to write + the order id.
+ - Store that real error message in the integration_log 'message' field instead of a 
+   generic failure.
+ - Trigger/replay one EC webhook and PASTE ME the full error and stack.
+
+STEP 2 — MOST LIKELY CAUSE (verify against the real error, don't assume):
+ The handler appears to write an INVALID status value into orders.status — the log shows 
+ it attempting "expedition", which is not one of the app's internal statuses. If the 
+ column/enum/validation rejects it, the update throws and the log is marked Échec.
+ - Build the allowed internal status set from the app's own definition (do not invent one).
+ - Normalize every mapped status before writing. If the value is not in the allowed set, 
+   write 'in_progress' instead and log a warning — NEVER write a raw/invalid value like 
+   "expedition" or "EC delivery_status=5" into orders.status.
+ - Confirm 'Attente De Ramassage' → the target status is a legal transition in 
+   updateOrderStatus (no guard silently rejecting it).
+
+STEP 3 — HONEST LOGGING:
+ - Mark the integration_log 'success' when the DB update actually succeeds, 'fail' only on 
+   a real error, and always include the real reason. Right now failures are opaque.
+
+STEP 4 — NUMERIC CODES (secondary, after Step 1–3 work):
+ Observed codes: 1, 3, 5, 17, 18, 30, 34, 35, 36, 49. Keep one exported 
+ EC_NUMERIC_STATUS_MAP + mapEcDeliveryStatus(code), used by BOTH the live webhook and the 
+ "Synchroniser" replay. Unknown codes default to 'in_progress'. DO NOT GUESS which code 
+ means Livré/Refusé — a wrong guess corrupts revenue, commissions and stats. Keep the raw 
+ code only in commentStatus (e.g. "EC 35").
+
+Deploy to main and paste me: (a) the real error + stack from Step 1, (b) the list of the 
+app's allowed internal status values.

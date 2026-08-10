@@ -1,0 +1,114 @@
+/**
+ * One-time repair: re-link order_items.product_id using the corrected
+ * resolveProductId() (server/services/variants.ts, which now preserves Arabic
+ * characters in normStr instead of stripping them).
+ *
+ * Context: before that fix, normStr() stripped all Arabic characters, so every
+ * Arabic product name normalised to the same empty string. resolveProductId()
+ * (or an older fallback path) then linked mismatched order_items to the wrong
+ * product — commonly to whichever product ended up "first"/matched by
+ * coincidence. That corrupted data is still sitting in order_items.product_id
+ * for historical orders; this script finds and fixes it.
+ *
+ * SAFETY: dry-run by default — prints what it WOULD change and writes nothing.
+ *   Preview:  node_modules/.bin/tsx scripts/repair-order-item-product-links.ts
+ *   Apply:    node_modules/.bin/tsx scripts/repair-order-item-product-links.ts --apply
+ *
+ * Rules:
+ *   - Only touches order_items that HAVE a rawProductName (never guesses from nothing).
+ *   - Recomputes the correct productId via resolveProductId(rawProductName, storeProducts)
+ *     using the SAME logic now used for new orders — so the result is guaranteed
+ *     consistent with what a fresh order would get today.
+ *   - If resolveProductId returns null (ambiguous / no match) → sets product_id to NULL
+ *     rather than leaving a wrong guess, and reports it separately so it can be
+ *     reviewed manually.
+ *   - If the recomputed productId is the SAME as the current one, the row is skipped
+ *     (no-op) — only genuinely wrong links are changed.
+ *   - Processes store by store (order_items has no storeId directly, joins via orders).
+ */
+
+import { eq, isNotNull, and } from "drizzle-orm";
+import { db, pool } from "../server/db";
+import { orders, orderItems, products, productVariants, stores } from "@shared/schema";
+import { resolveProductId } from "../server/services/variants";
+
+const APPLY = process.argv.includes("--apply");
+
+async function main() {
+  const allStores = await db.select({ id: stores.id, name: stores.name }).from(stores);
+
+  let totalChecked = 0;
+  let totalWrong = 0;
+  let totalNulled = 0;
+  const changes: { orderId: number; itemId: number; raw: string; from: number | null; to: number | null }[] = [];
+
+  for (const store of allStores) {
+    const storeProducts = await db
+      .select({ id: products.id, name: products.name })
+      .from(products)
+      .where(eq(products.storeId, store.id));
+
+    if (storeProducts.length === 0) continue;
+
+    const variantsRows = await db
+      .select({ productId: productVariants.productId, name: productVariants.name })
+      .from(productVariants)
+      .where(eq(productVariants.storeId, store.id));
+
+    const productsWithVariants = storeProducts.map(p => ({
+      ...p,
+      variants: variantsRows.filter(v => v.productId === p.id).map(v => ({ name: v.name })),
+    }));
+
+    const rows = await db
+      .select({
+        itemId: orderItems.id,
+        orderId: orderItems.orderId,
+        productId: orderItems.productId,
+        rawProductName: orderItems.rawProductName,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .where(and(eq(orders.storeId, store.id), isNotNull(orderItems.rawProductName)));
+
+    for (const row of rows) {
+      if (!row.rawProductName || !row.rawProductName.trim()) continue;
+      totalChecked++;
+
+      const resolved = resolveProductId(row.rawProductName, productsWithVariants);
+      const correctId = resolved.productId;
+
+      if (correctId === row.productId) continue; // already correct, skip
+
+      totalWrong++;
+      if (correctId === null) totalNulled++;
+      changes.push({ orderId: row.orderId, itemId: row.itemId, raw: row.rawProductName, from: row.productId, to: correctId });
+
+      if (APPLY) {
+        await db.update(orderItems).set({ productId: correctId }).where(eq(orderItems.id, row.itemId));
+      }
+    }
+  }
+
+  console.log(`\n=== Résultat ${APPLY ? "(APPLIQUÉ)" : "(DRY-RUN — rien n'a été écrit)"} ===`);
+  console.log(`order_items vérifiés (avec rawProductName): ${totalChecked}`);
+  console.log(`Liens incorrects trouvés: ${totalWrong}`);
+  console.log(`  dont mis à NULL (aucun match fiable): ${totalNulled}`);
+  console.log(`  dont ré-liés à un autre produit: ${totalWrong - totalNulled}`);
+
+  console.log(`\nPremiers 30 changements (aperçu):`);
+  for (const c of changes.slice(0, 30)) {
+    console.log(`  order #${c.orderId} item ${c.itemId} — "${c.raw}" — ${c.from ?? "NULL"} → ${c.to ?? "NULL"}`);
+  }
+
+  if (!APPLY && totalWrong > 0) {
+    console.log(`\n👉 Relancer avec --apply pour appliquer ces ${totalWrong} corrections.`);
+  }
+
+  await pool.end();
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});

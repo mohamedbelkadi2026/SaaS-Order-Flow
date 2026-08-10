@@ -234,6 +234,26 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: ozon_express_cities table verified/created.");
 
+    // ── 5b-ter. vitips_cities — Vitipsexpress city name → abbr map ────────────
+    // Vitipsexpress add-parcel requires 'city' = abbr (e.g. "Casablanca"), not
+    // the full uppercase name. Populated by "Synchroniser les villes".
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.vitips_cities (
+        id          SERIAL PRIMARY KEY,
+        store_id    INTEGER NOT NULL,
+        external_id TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        name_norm   TEXT NOT NULL,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        UNIQUE(store_id, external_id)
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_vitips_cities_store_norm
+        ON public.vitips_cities (store_id, name_norm);
+    `);
+    console.log("[DATABASE]: vitips_cities table verified/created.");
+
     // ── 5c. orders: offer_name + ameex_product_id enrichment columns ─────────
     await client.query(`
       ALTER TABLE public.orders
@@ -425,6 +445,27 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] idx_orders_assigned_magasin_created ensured ✅');
 
+    // ── 6e-quater. perf indexes for the orders list & profit queries ─────────
+    // These back the most frequent lookups: status filtering, date sorting,
+    // magasin scoping, and joining order_items by order_id.
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_store_status
+        ON public.orders (store_id, status);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_store_created
+        ON public.orders (store_id, created_at DESC);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_store_magasin
+        ON public.orders (store_id, magasin_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_order_items_order_id
+        ON public.order_items (order_id);
+    `);
+    console.log('[Migration] orders/order_items perf indexes ensured ✅');
+
     // ── 6. email_verification_codes ───────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.email_verification_codes (
@@ -609,6 +650,20 @@ export async function initializeDatabase(): Promise<void> {
     // auto-assign). Powers the Team page "Actions du jour" column so we count
     // agent ACTIONS taken today (per-magasin filterable) instead of all-time
     // assignments. Distribution math is untouched.
+    // ── products.archived_at — soft-delete support ────────────────────────────
+    await client.query(`
+      ALTER TABLE public.products
+        ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;
+    `);
+    console.log('[Migration] products.archived_at ensured ✅');
+
+    // ── products.settings — per-product profit defaults (JSONB) ───────────────
+    await client.query(`
+      ALTER TABLE public.products
+        ADD COLUMN IF NOT EXISTS settings JSONB;
+    `);
+    console.log('[Migration] products.settings ensured ✅');
+
     await client.query(`
       ALTER TABLE public.orders
         ADD COLUMN IF NOT EXISTS last_action_at TIMESTAMP,
@@ -648,6 +703,254 @@ export async function initializeDatabase(): Promise<void> {
       console.log(`[Migration] orders.last_action_at one-shot backfill ✅ (${backfilled.rowCount ?? 0} orders stamped from updated_at)`);
     } else {
       console.log('[Migration] orders.last_action_at one-shot backfill already applied (skipped)');
+    }
+
+    // ── ad_campaign_product_map — persistent campaign→product mapping for importer
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.ad_campaign_product_map (
+        id           SERIAL PRIMARY KEY,
+        store_id     INTEGER NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+        campaign_name TEXT NOT NULL,
+        product_id   INTEGER NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+        created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS ad_campaign_product_map_store_campaign_unique
+        ON public.ad_campaign_product_map(store_id, campaign_name);
+    `);
+    console.log('[Migration] ad_campaign_product_map table ensured ✅');
+
+    // ── users.notif_settings — web push notification preferences (JSONB) ─────────
+    // CRITICAL: must exist before any SELECT on the users table or login breaks.
+    await client.query(`
+      ALTER TABLE public.users
+        ADD COLUMN IF NOT EXISTS notif_settings JSONB;
+    `);
+    console.log('[Migration] users.notif_settings ensured ✅');
+
+    // ── push_subscriptions — per-device Web Push endpoint registry ────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+        id         SERIAL PRIMARY KEY,
+        user_id    INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+        store_id   INTEGER NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+        endpoint   TEXT NOT NULL,
+        p256dh     TEXT NOT NULL,
+        auth       TEXT NOT NULL,
+        user_agent TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_unique
+        ON public.push_subscriptions (endpoint);
+    `);
+    console.log('[Migration] push_subscriptions table ensured ✅');
+
+    // ── users.last_seen_at — tracks when each user last made an authenticated request
+    await client.query(`
+      ALTER TABLE public.users
+        ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;
+    `);
+    console.log('[Migration] users.last_seen_at ensured ✅');
+
+    // ── One-shot: backfill missing stock_movements for historical orders ────────
+    // Orders imported/webhookedirectly in an advanced status (delivered, shipped,
+    // confirmed) never passed through updateOrderStatus, so RULE 0 / RULE 0.5 /
+    // RULE 1 never fired and no stock_movements rows were created for them.
+    // This migration inserts the missing ledger rows (AUDIT TRAIL ONLY — no
+    // products.stock change, since previous fixes already corrected the number).
+    // Also removes any manual "Ajustement" movement whose removal still leaves
+    // the product balance matching products.stock, since the real movements now
+    // explain the full history.
+    const smBackfillKey = 'stock_movements_backfill_v1';
+    const { rows: smBackfillDone } = await pool.query(
+      `SELECT 1 FROM public._migration_state WHERE key = $1 LIMIT 1`,
+      [smBackfillKey],
+    );
+    if (smBackfillDone.length === 0) {
+      // Insert missing shipped/delivered movements for historical orders
+      const inserted = await pool.query(`
+        INSERT INTO public.stock_movements
+          (store_id, product_id, type, quantity, order_id, reason, created_at)
+        SELECT
+          o.store_id,
+          oi.product_id,
+          CASE
+            WHEN o.status IN ('delivered','livré','livre','livrée','Livré','Livrée')
+            THEN 'delivered'
+            ELSE 'shipped'
+          END,
+          -(oi.quantity),
+          o.id,
+          CASE
+            WHEN o.status IN ('delivered','livré','livre','livrée','Livré','Livrée')
+            THEN 'Commande #' || o.order_number || ' livrée'
+            ELSE 'Expédition commande #' || o.order_number
+          END,
+          COALESCE(o.updated_at, o.created_at)
+        FROM public.orders o
+        JOIN public.order_items oi ON oi.order_id = o.id
+        WHERE o.status IN (
+          'delivered','livré','livre','livrée','Livré','Livrée',
+          'in_progress','expédié','Attente De Ramassage','transit',
+          'unreachable','En Cours De Retour','refused','Retour Recu',
+          'confirme','confirme_reporte'
+        )
+        AND oi.product_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM public.stock_movements sm
+          WHERE sm.order_id = o.id
+            AND sm.product_id = oi.product_id
+            AND sm.type IN ('shipped','delivered')
+        )
+      `);
+
+      // Remove manual "Ajustement" movements that are now redundant:
+      // safe to delete only when (sum of all other movements) = products.stock,
+      // meaning the real movements fully explain the current balance.
+      const cleaned = await pool.query(`
+        DELETE FROM public.stock_movements sm
+        USING public.products p
+        WHERE sm.product_id = p.id
+          AND (
+            sm.type = 'adjustment'
+            OR (sm.reason ILIKE '%édition manuelle%')
+            OR (sm.reason ILIKE '%ajustement%manuel%')
+          )
+          AND (
+            SELECT COALESCE(SUM(sm2.quantity), 0)
+            FROM public.stock_movements sm2
+            WHERE sm2.product_id = p.id
+              AND sm2.id <> sm.id
+          ) = p.stock
+      `);
+
+      await pool.query(
+        `INSERT INTO public._migration_state (key) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [smBackfillKey],
+      );
+      console.log(
+        `[Migration] stock_movements backfill ✅ — ` +
+        `${inserted.rowCount ?? 0} movement(s) created, ` +
+        `${cleaned.rowCount ?? 0} redundant manual adjustment(s) removed`
+      );
+    } else {
+      console.log('[Migration] stock_movements backfill already applied (skipped)');
+    }
+
+    // ─── product_link_repair_v1 ──────────────────────────────────────────────
+    // Root cause: the old normStr() regex stripped all Arabic characters so every
+    // Arabic product name normalised to "". resolveProductId() then matched ALL
+    // Arabic orders to the first Arabic product in the store (smallest id).
+    // This one-shot migration re-resolves every order_item with a raw_product_name,
+    // fixes order_items.product_id, reassigns stock_movements, and recomputes stock.
+    const plrKey = 'product_link_repair_v1';
+    const { rows: plrDone } = await pool.query(
+      `SELECT 1 FROM public._migration_state WHERE key = $1 LIMIT 1`,
+      [plrKey],
+    );
+    if (plrDone.length === 0) {
+      // Dynamic import to avoid circular deps at module load time
+      const { resolveProductId } = await import('./services/variants');
+      let plrFixed = 0;
+
+      // Get all store IDs that have order_items with raw_product_name
+      const { rows: storeRows } = await pool.query(`
+        SELECT DISTINCT o.store_id
+        FROM public.order_items oi
+        JOIN public.orders o ON o.id = oi.order_id
+        WHERE oi.raw_product_name IS NOT NULL AND oi.raw_product_name != ''
+      `);
+
+      for (const { store_id: storeId } of storeRows) {
+        // Load products + variants for this store
+        const { rows: prodRows } = await pool.query(
+          `SELECT id, name FROM public.products WHERE store_id = $1`, [storeId]
+        );
+        const { rows: varRows } = await pool.query(
+          `SELECT product_id, name FROM public.product_variants WHERE store_id = $1`, [storeId]
+        );
+        const variantsByProd = new Map<number, { name: string }[]>();
+        for (const v of varRows) {
+          if (!variantsByProd.has(v.product_id)) variantsByProd.set(v.product_id, []);
+          variantsByProd.get(v.product_id)!.push({ name: v.name });
+        }
+        const storeProds = prodRows.map((p: any) => ({
+          id: p.id, name: p.name, variants: variantsByProd.get(p.id) || [],
+        }));
+
+        // Load all order_items with raw_product_name for this store
+        const { rows: itemRows } = await pool.query(`
+          SELECT oi.id, oi.order_id, oi.raw_product_name, oi.product_id AS current_product_id
+          FROM public.order_items oi
+          JOIN public.orders o ON o.id = oi.order_id
+          WHERE o.store_id = $1
+            AND oi.raw_product_name IS NOT NULL
+            AND oi.raw_product_name != ''
+        `, [storeId]);
+
+        const affectedProductIds = new Set<number>();
+
+        for (const item of itemRows) {
+          const { productId: computedId } = resolveProductId(item.raw_product_name, storeProds);
+          const currentId: number | null = item.current_product_id ?? null;
+          if (computedId === currentId) continue;              // already correct
+          if (!computedId && !currentId) continue;             // both null — no change
+
+          // Update order_items.product_id
+          await pool.query(
+            `UPDATE public.order_items SET product_id = $1 WHERE id = $2`,
+            [computedId, item.id],
+          );
+          plrFixed++;
+
+          if (currentId !== null) {
+            affectedProductIds.add(currentId);
+            if (computedId !== null) {
+              // Reassign stock_movements to correct product
+              await pool.query(`
+                UPDATE public.stock_movements
+                SET product_id = $1
+                WHERE store_id = $2 AND order_id = $3 AND product_id = $4
+              `, [computedId, storeId, item.order_id, currentId]);
+            } else {
+              // No valid product → remove bogus movement
+              await pool.query(`
+                DELETE FROM public.stock_movements
+                WHERE store_id = $1 AND order_id = $2 AND product_id = $3
+              `, [storeId, item.order_id, currentId]);
+            }
+          }
+          if (computedId !== null) affectedProductIds.add(computedId);
+        }
+
+        // Recalculate products.stock from movements for all touched products
+        for (const pid of affectedProductIds) {
+          const { rows: movRows } = await pool.query(
+            `SELECT type, quantity FROM public.stock_movements WHERE store_id = $1 AND product_id = $2`,
+            [storeId, pid],
+          );
+          let newStock = 0;
+          for (const m of movRows) {
+            const qty = Number(m.quantity ?? 1);
+            if (m.type === 'shipped' || m.type === 'delivered') newStock -= qty;
+            else newStock += qty;
+          }
+          newStock = Math.max(0, newStock);
+          await pool.query(
+            `UPDATE public.products SET stock = $1 WHERE id = $2 AND store_id = $3`,
+            [newStock, pid, storeId],
+          );
+        }
+      }
+
+      await pool.query(
+        `INSERT INTO public._migration_state (key) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [plrKey],
+      );
+      console.log(`[Migration] product_link_repair_v1 ✅ — ${plrFixed} order_item(s) corrected`);
+    } else {
+      console.log('[Migration] product_link_repair_v1 already applied (skipped)');
     }
 
   } catch (err: any) {

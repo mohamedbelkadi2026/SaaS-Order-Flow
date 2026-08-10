@@ -1,0 +1,281 @@
+I want to add TWO specific enhancements to the existing Profit Analyzer Pro page (the Import CSV mode). The page already has Step 1 (Import fichier), Step 2 (Saisie des coûts), Step 3 (Rapport final). It already has CONFIRM./U column in Step 2. I need to add:
+
+═══════════════════════════════════════════════════════════════════════
+ENHANCEMENT 1 — PRODUCT SELECTOR ON STEP 1
+═══════════════════════════════════════════════════════════════════════
+After the file is imported and "40 produits détectés (391/391 lignes livrées)" is shown, the user should be able to CHOOSE which products to include before continuing to Step 2.
+
+═══════════════════════════════════════════════════════════════════════
+ENHANCEMENT 2 — PACKAGING COST COLUMN ON STEP 2
+═══════════════════════════════════════════════════════════════════════
+Step 2 currently has columns: PRODUIT | QTÉ | CA BRUT | PRIX ACHAT/U | CONFIRM./U.
+Add a new column "EMBALLAGE/U" between PRIX ACHAT/U and CONFIRM./U:
+  PRODUIT | QTÉ | CA BRUT | PRIX ACHAT/U | EMBALLAGE/U | CONFIRM./U
+
+The packaging cost per unit must be subtracted from gross revenue in the final profit calculation.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT FIRST
+═══════════════════════════════════════════════════════════════════════
+1. Find the Profit Analyzer page: search client/src/pages/ for "ProfitAnalyzer", "profit-analyzer", or "Analyse de rentabilité".
+
+2. Locate and report:
+   - The detected-products state (the array shown in "Aperçu produits")
+   - The 3-step wizard state variable name (activeStep / currentStep / step)
+   - The Step 2 cost-input state structure (probably an array of objects { productId, prixAchat, confirmation })
+   - The function that computes the final report (profit, ROI). This is where we'll add packaging into the formula.
+
+3. Specifically report:
+   - The exact field names used in the cost state (e.g. `prixAchatU` or `coutAchat` or `purchasePriceUnit`)
+   - The current confirmation cost field name (e.g. `confirmU` or `coutConfirmation` or `confirmationCost`)
+   - Whether the per-product cost rows are stored in a Map, object, or array
+
+REPORT findings BEFORE writing any code.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — ADD PRODUCT SELECTOR (Step 1 of wizard)
+═══════════════════════════════════════════════════════════════════════
+After the existing "Aperçu produits" table on Step 1, add a multi-select control. The user can keep all products selected (default) or uncheck the ones they want to exclude.
+
+State:
+
+  const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
+  const [productSearchQuery, setProductSearchQuery] = useState("");
+
+  // Initialize: select all by default after detection
+  useEffect(() => {
+    if (detectedProducts && detectedProducts.length > 0 && selectedProductKeys.size === 0) {
+      setSelectedProductKeys(new Set(detectedProducts.map(p => p.id ?? p.name ?? p.key)));
+    }
+  }, [detectedProducts]);
+
+  // Filtered products by search
+  const filteredProducts = useMemo(() => {
+    const q = productSearchQuery.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    if (!q) return detectedProducts;
+    return detectedProducts.filter(p => {
+      const name = (p.name || p.designation || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      return name.includes(q);
+    });
+  }, [detectedProducts, productSearchQuery]);
+
+  // Stats
+  const totalSelected = selectedProductKeys.size;
+  const totalLines = detectedProducts.reduce((sum, p) => {
+    const key = p.id ?? p.name ?? p.key;
+    return selectedProductKeys.has(key) ? sum + (p.lineCount || p.deliveredCount || 0) : sum;
+  }, 0);
+
+  const handleToggleAll = () => {
+    if (selectedProductKeys.size === detectedProducts.length) {
+      setSelectedProductKeys(new Set());
+    } else {
+      setSelectedProductKeys(new Set(detectedProducts.map(p => p.id ?? p.name ?? p.key)));
+    }
+  };
+
+  const handleToggleProduct = (key: string) => {
+    setSelectedProductKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+UI (match the existing navy + gold theme):
+
+Add this block right BEFORE the existing "Aperçu produits" table or replace the table rows with checkboxes:
+
+  <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-5 mt-4">
+    <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
+      <div>
+        <h3 className="text-lg font-bold text-white">Sélection des produits à analyser</h3>
+        <p className="text-xs text-slate-400 mt-1">
+          Décochez les produits que vous voulez exclure du calcul.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleToggleAll}
+          className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-semibold"
+        >
+          {selectedProductKeys.size === detectedProducts.length ? "✗ Tout désélectionner" : "✓ Tout sélectionner"}
+        </button>
+      </div>
+    </div>
+
+    {/* Search */}
+    <input
+      type="text"
+      placeholder="🔍 Rechercher un produit..."
+      value={productSearchQuery}
+      onChange={(e) => setProductSearchQuery(e.target.value)}
+      className="w-full mb-3 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-white placeholder-slate-500 focus:border-amber-500 outline-none text-sm"
+    />
+
+    {/* Counter */}
+    <div className="text-xs text-amber-400 font-semibold mb-3">
+      {totalSelected} / {detectedProducts.length} produits sélectionnés · ≈ {totalLines} lignes
+    </div>
+
+    {/* Product list with checkboxes */}
+    <div className="max-h-80 overflow-y-auto space-y-1 pr-2">
+      {filteredProducts.map((p) => {
+        const key = p.id ?? p.name ?? p.key;
+        const checked = selectedProductKeys.has(key);
+        return (
+          <label
+            key={key}
+            className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+              checked ? "bg-slate-800/60 hover:bg-slate-800" : "bg-transparent hover:bg-slate-800/40 opacity-60"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={() => handleToggleProduct(key)}
+              className="w-4 h-4 accent-amber-500"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-white truncate">{p.name || p.designation || "—"}</div>
+              <div className="text-[11px] text-slate-400">
+                {p.lineCount || p.deliveredCount || 0} livraisons · {formatDH(p.revenue || p.caBrut || 0)}
+              </div>
+            </div>
+          </label>
+        );
+      })}
+      {filteredProducts.length === 0 && (
+        <div className="text-center text-slate-500 text-sm py-6">Aucun produit ne correspond à la recherche.</div>
+      )}
+    </div>
+  </div>
+
+The existing "Continuer" button (top-right amber button) must be disabled when selectedProductKeys.size === 0:
+
+  <button
+    onClick={handleContinue}
+    disabled={selectedProductKeys.size === 0}
+    className={`... existing classes ... ${selectedProductKeys.size === 0 ? "opacity-40 cursor-not-allowed" : ""}`}
+  >
+    Continuer →
+  </button>
+
+Update handleContinue: filter the deliveredRows (or whatever the parsed dataset is called) to only include rows whose product is in selectedProductKeys, THEN initialize the Step 2 cost rows from that filtered set.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — ADD EMBALLAGE/U COLUMN TO STEP 2
+═══════════════════════════════════════════════════════════════════════
+On the Saisie des coûts table, add a new column between PRIX ACHAT/U and CONFIRM./U.
+
+A) Extend the cost state shape. If the existing shape is:
+
+  type CostRow = { productKey: string; prixAchatU: number; confirmU: number };
+
+change it to:
+
+  type CostRow = {
+    productKey: string;
+    prixAchatU: number;
+    emballageU: number;     // NEW
+    confirmU: number;
+  };
+
+Default emballageU to 0 when initializing rows.
+
+B) Update the table header. Find the header row that has "PRIX ACHAT/U *" and "CONFIRM./U" and insert EMBALLAGE/U between them:
+
+  <tr>
+    <th>PRODUIT</th>
+    <th>QTÉ</th>
+    <th>CA BRUT</th>
+    <th>PRIX ACHAT/U <span className="text-amber-500">*</span></th>
+    <th>EMBALLAGE/U</th>          {/* NEW */}
+    <th>CONFIRM./U</th>
+  </tr>
+
+C) Update the row rendering. Find the existing row template and add a new <td> with an input bound to emballageU, mirroring the existing inputs' style exactly:
+
+  <td>
+    <input
+      type="number"
+      min="0"
+      step="0.01"
+      placeholder="ex: 5"
+      value={row.emballageU || ""}
+      onChange={(e) => updateRow(row.productKey, "emballageU", parseFloat(e.target.value) || 0)}
+      className="<copy the EXACT className from the existing PRIX ACHAT input>"
+    />
+  </td>
+
+Use the same className as the existing PRIX ACHAT input (the one showing "ex: 45" placeholder) so styling is identical.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — UPDATE THE PROFIT FORMULA
+═══════════════════════════════════════════════════════════════════════
+Find the function that computes the report (likely something like `computeReport()` or `calculateProfit()`). Subtract the new packaging cost from gross revenue.
+
+For each product row in the report:
+
+  const units = row.qty;                                      // delivered units
+  const revenue = row.caBrut;
+  const costGoods = units * row.prixAchatU;
+  const costPackaging = units * row.emballageU;               // NEW
+  const costConfirmation = units * row.confirmU;              // existing — likely already per-unit since header says CONFIRM./U
+  const costAds = ... // existing logic (Total pub global ou par produit)
+  const costShipping = ... // existing logic (from Shipping cost column)
+  const profit = revenue - costGoods - costPackaging - costConfirmation - costAds - costShipping;
+
+If the existing formula uses different variable names, ADAPT to them but keep the same subtraction logic.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — UPDATE THE FINAL REPORT (Step 3)
+═══════════════════════════════════════════════════════════════════════
+The final report breakdown (Step 3) shows lines like "Chiffre d'affaires / Coût produits / Coût publicité / ...". Add a new line "Coût emballage" right after "Coût des produits":
+
+  Chiffre d'affaires      :    XXX DH
+  Coût des produits       :   -XXX DH
+  Coût emballage          :   -XXX DH      ← NEW
+  Coût confirmation       :   -XXX DH
+  Coût publicité          :   -XXX DH
+  Frais de livraison      :   -XXX DH
+  ─────────────────────────────────────
+  PROFIT NET              :    XXX DH
+  ROI                     :    XX %
+
+═══════════════════════════════════════════════════════════════════════
+DESIGN RULES
+═══════════════════════════════════════════════════════════════════════
+1. Match the existing dark navy + amber/gold theme exactly. Use the same input classes, the same border colors (slate-700/600), the same focus ring (amber-500).
+2. Number inputs accept decimals, min 0. Empty = treated as 0 in calculation.
+3. Real-time recalculation: as the user types in the emballage field, totals at the bottom update.
+4. Default emballageU = 0 (so existing flow without packaging still works).
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Step 1 shows checkbox list of all detected products
+2. ✅ Default: all selected. "Tout désélectionner" + "Tout sélectionner" both work
+3. ✅ Search filter narrows the list (accent + case insensitive)
+4. ✅ Counter "X/40 produits sélectionnés · ≈Y lignes" updates live
+5. ✅ Continuer button disabled when 0 selected
+6. ✅ Only selected products appear in Step 2
+7. ✅ Step 2 has a new EMBALLAGE/U column between PRIX ACHAT/U and CONFIRM./U
+8. ✅ Emballage input accepts numbers, defaults to 0
+9. ✅ Step 3 report shows "Coût emballage" line in the breakdown
+10. ✅ Final profit correctly subtracts packaging
+11. ✅ Existing flow without packaging (emballage left at 0) gives same result as before
+12. ✅ Build passes locally before push
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(profit-analyzer): product selector on import + EMBALLAGE/U cost column"
+git push origin main
+
+WORKFLOW:
+1. INSPECT FIRST (Step 1). Report the cost state field names and the report computation function. Wait for confirmation before coding.
+2. Apply Steps 2–5 incrementally.
+3. `npm run build` before push.

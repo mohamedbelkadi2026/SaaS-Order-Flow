@@ -1,0 +1,46 @@
+On the orders list, SOURCE = "digylog_webhook" orders show "-" in PRODUIT, while 
+SOURCE = "shopify" orders show the product. I want the product name to keep showing.
+
+ROOT CAUSE (already diagnosed — do not re-investigate):
+In server/routes.ts, processCarrierWebhook() has an auto-create fallback: when a 
+Digylog status webhook arrives with a tracking number that matches NO existing order 
+(by tracking_number, then order_number, then cross-store tracking), it calls 
+storage.createOrderFromCarrier(), creating a new order with source "<carrier>_webhook". 
+Digylog's fetchOrderDetails() returns name/phone/address/city/price but NO product 
+name, so these auto-created orders have no rawProductName and no order_items → "-". 
+The product name can ONLY be preserved by routing the Digylog status onto the existing 
+(Shopify) order that already has it — never by reading it from Digylog.
+
+GOAL: stop creating product-less duplicates; link the Digylog webhook to the existing 
+order instead.
+
+CHANGES (server/routes.ts → processCarrierWebhook):
+1) BEFORE the auto-create block, add a phone-number match fallback:
+   - Get the customer phone from the webhook payload, or from fetchOrderDetails() if 
+     the payload lacks it. Normalize to local digits (strip +212 / leading 0 / spaces) 
+     using the same normalization the app already uses.
+   - Find the most RECENT order in the same store with the same normalized phone that 
+     is still active (status NOT in delivered/refused/retourné/Retour Recu), preferring 
+     one whose trackNumber is empty OR equals the incoming tracking number.
+   - If found: use it as the matched order (matchedBy = "phone_fallback") and let the 
+     existing update path run — it will backfill trackNumber + update status on THAT 
+     order. Do NOT create a new order.
+   Add a storage helper if needed: getActiveOrdersByPhone(storeId, normalizedPhone), 
+   ordered by createdAt desc.
+
+2) Only if the phone fallback also finds nothing, gate the existing auto-create behind 
+   a per-store/integration flag (e.g. integration.settings.autoCreateFromWebhook, 
+   default FALSE). When off, skip createOrderFromCarrier and log "webhook_no_match" 
+   (the old behavior) so no product-less orders are created.
+
+3) Do NOT change Shopify creation, and do NOT attempt to read a product name from 
+   Digylog — it doesn't return one.
+
+VERIFY:
+- A Digylog webhook whose customer phone matches an existing Shopify order updates that 
+  order's status (product name stays visible) instead of creating a "digylog_webhook" 
+  duplicate.
+- With the flag off, unmatched Digylog webhooks create no new orders.
+- Shopify/manual orders and their product names are unchanged.
+
+Then commit and push to the main branch so Railway auto-redeploys.

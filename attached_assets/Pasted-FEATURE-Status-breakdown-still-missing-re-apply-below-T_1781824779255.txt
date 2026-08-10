@@ -1,0 +1,62 @@
+FEATURE: Status breakdown still missing — re-apply below "Taux de confirmation"
+Files to change: server/routes.ts and client/src/pages/dashboard.tsx
+Problem: A previous prompt asked to add a full status breakdown (Confirmé Reporté, Rappel, Injoignables, Pas de réponse, Annulés) below the "Taux de confirmation" card. It was not applied. The dashboard still only shows the donut + "2 nouveaux / 0 boite vocale / 0 en cours" with nothing else.
+
+Step 1 — Inspect first
+Open client/src/pages/dashboard.tsx and find the exact JSX block that renders:
+Taux de confirmation
+246 confirmés / 321 leads
+🆕 2 nouveaux   🔕 0 boite vocale   🔄 0 en cours
+Find the closing </div> of this card (the white rounded box containing the donut chart).
+
+Step 2 — server/routes.ts — Confirm/add these fields in stats response
+Open the /api/stats/filtered endpoint (or wherever stats for the dashboard comes from). Make sure the response includes:
+tsres.json({
+  // ... existing fields ...
+  totalOrders,
+  confirme,
+  cancelled,
+  injoignable,
+  nouveau,
+  boiteVocale,
+  confirmeReporte: allOrders.filter(o => o.status === 'Confirmé Reporté' || o.status === 'Confirme Reporte').length,
+  rappel: allOrders.filter(o => o.status === 'Rappel' || o.status === 'rappel').length,
+  pasReponse: allOrders.filter(o => o.status === 'Pas de réponse' || o.status === 'Pas de Réponse' || o.status === 'pas_reponse').length,
+});
+If confirmeReporte, rappel, or pasReponse are not yet computed anywhere in this endpoint, add the filter lines above right before the res.json(...) call.
+
+Step 3 — client/src/pages/dashboard.tsx — Insert the breakdown JSX
+Inside the "Taux de confirmation" card, immediately after the line that renders 🆕 {nouveau} nouveaux  🔕 {boiteVocale} boite vocale  🔄 {enCours} en cours, and before the card's closing </div>, insert:
+tsx<div className="mt-4 pt-4 border-t border-gray-100 space-y-2">
+  {[
+    { label: "📅 Confirmé Reporté", value: stats?.confirmeReporte || 0, color: "#2563eb" },
+    { label: "🔁 Rappel",           value: stats?.rappel || 0,          color: "#d97706" },
+    { label: "📵 Injoignables",     value: stats?.injoignable || 0,     color: "#7c3aed" },
+    { label: "🔕 Pas de réponse",   value: stats?.pasReponse || 0,      color: "#475569" },
+    { label: "❌ Annulés",          value: stats?.cancelled || 0,       color: "#dc2626" },
+  ].map(({ label, value, color }) => {
+    const total = stats?.totalOrders || 0;
+    const pct = total > 0 ? ((value / total) * 100).toFixed(1) : "0.0";
+    return (
+      <div key={label} className="flex items-center justify-between text-sm">
+        <span className="text-gray-600">{label}</span>
+        <div className="flex items-center gap-2">
+          <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
+          </div>
+          <span className="font-bold w-7 text-right" style={{ color }}>{value}</span>
+          <span className="text-xs w-12 text-right font-semibold" style={{ color }}>{pct}%</span>
+        </div>
+      </div>
+    );
+  })}
+</div>
+
+Step 4 — Verify
+After applying:
+
+npx tsc --noEmit must pass with no errors
+Reload the dashboard — the breakdown rows must visually appear directly below "🆕 2 nouveaux 🔕 0 boite vocale 🔄 0 en cours" inside the same white card
+Confirm the new rows show real counts, not all zeros (unless genuinely zero)
+
+Apply this now — do not skip Step 3, it was missed last time.

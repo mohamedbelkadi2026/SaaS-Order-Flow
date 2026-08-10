@@ -1,0 +1,187 @@
+The Ozon Express cities sync FOUND the right endpoint but doesn't parse the response correctly. From the Railway logs:
+
+  [Ozon-SyncCities] https://api.ozonexpress.ma/cities → HTTP 200 — preview:
+  {"CITIES":{"37":{"ID":37,"REF":"AGA","NAME":"Agadir","DELIVERED-PRICE":35,"RETURNED-PRICE":0,"REFUSED-PRICE":10},"49":{"ID":49,"REF":"AIL","NAME":"Ait Melloul","DELIVERED-PRICE":35,"RETURNED-PRICE":0,...}}}
+
+The response is { CITIES: { "37": {...}, "49": {...}, ... } } — an OBJECT keyed by city ID, NOT an array. Our current parser expects an array, so it treats the result as empty and returns 422.
+
+═══════════════════════════════════════════════════════════════════════
+THE REAL OZON EXPRESS RESPONSE SHAPE
+═══════════════════════════════════════════════════════════════════════
+GET https://api.ozonexpress.ma/cities    (public, no auth in URL)
+
+Response:
+{
+  "CITIES": {
+    "37": {
+      "ID": 37,
+      "REF": "AGA",
+      "NAME": "Agadir",
+      "DELIVERED-PRICE": 35,
+      "RETURNED-PRICE": 0,
+      "REFUSED-PRICE": 10
+    },
+    "49": {
+      "ID": 49,
+      "REF": "AIL",
+      "NAME": "Ait Melloul",
+      "DELIVERED-PRICE": 35,
+      "RETURNED-PRICE": 0
+    },
+    ...
+  }
+}
+
+═══════════════════════════════════════════════════════════════════════
+THE FIX (single function)
+═══════════════════════════════════════════════════════════════════════
+In server/routes.ts → /api/carriers/ozonexpress/sync-cities/:accountId, find the section that extracts cities from `data`. Replace it with this normalizer that handles BOTH the Ozon-specific shape AND the previous fallback shapes:
+
+  function extractOzonCities(data: any): Array<{ cityId: string; cityName: string; deliveredPrice?: number }> {
+    if (!data) return [];
+
+    // Ozon Express official shape: { CITIES: { "37": {ID, NAME, REF, DELIVERED-PRICE, ...} } }
+    if (data.CITIES && typeof data.CITIES === "object" && !Array.isArray(data.CITIES)) {
+      return Object.entries(data.CITIES).map(([key, c]: [string, any]) => ({
+        cityId: String(c?.ID ?? key).trim(),
+        cityName: String(c?.NAME ?? "").trim(),
+        deliveredPrice: c?.["DELIVERED-PRICE"] != null ? Number(c["DELIVERED-PRICE"]) : undefined,
+      })).filter(x => /^\d+$/.test(x.cityId) && x.cityName);
+    }
+
+    // Array shape (some Moroccan carriers): [{id, name}]
+    if (Array.isArray(data)) {
+      return data.map((c: any) => ({
+        cityId: String(c?.id ?? c?.ID ?? c?.city_id ?? "").trim(),
+        cityName: String(c?.name ?? c?.NAME ?? c?.city_name ?? "").trim(),
+      })).filter(x => /^\d+$/.test(x.cityId) && x.cityName);
+    }
+
+    // Wrapped array: { cities: [...] } | { data: [...] }
+    const arr = (Array.isArray(data?.cities) && data.cities) ||
+                (Array.isArray(data?.data) && data.data) ||
+                (Array.isArray(data?.data?.cities) && data.data.cities) ||
+                null;
+    if (arr) {
+      return arr.map((c: any) => ({
+        cityId: String(c?.id ?? c?.ID ?? c?.city_id ?? "").trim(),
+        cityName: String(c?.name ?? c?.NAME ?? c?.city_name ?? "").trim(),
+      })).filter(x => /^\d+$/.test(x.cityId) && x.cityName);
+    }
+
+    // Generic object keyed by ID: { "37": {NAME: "..."} } at top level
+    if (typeof data === "object") {
+      const entries = Object.entries(data).filter(([k, v]) =>
+        /^\d+$/.test(k) && v && typeof v === "object"
+      );
+      if (entries.length > 0) {
+        return entries.map(([key, c]: [string, any]) => ({
+          cityId: String(c?.ID ?? key).trim(),
+          cityName: String(c?.NAME ?? c?.name ?? "").trim(),
+        })).filter(x => /^\d+$/.test(x.cityId) && x.cityName);
+      }
+    }
+
+    return [];
+  }
+
+Now use it in the sync handler. ALSO simplify the candidate URLs: from the logs we KNOW the working endpoint is the unauthenticated /cities. Put it FIRST:
+
+  const candidateUrls = [
+    `https://api.ozonexpress.ma/cities`,                                                                       // ← confirmed working
+    `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}/cities`,  // fallback
+  ];
+
+  let cities: Array<{ cityId: string; cityName: string; deliveredPrice?: number }> = [];
+  let usedUrl = "";
+  let lastError = "";
+
+  for (const url of candidateUrls) {
+    try {
+      console.log(`[Ozon-SyncCities] Trying ${url}`);
+      const resp = await fetch(url, { method: "GET", headers: { Accept: "application/json" } });
+      const text = await resp.text();
+      console.log(`[Ozon-SyncCities] ${url} → HTTP ${resp.status} — preview: ${text.slice(0, 300)}`);
+      if (!resp.ok) { lastError = `HTTP ${resp.status} on ${url}`; continue; }
+
+      let data: any = null;
+      try { data = JSON.parse(text); } catch { lastError = `Non-JSON from ${url}`; continue; }
+
+      const parsed = extractOzonCities(data);
+      if (parsed.length > 0) {
+        cities = parsed;
+        usedUrl = url;
+        break;
+      }
+      lastError = `Empty parsed cities from ${url}`;
+    } catch (e: any) {
+      lastError = `Fetch error on ${url}: ${e.message}`;
+    }
+  }
+
+  if (cities.length === 0) {
+    return res.status(422).json({
+      message: `Aucune ville reçue de Ozon Express. Dernière erreur : ${lastError}. Utilisez "Importer villes (JSON)".`,
+    });
+  }
+
+  console.log(`[Ozon-SyncCities] Parsed ${cities.length} cities from ${usedUrl}`);
+
+  let inserted = 0, updated = 0;
+  for (const c of cities) {
+    const existing = await db.select().from(carrierCities)
+      .where(and(eq(carrierCities.accountId, accountId), eq(carrierCities.cityName, c.cityName)));
+
+    const settingsValue: any = { cityId: c.cityId };
+    if (c.deliveredPrice != null) settingsValue.deliveredPrice = c.deliveredPrice;
+
+    if (existing.length === 0) {
+      await db.insert(carrierCities).values({
+        accountId, cityName: c.cityName, settings: settingsValue,
+      } as any);
+      inserted += 1;
+    } else {
+      await db.update(carrierCities)
+        .set({ settings: { ...(existing[0] as any).settings, ...settingsValue } } as any)
+        .where(eq(carrierCities.id, existing[0].id));
+      updated += 1;
+    }
+  }
+
+  res.json({
+    ok: true,
+    usedUrl,
+    inserted,
+    updated,
+    total: cities.length,
+    message: `${cities.length} villes synchronisées (${inserted} ajoutées, ${updated} mises à jour)`,
+  });
+
+═══════════════════════════════════════════════════════════════════════
+BONUS: persist DELIVERED-PRICE per city
+═══════════════════════════════════════════════════════════════════════
+Ozon Express returns DELIVERED-PRICE per city (the shipping fee Ozon charges for that city). Save it in carrier_cities.settings.deliveredPrice (already done above). Later we can use it in the order modal to preview the expected shipping fee per carrier per city — very useful for cost-aware routing.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ extractOzonCities returns Agadir, Ait Melloul, etc. from the real response
+2. ✅ Sync logs show: "Parsed N cities from https://api.ozonexpress.ma/cities"
+3. ✅ The 422 error is GONE
+4. ✅ ~600+ cities inserted into carrier_cities for that account
+5. ✅ Each city row has settings.cityId (numeric) and settings.deliveredPrice
+6. ✅ The order modal now shows Ozon-covered cities with their numeric IDs
+7. ✅ Build passes
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(ozon): parse CITIES object response shape and persist delivered prices"
+git push origin main
+
+WORKFLOW:
+1. Apply the parser fix and the simplified URL list.
+2. `npm run build`.
+3. Push.
+4. Click "Synchroniser les villes" again. Logs should show "Parsed N cities from https://api.ozonexpress.ma/cities" and the toast should say "X villes synchronisées".

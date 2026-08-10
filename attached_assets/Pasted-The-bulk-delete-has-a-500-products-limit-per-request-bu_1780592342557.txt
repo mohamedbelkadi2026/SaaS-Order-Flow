@@ -1,0 +1,341 @@
+The bulk delete has a 500-products limit per request, but the user has 1707 products to clean. Add a way to delete/archive ALL products at once, with batching done server-side, plus stronger safety dialogs because this is destructive.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT
+═══════════════════════════════════════════════════════════════════════
+Open:
+- server/routes.ts — find /api/products/bulk-delete (the 500 limit lives here)
+- client/src/pages/stock.tsx — find the selection bar and "Supprimer sans commandes" / "Archiver tous" buttons
+
+Report:
+- The current 500-limit code
+- The existing storage methods we built: deleteProduct, archiveProduct, getProductsWithoutOrders, getProductUsage
+- Whether there's any existing bulk operation that processes in chunks (search for "chunk" or "batch")
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — BACKEND: bulk delete in chunks, returns progress
+═══════════════════════════════════════════════════════════════════════
+Add a new endpoint that handles ANY number of products by chunking internally:
+
+  app.post("/api/products/bulk-delete-all", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const {
+      mode,                  // "no_orders" | "all" | "selected_ids"
+      productIds,            // used when mode === "selected_ids"
+      archiveIfHasOrders,    // boolean — if true, archive linked products; if false, skip them
+      confirmText,           // safety: user must type a phrase
+    } = req.body || {};
+
+    // Safety: require explicit confirmation text
+    if (mode === "all" && confirmText !== "SUPPRIMER TOUT") {
+      return res.status(400).json({
+        message: "Confirmation requise. Tapez exactement 'SUPPRIMER TOUT' pour confirmer.",
+      });
+    }
+
+    try {
+      // Build the candidate list
+      let candidates: any[] = [];
+      if (mode === "no_orders") {
+        candidates = await storage.getProductsWithoutOrders(storeId);
+      } else if (mode === "all") {
+        candidates = await storage.getProducts(storeId, { includeArchived: false });
+      } else if (mode === "selected_ids") {
+        if (!Array.isArray(productIds) || productIds.length === 0) {
+          return res.status(400).json({ message: "Liste de produits vide" });
+        }
+        candidates = await Promise.all(productIds.map((id: number) => storage.getProduct(id)));
+        candidates = candidates.filter(p => p && p.storeId === storeId);
+      } else {
+        return res.status(400).json({ message: "Mode invalide" });
+      }
+
+      const total = candidates.length;
+      const results = { total, deleted: 0, archived: 0, skipped: 0, errors: [] as any[] };
+
+      // Process in chunks of 100 to avoid long-running transactions
+      const CHUNK = 100;
+      for (let i = 0; i < candidates.length; i += CHUNK) {
+        const slice = candidates.slice(i, i + CHUNK);
+        for (const product of slice) {
+          try {
+            const usage = await storage.getProductUsage(storeId, product.id);
+            if (usage.ordersCount > 0) {
+              if (archiveIfHasOrders) {
+                await storage.archiveProduct(product.id);
+                results.archived += 1;
+              } else {
+                results.skipped += 1;
+              }
+            } else {
+              await storage.deleteProduct(product.id);
+              results.deleted += 1;
+            }
+          } catch (err: any) {
+            results.errors.push({ id: product.id, message: err.message });
+          }
+        }
+      }
+
+      res.json(results);
+    } catch (err: any) {
+      console.error("[BulkDeleteAll] error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+REMOVE or RAISE the 500 limit on /api/products/bulk-delete to keep that endpoint useful for selected-IDs flows (or just rely on the new endpoint and deprecate the old).
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — FRONTEND: client-side chunking with progress bar
+═══════════════════════════════════════════════════════════════════════
+If we keep client-side chunking (uses the existing /api/products/bulk-delete with batches of 200), here's the helper to add in stock.tsx:
+
+  async function deleteInChunks(ids: number[], force: boolean, onProgress: (done: number, total: number) => void) {
+    const CHUNK_SIZE = 200;
+    const totals = { deleted: 0, archived: 0, skipped: 0, errors: [] as any[] };
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      const resp = await fetch("/api/products/bulk-delete", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: chunk, force }),
+      });
+      const r = await resp.json();
+      totals.deleted += r.deleted || 0;
+      totals.archived += r.archived || 0;
+      totals.skipped += r.skipped || 0;
+      totals.errors.push(...(r.errors || []));
+      onProgress(Math.min(i + CHUNK_SIZE, ids.length), ids.length);
+    }
+    return totals;
+  }
+
+But the simpler approach is the new server endpoint /api/products/bulk-delete-all which handles everything in one call. Pick the simpler one.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — FRONTEND: add "TOUT" actions in the selection bar
+═══════════════════════════════════════════════════════════════════════
+On the stock page, when ALL products are selected (selectedIds.size === products.length), the action bar should offer big-batch operations. Update the selection bar:
+
+  {selectedIds.size > 0 && (
+    <div className="bg-red-50 border-2 border-red-200 rounded-xl px-4 py-3 mb-4 flex items-center justify-between flex-wrap gap-3">
+      <div className="text-sm font-bold text-red-700">
+        ☑ {selectedIds.size} produit{selectedIds.size > 1 ? "s" : ""} sélectionné{selectedIds.size > 1 ? "s" : ""}
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+
+        {/* Existing buttons */}
+        <button onClick={handleDeleteWithoutOrders} className="...">
+          🗑 Supprimer sans commandes
+        </button>
+        <button onClick={handleArchiveAll} className="...">
+          📦 Archiver la sélection
+        </button>
+
+        {/* NEW: nuclear option */}
+        {selectedIds.size > 100 && (
+          <button
+            onClick={openNuclearDeleteModal}
+            className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold text-sm flex items-center gap-2"
+          >
+            💥 TOUT supprimer / archiver
+          </button>
+        )}
+
+        <button onClick={() => setSelectedIds(new Set())} className="...">
+          Annuler
+        </button>
+      </div>
+    </div>
+  )}
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — FRONTEND: Nuclear delete modal (with safety)
+═══════════════════════════════════════════════════════════════════════
+Build a strong-safety confirmation modal because deleting 1700+ products is irreversible:
+
+  function NuclearDeleteModal({ totalProducts, onConfirm, onClose }) {
+    const [confirmText, setConfirmText] = useState("");
+    const [archiveIfHasOrders, setArchiveIfHasOrders] = useState(true);
+    const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+
+    const isConfirmed = confirmText === "SUPPRIMER TOUT";
+
+    return (
+      <Modal onClose={onClose}>
+        <div className="p-6 max-w-lg">
+          <div className="text-5xl text-center mb-3">⚠️</div>
+          <h2 className="text-xl font-bold text-center text-red-700 mb-2">
+            Action irréversible
+          </h2>
+          <p className="text-sm text-gray-700 mb-4 text-center">
+            Vous êtes sur le point de supprimer/archiver <span className="font-bold">{totalProducts}</span> produits.
+          </p>
+
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-800">
+            <div className="font-bold mb-1">Comportement :</div>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Produits sans commandes → <span className="font-bold text-red-700">supprimés définitivement</span></li>
+              <li>Produits avec commandes → <span className="font-bold text-amber-700">archivés</span> (historique préservé)</li>
+            </ul>
+          </div>
+
+          <label className="flex items-center gap-2 mb-4 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={archiveIfHasOrders}
+              onChange={(e) => setArchiveIfHasOrders(e.target.checked)}
+            />
+            Archiver les produits avec commandes (recommandé)
+          </label>
+
+          <div className="mb-4">
+            <label className="block text-xs font-bold text-gray-700 mb-1.5">
+              Tapez <span className="font-mono bg-gray-100 px-1.5 py-0.5 rounded text-red-700">SUPPRIMER TOUT</span> pour confirmer :
+            </label>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              className="w-full px-3 py-2 border-2 border-gray-200 rounded-lg focus:border-red-500 outline-none text-sm font-mono"
+              placeholder="SUPPRIMER TOUT"
+            />
+          </div>
+
+          {progress && (
+            <div className="mb-4">
+              <div className="flex justify-between text-xs text-gray-600 mb-1">
+                <span>Traitement en cours...</span>
+                <span>{progress.done} / {progress.total}</span>
+              </div>
+              <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-red-600 transition-all"
+                  style={{ width: `${(progress.done / progress.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-3 justify-end">
+            <button onClick={onClose} disabled={!!progress} className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-semibold text-sm">
+              Annuler
+            </button>
+            <button
+              disabled={!isConfirmed || !!progress}
+              onClick={async () => {
+                setProgress({ done: 0, total: totalProducts });
+                await onConfirm({ confirmText, archiveIfHasOrders, onProgress: setProgress });
+              }}
+              className={`px-5 py-2 rounded-lg font-bold text-sm text-white ${
+                isConfirmed && !progress ? "bg-red-600 hover:bg-red-700" : "bg-red-300 cursor-not-allowed"
+              }`}
+            >
+              {progress ? "En cours..." : "💥 Confirmer la suppression"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — FRONTEND: wire the modal to the API
+═══════════════════════════════════════════════════════════════════════
+
+  async function handleNuclearConfirm({ confirmText, archiveIfHasOrders, onProgress }) {
+    try {
+      // Option A — single call to the new server endpoint:
+      const resp = await fetch("/api/products/bulk-delete-all", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "all",                       // or "selected_ids" if you want to use selectedIds
+          archiveIfHasOrders,
+          confirmText,
+        }),
+      });
+      const r = await resp.json();
+      if (!resp.ok) throw new Error(r.message || "Erreur");
+
+      toast.success(
+        `✅ Terminé : ${r.deleted} supprimés · ${r.archived} archivés · ${r.skipped} ignorés`
+      );
+
+      // Option B — client-side chunking with live progress:
+      // const ids = Array.from(selectedIds);
+      // const r = await deleteInChunks(ids, archiveIfHasOrders, (done, total) => onProgress({ done, total }));
+      // toast.success(`✅ ${r.deleted} suppr · ${r.archived} arch · ${r.skipped} ignorés`);
+
+      setNuclearOpen(false);
+      setSelectedIds(new Set());
+      await refetchProducts();
+    } catch (e: any) {
+      toast.error(`❌ ${e.message}`);
+    }
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 7 — ADD A "TOUT SÉLECTIONNER" SHORTCUT
+═══════════════════════════════════════════════════════════════════════
+The header checkbox currently selects only the visible page. Add a small text link below the header to select EVERY product across all pages:
+
+  {selectedIds.size === pageProducts.length && totalProducts > pageProducts.length && (
+    <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 mb-2 text-sm text-indigo-700 flex items-center justify-between">
+      <span>{pageProducts.length} produits de cette page sont sélectionnés.</span>
+      <button
+        onClick={selectAllProductsAcrossPages}
+        className="font-bold underline hover:text-indigo-900"
+      >
+        Sélectionner les {totalProducts} produits
+      </button>
+    </div>
+  )}
+
+  async function selectAllProductsAcrossPages() {
+    // Fetch ALL product IDs (lightweight endpoint)
+    const resp = await fetch("/api/products/all-ids");
+    const data = await resp.json();
+    setSelectedIds(new Set(data.ids));
+  }
+
+Add the matching endpoint:
+
+  app.get("/api/products/all-ids", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const rows = await storage.getProductsIdsOnly(storeId);  // SELECT id FROM products WHERE store_id = ?
+    res.json({ ids: rows.map((r: any) => r.id) });
+  });
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ /api/products/bulk-delete-all handles 1707+ items in one call
+2. ✅ Requires confirmText === "SUPPRIMER TOUT" for mode "all"
+3. ✅ Server chunks internally (100/batch) — no client-side looping needed
+4. ✅ Returns { deleted, archived, skipped, errors, total }
+5. ✅ "💥 TOUT supprimer" button shows when 100+ items selected
+6. ✅ Modal blocks confirm until exact phrase typed
+7. ✅ "Archiver si commandes" toggle (default ON)
+8. ✅ Progress bar shows during execution
+9. ✅ Toast at end: "1245 supprimés · 412 archivés · 50 ignorés"
+10. ✅ "Sélectionner les 1707 produits" link works across pages
+11. ✅ Build passes locally
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(stock): unlimited bulk delete with safety confirm and progress"
+git push origin main
+
+WORKFLOW:
+1. INSPECT (Step 1). Confirm:
+   - Current 500 limit location
+   - getProducts signature (for "all" mode)
+2. Apply Steps 2–7.
+3. `npm run build` before push.
+4. After deploy, test on 10 products first, then go for the full 1707.

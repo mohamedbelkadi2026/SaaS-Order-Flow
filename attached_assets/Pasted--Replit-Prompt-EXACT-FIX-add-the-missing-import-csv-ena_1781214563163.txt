@@ -1,0 +1,45 @@
+# Replit Prompt — EXACT FIX: add the missing `import_csv_enabled` column
+
+The server logs show the real cause:
+```
+[SERVER_ERROR] status=500 message=column "import_csv_enabled" does not exist
+    at async getSubscription (dist/index.js …)
+```
+`getSubscription` selects `subscriptions.import_csv_enabled`, but that column doesn't exist in the database, so every call to `getSubscription` 500s — which breaks Super Admin, billing, and more. (Earlier I added `import_csv_override`, but the code actually uses `import_csv_enabled` — different name. The real fix is to add `import_csv_enabled`.)
+
+## Step 1 — Find the exact type in the schema
+In `shared/schema.ts`, look at the `subscriptions` table for the field mapping to `"import_csv_enabled"`. Note whether it's `integer("import_csv_enabled")` or `boolean("import_csv_enabled")`. Add the DB column with the **matching** SQL type:
+
+- If the schema field is `integer(...)`:
+  ```sql
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS import_csv_enabled integer;
+  ```
+- If the schema field is `boolean(...)`:
+  ```sql
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS import_csv_enabled boolean DEFAULT false;
+  ```
+
+## Step 2 — Add any sibling feature columns the code may also reference
+Check the `subscriptions` schema for the Automation / Media Buyers flags and make sure their DB columns exist too (they may use `_enabled` naming as well). Add whichever are missing, matching type:
+```sql
+-- only run the ones your schema actually defines and the DB is missing
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS automation_enabled    integer;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS media_buyers_enabled  integer;
+```
+
+## Step 3 — Verify, then restart
+```sql
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'subscriptions'
+  AND column_name LIKE '%enabled%';
+```
+`import_csv_enabled` (and any siblings the code uses) must appear. Restart the server.
+
+## Step 4 — Confirm the schema/DB are now in sync
+Run `npm run db:push` once and accept any prompt, so the schema and DB fully match going forward (no more "column does not exist"). If `db:push` asks to rename `import_csv_override` → `import_csv_enabled`, that's fine; otherwise leave the unused `_override` column, it's harmless.
+
+## Testing checklist
+1. `getSubscription` no longer errors; `GET /api/subscription` returns 200.
+2. Super Admin shows all boutiques and platform stats again.
+3. Billing/plan pages load.
+4. The Import CSV gating still reads its flag correctly.

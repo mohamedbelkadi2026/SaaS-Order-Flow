@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, X, Trash2, Plus, Phone, MessageCircle, RotateCcw, CheckCircle } from "lucide-react";
+import { Loader2, X, Trash2, Plus, Phone, MessageCircle, RotateCcw, CheckCircle, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -258,6 +258,7 @@ interface OrderDetailsModalProps {
 export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: OrderDetailsModalProps) {
   const { user } = useAuth();
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
+  const canEditShippingFee = isAdmin || !!((user as any)?.dashboardPermissions?.can_edit_shipping_fee);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -265,6 +266,8 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [newItemCounter, setNewItemCounter] = useState(0);
   const [manualPriceOverride, setManualPriceOverride] = useState(false);
+  const [attachTrackNum, setAttachTrackNum] = useState("");
+  const [attachCarrier, setAttachCarrier]   = useState<string>(""); // explicit override when store has multiple carriers
   // Track the last order ID so we only reset the manual override when a
   // different order is opened — NOT when the same order's data refreshes
   // after save (which would immediately re-run the auto-calc and undo the
@@ -299,6 +302,27 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     queryKey: ["/api/products"],
     staleTime: 5 * 60 * 1000,
   });
+
+  // Store settings — needed to check allowAttachTracking (skipped for superAdmin who always sees the box)
+  const { data: storeInfo } = useQuery<any>({
+    queryKey: ['/api/store'],
+    staleTime: 5 * 60 * 1000,
+    enabled: !!user && !user.isSuperAdmin,
+  });
+
+  // Carrier accounts — needed to determine the carrier dropdown in the attach box.
+  // Only fetched when the attach box would be visible (confirmé order + feature enabled).
+  const attachBoxVisible = order?.status === 'confirme' && (user?.isSuperAdmin || storeInfo?.settings?.allowAttachTracking);
+  const orderHasCarrier  = !!((order as any)?.shippingProvider || (order as any)?.carrierName);
+  const { data: carrierAccounts = [] } = useQuery<any[]>({
+    queryKey: ['/api/carrier-accounts'],
+    staleTime: 5 * 60 * 1000,
+    enabled: attachBoxVisible && !orderHasCarrier,  // only needed when carrier isn't already set
+  });
+  // If the order already has a carrier, the backend will keep it — no dropdown needed.
+  // If only one carrier account exists, the backend auto-selects it — no dropdown needed.
+  // Show dropdown only when the order has no carrier AND the store has multiple carrier accounts.
+  const showCarrierDropdown = attachBoxVisible && !orderHasCarrier && carrierAccounts.length > 1;
 
   // Always fetch the latest order from the server when the modal opens.
   // staleTime=0 ensures a refetch even when the same order is reopened after
@@ -402,6 +426,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       totalPrice: isNewOrder ? (order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00") : (prev.totalPrice ?? (order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00")),
       variantInfo: isNewOrder ? (variantFallback !== "null" ? variantFallback : "") : (prev.variantInfo ?? (variantFallback !== "null" ? variantFallback : "")),
       commentOrder: isNewOrder ? (order.commentOrder || "") : (prev.commentOrder ?? order.commentOrder ?? ""),
+      shippingCost: isNewOrder ? ((order.shippingCost ?? 0) / 100).toFixed(2) : (prev.shippingCost ?? ((order.shippingCost ?? 0) / 100).toFixed(2)),
     }));
     const mappedItems = (order.items || []).map((item: any) => ({
       ...item,
@@ -469,6 +494,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         rawProductName: fields.rawProductName || null,
         totalPrice: Math.round(parseFloat(fields.totalPrice || "0") * 100),
         commentOrder: fields.commentOrder || null,
+        ...(canEditShippingFee ? { shippingCost: Math.round(parseFloat(fields.shippingCost || "0") * 100) } : {}),
       };
       const res = await apiRequest("PATCH", `/api/orders/${order.id}`, payload);
       const updatedOrder = await res.json();
@@ -566,6 +592,33 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       onClose();
     },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const attachTrackingMutation = useMutation({
+    mutationFn: async (trackingNumber: string) => {
+      // Pass the explicit carrier only when the dropdown was used.
+      // If the order already has a carrier, the backend preserves it automatically.
+      const body: Record<string, string> = { trackingNumber };
+      if (showCarrierDropdown && attachCarrier) body.carrier = attachCarrier;
+      const res = await apiRequest("PATCH", `/api/orders/${order?.id}/attach-tracking`, body);
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      const statusLabel = data.status || 'Attente De Ramassage';
+      const carrierLabel = data.carrier ? ` — ${data.carrier}` : '';
+      toast({ title: "✅ Tracking attaché", description: `${data.trackNumber}${carrierLabel} → ${statusLabel}` });
+      setAttachTrackNum("");
+      setAttachCarrier("");
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', order?.id] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      onUpdated?.({ ...order, trackNumber: data.trackNumber, status: data.status, shippingProvider: data.carrier, carrierName: data.carrier });
+      onClose();
+    },
+    onError: (e: any) => {
+      const msg = e?.message || "Impossible d'attacher le tracking";
+      toast({ title: "Erreur", description: msg, variant: "destructive" });
+    },
   });
 
   const set = (key: string, value: any) => setFields((f: any) => ({ ...f, [key]: value }));
@@ -859,13 +912,19 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
               </p>
 
               <Field label="Nom du produit">
-                <Input
+                <ProductCombobox
+                  products={stockProducts}
                   value={fields.rawProductName}
-                  onChange={e => set("rawProductName", e.target.value)}
-                  className={cn(inputCls, "bg-gray-50")}
-                  style={{ color: NAVY }}
-                  placeholder="Auto-rempli depuis la boutique"
-                  dir="rtl"
+                  onChange={(p) => {
+                    set("rawProductName", p.name);
+                    if (p.id !== -1) {
+                      const price = p.sellingPrice ?? p.costPrice;
+                      if (price && !manualPriceOverride) {
+                        set("totalPrice", (price / 100).toFixed(2));
+                      }
+                    }
+                  }}
+                  placeholder="Rechercher dans le stock ou saisir librement..."
                   data-testid="input-product-name"
                 />
               </Field>
@@ -913,6 +972,28 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   );
                 })()}
               </Field>
+
+              {canEditShippingFee && (
+                <Field label="Frais de livraison">
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={fields.shippingCost}
+                      onChange={e => set("shippingCost", e.target.value)}
+                      className={cn(inputCls, "flex-1 bg-gray-50 text-right font-bold")}
+                      style={{ color: NAVY }}
+                      placeholder="0.00"
+                      data-testid="input-shipping-cost"
+                    />
+                    <span
+                      className="shrink-0 text-xs font-bold px-3 py-2 rounded-lg text-white"
+                      style={{ backgroundColor: NAVY }}
+                    >DH</span>
+                  </div>
+                </Field>
+              )}
 
               <Field label="Taille / Variant">
                 <div className="relative">
@@ -1019,6 +1100,62 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
               />
             </div>
           </div>
+
+          {/* ── ATTACH TRACKING BOX — confirmé orders only, when feature is enabled ── */}
+          {attachBoxVisible && (
+            <div className="mx-4 mb-3 rounded-xl border border-orange-200 bg-orange-50 dark:bg-orange-950/30 dark:border-orange-800 p-4">
+              <p className="text-xs font-bold text-orange-800 dark:text-orange-200 mb-0.5">
+                📦 Attacher Tracking
+              </p>
+              <p className="text-[10px] text-orange-700/80 dark:text-orange-300/80 mb-3">
+                {orderHasCarrier
+                  ? <>Collez le numéro de suivi — le transporteur <strong>{(order as any).shippingProvider || (order as any).carrierName}</strong> sera conservé.</>
+                  : <>Collez le numéro de suivi — le transporteur et le statut seront mis à jour automatiquement.</>}
+              </p>
+
+              {/* Carrier dropdown — only when order has no carrier and store has multiple accounts */}
+              {showCarrierDropdown && (
+                <div className="mb-2">
+                  <select
+                    value={attachCarrier}
+                    onChange={e => setAttachCarrier(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-orange-200 bg-white dark:bg-orange-900/20 dark:border-orange-700 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300 focus:ring-offset-0"
+                    data-testid="select-attach-carrier"
+                  >
+                    <option value="">— Choisir le transporteur —</option>
+                    {carrierAccounts.map((acct: any) => (
+                      <option key={acct.id} value={acct.carrierName}>
+                        {acct.carrierName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={attachTrackNum}
+                  onChange={e => setAttachTrackNum(e.target.value)}
+                  placeholder="Ex: ATQ0726B27347…"
+                  className="flex-1 px-3 py-2 rounded-lg border border-orange-200 bg-white dark:bg-orange-900/20 dark:border-orange-700 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300 focus:ring-offset-0"
+                  data-testid="input-attach-tracking"
+                  onKeyDown={e => { if (e.key === 'Enter' && attachTrackNum.trim()) attachTrackingMutation.mutate(attachTrackNum.trim()); }}
+                />
+                <button
+                  onClick={() => { if (attachTrackNum.trim()) attachTrackingMutation.mutate(attachTrackNum.trim()); }}
+                  disabled={!attachTrackNum.trim() || attachTrackingMutation.isPending || (showCarrierDropdown && !attachCarrier)}
+                  className="px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors flex items-center gap-1.5 shrink-0"
+                  data-testid="button-attach-tracking-submit"
+                >
+                  {attachTrackingMutation.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <Check className="w-4 h-4" />}
+                  Attacher
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* bottom padding so content isn't hidden behind sticky footer on mobile */}
           <div className="h-4 sm:h-0" />

@@ -1,0 +1,45 @@
+Progress: EC status 28 → Refusé now maps correctly. Remaining bug: the STATUS column still 
+shows raw carrier values for many orders: "EC 19", "EC 5", "EC delivery_status=35", 
+"EC delivery_status=49", and a stale "expedition". These are NOT internal statuses and must 
+never appear in orders.status.
+
+Two things are still wrong:
+ (a) The code still WRITES raw values into orders.status when it can't map a code.
+ (b) Existing rows already corrupted with raw values were never cleaned up.
+
+FIX BOTH — do NOT change anything else:
+
+1) NEVER write a raw value into orders.status. Every EC code must go through 
+   EC_NUMERIC_STATUS_MAP. If a code is missing from the map, fall back to 'in_progress' 
+   (safe default) and log a warning. Under no circumstance write "EC <n>", 
+   "EC delivery_status=<n>", or "expedition" into orders.status. The EC status NAME (from 
+   the official /v1.0/statuses table) goes in commentStatus only.
+
+2) Make sure EC_NUMERIC_STATUS_MAP is COMPLETE per the official table (ids → internal):
+   delivered:            3
+   refused:              28, 29
+   retourné:             4, 18, 19, 20, 21, 27, 32, 36, 48, 50, 51, 52
+   Attente De Ramassage: 1
+   in_progress:          0, 5, 8, 9, 10, 13, 14, 15, 17, 30, 33, 34, 35, 37, 38, 39, 53
+   Unknown/new id → in_progress.
+   Use the app's EXACT internal status strings (reuse the codebase's spelling for 
+   'retourné'/'Retour Recu' verbatim — do not invent a new value).
+
+3) CLEANUP EXISTING ROWS (dry-run first, --apply after I approve):
+   Find every order whose status matches /^EC /, contains "delivery_status", or equals 
+   "expedition". For each, take the LATEST stored EC webhook event for its track_number 
+   (from integration_logs, parsed by package_id), read its delivery_status id, and re-map it 
+   through EC_NUMERIC_STATUS_MAP. Set commentStatus to the official EC status name (strip the 
+   literal "{{city}}" placeholder). If no webhook event exists for that tracking, extract the 
+   id from the corrupted status string itself (e.g. "EC 19" → 19, 
+   "EC delivery_status=35" → 35) and map that; if even that fails, set 'in_progress'.
+   Report: total corrupted rows, and the resulting counts per internal status, plus 10 
+   examples (order code → package_id → EC id → EC name → new status).
+
+4) Apply the same mapping in BOTH the live webhook handler and the "Synchroniser" replay.
+
+VERIFY after apply: no order status starts with "EC " or contains "delivery_status" or 
+"expedition". Every EC order shows a real badge (Livrée / Refusé / Retourné / En cours / 
+Attente Ramassage) matching Express Coursier's own dashboard.
+
+Deploy to main, run the dry-run, and paste me the summary before applying.

@@ -1,0 +1,98 @@
+FEATURE — Bouton "Appliquer à toutes les variantes" pour copier le "Prix
+coûtant" du produit parent vers TOUTES les variantes en un clic (au lieu de
+taper le même prix 5 fois, une fois par taille).
+
+client/src/pages/inventory.tsx — les 2 endroits (modale "Nouveau Produit"
+ET modale "Modifier le produit") partagent déjà le même state `variants` /
+`setVariants` et la même fonction `updateVariant` — donc UNE seule
+modification de state suffit, appliquée aux 2 emplacements JSX.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Ajouter la fonction (à côté de `updateVariant`, ~ligne 782-784)
+
+```ts
+const applyCostToAllVariants = () => {
+  if (!form.costPrice) {
+    toast({ title: "Entrez d'abord le Prix coûtant du produit", variant: "destructive" });
+    return;
+  }
+  setVariants(v => v.map(vr => ({ ...vr, costPrice: form.costPrice })));
+  toast({ title: `Prix coûtant (${form.costPrice} DH) appliqué à toutes les variantes` });
+};
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Modale "Nouveau Produit" (~ligne 1624-1628) : ajouter le bouton
+à côté de "Ajouter"
+
+Remplacer :
+```tsx
+<div className="flex items-center justify-between">
+  <h4 className="font-semibold text-sm">Variantes</h4>
+  <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-add-variant">
+    <Plus className="w-3 h-3 mr-1" /> Ajouter
+  </Button>
+</div>
+```
+par :
+```tsx
+<div className="flex items-center justify-between">
+  <h4 className="font-semibold text-sm">Variantes</h4>
+  <div className="flex gap-2">
+    <Button size="sm" variant="ghost" onClick={applyCostToAllVariants} data-testid="button-apply-cost-all-variants" title="Copier le Prix coûtant du produit vers toutes les variantes">
+      <Copy className="w-3 h-3 mr-1" /> Appliquer le coûtant à toutes
+    </Button>
+    <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-add-variant">
+      <Plus className="w-3 h-3 mr-1" /> Ajouter
+    </Button>
+  </div>
+</div>
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Modale "Modifier le produit" (~ligne 1814-1818) : même bouton
+
+Remplacer :
+```tsx
+<div className="flex items-center justify-between">
+  <h4 className="font-semibold text-sm">Variantes</h4>
+  <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-edit-add-variant">
+    <Plus className="w-3 h-3 mr-1" /> Ajouter
+  </Button>
+</div>
+```
+par :
+```tsx
+<div className="flex items-center justify-between">
+  <h4 className="font-semibold text-sm">Variantes</h4>
+  <div className="flex gap-2">
+    <Button size="sm" variant="ghost" onClick={applyCostToAllVariants} data-testid="button-edit-apply-cost-all-variants" title="Copier le Prix coûtant du produit vers toutes les variantes">
+      <Copy className="w-3 h-3 mr-1" /> Appliquer le coûtant à toutes
+    </Button>
+    <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-edit-add-variant">
+      <Plus className="w-3 h-3 mr-1" /> Ajouter
+    </Button>
+  </div>
+</div>
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 4 — Vérifier l'import de l'icône `Copy` depuis `lucide-react` en haut
+du fichier ; l'ajouter si absent.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add button to copy parent product cost price to all variants at once" && git push
+
+VÉRIFICATION
+1. Modifier le produit "Sandale En Cuir Rf 1012 Marron" (Prix coûtant =
+   140,00 DH, variantes 40/41/42/43/44 avec Coûtant vide) → cliquer
+   "Appliquer le coûtant à toutes" → les 5 champs "Coûtant" des variantes
+   doivent se remplir à 140,00 instantanément.
+2. Modifier une variante individuellement après coup (ex: mettre 45 pour la
+   taille 44) → doit rester modifiable normalement, le bouton ne fait
+   qu'une copie ponctuelle, pas un lien permanent.
+3. Cliquer "Mettre à jour" → les nouveaux coûts doivent être sauvegardés
+   pour chaque variante.
+4. Tester aussi dans la modale "Nouveau Produit" (création) → même
+   comportement.

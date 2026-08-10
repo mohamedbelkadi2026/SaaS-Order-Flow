@@ -1,0 +1,73 @@
+The "Synchroniser Ozon Express" button must also UPDATE STATUS for older orders (not just fees).
+Ozon's /parcels/tracking is dead, but parcel-info IS alive and returns DELIVERED-PRICE /
+RETURNED-PRICE / REFUSED-PRICE. We can INFER the final status from these:
+  DELIVERED-PRICE > 0  → "delivered"
+  RETURNED-PRICE > 0   → "Retour Recu"
+  REFUSED-PRICE  > 0   → "refused"
+  all zero             → still in transit → do NOT change status
+shippingCost is in CENTIMES (fee × 100).
+
+In server/routes.ts, change backfillOzonFees(storeId) (called by the ozonexpress sync) so that,
+for EACH Ozon order that is not already in a final state, it calls parcel-info and:
+  1) infers the final status from the *-PRICE fields,
+  2) if a final status is inferred AND it differs from the current order status → updateOrderStatus
+     + write an order follow-up log + an integration "status_update" log,
+  3) sets shippingCost = Math.round(fee × 100) using the matching price field.
+Widen the order selection it loops over: instead of only final-state orders missing a fee, select
+ALL Ozon orders that are NOT already terminal (e.g. status in: nouveau, confirme, transit,
+'Attente De Ramassage', confirme_reporte, unreachable, etc.) AND have a trackingNumber, PLUS final
+orders still missing a fee. Cap ~300 per run, small delay between calls.
+
+   async function backfillOzonFees(storeId) {
+     const acct = (await storage.getCarrierAccounts(storeId,"ozonexpress"))[0];
+     const cid = acct?.settings?.ozonExpressCustomerId, key = acct?.apiKey;
+     if (!cid || !key) return { checked:0, statusUpdated:0, feeUpdated:0 };
+     const orders = await storage.getOzonOrdersToReconcile(storeId); // see storage method below
+     let statusUpdated = 0, feeUpdated = 0;
+     for (const o of orders) {
+       try {
+         const FD = (await import("form-data")).default; const fd = new FD();
+         fd.append("tracking-number", o.trackingNumber);
+         const r = await axios.post(`https://api.ozonexpress.ma/customers/${cid}/${key}/parcel-info`,
+           fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true });
+         const infos = r.data?.["PARCEL-INFO"]?.["INFOS"];
+         if (!infos) continue;
+         const dp = Number(infos["DELIVERED-PRICE"]||0), rp = Number(infos["RETURNED-PRICE"]||0), fp = Number(infos["REFUSED-PRICE"]||0);
+         let inferred = null, fee = 0;
+         if (dp > 0) { inferred = "delivered"; fee = dp; }
+         else if (rp > 0) { inferred = "Retour Recu"; fee = rp; }
+         else if (fp > 0) { inferred = "refused"; fee = fp; }
+         if (inferred && inferred !== o.status) {
+           await storage.updateOrderStatus(o.id, inferred);
+           await storage.createOrderFollowUpLog({ orderId:o.id, agentId:null, agentName:"Ozon Express Sync",
+             note:`Statut déduit via parcel-info → ${inferred}` });
+           await storage.createIntegrationLog({ storeId, integrationId:null, provider:"ozonexpress",
+             action:"status_update", status:"ok", message:`✅ Ozon #${o.orderNumber}: ${o.status} → ${inferred} (parcel-info)` });
+           statusUpdated++;
+         }
+         if (fee > 0 && (!o.shippingCost || o.shippingCost === 0)) {
+           await storage.updateOrder(o.id, { shippingCost: Math.round(fee*100) });
+           feeUpdated++;
+         }
+         await new Promise(res => setTimeout(res, 120));
+       } catch(e:any){ console.log(`[OZON-RECONCILE] ${o.trackingNumber} failed: ${e?.message}`); }
+     }
+     return { checked: orders.length, statusUpdated, feeUpdated };
+   }
+
+Add storage.getOzonOrdersToReconcile(storeId): select store orders that belong to Ozon
+(carrier = 'ozonexpress' if such a field exists, else trackingNumber LIKE 'TG-%') AND
+trackingNumber is non-empty AND status NOT IN ('delivered','Retour Recu','refused','annule')
+OR (status IN final set AND (shippingCost IS NULL OR =0)). Limit 300.
+
+In syncCarrierOrdersInternal for 'ozonexpress', call backfillOzonFees and return its counts in the
+toast message: "{checked} vérifiées · {statusUpdated} statuts · {feeUpdated} frais".
+
+Also run backfillOzonFees on the existing Ozon auto-poll interval (every ~10 min) so it's
+automatic without clicking. Keep the webhook path as-is for real-time pushes.
+
+VERIFY:
+- Click "Synchroniser Ozon Express": old delivered orders like TG-MAN-1780671978057 flip from
+  "Attente Ramassage" to "Livré" (status inferred from DELIVERED-PRICE) and get their fee.
+- Orders with all *-PRICE = 0 stay unchanged (still in transit).
+- Runs automatically every ~10 min too. App compiles.

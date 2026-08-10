@@ -1,0 +1,107 @@
+FEATURE — Contrôler "Autoriser l'ouverture du colis par le client" (et
+"Produit en stock") pour Vitips Express directement depuis la plateforme,
+au lieu de devoir aller le régler manuellement sur le portail Vitips.
+
+CONSTAT (confirmé dans le code)
+`input.canOpen` (server/services/carrier-service.ts, `CarrierShipInput`)
+existe déjà et est câblé pour 4 autres transporteurs :
+```ts
+openproduct: input.canOpen ? 1 : 0,        // (transporteur A)
+ouverture_colis: input.canOpen ? 1 : 0,    // (transporteur B)
+can_open:        input.canOpen ? 1 : 0,    // (transporteur C)
+open:      input.canOpen ? "YES" : "NO",   // (transporteur D)
+```
+Cette valeur vient déjà de `order.canOpen` (colonne existante sur `orders`,
+réglable produit par produit / commande par commande dans la plateforme —
+c'est exactement le formulaire "Autoriser l'ouverture du colis par le
+client ?" vu dans les captures). SEULE `buildVitipsPayload` ne l'utilise
+pas encore — elle envoie `openpackage: 0` en dur, toujours "NON", peu
+importe le réglage fait dans la plateforme.
+
+`isStock` (colonne existante aussi, "Produit en stock") a exactement le
+même problème dans `buildVitipsPayload` : `from_stock: 0` en dur.
+
+────────────────────────────────────────────────────────────────────────────
+FIX — server/services/carrier-service.ts, fonction `buildVitipsPayload`
+
+Remplacer :
+```ts
+return {
+  fullname:     input.customerName.trim(),
+  phone,
+  city,
+  address:      addr,
+  price:        priceDH,
+  product:      (input.productName || "Produit").trim(),
+  qty:          String(input.quantity ?? 1),
+  note:         input.note || "",
+  exchange:     0,
+  openpackage:  0,
+  from_stock:   0,
+  try_product:  0,
+  internal_id:  input.orderNumber,
+};
+```
+
+par :
+```ts
+return {
+  fullname:     input.customerName.trim(),
+  phone,
+  city,
+  address:      addr,
+  price:        priceDH,
+  product:      (input.productName || "Produit").trim(),
+  qty:          String(input.quantity ?? 1),
+  note:         input.note || "",
+  exchange:     0,                             // pas de champ dédié en base pour l'instant (voir note plus bas)
+  openpackage:  input.canOpen ? 1 : 0,          // ← branché sur le réglage existant "Autoriser l'ouverture du colis"
+  from_stock:   input.isStock ? 1 : 0,          // ← branché sur le réglage existant "Produit en stock"
+  try_product:  0,                             // pas de champ dédié en base pour l'instant (voir note plus bas)
+  internal_id:  input.orderNumber,
+};
+```
+
+────────────────────────────────────────────────────────────────────────────
+Ajouter `isStock` à l'interface `CarrierShipInput` (juste à côté de `canOpen`)
+si pas déjà présent :
+```ts
+export interface CarrierShipInput {
+  // ...
+  canOpen: boolean;
+  isStock?: boolean;   // ← AJOUTÉ
+  // ...
+}
+```
+
+Et là où `CarrierShipInput` est construit avant l'appel `buildPayload(...)`
+(server/routes.ts, ~ligne 1831, à côté de `canOpen: (order as any).canOpen === 1`),
+ajouter :
+```ts
+isStock: (order as any).isStock === 1,
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Wire canOpen and isStock settings into Vitips Express order payload (was hardcoded to NON)" && git push
+
+VÉRIFICATION
+- Régler "Autoriser l'ouverture du colis par le client ?" sur OUI pour une
+  commande/produit, l'expédier via Vitips Express, puis vérifier côté portail
+  Vitips (ou via les logs de la requête sortante) que `openpackage` vaut
+  bien `1` dans la requête envoyée.
+- Idem pour "Produit en stock" → `from_stock` doit valoir `1` quand activé.
+- Régler sur NON → doit repasser à `0`, comme avant.
+
+────────────────────────────────────────────────────────────────────────────
+NOTE — "Échange" et "Autoriser l'essayage" restent à 0 (NON) fixe
+
+Contrairement à `canOpen` et `isStock`, il n'existe PAS encore de colonne en
+base pour "Échange" (`exchange`) ni pour "Autoriser l'essayage"
+(`try_product`) — ces 2 réglages ne sont donc pas encore configurables
+depuis la plateforme pour aucun transporteur (pas seulement Vitips). Si tu
+veux aussi pouvoir les piloter depuis la plateforme, dis-le-moi et je
+prépare un prompt séparé pour ajouter ces 2 nouveaux champs (colonnes sur
+`orders` et/ou `products`, toggles dans le formulaire, câblage dans les
+payloads de tous les transporteurs concernés) — c'est un chantier un peu
+plus large que ce fix-ci, qui ne touche que ce qui existe déjà.

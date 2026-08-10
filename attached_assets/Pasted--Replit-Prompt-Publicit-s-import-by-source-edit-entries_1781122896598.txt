@@ -1,0 +1,44 @@
+# Replit Prompt — Publicités: import by source + edit entries + date filter presets
+
+Add three things to the Publicités page (`client/src/pages/publicites.tsx`) and its API (`server/routes.ts`). Keep the existing Par Produit import (which now works) intact. French for all user-facing strings.
+
+Repo facts (verified): `POST /api/publicites` stores `amount` as centimes via `Math.round(Number(amount)*100)` using `storage.createAdSpendEntry`. `DELETE /api/publicites/:id` exists and uses admin-or-owner rules (admin can act on any row, others only their own). There is **no** update endpoint yet. Filter state holds `dateFrom`/`dateTo` as `YYYY-MM-DD` strings. Tabs are `"source" | "produit"`.
+
+## FEATURE 1 — "Importer" on the Par Source tab (total spend per source)
+Make the existing import dialog **tab-aware**:
+- When opened on **Par Produit** (`tab === "produit"`): keep current behavior (campaign→product mapping, aggregate per product).
+- When opened on **Par Source** (`tab === "source"`): **hide** the campaign→product mapping (ÉTAPE 2) and the "Résumé par produit". Instead:
+  1. Detect the amount column with the existing logic (`Amount spent (USD)`, never Cost-per-results/CPM/CPC).
+  2. **Sum every row** in the file into one total, convert USD→MAD with the Taux field.
+  3. Show a single line: `Total {source} : X DH` (e.g. `Total Facebook Ads : 31804.57 DH`).
+  4. On import, create **one** ad-spend entry with **no product**: `{ source, date, amount: totalDh, magasinId }` (productId null). Reuse `POST /api/publicites` (or the import endpoint with a single aggregated row, productId null).
+- The Source select lets the user pick Facebook Ads / TikTok Ads / etc., so the total is attributed to that source. The "Importer" button stays visible on both tabs.
+
+## FEATURE 2 — Edit an existing entry (after adding)
+**Backend** — add `PATCH /api/publicites/:id` (`requireAuth`) right after the DELETE route:
+- Body: `{ date?, source?, amount?, productId? }` (amount in DH).
+- Ownership: admin/owner can edit any row of the store; others only their own (same rule as DELETE).
+- Convert amount to centimes with `Math.round(Number(amount)*100)`. Add `storage.updateAdSpendEntry(id, storeId, userIdOrUndefined, fields)` that runs `UPDATE ad_spend SET ... WHERE id = $id AND store_id = $storeId [AND user_id = $userId]` and returns the updated row.
+- Return the updated entry; 404 if nothing updated.
+
+**Frontend** — in the ACTION column, add a pencil **Edit** button next to the existing `Trash2`:
+- Opens a modal pre-filled with the row's current values: `date` (YYYY-MM-DD), `source` (select), `amount` in DH (`entry.amount / 100`), and on the Produit tab a product select pre-set to `entry.productId`.
+- Save → `PATCH /api/publicites/:id` → on success invalidate `["/api/publicites"]`, `["/api/stats/filtered"]`, `["/api/media-buyer/profit"]`, toast `Dépense mise à jour`.
+- Validate amount is a number ≥ 0 and date is set before saving.
+
+## FEATURE 3 — Date filter presets in the filter bar
+Add a quick date-range control to the filter bar (a small `Select` labeled `Période`, or a row of buttons) with these options. Selecting one sets `dateFrom`/`dateTo` (format `YYYY-MM-DD`) and applies the filter immediately:
+- **Aujourd'hui** → from = to = today.
+- **7 derniers jours** → from = today − 6 days, to = today.
+- **Ce mois** → from = first day of current month, to = today.
+- **Le mois dernier** → from = first day of previous month, to = last day of previous month.
+- **Tout** → clear both dates.
+Compute these client-side from `new Date()`. The manual `dd/mm/yyyy` date inputs stay; choosing a preset just fills them. If the user edits a date manually after, switch the preset back to a neutral/custom state.
+
+## Testing checklist
+1. On **Par Source**, click Importer → the dialog has no product mapping; it shows `Total Facebook Ads : … DH` (sum of the file); importing creates one source-level entry (no product) and the Par Source total reflects it.
+2. On **Par Produit**, Importer still maps campaigns→products and aggregates per product (unchanged).
+3. Edit a row: the pencil opens a modal pre-filled with its date/source/amount(/product); changing amount or date and saving updates the row and the totals; the table shows the new values.
+4. Edit permissions: a non-admin can edit only their own rows; admin can edit any.
+5. Presets: "Aujourd'hui", "7 derniers jours", "Ce mois", "Le mois dernier" each set the correct range and filter the table; "Tout" clears them.
+6. Amounts stay correct in centimes (e.g. editing to 1500 DH stores 150000).

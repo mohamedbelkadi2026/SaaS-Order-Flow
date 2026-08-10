@@ -1,0 +1,32 @@
+In client/src/pages/team.tsx, in the "Ajouter un nouveau membre" modal, REMOVE the "Type de membre"
+selector (the Agent / Media Buyer tab toggle) so the modal only creates Agents. Keep the separate
+"Gestion Media Buyers" page untouched.
+
+1) Delete this whole block (around lines 736-750):
+
+   {/* Member type selector */}
+   <div className="space-y-2">
+     <Label className="text-sm font-semibold text-foreground">Type de membre</Label>
+     <div className="grid grid-cols-2 gap-2 border rounded-lg p-1 bg-muted/20">
+       <button type="button" onClick={() => setFormData(d => ({ ...d, memberType: 'agent' }))} ...>Agent</button>
+       <button type="button" onClick={() => setFormData(d => ({ ...d, memberType: 'media_buyer' }))} ...>Media Buyer</button>
+     </div>
+   </div>
+
+2) Keep formData.memberType in state but force it to 'agent' permanently (so creation payload and
+   any `memberType === 'media_buyer'` conditionals still work and simply never trigger the buyer path):
+   - In the initial form state it's already `memberType: "agent"` — leave it.
+   - In the modal's reset/open handler, ensure memberType is always set to 'agent' when opening the
+     "Ajouter un membre" dialog (not carried over from an edited media buyer).
+   - Any JSX that renders ONLY when memberType === 'media_buyer' (e.g. the "Code Media Buyer" field)
+     will now never show in this modal — that's intended. Leave the handleCreateAgent logic as-is;
+     since memberType is always 'agent', the media_buyer branch is simply never hit.
+
+3) Do NOT change the edit flow that loads an existing media_buyer (handleEditAgent sets memberType
+   from agent.role). Editing existing media buyers from their own page must keep working. Only the
+   "Ajouter un nouveau membre" creation modal should be Agent-only.
+
+VERIFY:
+- "Ajouter un membre" modal no longer shows the Agent/Media Buyer tabs; it creates an Agent directly.
+- The "Gestion Media Buyers" page and existing media buyers are unaffected.
+- App compiles, no unused-variable errors (keep memberType used by handleCreateAgent).

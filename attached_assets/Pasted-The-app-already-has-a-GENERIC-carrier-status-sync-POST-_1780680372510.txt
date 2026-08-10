@@ -1,0 +1,92 @@
+The app already has a GENERIC carrier status-sync: POST /api/shipping/:provider/sync →
+syncCarrierOrdersInternal → runSyncLoop → trackByCarrier(provider, trackingNumber, account).
+Ameex and Digylog work. Add the same one-click "Synchroniser" for Ozon Express and Express
+Coursier, with the carrier name + sync (RefreshCw) icon, like the Digylog button.
+
+PART A — FRONTEND (client/src/pages/shipping-integrations.tsx)
+The sync handler `syncCarrier(provider, opts)` and `syncingProvider` state already exist.
+Add two handlers next to handleAmeexSync/handleDigylogSync:
+   const ozonSyncPending = syncingProvider === "ozonexpress";
+   const handleOzonSync  = () => syncCarrier("ozonexpress", { successTitle: "✅ Statuts Ozon Express synchronisés", errorTitle: "Erreur de synchronisation Ozon Express" });
+   const ecSyncPending   = syncingProvider === "expresscoursier";
+   const handleEcSync    = () => syncCarrier("expresscoursier", { successTitle: "✅ Statuts Express Coursier synchronisés", errorTitle: "Erreur de synchronisation Express Coursier" });
+
+In the Actions row (where the `providerId === "ameex"` and `providerId === "digylog"` buttons
+are rendered), add two more buttons with the same styling and the RefreshCw/Loader2 icon:
+   {providerId === "ozonexpress" && (
+     <Button size="sm" variant="outline" className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+       onClick={handleOzonSync} disabled={ozonSyncPending} data-testid={`button-ozon-sync-statuses-${acct.id}`}>
+       {ozonSyncPending ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+       Synchroniser Ozon Express
+     </Button>
+   )}
+   {providerId === "expresscoursier" && (
+     <Button size="sm" variant="outline" className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+       onClick={handleEcSync} disabled={ecSyncPending} data-testid={`button-ec-sync-statuses-${acct.id}`}>
+       {ecSyncPending ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+       Synchroniser Express Coursier
+     </Button>
+   )}
+
+PART B — BACKEND (server/services/carrier-service.ts)
+trackByCarrier() currently only handles 'ameex' and 'digylog'. Add two tracking functions and
+wire them in. Model them on the existing trackAmeexShipment (same return shape:
+{ status, rawStatus, rawResponse, error }). Use axios with a 15s timeout.
+
+IMPORTANT: the exact tracking endpoint URL and the carrier status labels below are PLACEHOLDERS —
+replace them with the real values from each carrier's API documentation / dashboard. The auth
+patterns match the existing ship code: Ozon Express uses customerId + apiKey in the URL path;
+Express Coursier uses the token in the URL path.
+
+1. Ozon Express:
+   export const OZON_STATUS_MAP: Record<string,string> = {
+     // TODO: fill real Ozon status labels → internal codes
+     "Livré": "delivered", "Delivered": "delivered",
+     "Retourné": "refused", "Refusé": "refused",
+     "En cours": "in_progress", "Expédié": "expedie", "Reçu": "expedie",
+   };
+   export function mapOzonStatus(raw: string): string | null { return OZON_STATUS_MAP[(raw||'').trim()] ?? null; }
+   export async function trackOzonExpressShipment(trackingNumber: string, apiKey: string, account: any) {
+     const customerId = account?.settings?.ozonExpressCustomerId ?? account?.ozonSettings?.ozonExpressCustomerId;
+     // TODO: confirm real tracking endpoint (e.g. https://api.ozonexpress.ma/customers/{customerId}/{apiKey}/parcel-info)
+     const url = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}/parcel-info`;
+     try {
+       const r = await axios.post(url, { "TRACKING-NUMBER": trackingNumber }, { timeout: 15000, validateStatus: () => true });
+       const body = r.data;
+       // TODO: confirm where the status lives in the response
+       const rawStatus = body?.['PARCEL-INFO']?.STATUS ?? body?.STATUS ?? body?.status ?? null;
+       return { status: rawStatus ? mapOzonStatus(rawStatus) : null, rawStatus, rawResponse: body, error: r.status>=400 ? `HTTP ${r.status}` : undefined };
+     } catch (e:any) { return { status:null, rawStatus:null, rawResponse:null, error: e?.message || 'Ozon track error' }; }
+   }
+
+2. Express Coursier:
+   export const EC_STATUS_MAP: Record<string,string> = {
+     // TODO: fill real Express Coursier status labels → internal codes
+     "delivered":"delivered","livre":"delivered","retour":"refused","refuse":"refused","in_transit":"in_progress",
+   };
+   export function mapEcStatus(raw: string): string | null { return EC_STATUS_MAP[(raw||'').toLowerCase().trim()] ?? null; }
+   export async function trackExpressCoursierShipment(trackingNumber: string, apiKey: string) {
+     // TODO: confirm real tracking endpoint (token in path)
+     const url = `https://expresscoursier.ma/v1.0/track/${encodeURIComponent(apiKey.trim())}/${encodeURIComponent(trackingNumber)}`;
+     try {
+       const r = await axios.get(url, { timeout: 15000, validateStatus: () => true });
+       const body = r.data;
+       const rawStatus = body?.status ?? body?.data?.status ?? body?.tracking?.status ?? null;
+       return { status: rawStatus ? mapEcStatus(rawStatus) : null, rawStatus, rawResponse: body, error: r.status>=400 ? `HTTP ${r.status}` : undefined };
+     } catch (e:any) { return { status:null, rawStatus:null, rawResponse:null, error: e?.message || 'EC track error' }; }
+   }
+
+3. In trackByCarrier(), before the final "not implemented" return, add:
+     if (p === 'ozonexpress')     { const r = await trackOzonExpressShipment(trackingNumber, apiKey, account); return { status:r.status, rawStatus:r.rawStatus, error:r.error }; }
+     if (p === 'expresscoursier') { const r = await trackExpressCoursierShipment(trackingNumber, apiKey);        return { status:r.status, rawStatus:r.rawStatus, error:r.error }; }
+
+VERIFY:
+- Buttons "Synchroniser Ozon Express" / "Synchroniser Express Coursier" appear (with the sync
+  icon) on those carrier cards, like Digylog/Ameex.
+- Clicking calls POST /api/shipping/ozonexpress/sync (resp. expresscoursier), which pulls live
+  statuses for shipped orders with a tracking number and updates them; the toast shows
+  X vérifiées / Y mises à jour, and the order lists refresh.
+- App compiles.
+- NOTE: until the TODO endpoint URLs + status maps are set to each carrier's real API values,
+  the sync will run but may return "no status"/errors — those two carriers' tracking API specs
+  must be filled in.

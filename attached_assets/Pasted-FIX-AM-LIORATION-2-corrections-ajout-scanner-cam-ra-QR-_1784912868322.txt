@@ -1,0 +1,184 @@
+FIX / AMÉLIORATION — 2 corrections + ajout scanner caméra QR réel.
+
+────────────────────────────────────────────────────────────────────────────
+PARTIE A — Filtre "Retours" : n'afficher QUE les statuts qui contiennent
+réellement "retour", pas Refusé/Annulé
+
+CAUSE
+Le filtre `retour_group` (server/storage.ts, ~ligne 712) utilise une liste
+figée : `['retourné', 'Retour Recu', 'En Cours De Retour']` — elle ne
+contient ni "Demande retour", ni "Prêt pour retour", ni les statuts bruts
+remontés par certains transporteurs (ex: "En cours d'expédition au hub de
+retour"). Et les onglets "Non confirmés"/"Confirmés" ajoutés au fix
+précédent utilisaient `RETURN_STATUSES` qui, lui, mélange à tort
+refused/Annulé avec les vrais statuts de retour.
+
+FIX — Remplacer partout la comparaison par liste figée par une règle simple
+et robuste : **le statut contient le mot "retour" (insensible à la casse)**.
+Ça couvre automatiquement tout nom de statut retour actuel ou futur
+(quel que soit le transporteur), et exclut naturellement Refusé/Annulé.
+
+1) server/storage.ts, remplacer le bloc `retour_group` (~ligne 712-716) :
+```ts
+} else if (filters.status === 'retour_group') {
+  conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%'`);
+} else if (filters.status === 'retour_en_route') {
+  conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%' AND LOWER(${orders.status}) NOT IN ('retourné', 'retour recu')`);
+} else if (filters.status === 'retour_recu') {
+  conditions.push(inArray(orders.status, ['Retour Recu', 'retourné']));
+}
+```
+
+2) Ajouter un helper réutilisable en haut de server/storage.ts (ou dans un
+fichier utils partagé s'il y en a un) :
+```ts
+export function isReturnStatus(status: string | null | undefined): boolean {
+  return !!status && status.toLowerCase().includes('retour');
+}
+```
+
+3) Dans `confirmReturnReceipt` (ajouté au fix précédent), remplacer :
+```ts
+if (!this.RETURN_STATUSES.has(order.status)) {
+```
+par :
+```ts
+if (!isReturnStatus(order.status)) {
+```
+
+4) Endpoint `/api/orders/confirm-return-by-code` : aucun changement
+nécessaire, il délègue déjà à `confirmReturnReceipt`.
+
+────────────────────────────────────────────────────────────────────────────
+PARTIE B — Séparer le comportement stock : Refusé/Annulé restent
+AUTOMATIQUES (pas de scan requis), seuls les vrais statuts "retour" sont
+gatés par confirmation physique
+
+RAPPEL du contexte (fix précédent) : RULE 2 dans storage.ts a été VIDÉE de
+toute logique de stock (juste un commentaire). C'était trop large — Refusé
+et Annulé n'impliquent pas un colis qui revient physiquement (ce sont des
+annulations/refus administratifs), donc PAS besoin de scan pour eux : leur
+stock doit continuer à se restaurer automatiquement comme avant. Seuls les
+VRAIS statuts de retour (colis qui revient physiquement) doivent attendre la
+confirmation scan.
+
+FIX — Réintroduire dans RULE 2 la restauration automatique, mais SEULEMENT
+pour refused/Annulé* (pas pour les statuts contenant "retour") :
+
+```ts
+// ── RULE 2a: Refus/Annulation → restauration AUTOMATIQUE (pas de colis qui
+// revient physiquement, donc pas de scan requis) ──────────────────────────
+const AUTO_RESTORE_STATUSES = new Set(['refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']);
+if ((prevStatus === 'delivered' || this.CONFIRMED_FOR_STOCK.has(prevStatus)) && AUTO_RESTORE_STATUSES.has(status)) {
+  for (const item of items) {
+    if (!item.productId) continue;
+    const qty = Number(item.quantity);
+    await tx.update(products).set({ stock: sql`${products.stock} + ${qty}` }).where(eq(products.id, item.productId));
+    await tx.insert(stockLogs).values({
+      storeId: currentOrder.storeId!, productId: item.productId, orderId: id,
+      changeAmount: qty, reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
+    });
+    await tx.insert(stockMovements).values({
+      storeId: currentOrder.storeId!, productId: item.productId, type: 'returned', quantity: qty,
+      orderId: id, userId: actorId ?? null, reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
+    });
+  }
+}
+// ── RULE 2b: Vrai retour physique (statut contenant "retour") → PAS de
+// restauration automatique. Attend confirmReturnReceipt() (scan/tracking).
+// Rien à faire ici volontairement.
+```
+
+────────────────────────────────────────────────────────────────────────────
+PARTIE C — Scanner caméra QR/code-barres réel (pas juste un champ texte)
+
+Le champ texte actuel reste utile pour les douchettes physiques (elles
+tapent comme un clavier), mais il faut AUSSI un vrai scanner caméra pour
+utilisation au téléphone/tablette sans matériel dédié.
+
+1) Installer la librairie légère `html5-qrcode` :
+```bash
+npm install html5-qrcode
+```
+
+2) Dans le composant `ReturnScanner` (ajouté au fix précédent), ajouter un
+bouton "📷 Scanner avec la caméra" qui ouvre une modale avec le flux caméra
+live :
+
+```tsx
+import { Html5Qrcode } from "html5-qrcode";
+
+function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
+  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const elementId = "qr-reader-region";
+
+  useEffect(() => {
+    const scanner = new Html5Qrcode(elementId);
+    scannerRef.current = scanner;
+    scanner.start(
+      { facingMode: "environment" }, // caméra arrière par défaut
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      (decodedText) => {
+        onScan(decodedText);
+        scanner.stop().catch(() => {});
+      },
+      () => { /* erreurs de frame ignorées silencieusement, normal en continu */ }
+    ).catch((err) => {
+      console.error("Camera scanner failed to start:", err);
+    });
+    return () => { scanner.stop().catch(() => {}); scanner.clear(); };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80">
+      <div id={elementId} className="w-[300px] h-[300px] bg-white rounded-lg overflow-hidden" />
+      <button onClick={onClose} className="mt-4 rounded bg-white px-4 py-2 text-sm font-medium">
+        Fermer
+      </button>
+    </div>
+  );
+}
+```
+
+3) Dans `ReturnScanner`, ajouter l'état et le bouton pour l'ouvrir :
+```tsx
+const [showCamera, setShowCamera] = useState(false);
+
+// ... dans le JSX, à côté de l'input existant :
+<button type="button" onClick={() => setShowCamera(true)} className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white">
+  📷 Scanner avec la caméra
+</button>
+
+{showCamera && (
+  <CameraScanner
+    onScan={(decoded) => {
+      setShowCamera(false);
+      setCode(decoded);
+      // Soumettre directement le code scanné, sans attendre un submit manuel.
+      handleSubmit({ preventDefault: () => {} } as any);
+    }}
+    onClose={() => setShowCamera(false)}
+  />
+)}
+```
+
+Note : la caméra nécessite HTTPS (déjà le cas sur tajergrow.com) et
+l'autorisation du navigateur — au premier clic, le navigateur demandera la
+permission caméra à l'utilisateur.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+npm install html5-qrcode
+git add -A && git commit -m "Fix return status filtering (substring match), keep auto stock restore for refused/annulé, add real camera QR scanner" && git push
+
+VÉRIFICATION
+1. Page Retours → seuls les statuts contenant "retour" apparaissent
+   (Retourné, Demande retour, Prêt pour retour, hub de retour...) — PLUS de
+   Refusé/Annulé dans cette liste.
+2. Faire passer une commande confirmée à "Refusé" → stock revient
+   AUTOMATIQUEMENT (comme avant, pas besoin de scanner).
+3. Faire passer une commande confirmée à "Retourné" (ou tout statut
+   contenant "retour") → stock NE bouge PAS tant que non confirmé/scanné.
+4. Cliquer "📷 Scanner avec la caméra" → la caméra s'ouvre, scanner un QR/
+   code-barres contenant un trackNumber/orderNumber valide → confirmation
+   automatique, toast succès, stock mis à jour.

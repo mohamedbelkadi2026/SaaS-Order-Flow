@@ -1,0 +1,35 @@
+Fix the manual "Attacher Tracking (package_id)" feature so it sets the CORRECT carrier for ALL 
+carriers (not hardcoded to Express Coursier). Bug: pasting an Ameex code (e.g. 
+NDR0726B27347IP9738898) saves the order with the Express Coursier carrier/logo instead of Ameex.
+
+BEHAVIOR (option C):
+1) When the attach box opens for an order:
+   - If the order ALREADY has a carrier (shippingProvider/carrierName set), use THAT carrier 
+     automatically — show it (read-only or as the preselected value) and do NOT change it.
+   - If the order has NO carrier yet, show a REQUIRED carrier dropdown listing the store's 
+     CONNECTED carrier accounts (Ameex, Express Coursier, Ozon, Digylog, etc. — only those the 
+     store actually has connected). The user picks one. Block "Attacher" until a carrier is 
+     chosen in this case.
+2) On attach (PATCH endpoint), REMOVE any hardcoded "expresscoursier" default. Set:
+   - trackNumber = the pasted code
+   - shippingProvider / carrierName = the resolved carrier (existing order carrier, else the 
+     user-selected one)
+   - status = keep current, or 'Attente De Ramassage' if it was still 'confirme'
+   Authorize by the existing Super-Admin per-user permission (can_edit / attach), tenant-checked.
+3) The Suivi CODE column + carrier LOGO must reflect the correct carrier after attach.
+4) Webhook routing must follow the assigned carrier: an Ameex-attached order is matched/updated 
+   by the Ameex webhook + AMEEX_STATUS_MAP; an EC one by EC; etc. The attached carrier drives 
+   which status map applies.
+5) The attach box works for ALL connected carriers, not EC-only.
+
+Also FIX the already-wrongly-attached orders: any order that was manually attached and forced to 
+"expresscoursier" but whose real code belongs to another carrier — re-derive the carrier from 
+the tracking code prefix/source where possible (e.g. Ameex codes like NDR/CAS/MRK/TGR... + the 
+recent Ameex backfill), and correct shippingProvider/carrierName. Dry-run first: list which 
+orders would be corrected (order, code, wrong carrier -> correct carrier), then apply.
+
+VERIFY: attaching an Ameex code shows the Ameex logo and its Ameex webhook updates the status; 
+attaching an EC code shows EC; the dropdown only lists connected carriers; no hardcoded carrier 
+remains.
+
+Deploy to main. Paste me the dry-run list of orders whose carrier gets corrected.

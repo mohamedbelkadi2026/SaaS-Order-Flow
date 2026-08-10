@@ -130,11 +130,13 @@ async function syncOneSpreadsheet(conn: any) {
                (p as any).sku?.toLowerCase() === product.toLowerCase()
       );
 
-      const orderItems = matched
-        ? [{ productId: matched.id, productName: matched.name, quantity: qty,
-             unitPrice: matched.price ?? totalPrice, totalPrice: (matched.price ?? totalPrice) * qty }]
-        : [{ productId: null as any, productName: product, quantity: qty,
-             unitPrice: totalPrice, totalPrice: totalPrice * qty }];
+      const orderItems = [{
+        productId:      matched ? matched.id : (null as any),
+        rawProductName: product,
+        quantity:       qty,
+        price:          matched ? (matched.price ?? totalPrice) : totalPrice,
+        orderId:        0,
+      }];
 
       try {
         const order = await storage.createOrder({
@@ -145,6 +147,7 @@ async function syncOneSpreadsheet(conn: any) {
           customerPhone:   phone,
           customerCity:    city,
           customerAddress: address,
+          rawProductName:  product,
           status:          "nouveau",
           totalPrice,
           productCost:     matched ? (matched.costPrice ?? 0) : 0,

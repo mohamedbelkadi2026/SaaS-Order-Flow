@@ -1,0 +1,102 @@
+FIX — Ville et adresse manquantes sur les commandes YouCan importées
+("Champs manquants: ville, adresse"), malgré des données bien remplies côté
+client sur YouCan.
+
+CAUSE 1 (certaine) — `customerAddress` n'est jamais mappé
+Dans le handler webhook (ÉTAPE 3 de l'intégration YouCan), la commande est
+créée avec `customerCity` mais SANS `customerAddress`, alors que la colonne
+`customer_address` existe bien dans `orders` (shared/schema.ts). Il faut
+l'ajouter à l'objet passé à `storage.createOrder(...)`.
+
+CAUSE 2 (à confirmer par les logs) — `customerCity` reste vide
+Le code suppose que l'adresse complète se trouve à
+`fullOrder.shipping.address.city` ou `fullOrder.customer.address.city` dans
+la réponse de `GET /orders/{id}?include=customer,shipping`. Si la structure
+réelle de la réponse YouCan diffère (nom de champ différent, structure
+imbriquée différente), l'extraction échoue silencieusement et
+`customerCity` reste une chaîne vide.
+
+────────────────────────────────────────────────────────────────────────────
+FIX — server/routes.ts, dans le handler POST /api/webhooks/youcan/order/:webhookKey
+
+Remplacer le bloc de récupération de l'adresse :
+```ts
+let customerCity = "";
+const accessToken = decrypt(integration.oauthAccessToken || "");
+if (accessToken && payload.id) {
+  try {
+    const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const fullOrder = await fullOrderResp.json() as any;
+    customerCity = fullOrder?.shipping?.address?.city || fullOrder?.customer?.address?.city || "";
+  } catch (fetchErr: any) {
+    console.error("[YOUCAN-WEBHOOK] Failed to fetch full order for address:", fetchErr.message);
+  }
+}
+```
+
+par (log complet de la réponse pour diagnostic + extraction plus large +
+mapping de l'adresse) :
+
+```ts
+let customerCity = "";
+let customerAddress = "";
+const accessToken = decrypt(integration.oauthAccessToken || "");
+if (accessToken && payload.id) {
+  try {
+    const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const fullOrder = await fullOrderResp.json() as any;
+
+    // LOG TEMPORAIRE — à garder le temps de confirmer la vraie structure,
+    // supprimable une fois que ville/adresse remontent correctement.
+    console.log(`[YOUCAN-WEBHOOK] Full order response for order ${payload.id}:`, JSON.stringify(fullOrder, null, 2));
+
+    const addr = fullOrder?.shipping?.address
+      || fullOrder?.customer?.address
+      || (Array.isArray(fullOrder?.shipping?.address) ? fullOrder.shipping.address[0] : null)
+      || (Array.isArray(fullOrder?.addresses) ? fullOrder.addresses[0] : null)
+      || null;
+
+    customerCity = addr?.city || addr?.city_name || fullOrder?.city || "";
+    customerAddress = [addr?.address, addr?.address_line_1, addr?.street, addr?.line1]
+      .filter(Boolean)[0] || addr?.full_address || "";
+
+    if (!customerCity) console.warn(`[YOUCAN-WEBHOOK] Could not extract city for order ${payload.id} — check the logged response above to find the right field path`);
+  } catch (fetchErr: any) {
+    console.error("[YOUCAN-WEBHOOK] Failed to fetch full order for address:", fetchErr.message);
+  }
+}
+```
+
+Puis, plus bas dans la même fonction, ajouter `customerAddress` à l'objet
+passé à `storage.createOrder(...)` :
+```ts
+const order = await storage.createOrder({
+  storeId,
+  orderNumber: `YC-${orderRef}`,
+  customerName,
+  customerPhone,
+  customerCity,
+  customerAddress,   // ← AJOUTÉ
+  totalPrice: totalPriceCents,
+  ...
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add customerAddress mapping + log full YouCan order response for city/address diagnosis" && git push
+
+VÉRIFICATION
+1. Passer une nouvelle commande test sur YouCan avec ville + adresse bien
+   remplies.
+2. Dans les logs Railway, chercher la ligne `[YOUCAN-WEBHOOK] Full order
+   response for order ...` — c'est le JSON COMPLET renvoyé par l'API YouCan
+   pour cette commande.
+3. Copier-coller-moi ce JSON complet (le bloc entier après cette ligne de
+   log) — je vais y repérer exactement où se trouvent la ville et l'adresse
+   dans CETTE réponse réelle, et te donner le chemin exact à utiliser à la
+   place des suppositions actuelles si l'extraction automatique ne les a
+   toujours pas trouvées.

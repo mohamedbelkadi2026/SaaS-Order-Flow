@@ -1,0 +1,56 @@
+The dashboard "EXPÉDIÉS" (36) does not match the carrier's own count (Ozonexpress: 41) 
+for the same month. Make the platform's shipping/delivery stats reconcile with the 
+carrier.
+
+ROOT CAUSE (already diagnosed — do NOT re-investigate):
+(a) /api/stats/filtered filters ALL orders by createdAt (order creation date). So 
+"EXPÉDIÉS" counts orders CREATED in the period that are shipped. The carrier counts by 
+SHIP date. Orders created last month but shipped this month appear in the carrier's 
+count but not the platform's → the gap.
+(b) The orders table already has a `pickupDate` column (schema line ~147) and 
+getFilteredOrders already supports dateType === 'pickupDate' (storage.ts ~682), BUT 
+pickupDate is NEVER written anywhere — it is always NULL. It was a half-built feature.
+
+FIX:
+1) POPULATE pickupDate = ship timestamp at every point an order becomes shipped:
+   - server/routes.ts bulk-ship post-ship update (the storage.updateOrder call that sets 
+     trackNumber + status 'Attente De Ramassage', ~line 1706): also set 
+     pickupDate: new Date() (only if not already set).
+   - server/routes.ts processCarrierWebhook backfill (~line 3720, where it sets 
+     trackNumber + shippingProvider + status on first webhook): set pickupDate if empty.
+   - Any other path that transitions an order into a shipped status: set pickupDate if 
+     empty. Never overwrite an existing pickupDate.
+
+2) BACKFILL existing shipped orders (one-time script, DRY-RUN first, --apply to write):
+   For every order that is shipped (has trackNumber OR status in the shipped set) and 
+   pickupDate IS NULL, set pickupDate = best available ship time in this priority: 
+   lastActionAt, else the timestamp of its earliest "shipping_sent success" integration 
+   log for that order, else updatedAt. Print a dry-run summary (how many would be set) 
+   before applying.
+
+3) MAKE THE DASHBOARD RECONCILE BY SHIP DATE:
+   Add a dateType query param to /api/stats/filtered: 'creation' (default) or 'shipping'.
+   - When dateType === 'shipping', filter the SHIPPING/DELIVERY cohort 
+     (totalShipped, delivered, pending/en attente, refused, carrier performance, 
+     deliveryRate) by pickupDate within [dateFrom, dateTo] instead of createdAt, and 
+     only include orders whose pickupDate is set and in range.
+   - Keep 'creation' behavior exactly as-is (lead cohort by createdAt).
+   Wire a "Type de date" selector in the dashboard filter bar (client/src/pages/
+   dashboard.tsx) with options "Date de création" and "Date d'expédition", mirroring the 
+   one already on the orders page, and pass dateType through to the stats query.
+
+VERIFY:
+- With "Date d'expédition" selected for the current month, EXPÉDIÉS equals (or is within 
+  the expected residual of) the Ozonexpress dashboard count for the same month.
+- With "Date de création" selected, numbers match today's lead-based behavior.
+- pickupDate is set for newly shipped orders and does not get overwritten on later 
+  status updates.
+
+IMPORTANT NOTE (state this back to me, do not "fix" it):
+Any residual difference after this is expected and NOT a bug: orders shipped DIRECTLY 
+inside Ozonexpress that never went through the platform will be counted by the carrier 
+but cannot exist in the platform. Report how many platform orders matched vs the 
+carrier total so the remaining gap is explained, not hidden.
+
+Do the migration for any schema access needed, then run the backfill DRY-RUN and paste 
+me the summary. Commit and push code changes to main so Railway auto-redeploys.

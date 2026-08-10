@@ -1,0 +1,31 @@
+Express Coursier sync already pulls STATUS correctly (orders show "Livré"), but it never fills
+"Frais de livraison". The track function reads only `status`, not the fee. Add fee capture WITHOUT
+touching status logic. shippingCost is stored in CENTIMES (UI divides by 100).
+
+1) server/services/carrier-service.ts — trackExpressCoursierShipment:
+   - Right after the axios call, log the FULL response so we can confirm the fee field:
+       console.log(`[EC-TRACK-FULL] ${trackingNumber}: ${JSON.stringify(r.data)}`);
+   - Extend the return type to include `fee: number | null`. Extract the fee from the common field
+     names (only if present), checking nested shapes too:
+       const b = r.data, d = b?.data ?? b, t = b?.tracking ?? d;
+       const feeRaw = d?.delivery_price ?? d?.deliveryPrice ?? d?.price ?? d?.fee ?? d?.frais
+                    ?? d?.montant ?? d?.tarif ?? d?.shipping_price ?? t?.delivery_price ?? t?.price ?? null;
+       const fee = Number(feeRaw);
+     Return `fee: Number.isFinite(fee) && fee > 0 ? fee : null` alongside status/rawStatus/rawResponse.
+
+2) server/routes.ts — runSyncLoop, the Express Coursier path that applies the track result:
+   after the status is applied for each order, also set the fee when available and missing:
+       if (result.fee && (!order.shippingCost || order.shippingCost === 0)) {
+         await storage.updateOrder(order.id, { shippingCost: Math.round(result.fee * 100) });
+         console.log(`[EC-FEE] #${order.orderNumber} fee=${result.fee} → ${Math.round(result.fee*100)} centimes`);
+       }
+   (If EC already returns the fee in centimes rather than DH, store result.fee directly instead of
+   ×100 — decide after seeing [EC-TRACK-FULL].)
+
+3) Do NOT infer status from the fee. Status keeps coming from the EC tracking status field only.
+
+VERIFY:
+- Click "Synchroniser Express Coursier": delivered CL-EXP-... orders get their Frais de livraison
+  filled; statuses stay as the API reports.
+- The logs print [EC-TRACK-FULL] lines.
+- App compiles.

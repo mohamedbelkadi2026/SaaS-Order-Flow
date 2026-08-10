@@ -1,0 +1,43 @@
+CRITICAL BUG in the Ameex replay: it backfilled 32 DIFFERENT tracking CODEs all onto the SAME 
+order #1532:
+  Backfilled CODE=KENCF6... onto #1532 (was AMEEX-PENDING-TJG-1532)
+  Backfilled CODE=CAS4664... onto #1532 (was AMEEX-PENDING-TJG-1532)
+  ... 32 different codes, all onto #1532.
+This is wrong — each CODE belongs to a DIFFERENT order. The phone-fallback matched them all to 
+one order, almost certainly because it matched on the DRIVER phone 
+(payload.current_driver.phone = "0666666666") which is identical for every event. Fix urgently.
+
+STEP 1 — UNDO THE BAD BACKFILL (dry-run first, then apply):
+ - Find every order where trackNumber no longer matches its AMEEX-PENDING-<orderNumber> pattern 
+   because of this run, and restore the placeholder AMEEX-PENDING-TJG-<orderNumber> (the 
+   pattern encodes the order number, so it's recoverable). Specifically: order #1532 got 32 
+   codes — revert it to AMEEX-PENDING-TJG-1532. Report how many orders were corrupted and 
+   restored.
+
+STEP 2 — FIX THE MATCHING (never match on driver phone):
+ - The correct link is by ORDER NUMBER, which is embedded in the placeholder itself: 
+   AMEEX-PENDING-TJG-<orderNumber>. When we ship to Ameex we send internal_id/order number; 
+   Ameex's payload.order_id is Ameex's OWN code, NOT ours. So DO NOT match Ameex's 
+   payload.order_id to our order number.
+ - Correct approach: we must know which Ameex CODE corresponds to which of OUR orders. Check the 
+   Ameex SHIP/CREATE response — it should return, per package, the Ameex code paired with the 
+   internal_id we sent. Store that real Ameex code as trackNumber at SHIP time (replace the 
+   AMEEX-PENDING placeholder then). If the ship response doesn't return it, we cannot reliably 
+   match webhooks to orders by code alone.
+ - NEVER match by payload.current_driver.phone (that's the driver, shared across all orders). 
+   Only match by (a) trackNumber == payload.order_id once real codes are stored, or (b) the 
+   CUSTOMER phone if Ameex includes it in the payload (it does not appear to — confirm).
+ - Until real codes are stored at ship time, the safe behavior is: log webhook_no_match (do NOT 
+   guess/attach). Do not attach a code to an order unless the match is unambiguous.
+
+STEP 3 — SHIP-TIME FIX (the real solution):
+ - Inspect the Ameex batch/create ship response. It must map each created package's Ameex code 
+   to the internal_id/order we sent. Store that code as order.trackNumber immediately on ship, 
+   so future webhooks match by trackNumber == payload.order_id exactly. Paste me the ship 
+   response shape.
+
+VERIFY: after restore, #1532 has its single placeholder back; no order has multiple/foreign 
+codes; a real webhook matches exactly one order by its real Ameex code. 
+
+Deploy to main. First run STEP 1 as DRY-RUN and paste the count of corrupted orders before 
+applying.

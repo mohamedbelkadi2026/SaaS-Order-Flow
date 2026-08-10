@@ -1,0 +1,80 @@
+FIX — GET /api/webhooks/carrier/:storeId/:carrierName (ex: appelée par
+Vitips Express, probablement un "ping" de vérification d'URL sans body)
+plante avec 500 "Cannot read properties of undefined (reading 'slice')".
+
+CAUSE
+server/routes.ts, fonction `processCarrierWebhook` (~ligne 4140-4152) :
+```ts
+async function processCarrierWebhook(
+  storeId: number,
+  carrierNameRaw: string,
+  body: Record<string, any>,
+): Promise<...> {
+  const rawPayload = JSON.stringify(body);
+  ...
+  console.log(`[WEBHOOK-INCOMING]: Received from ${carrierName} (store ${storeId}) — keys: ${Object.keys(body).join(', ')}`);
+```
+Quand la requête arrive sans body JSON (ex: une requête GET, ou un POST
+sans Content-Type application/json — ce qui semble être le cas ici), `body`
+vaut `undefined`. `JSON.stringify(undefined)` renvoie la VALEUR `undefined`
+(pas la chaîne "undefined"), donc `rawPayload` devient `undefined` — et
+`rawPayload.slice(0, 1000)` plus loin (~lignes 4427, 4470, 4480) plante.
+`Object.keys(body)` juste après aurait aussi planté (`Cannot convert
+undefined to object`) si le code n'avait pas crashé avant sur `.slice`.
+
+FIX — Rendre les deux points défensifs, tout au début de la fonction :
+```ts
+async function processCarrierWebhook(
+  storeId: number,
+  carrierNameRaw: string,
+  body: Record<string, any>,
+): Promise<{ tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string }> {
+  body = body || {};   // ← AJOUTÉ : ne jamais opérer sur undefined (ex: requête GET/ping sans body)
+  const rawPayload = JSON.stringify(body) || '{}';   // ← AJOUTÉ : filet de sécurité supplémentaire
+  const carrierName = CARRIER_NAME_ALIASES[(carrierNameRaw || '').toLowerCase().trim()] || carrierNameRaw;
+  if (carrierName !== carrierNameRaw) {
+    console.log(`[WEBHOOK-ALIAS]: carrierName "${carrierNameRaw}" normalized to "${carrierName}"`);
+  }
+
+  console.log(`[WEBHOOK-INCOMING]: Received from ${carrierName} (store ${storeId}) — keys: ${Object.keys(body).join(', ')}`);
+  console.log(`[WEBHOOK-INCOMING]: Full payload: ${rawPayload}`);
+```
+
+Et dans le handler de route lui-même (~ligne 4791-4795), même chose côté
+`req.body` avant de logger, pour couper le problème à la source :
+```ts
+app.all("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
+  const safeBody = req.body || {};   // ← AJOUTÉ
+  console.log('--- INCOMING WEBHOOK DATA ---');
+  console.log(JSON.stringify(safeBody, null, 2));
+  console.log(`[DEBUG-WEBHOOK]: Params — storeId=${req.params.storeId} carrier=${req.params.carrierName}`);
+  ...
+  // Utiliser `safeBody` à la place de `req.body` dans tout le reste du handler
+  // (notamment l'appel à processCarrierWebhook(storeId, carrierName, safeBody)).
+```
+
+Chercher dans ce handler l'appel `processCarrierWebhook(storeId, carrierName, req.body)` et le remplacer par
+`processCarrierWebhook(storeId, carrierName, safeBody)`.
+
+Optionnel mais utile : si la méthode HTTP est GET (probable ping de
+vérification, pas un vrai événement de suivi), répondre tôt avec un simple
+200 sans traiter quoi que ce soit, pour économiser du travail inutile et
+éviter tout autre effet de bord :
+```ts
+if (req.method === "GET") {
+  return res.status(200).json({ status: "ok", message: "Webhook endpoint alive" });
+}
+```
+(à placer juste après le calcul de `storeId`/`carrierName`, avant tout
+traitement du body).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix crash on carrier webhook when request has no body (e.g. GET ping)" && git push
+
+VÉRIFICATION
+1. Les logs ne doivent plus montrer `[SERVER_ERROR] ... Cannot read properties of undefined (reading 'slice')` pour ce endpoint.
+2. Une requête GET vers `/api/webhooks/carrier/71/vitipsexpress` doit
+   répondre 200 proprement (pas 500).
+3. Les vrais webhooks Vitips (avec un vrai body JSON, ex: mise à jour de
+   statut) doivent continuer à être traités normalement, sans régression.

@@ -1,0 +1,51 @@
+Express Coursier status updates never apply — neither via "Synchroniser Express 
+Coursier" (pull) nor via the incoming webhook (push). Diagnosed causes below; harden 
+both paths and surface the real error clearly.
+
+FINDINGS (already diagnosed — do NOT re-investigate):
+A) PULL/SYNC: trackExpressCoursierShipment() in server/services/carrier-service.ts calls
+   GET https://expresscoursier.ma/v1.0/track/{apiKey}/{trackingNumber}
+   and receives an HTML "404 Not Found" page for valid package_ids like 
+   "CL-EXP-2607041205-164X55103261" (see [EC-TRACK-FULL] logs and the "6 erreurs HTTP 
+   404" toast). So the track endpoint URL/format is wrong and no status comes back.
+B) PUSH/WEBHOOK: the carrier POSTs to /api/webhooks/carrier/64/olivraison with a payload 
+   that yields empty tracking AND empty order number in processCarrierWebhook() 
+   (server/routes.ts), so it cannot match any order (tracked:false). The carrier name 
+   arrives as "olivraison", not "expresscoursier".
+
+TASKS:
+1) EC TRACK — make the failure explicit and easy to fix:
+   - In trackExpressCoursierShipment, detect when the response is NOT JSON (HTML string, 
+     or r.status === 404): return a clear structured error like 
+     { error: "EC track endpoint returned HTTP <code> / non-JSON — endpoint likely 
+     wrong", rawResponse: <first 300 chars> } instead of silently yielding status null.
+   - Log the EXACT request URL (with the api key masked) on every call so the correct 
+     endpoint can be verified by hand.
+   - Make the endpoint configurable: read the track URL template from the carrier 
+     account settings (e.g. settings.ecTrackUrlTemplate with placeholders {apiKey}, 
+     {tracking}, {storeId}) and fall back to the current default. Do NOT invent a new 
+     URL — leave a clearly-marked TODO where the correct endpoint goes once EC docs are 
+     provided.
+   - In the "Synchroniser" handler, when a track call returns the non-JSON/404 error, 
+     count it and include the failing tracking number + HTTP code in the error toast 
+     (it already shows "6 erreurs HTTP 404" — also log each failing tracking number).
+
+2) WEBHOOK — capture and match reliably:
+   - Ensure the "[WEBHOOK-INCOMING] Full payload" line always logs for carrier 
+     "olivraison"/"expresscoursier" (it should already) so the real field names are 
+     visible.
+   - Alias the carrier name: treat incoming carrierName "olivraison" as "expresscoursier" 
+     (add a normalization map) so its statuses map through the EC status map (mapEcStatus).
+   - Extend the tracking/order identifier extraction in processCarrierWebhook to also 
+     read nested/alternate keys (e.g. body.data?.tracking_number, body.package_id, 
+     body.data?.package_id, body.internal_id, body.data?.internal_id, body.colis?.code). 
+     internal_id is what we send to EC as our order number on ship — match on it too 
+     (order_number fallback).
+   - If STILL no identifier is present in the payload, log a one-line WARN listing all 
+     top-level payload keys, so we can see exactly what the carrier sends.
+
+3) Do NOT change other carriers (Digylog, Ozon, Ameex). 
+
+Commit and push to main so Railway auto-redeploys, and paste me: (a) one full 
+[WEBHOOK-INCOMING] payload for olivraison, and (b) one [EC-TRACK-FULL] line with the 
+masked request URL, so we can confirm the correct EC endpoint.

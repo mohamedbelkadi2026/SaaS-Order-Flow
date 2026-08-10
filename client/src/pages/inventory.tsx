@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useProducts, useCreateProduct, useUpdateProduct, useDeleteProduct, useInventoryStats } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
@@ -13,10 +13,9 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Wrench, Loader2 } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth } from "@/hooks/use-auth";
 
 interface VariantForm {
   name: string;
@@ -26,66 +25,650 @@ interface VariantForm {
   stock: string;
 }
 
+/* ── Smart Cleanup Modal ──────────────────────────────────────────────────── */
+function CleanupModal({
+  open, onClose, cleanupType, setCleanupType, cleanupSelectedIds, setCleanupSelectedIds, onBulkDelete,
+}: {
+  open: boolean;
+  onClose: () => void;
+  cleanupType: "no_orders" | "duplicates" | "archived";
+  setCleanupType: (t: "no_orders" | "duplicates" | "archived") => void;
+  cleanupSelectedIds: Set<number>;
+  setCleanupSelectedIds: (s: Set<number>) => void;
+  onBulkDelete: (ids: number[], force: boolean) => Promise<void>;
+}) {
+  const { data, isLoading, refetch } = useQuery<{ type: string; count: number; products: any[] }>({
+    queryKey: ["/api/products/cleanup-suggestions", cleanupType],
+    queryFn: () => fetch(`/api/products/cleanup-suggestions?type=${cleanupType}`, { credentials: "include" }).then(r => r.json()),
+    enabled: open,
+  });
+  const { toast } = useToast();
+  const [running, setRunning] = useState(false);
+
+  const prods = data?.products ?? [];
+  const allChecked = cleanupSelectedIds.size === prods.length && prods.length > 0;
+
+  const toggleOne = (id: number) => {
+    setCleanupSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const toggleAll = () => {
+    setCleanupSelectedIds(allChecked ? new Set() : new Set(prods.map((p: any) => p.id)));
+  };
+
+  const handleRun = async (force: boolean) => {
+    if (cleanupSelectedIds.size === 0) {
+      toast({ title: "Aucun produit sélectionné", variant: "destructive" }); return;
+    }
+    setRunning(true);
+    await onBulkDelete(Array.from(cleanupSelectedIds), force);
+    setCleanupSelectedIds(new Set());
+    refetch();
+    setRunning(false);
+  };
+
+  const typeLabels: Record<string, string> = {
+    no_orders: "Sans commandes",
+    duplicates: "Doublons",
+    archived: "Archivés",
+  };
+  const typeDesc: Record<string, string> = {
+    no_orders: "Produits qui n'ont jamais été commandés — sans risque de suppression.",
+    duplicates: "Produits avec le même nom normalisé — gardez le plus récent, supprimez les copies.",
+    archived: "Produits déjà archivés (liés à des commandes) — vous pouvez les supprimer définitivement si nécessaire.",
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Filter className="w-5 h-5 text-orange-500" />
+            Nettoyage intelligent de l'inventaire
+          </DialogTitle>
+          <DialogDescription>
+            Identifiez et supprimez rapidement les produits obsolètes, doublons ou non utilisés.
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Filter tabs */}
+        <div className="flex gap-2 flex-wrap">
+          {(["no_orders", "duplicates", "archived"] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => { setCleanupType(t); setCleanupSelectedIds(new Set()); }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                cleanupType === t
+                  ? "bg-orange-500 text-white"
+                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+              }`}
+              data-testid={`cleanup-tab-${t}`}
+            >
+              {typeLabels[t]}
+              {data?.type === t && ` (${data.count})`}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">{typeDesc[cleanupType]}</p>
+
+        {/* Product list */}
+        <div className="flex-1 overflow-y-auto border rounded-xl min-h-[200px]">
+          {isLoading ? (
+            <div className="py-12 text-center text-sm text-muted-foreground">Analyse en cours...</div>
+          ) : prods.length === 0 ? (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-emerald-500 opacity-60" />
+              Aucun produit à nettoyer dans cette catégorie.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-muted/30 sticky top-0">
+                <tr>
+                  <th className="w-10 pl-4 py-2 text-left">
+                    <input type="checkbox" className="w-4 h-4 accent-orange-500" checked={allChecked} onChange={toggleAll} />
+                  </th>
+                  <th className="text-left py-2 font-medium text-muted-foreground">Produit</th>
+                  <th className="text-left py-2 font-medium text-muted-foreground pr-3">SKU</th>
+                  {cleanupType === "duplicates" && (
+                    <th className="text-left py-2 font-medium text-muted-foreground pr-3">Groupe</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {prods.map((p: any) => (
+                  <tr key={p.id} className={`border-t border-border/30 ${cleanupSelectedIds.has(p.id) ? "bg-orange-50/40 dark:bg-orange-950/20" : ""}`}>
+                    <td className="pl-4 py-2">
+                      <input type="checkbox" className="w-4 h-4 accent-orange-500" checked={cleanupSelectedIds.has(p.id)} onChange={() => toggleOne(p.id)} />
+                    </td>
+                    <td className="py-2 font-medium max-w-[240px] truncate">{p.name}</td>
+                    <td className="py-2 font-mono text-xs text-muted-foreground pr-3">{p.sku}</td>
+                    {cleanupType === "duplicates" && (
+                      <td className="py-2 text-xs text-muted-foreground pr-3 max-w-[180px] truncate">{p.duplicateGroup}</td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Action row */}
+        <div className="flex items-center gap-3 pt-2 border-t flex-wrap">
+          <span className="text-sm text-muted-foreground flex-1">
+            {cleanupSelectedIds.size > 0 ? `${cleanupSelectedIds.size} sélectionné${cleanupSelectedIds.size > 1 ? "s" : ""}` : "Cochez les produits à traiter"}
+          </span>
+          <Button variant="outline" size="sm" onClick={onClose}>Fermer</Button>
+          {cleanupType === "archived" ? (
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={cleanupSelectedIds.size === 0 || running}
+              onClick={() => handleRun(true)}
+              className="gap-1.5"
+              data-testid="button-cleanup-delete-archived"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Supprimer définitivement
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              className="gap-1.5 bg-orange-500 hover:bg-orange-600 text-white"
+              disabled={cleanupSelectedIds.size === 0 || running}
+              onClick={() => handleRun(false)}
+              data-testid="button-cleanup-delete"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Supprimer la sélection
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ── Nuclear Delete Modal ─────────────────────────────────────────────────── */
+function NuclearDeleteModal({
+  open, onClose, selectedCount, onConfirm,
+}: {
+  open: boolean;
+  onClose: () => void;
+  selectedCount: number;
+  onConfirm: (opts: { archiveIfHasOrders: boolean; confirmText: string }) => Promise<void>;
+}) {
+  const [confirmText, setConfirmText] = useState("");
+  const [archiveIfHasOrders, setArchiveIfHasOrders] = useState(true);
+  const [running, setRunning] = useState(false);
+
+  const isConfirmed = confirmText === "SUPPRIMER TOUT";
+
+  const handleSubmit = async () => {
+    if (!isConfirmed || running) return;
+    setRunning(true);
+    try {
+      await onConfirm({ archiveIfHasOrders, confirmText });
+    } finally {
+      setRunning(false);
+      setConfirmText("");
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !running) { onClose(); setConfirmText(""); } }}>
+      <DialogContent className="sm:max-w-md rounded-2xl">
+        <DialogHeader>
+          <DialogTitle className="text-red-700 flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 shrink-0" />
+            Action irréversible
+          </DialogTitle>
+          <DialogDescription>
+            Vous êtes sur le point de traiter <strong>{selectedCount}</strong> produit{selectedCount > 1 ? "s" : ""}.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-1">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-3 text-xs text-amber-800 dark:text-amber-300">
+            <div className="font-bold mb-1.5">Ce qui va se passer :</div>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Produits <strong>sans commandes</strong> → supprimés définitivement</li>
+              <li>Produits <strong>avec commandes</strong> → archivés (historique préservé)</li>
+            </ul>
+          </div>
+          <label className="flex items-center gap-2.5 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={archiveIfHasOrders}
+              onChange={(e) => setArchiveIfHasOrders(e.target.checked)}
+              className="w-4 h-4 accent-amber-500"
+            />
+            Archiver les produits liés à des commandes (recommandé)
+          </label>
+          <div>
+            <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+              Tapez <span className="font-mono bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-red-700 dark:text-red-400">SUPPRIMER TOUT</span> pour confirmer :
+            </label>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              className="w-full px-3 py-2 border-2 border-gray-200 dark:border-gray-700 rounded-lg focus:border-red-500 outline-none text-sm font-mono bg-white dark:bg-gray-900 dark:text-white"
+              placeholder="SUPPRIMER TOUT"
+              disabled={running}
+              data-testid="input-nuclear-confirm"
+            />
+          </div>
+        </div>
+        <DialogFooter className="gap-2 pt-2">
+          <Button variant="outline" onClick={() => { onClose(); setConfirmText(""); }} disabled={running} data-testid="button-nuclear-cancel">
+            Annuler
+          </Button>
+          <Button
+            disabled={!isConfirmed || running}
+            onClick={handleSubmit}
+            className="bg-red-600 hover:bg-red-700 text-white font-bold"
+            data-testid="button-nuclear-submit"
+          >
+            {running ? (
+              <span className="flex items-center gap-2"><span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" /> En cours…</span>
+            ) : (
+              <span className="flex items-center gap-1.5"><Trash2 className="w-3.5 h-3.5" /> Confirmer la suppression</span>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ── ImportDialog ─────────────────────────────────────────────────────────── */
+interface ImportedProduct {
+  name: string; sku: string; reference: string; description: string | null;
+  imageUrl: string | null; hasVariants: number; stock: number;
+  costPrice: number; sellingPrice: number;
+  variants: { name: string; sku: string; costPrice: number; sellingPrice: number; stock: number; imageUrl: string | null }[];
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
+}
+
+function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { toast } = useToast();
+  const [step, setStep] = useState<'upload' | 'preview'>('upload');
+  const [file, setFile] = useState<File | null>(null);
+  const [priceSource, setPriceSource] = useState<'morocco' | 'variant'>('morocco');
+  const [skipExisting, setSkipExisting] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [parsedProducts, setParsedProducts] = useState<ImportedProduct[]>([]);
+  const [selectedIdx, setSelectedIdx] = useState<Set<number>>(new Set());
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const reset = () => {
+    setStep('upload');
+    setFile(null);
+    setParsedProducts([]);
+    setSelectedIdx(new Set());
+    setParsing(false);
+    setImporting(false);
+  };
+
+  const handleClose = () => { reset(); onClose(); };
+
+  const parseFile = async () => {
+    if (!file) return;
+    setParsing(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+      const rows: Record<string, string>[] = XLSX.utils.sheet_to_json(
+        wb.Sheets[wb.SheetNames[0]], { defval: '' }
+      ) as Record<string, string>[];
+
+      const groups = new Map<string, Record<string, string>[]>();
+      for (const row of rows) {
+        const handle = String(row['Handle'] || '').trim();
+        if (!handle) continue;
+        if (!groups.has(handle)) groups.set(handle, []);
+        groups.get(handle)!.push(row);
+      }
+
+      const priceCol = priceSource === 'morocco' ? 'Price / Morocco' : 'Variant Price';
+      const products: ImportedProduct[] = [];
+
+      for (const [handle, groupRows] of groups) {
+        const titleRow = groupRows.find(r => r['Title']?.trim()) ?? groupRows[0];
+        const name = (titleRow['Title'] || handle).trim();
+        const description = stripHtml(String(titleRow['Body (HTML)'] || '')) || null;
+        const imageUrl = (groupRows.find(r => r['Image Src']?.trim())?.['Image Src'] || '').trim() || null;
+
+        const variantRows = groupRows.filter(r => {
+          const opt1 = String(r['Option1 Value'] || '').trim();
+          return opt1 && opt1 !== 'Default Title';
+        });
+
+        if (variantRows.length > 0) {
+          const seenSkus = new Set<string>();
+          const variants = variantRows.map((r, idx) => {
+            const parts = ['Option1 Value', 'Option2 Value', 'Option3 Value']
+              .map(k => String(r[k] || '').trim()).filter(Boolean);
+            const vName = parts.join(' / ') || `Variante ${idx + 1}`;
+            let sku = String(r['Variant SKU'] || '').trim() || `${handle}-v${idx}`;
+            if (seenSkus.has(sku)) sku = `${sku}-${idx}`;
+            seenSkus.add(sku);
+            const rawPrice = Number(r[priceCol] || r['Variant Price'] || 0);
+            return {
+              name: vName,
+              sku,
+              sellingPrice: Math.round(rawPrice * 100),
+              costPrice: Math.round(Number(r['Cost per item'] || 0) * 100),
+              stock: parseInt(String(r['Variant Inventory Qty'] || '0'), 10) || 0,
+              imageUrl: String(r['Variant Image'] || r['Image Src'] || '').trim() || imageUrl,
+            };
+          });
+          const totalStock = variants.reduce((s, v) => s + v.stock, 0);
+          const avgSell = variants.length ? Math.round(variants.reduce((s, v) => s + v.sellingPrice, 0) / variants.length) : 0;
+          const avgCost = variants.length ? Math.round(variants.reduce((s, v) => s + v.costPrice, 0) / variants.length) : 0;
+          products.push({
+            name, sku: String(titleRow['Variant SKU'] || '').trim() || handle,
+            reference: handle, description, imageUrl, hasVariants: 1,
+            stock: totalStock, costPrice: avgCost, sellingPrice: avgSell, variants,
+          });
+        } else {
+          const row = groupRows.find(r => r['Variant SKU'] || r[priceCol]) ?? groupRows[0];
+          const rawPrice = Number(row[priceCol] || row['Variant Price'] || 0);
+          products.push({
+            name, sku: String(row['Variant SKU'] || '').trim() || handle,
+            reference: handle, description, imageUrl, hasVariants: 0,
+            stock: parseInt(String(row['Variant Inventory Qty'] || '0'), 10) || 0,
+            costPrice: Math.round(Number(row['Cost per item'] || 0) * 100),
+            sellingPrice: Math.round(rawPrice * 100),
+            variants: [],
+          });
+        }
+      }
+
+      setParsedProducts(products);
+      setSelectedIdx(new Set(products.map((_, i) => i)));
+      setStep('preview');
+    } catch (err: any) {
+      toast({ title: "Erreur de parsing", description: err.message, variant: "destructive" });
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const toggleAll = () => {
+    setSelectedIdx(selectedIdx.size === parsedProducts.length
+      ? new Set()
+      : new Set(parsedProducts.map((_, i) => i))
+    );
+  };
+
+  const toggleOne = (i: number) => {
+    setSelectedIdx(prev => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  };
+
+  const doImport = async () => {
+    setImporting(true);
+    try {
+      const toImport = parsedProducts.filter((_, i) => selectedIdx.has(i));
+      const result: { created: number; skipped: number; errors: { name: string; error: string }[] } =
+        await apiRequest("POST", "/api/products/import", { products: toImport, overwrite: !skipExisting });
+      toast({
+        title: "Import terminé",
+        description: `${result.created} produits importés · ${result.skipped} ignorés${result.errors.length > 0 ? ` · ${result.errors.length} erreur(s)` : ''}`,
+        variant: result.errors.length > 0 ? "destructive" : "default",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      handleClose();
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const totalVariants = parsedProducts.filter((_, i) => selectedIdx.has(i)).reduce((s, p) => s + p.variants.length, 0);
+  const totalStock    = parsedProducts.filter((_, i) => selectedIdx.has(i)).reduce((s, p) => s + p.stock, 0);
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <PackagePlus className="w-5 h-5" style={{ color: '#C5A059' }} />
+            Importer des produits
+          </DialogTitle>
+          <DialogDescription>
+            {step === 'upload'
+              ? 'Importez un export Shopify (.csv ou .xlsx) pour créer vos produits avec leurs variantes, stocks et prix.'
+              : `${selectedIdx.size} produit(s) sélectionné(s) · ${totalVariants} variante(s) · stock total ${totalStock}`}
+          </DialogDescription>
+        </DialogHeader>
+
+        {step === 'upload' && (
+          <div className="space-y-5 py-2">
+            <div className="space-y-2">
+              <Label>Fichier (CSV ou Excel Shopify)</Label>
+              <div
+                className="border-2 border-dashed border-border rounded-xl p-8 text-center cursor-pointer hover:border-primary/50 transition-colors"
+                onClick={() => fileRef.current?.click()}
+                data-testid="import-file-dropzone"
+              >
+                {file ? (
+                  <div className="space-y-1">
+                    <Package className="w-8 h-8 mx-auto text-primary" />
+                    <p className="font-medium text-sm">{file.name}</p>
+                    <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(0)} Ko</p>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <ImageUp className="w-8 h-8 mx-auto text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">Cliquez pour sélectionner un fichier</p>
+                    <p className="text-xs text-muted-foreground">.csv, .xlsx, .xls</p>
+                  </div>
+                )}
+              </div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                className="hidden"
+                data-testid="input-import-file"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) setFile(f); }}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Source des prix</Label>
+              <Select value={priceSource} onValueChange={(v) => setPriceSource(v as 'morocco' | 'variant')} data-testid="select-price-source">
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="morocco">Prix Maroc (Price / Morocco)</SelectItem>
+                  <SelectItem value="variant">Prix Variante (Variant Price)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
+              <Switch
+                id="skip-existing"
+                checked={skipExisting}
+                onCheckedChange={setSkipExisting}
+                data-testid="switch-skip-existing"
+              />
+              <Label htmlFor="skip-existing" className="cursor-pointer text-sm">
+                Ignorer les produits déjà existants (même SKU ou nom)
+              </Label>
+            </div>
+          </div>
+        )}
+
+        {step === 'preview' && (
+          <div className="space-y-3">
+            <div className="max-h-[45vh] overflow-y-auto rounded-lg border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead className="w-8">
+                      <input
+                        type="checkbox"
+                        checked={selectedIdx.size === parsedProducts.length && parsedProducts.length > 0}
+                        onChange={toggleAll}
+                        className="cursor-pointer"
+                        data-testid="import-select-all"
+                      />
+                    </TableHead>
+                    <TableHead>Nom</TableHead>
+                    <TableHead className="text-right">Variantes</TableHead>
+                    <TableHead className="text-right">Stock</TableHead>
+                    <TableHead className="text-right">Prix vente</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {parsedProducts.map((p, i) => (
+                    <TableRow key={i} className={!selectedIdx.has(i) ? 'opacity-40' : ''} data-testid={`import-row-${i}`}>
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          checked={selectedIdx.has(i)}
+                          onChange={() => toggleOne(i)}
+                          className="cursor-pointer"
+                        />
+                      </TableCell>
+                      <TableCell className="font-medium text-sm max-w-[180px] truncate" title={p.name}>
+                        {p.name}
+                        {p.hasVariants ? <Badge variant="outline" className="ml-1.5 text-xs">variantes</Badge> : null}
+                      </TableCell>
+                      <TableCell className="text-right text-sm">{p.variants.length || '—'}</TableCell>
+                      <TableCell className="text-right text-sm">{p.stock}</TableCell>
+                      <TableCell className="text-right text-sm">{p.sellingPrice > 0 ? (p.sellingPrice / 100).toFixed(2) + ' DH' : '—'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        )}
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={step === 'preview' ? () => setStep('upload') : handleClose} disabled={importing}>
+            {step === 'preview' ? 'Retour' : 'Annuler'}
+          </Button>
+          {step === 'upload' ? (
+            <Button
+              onClick={parseFile}
+              disabled={!file || parsing}
+              style={{ background: '#C5A059', color: '#fff' }}
+              data-testid="button-parse-import"
+            >
+              {parsing ? (
+                <span className="flex items-center gap-2"><span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />Analyse…</span>
+              ) : (
+                <><Search className="w-4 h-4 mr-2" />Analyser le fichier</>
+              )}
+            </Button>
+          ) : (
+            <Button
+              onClick={doImport}
+              disabled={importing || selectedIdx.size === 0}
+              style={{ background: '#C5A059', color: '#fff' }}
+              data-testid="button-confirm-import"
+            >
+              {importing ? (
+                <span className="flex items-center gap-2"><span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />Import…</span>
+              ) : (
+                <><PackagePlus className="w-4 h-4 mr-2" />Importer {selectedIdx.size} produit{selectedIdx.size !== 1 ? 's' : ''}</>
+              )}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Inventory() {
-  const { data: inventoryData, isLoading: statsLoading } = useInventoryStats();
+  const { data: inventoryData, isLoading: statsLoading, refetch: refetchStats } = useInventoryStats();
   const createProduct = useCreateProduct();
   const updateProduct = useUpdateProduct();
   const deleteProduct = useDeleteProduct();
   const { toast } = useToast();
-  const { user } = useAuth();
-  // The backend requireAdmin middleware only admits 'owner' — gate the button the same way.
-  const isOwner = user?.role === 'owner';
-
-  // "Réparer les liaisons produit" (dry-run preview → confirm apply)
-  const [repairOpen, setRepairOpen] = useState(false);
-  const [repairPreview, setRepairPreview] = useState<any | null>(null);
-  const [repairLoading, setRepairLoading] = useState(false);
-  const [repairApplying, setRepairApplying] = useState(false);
-  const [repairResult, setRepairResult] = useState<any | null>(null);
-
-  const startRepairPreview = async () => {
-    setRepairOpen(true);
-    setRepairPreview(null);
-    setRepairResult(null);
-    setRepairLoading(true);
-    try {
-      const res = await apiRequest("POST", "/api/inventory/repair-product-links", { apply: false });
-      setRepairPreview(await res.json());
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message || "Erreur lors de l'aperçu", variant: "destructive" });
-      setRepairOpen(false);
-    } finally {
-      setRepairLoading(false);
-    }
-  };
-
-  const applyRepair = async () => {
-    setRepairApplying(true);
-    try {
-      const res = await apiRequest("POST", "/api/inventory/repair-product-links", { apply: true });
-      const data = await res.json();
-      setRepairResult(data);
-      toast({ title: "✅ Liaisons réparées", description: `${data.applied ?? 0} liaison(s) mise(s) à jour.` });
-      queryClient.invalidateQueries({ queryKey: ['/api/products/inventory'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message || "Erreur lors de l'application", variant: "destructive" });
-    } finally {
-      setRepairApplying(false);
-    }
-  };
-
   const [logsProductId, setLogsProductId] = useState<number | null>(null);
   const [logsProductName, setLogsProductName] = useState<string>("");
 
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  // Nuclear delete modal
+  const [nuclearOpen, setNuclearOpen] = useState(false);
+
+  // Historical linking dialog (shown when adding a product that has existing orders)
+  const [historicalCheck, setHistoricalCheck] = useState<{ total: number; confirmed: number; delivered: number; confirmRate: number; deliveryRate: number } | null>(null);
+  const [pendingPayload, setPendingPayload] = useState<any>(null);
+  const [rattachingId, setRattachingId] = useState<number | null>(null);
+
+  // Safe-delete confirmation dialog (single product)
+  const [deleteDialog, setDeleteDialog] = useState<{ product: any; usage: any } | null>(null);
+  const [deleteDialogLoading, setDeleteDialogLoading] = useState(false);
+
+  // Smart cleanup modal
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupType, setCleanupType] = useState<"no_orders" | "duplicates" | "archived">("no_orders");
+  const [cleanupSelectedIds, setCleanupSelectedIds] = useState<Set<number>>(new Set());
+
   // Insights side-sheet
   const [insightsProductId, setInsightsProductId] = useState<number | null>(null);
+
+  // Stock history drawer
+  const [historyProduct, setHistoryProduct] = useState<any | null>(null);
+
+  // Backfill initial-stock-history
+  const [backfillResult, setBackfillResult] = useState<any>(null);
+  const [bulkCostResult, setBulkCostResult] = useState<any>(null);
+  const backfillHistoryMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/products/backfill-initial-stock-history", {}).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setBackfillResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      toast({ title: "✅ Historique réparé", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+
+  const bulkApplyCostMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/products/bulk-apply-cost-to-variants", {}).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setBulkCostResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      toast({ title: "✅ Coûtants appliqués", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const { data: historyMovements = [], isLoading: historyLoading } = useQuery<any[]>({
+    queryKey: ["/api/stock-movements", historyProduct?.id],
+    queryFn: () => fetch(`/api/stock-movements/${historyProduct!.id}`, { credentials: "include" }).then(r => r.json()),
+    enabled: historyProduct !== null,
+  });
 
   // Restock dialog
   const [restockProduct, setRestockProduct] = useState<any | null>(null);
   const [restockQty, setRestockQty] = useState<string>("");
   const [restockReason, setRestockReason] = useState<string>("");
+  const [restockDate, setRestockDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [restockSaving, setRestockSaving] = useState(false);
 
   const handleRestockSave = async () => {
@@ -100,6 +683,7 @@ export default function Inventory() {
       await apiRequest("POST", `/api/products/${restockProduct.id}/restock`, {
         quantity: n,
         reason: restockReason.trim() || undefined,
+        date: new Date(restockDate + "T12:00:00").toISOString(),
       });
       toast({ title: "✅ Stock mis à jour", description: `+${n} unités ajoutées à "${restockProduct.name}".` });
       queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
@@ -154,6 +738,8 @@ export default function Inventory() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
+  const [newProductStockDate, setNewProductStockDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [importOpen, setImportOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
   const [hasVariants, setHasVariants] = useState(false);
@@ -163,6 +749,7 @@ export default function Inventory() {
     name: "", sku: "", stock: "", costPrice: "", sellingPrice: "",
     description: "", reference: "",
     descriptionDarija: "", aiFeatures: "", imageUrl: "",
+    coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "",
   });
 
   // File upload state — shared between Add and Edit dialogs (only one open at a time)
@@ -173,13 +760,18 @@ export default function Inventory() {
 
   const handleFileSelect = useCallback((file: File) => {
     if (!file.type.startsWith("image/")) return;
+    if (file.size > 2 * 1024 * 1024) { alert("Image trop grande (max 2 MB)."); return; }
     setPendingFile(file);
-    const objectUrl = URL.createObjectURL(file);
-    setPreviewUrl(objectUrl);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result as string;
+      setPreviewUrl(base64);
+      setForm(f => ({ ...f, imageUrl: base64 }));
+    };
+    reader.readAsDataURL(file);
   }, []);
 
   const clearFile = () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPendingFile(null);
     setPreviewUrl(null);
   };
@@ -200,10 +792,11 @@ export default function Inventory() {
   };
 
   const resetForm = () => {
-    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "" });
+    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "", coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "" });
     setHasVariants(false);
     setVariants([]);
     clearFile();
+    setNewProductStockDate(new Date().toISOString().slice(0, 10));
   };
 
   const addVariant = () => {
@@ -218,6 +811,15 @@ export default function Inventory() {
     setVariants(v => v.map((vr, i) => i === idx ? { ...vr, [field]: value } : vr));
   };
 
+  const applyCostToAllVariants = () => {
+    if (!form.costPrice) {
+      toast({ title: "Entrez d'abord le Prix coûtant du produit", variant: "destructive" });
+      return;
+    }
+    setVariants(v => v.map(vr => ({ ...vr, costPrice: form.costPrice })));
+    toast({ title: `Prix coûtant (${form.costPrice} DH) appliqué à toutes les variantes` });
+  };
+
   const handleCreate = async () => {
     if (!form.name || !form.sku) {
       toast({ title: "Erreur", description: "Nom et SKU requis", variant: "destructive" });
@@ -227,75 +829,165 @@ export default function Inventory() {
       toast({ title: "Erreur", description: "Ajoutez au moins une variante", variant: "destructive" });
       return;
     }
+    const payload: any = {
+      name: form.name,
+      sku: form.sku,
+      stock: form.stock ? parseInt(form.stock) : 0,
+      costPrice: form.costPrice ? Math.round(parseFloat(form.costPrice) * 100) : 0,
+      sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : 0,
+      description: form.description || null,
+      reference: form.reference || null,
+      imageUrl: form.imageUrl || null,
+      coutAchat: parseFloat(form.coutAchat) || 0,
+      prixVente: parseFloat(form.prixVente) || 0,
+      coutEmballage: parseFloat(form.coutEmballage) || 0,
+      coutLivraison: parseFloat(form.coutLivraison) || 0,
+      coutConfirmation: parseFloat(form.coutConfirmation) || 0,
+      stockDate: new Date(newProductStockDate + "T12:00:00").toISOString(),
+    };
+    if (hasVariants && variants.length > 0) {
+      payload.hasVariants = 1;
+      payload.variants = variants.map(v => ({
+        name: v.name,
+        sku: v.sku,
+        costPrice: v.costPrice ? Math.round(parseFloat(v.costPrice) * 100) : 0,
+        sellingPrice: v.sellingPrice ? Math.round(parseFloat(v.sellingPrice) * 100) : 0,
+        stock: v.stock ? parseInt(v.stock) : 0,
+      }));
+    }
+    // Check BEFORE creating — if historical orders exist, ask the user
     try {
-      // Upload image first if a file was selected
-      let resolvedImageUrl: string | null = null;
-      if (pendingFile) {
-        resolvedImageUrl = await uploadFile();
-        clearFile();
+      const check = await fetch(
+        `/api/products/name-check?name=${encodeURIComponent(form.name)}`,
+        { credentials: 'include' }
+      ).then(r => r.json());
+      if (check.found && check.total > 0) {
+        setPendingPayload(payload);
+        setHistoricalCheck(check);
+        return;
       }
+    } catch {}
+    // No historical match → create directly without dialog
+    await doCreateProduct(payload, false);
+  };
 
-      const payload: any = {
-        name: form.name,
-        sku: form.sku,
-        stock: form.stock ? parseInt(form.stock) : 0,
-        costPrice: form.costPrice ? Math.round(parseFloat(form.costPrice) * 100) : 0,
-        sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : 0,
-        description: form.description || null,
-        reference: form.reference || null,
-        imageUrl: resolvedImageUrl,
-      };
-      if (hasVariants && variants.length > 0) {
-        payload.hasVariants = 1;
-        payload.variants = variants.map(v => ({
-          name: v.name,
-          sku: v.sku,
-          costPrice: v.costPrice ? Math.round(parseFloat(v.costPrice) * 100) : 0,
-          sellingPrice: v.sellingPrice ? Math.round(parseFloat(v.sellingPrice) * 100) : 0,
-          stock: v.stock ? parseInt(v.stock) : 0,
-        }));
-      }
-      await createProduct.mutateAsync(payload);
-
-      // Check if orders already exist for this product name
-      try {
-        const check = await fetch(
-          `/api/products/name-check?name=${encodeURIComponent(form.name)}`,
-          { credentials: 'include' }
-        ).then(r => r.json());
-
-        if (check.found && check.total > 0) {
-          toast({
-            title: `⚠️ ${form.name} — Données historiques trouvées`,
-            description: `${check.total} commande(s) existantes — ${check.confirmed} confirmées (${check.confirmRate}%) — ${check.delivered} livrées (${check.deliveryRate}%). Ces stats s'affichent maintenant dans Profit Analyzer.`,
-            duration: 8000,
+  const doCreateProduct = async (payload: any, shouldLink: boolean) => {
+    try {
+      const created = await createProduct.mutateAsync(payload);
+      if (shouldLink && created?.id) {
+        try {
+          await fetch(`/api/products/${created.id}/link-historical`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ name: payload.name }),
           });
-        } else {
-          toast({ title: "Produit ajouté", description: `${form.name} a été ajouté au stock` });
-        }
-      } catch {
-        toast({ title: "Produit ajouté", description: `${form.name} a été ajouté au stock` });
+        } catch {}
       }
-
+      toast({ title: "Produit ajouté", description: `${payload.name} a été ajouté au stock` });
       setAddOpen(false);
       resetForm();
+      setHistoricalCheck(null);
+      setPendingPayload(null);
     } catch (err: any) {
       toast({ title: "Erreur", description: err.message?.replace(/^\d+:\s*/, '') || "Erreur", variant: "destructive" });
+    }
+  };
+
+  const handleLinkHistorical = async (product: any) => {
+    setRattachingId(product.id);
+    try {
+      const r = await fetch(`/api/products/${product.id}/link-historical`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ name: product.name }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message || 'Erreur');
+      toast({ title: 'Rattachement effectué', description: `${data.linked} ligne(s) rattachée(s) à « ${product.name} »` });
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/inventory'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/profitability'] });
+    } catch (err: any) {
+      toast({ title: 'Erreur', description: err.message, variant: 'destructive' });
+    } finally {
+      setRattachingId(null);
+    }
+  };
+
+  const [linkAllOpen, setLinkAllOpen] = useState(false);
+  const [linkAllLoading, setLinkAllLoading] = useState(false);
+  const [linkAllResult, setLinkAllResult] = useState<{ linked: number; unmatched: number; total: number } | null>(null);
+
+  // ── Fix historical stock dialog ──────────────────────────────────────────
+  const [fixHistoricalOpen, setFixHistoricalOpen] = useState(false);
+  const [fixPreviewData, setFixPreviewData] = useState<{ count: number; orders: any[] } | null>(null);
+  const [fixPreviewLoading, setFixPreviewLoading] = useState(false);
+  const [fixApplying, setFixApplying] = useState(false);
+
+  const openFixHistorical = async () => {
+    setFixPreviewData(null);
+    setFixHistoricalOpen(true);
+    setFixPreviewLoading(true);
+    try {
+      const res = await apiRequest("GET", "/api/stock/fix-historical-shipments/preview");
+      const data = await res.json();
+      setFixPreviewData(data);
+    } catch {
+      toast({ title: "Erreur lors du chargement de la prévisualisation", variant: "destructive" });
+      setFixHistoricalOpen(false);
+    } finally {
+      setFixPreviewLoading(false);
+    }
+  };
+
+  const applyFixHistorical = async () => {
+    setFixApplying(true);
+    try {
+      const res = await apiRequest("POST", "/api/stock/fix-historical-shipments/apply", {});
+      const data = await res.json();
+      toast({ title: `✅ Stock mis à jour pour ${data.applied} commande${data.applied !== 1 ? "s" : ""}` });
+      setFixHistoricalOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/stats"] });
+    } catch {
+      toast({ title: "Erreur lors de la correction du stock", variant: "destructive" });
+    } finally {
+      setFixApplying(false);
+    }
+  };
+
+  const handleLinkAll = async () => {
+    setLinkAllLoading(true);
+    setLinkAllResult(null);
+    try {
+      const r = await fetch('/api/products/link-all-historical', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message || 'Erreur');
+      setLinkAllResult(data);
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/inventory'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/profitability'] });
+    } catch (err: any) {
+      toast({ title: 'Erreur', description: err.message, variant: 'destructive' });
+      setLinkAllOpen(false);
+    } finally {
+      setLinkAllLoading(false);
     }
   };
 
   const handleEdit = async () => {
     if (!editingProduct) return;
     try {
-      // Upload new image if one was selected
-      let resolvedImageUrl: string | null | undefined = undefined; // undefined = don't change
-      if (pendingFile) {
-        resolvedImageUrl = await uploadFile();
-        clearFile();
-      } else if (form.imageUrl !== (editingProduct.imageUrl || "")) {
-        // User may have cleared the existing image
-        resolvedImageUrl = form.imageUrl || null;
-      }
+      // Image is stored as base64 in form.imageUrl — no separate upload step needed
+      const imageChanged = (form.imageUrl || null) !== (editingProduct.imageUrl || null);
+      clearFile();
 
       // Build AI features as JSON array if provided (comma-separated input)
       let aiFeaturesParsed: string | null = null;
@@ -314,8 +1006,25 @@ export default function Inventory() {
         reference: form.reference || undefined,
         descriptionDarija: form.descriptionDarija || null,
         aiFeatures: aiFeaturesParsed,
+        coutAchat: parseFloat(form.coutAchat) || 0,
+        prixVente: parseFloat(form.prixVente) || 0,
+        coutEmballage: parseFloat(form.coutEmballage) || 0,
+        coutLivraison: parseFloat(form.coutLivraison) || 0,
+        coutConfirmation: parseFloat(form.coutConfirmation) || 0,
       };
-      if (resolvedImageUrl !== undefined) updatePayload.imageUrl = resolvedImageUrl;
+      if (imageChanged) updatePayload.imageUrl = form.imageUrl || null;
+      if (hasVariants) {
+        updatePayload.hasVariants = 1;
+        updatePayload.variants = variants.map(v => ({
+          name: v.name,
+          sku: v.sku || '',
+          costPrice: v.costPrice ? Math.round(parseFloat(v.costPrice) * 100) : 0,
+          sellingPrice: v.sellingPrice ? Math.round(parseFloat(v.sellingPrice) * 100) : 0,
+          stock: v.stock ? parseInt(v.stock) : 0,
+        }));
+      } else {
+        updatePayload.variants = [];
+      }
       await updateProduct.mutateAsync(updatePayload);
       toast({ title: "Produit mis à jour", description: `${form.name} a été modifié` });
       setEditOpen(false);
@@ -327,16 +1036,116 @@ export default function Inventory() {
   };
 
   const handleDelete = async (product: any) => {
-    if (!confirm(`Supprimer ${product.name} ?`)) return;
+    setDeleteDialogLoading(true);
     try {
-      await deleteProduct.mutateAsync(product.id);
-      toast({ title: "Supprimé", description: `${product.name} a été supprimé` });
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message?.replace(/^\d+:\s*/, '') || "Erreur", variant: "destructive" });
+      const usage = await apiRequest("GET", `/api/products/${product.id}/usage`);
+      setDeleteDialog({ product, usage });
+    } catch {
+      setDeleteDialog({ product, usage: { ordersCount: 0, deliveredCount: 0, inStockOrders: 0, totalRevenue: 0 } });
+    } finally {
+      setDeleteDialogLoading(false);
     }
   };
 
-  const openEdit = (product: any) => {
+  const confirmDelete = async (force: boolean) => {
+    if (!deleteDialog) return;
+    try {
+      const qs = force ? "?force=true" : "";
+      await apiRequest("DELETE", `/api/products/${deleteDialog.product.id}${qs}`);
+      toast({
+        title: force ? "📦 Archivé" : "🗑️ Supprimé",
+        description: force
+          ? `"${deleteDialog.product.name}" a été archivé (commandes conservées).`
+          : `"${deleteDialog.product.name}" a été supprimé définitivement.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message?.replace(/^\d+:\s*/, '') || "Erreur", variant: "destructive" });
+    } finally {
+      setDeleteDialog(null);
+    }
+  };
+
+  const handleBulkDelete = async (force: boolean) => {
+    if (selectedIds.size === 0) return;
+    setBulkDeleting(true);
+    try {
+      const result = await apiRequest("POST", "/api/products/bulk-delete", {
+        productIds: Array.from(selectedIds),
+        force,
+      });
+      toast({
+        title: "Opération terminée",
+        description: `${result.deleted} supprimés · ${result.archived} archivés · ${result.skipped} ignorés`,
+      });
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message || "Erreur", variant: "destructive" });
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const selectAllAcrossPages = async () => {
+    try {
+      const resp = await fetch("/api/products/all-ids", { credentials: "include" });
+      const data = await resp.json();
+      setSelectedIds(new Set(data.ids));
+    } catch {
+      toast({ title: "Erreur", description: "Impossible de récupérer tous les IDs", variant: "destructive" });
+    }
+  };
+
+  const handleNuclearConfirm = async ({ archiveIfHasOrders, confirmText }: { archiveIfHasOrders: boolean; confirmText: string }) => {
+    try {
+      const resp = await fetch("/api/products/bulk-delete-all", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "selected_ids",
+          productIds: Array.from(selectedIds),
+          archiveIfHasOrders,
+          confirmText,
+        }),
+      });
+      const r = await resp.json();
+      if (!resp.ok) throw new Error(r.message || "Erreur");
+      toast({
+        title: "✅ Nettoyage terminé",
+        description: `${r.deleted} supprimés · ${r.archived} archivés · ${r.skipped} ignorés`,
+      });
+      setNuclearOpen(false);
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      refetchStats();
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+      throw e;
+    }
+  };
+
+  const handleToggleSelect = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleToggleAll = () => {
+    if (selectedIds.size === filtered.length && filtered.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filtered.map((p: any) => p.id)));
+    }
+  };
+
+  const openEdit = async (product: any) => {
     setEditingProduct(product);
     // Parse AI features from JSON array back to comma-separated string for display
     let aiFeaturesDisplay = "";
@@ -348,6 +1157,7 @@ export default function Inventory() {
         aiFeaturesDisplay = product.aiFeatures;
       }
     }
+    const pd = (product.settings as any)?.profitDefaults || {};
     setForm({
       name: product.name,
       sku: product.sku,
@@ -359,15 +1169,48 @@ export default function Inventory() {
       descriptionDarija: product.descriptionDarija || "",
       aiFeatures: aiFeaturesDisplay,
       imageUrl: product.imageUrl || "",
+      coutAchat: pd.coutAchat ? String(pd.coutAchat) : "",
+      prixVente: pd.prixVente ? String(pd.prixVente) : "",
+      coutEmballage: pd.coutEmballage ? String(pd.coutEmballage) : "",
+      coutLivraison: pd.coutLivraison ? String(pd.coutLivraison) : "",
+      coutConfirmation: pd.coutConfirmation ? String(pd.coutConfirmation) : "",
     });
+
+    // Load existing variants
+    setHasVariants(false);
+    setVariants([]);
+    if (product.hasVariants) {
+      try {
+        const data = await apiRequest("GET", `/api/products/${product.id}`);
+        const fetched = await data.json();
+        if (fetched.variants && fetched.variants.length > 0) {
+          setHasVariants(true);
+          setVariants(fetched.variants.map((v: any) => ({
+            name: v.name || "",
+            sku: v.sku || "",
+            costPrice: v.costPrice ? (v.costPrice / 100).toFixed(2) : "",
+            sellingPrice: v.sellingPrice ? (v.sellingPrice / 100).toFixed(2) : "",
+            stock: String(v.stock ?? 0),
+          })));
+        }
+      } catch {}
+    }
+
     setEditOpen(true);
   };
 
   const stats = inventoryData || { totalProducts: 0, totalQuantity: 0, lowStock: 0, outOfStock: 0, newProducts: 0, productStats: [] };
   const productStats: any[] = stats.productStats || [];
 
+  const normSearch = (s: string) =>
+    (s || "").toLowerCase().normalize('NFKD')
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/\s+/g, " ").trim();
+
   const filtered = productStats.filter((p: any) => {
-    const matchesSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku?.toLowerCase().includes(search.toLowerCase());
+    const q = normSearch(search);
+    const hay = `${normSearch(p.name)} ${normSearch(p.sku)} ${normSearch(p.reference)}`;
+    const matchesSearch = !q || q.split(" ").every((tok: string) => hay.includes(tok));
     const matchesStatus = statusFilter === "all" ||
       (statusFilter === "in_stock" && p.stock > 10) ||
       (statusFilter === "low_stock" && p.stock > 0 && p.stock <= 10) ||
@@ -391,11 +1234,15 @@ export default function Inventory() {
           <p className="text-muted-foreground mt-1">Gestion complète des produits et niveaux de stock.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {isOwner && (
-            <Button variant="outline" data-testid="button-repair-product-links" onClick={startRepairPreview}>
-              <Wrench className="w-4 h-4 mr-2" /> Réparer les liaisons produit
-            </Button>
-          )}
+          <Button variant="outline" data-testid="button-fix-historical-stock" onClick={openFixHistorical}>
+            <Wrench className="w-4 h-4 mr-2" /> Corriger l'historique stock
+          </Button>
+          <Button variant="outline" data-testid="button-link-all-historical" onClick={() => { setLinkAllResult(null); setLinkAllOpen(true); }}>
+            <Link2 className="w-4 h-4 mr-2" /> Lier tout l'historique
+          </Button>
+          <Button variant="outline" data-testid="button-import-products" onClick={() => setImportOpen(true)}>
+            <PackagePlus className="w-4 h-4 mr-2" /> Importer des produits
+          </Button>
           <Button className="shadow-lg shadow-primary/20" data-testid="button-add-product" onClick={() => setAddOpen(true)}>
             <Plus className="w-4 h-4 mr-2" /> Nouveau Produit
           </Button>
@@ -434,12 +1281,126 @@ export default function Inventory() {
             <SelectItem value="out_of_stock">Rupture</SelectItem>
           </SelectContent>
         </Select>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2 border-orange-300 text-orange-600 hover:bg-orange-50 dark:border-orange-700 dark:text-orange-400 dark:hover:bg-orange-950/30"
+          onClick={() => { setCleanupType("no_orders"); setCleanupSelectedIds(new Set()); setCleanupOpen(true); }}
+          data-testid="button-open-cleanup"
+        >
+          <Filter className="w-4 h-4" /> Nettoyage intelligent
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => backfillHistoryMutation.mutate()}
+          disabled={backfillHistoryMutation.isPending}
+          data-testid="button-backfill-stock-history"
+        >
+          {backfillHistoryMutation.isPending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Réparation en cours...</>
+          ) : (
+            <><History className="w-4 h-4" /> Réparer l'historique des stocks</>
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => bulkApplyCostMutation.mutate()}
+          disabled={bulkApplyCostMutation.isPending}
+          data-testid="button-bulk-apply-cost-variants"
+        >
+          {bulkApplyCostMutation.isPending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> En cours...</>
+          ) : (
+            <><Copy className="w-4 h-4" /> Appliquer coûtant à toutes les variantes</>
+          )}
+        </Button>
       </div>
+
+      {/* "Select all across pages" banner */}
+      {selectedIds.size > 0 && selectedIds.size === filtered.length && filtered.length < (productStats.length) && (
+        <div className="flex items-center justify-between px-4 py-2 rounded-xl border border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30 text-sm text-indigo-700 dark:text-indigo-300">
+          <span>{filtered.length} produits filtrés sélectionnés.</span>
+          <button
+            onClick={selectAllAcrossPages}
+            className="font-bold underline hover:text-indigo-900 dark:hover:text-indigo-100"
+            data-testid="button-select-all-pages"
+          >
+            Sélectionner les {productStats.length} produits
+          </button>
+        </div>
+      )}
+
+      {/* Bulk action bar — visible when items are selected */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 animate-in slide-in-from-top-2 flex-wrap">
+          <CheckSquare className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+          <span className="text-sm font-semibold text-red-700 dark:text-red-300">
+            {selectedIds.size} produit{selectedIds.size > 1 ? "s" : ""} sélectionné{selectedIds.size > 1 ? "s" : ""}
+          </span>
+          <div className="flex-1" />
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-red-300 text-red-600 hover:bg-red-100 dark:border-red-700 dark:text-red-400 gap-1.5"
+            disabled={bulkDeleting}
+            onClick={() => handleBulkDelete(false)}
+            data-testid="button-bulk-delete"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Supprimer sans commandes
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 gap-1.5"
+            disabled={bulkDeleting}
+            onClick={() => handleBulkDelete(true)}
+            data-testid="button-bulk-archive"
+          >
+            <Archive className="w-3.5 h-3.5" />
+            Archiver tous
+          </Button>
+          {selectedIds.size >= 100 && (
+            <Button
+              size="sm"
+              className="bg-red-600 hover:bg-red-700 text-white font-bold gap-1.5"
+              disabled={bulkDeleting}
+              onClick={() => setNuclearOpen(true)}
+              data-testid="button-bulk-nuclear"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              TOUT supprimer / archiver
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground"
+            onClick={() => setSelectedIds(new Set())}
+            data-testid="button-bulk-cancel"
+          >
+            Annuler
+          </Button>
+        </div>
+      )}
 
       <Card className="rounded-2xl border-border/50 shadow-sm overflow-x-auto">
         <Table>
           <TableHeader className="bg-muted/30">
             <TableRow>
+              <TableHead className="w-10 pl-4">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 accent-red-500 cursor-pointer"
+                  checked={selectedIds.size === filtered.length && filtered.length > 0}
+                  onChange={handleToggleAll}
+                  data-testid="checkbox-select-all"
+                />
+              </TableHead>
               <TableHead className="min-w-[180px]">Produit</TableHead>
               <TableHead>SKU</TableHead>
               <TableHead className="text-center">Variantes</TableHead>
@@ -467,7 +1428,16 @@ export default function Inventory() {
               </TableRow>
             ) : (
               filtered.map((product: any) => (
-                <TableRow key={product.id} data-testid={`row-product-${product.id}`}>
+                <TableRow key={product.id} data-testid={`row-product-${product.id}`} className={selectedIds.has(product.id) ? "bg-red-50/40 dark:bg-red-950/20" : ""}>
+                  <TableCell className="pl-4">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 accent-red-500 cursor-pointer"
+                      checked={selectedIds.has(product.id)}
+                      onChange={() => handleToggleSelect(product.id)}
+                      data-testid={`checkbox-product-${product.id}`}
+                    />
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-3">
                       {product.imageUrl ? (
@@ -550,7 +1520,7 @@ export default function Inventory() {
                         className="w-8 h-8 text-emerald-600 hover:text-emerald-700"
                         title="Réapprovisionner"
                         data-testid={`button-restock-product-${product.id}`}
-                        onClick={() => { setRestockProduct(product); setRestockQty(""); setRestockReason(""); }}
+                        onClick={() => { setRestockProduct(product); setRestockQty(""); setRestockReason(""); setRestockDate(new Date().toISOString().slice(0, 10)); }}
                       >
                         <PackagePlus className="w-4 h-4" />
                       </Button>
@@ -562,6 +1532,25 @@ export default function Inventory() {
                         onClick={() => setInsightsProductId(product.id)}
                       >
                         <BarChart3 className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost" size="icon"
+                        className="w-8 h-8 text-orange-500 hover:text-orange-700"
+                        title="Historique des mouvements"
+                        data-testid={`button-history-product-${product.id}`}
+                        onClick={() => setHistoryProduct(product)}
+                      >
+                        <History className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost" size="icon"
+                        className="w-8 h-8 text-violet-500 hover:text-violet-700"
+                        title="Rattacher les commandes historiques"
+                        data-testid={`button-link-historical-${product.id}`}
+                        disabled={rattachingId === product.id}
+                        onClick={() => handleLinkHistorical(product)}
+                      >
+                        <Link2 className="w-4 h-4" />
                       </Button>
                       <Button variant="ghost" size="icon" className="w-8 h-8" data-testid={`button-edit-product-${product.id}`} onClick={() => openEdit(product)}>
                         <Pencil className="w-4 h-4" />
@@ -611,10 +1600,10 @@ export default function Inventory() {
       )}
 
       <Dialog open={addOpen} onOpenChange={(v) => { setAddOpen(v); if (!v) resetForm(); }}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6">
           <DialogHeader><DialogTitle>Nouveau Produit</DialogTitle></DialogHeader>
           <div className="space-y-5 pt-2">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Nom du produit *</Label>
                 <Input data-testid="input-product-name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="ex: T-shirt Premium" />
@@ -624,7 +1613,7 @@ export default function Inventory() {
                 <Input data-testid="input-product-sku" value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} placeholder="ex: TSH-001" />
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label>Prix coûtant (DH)</Label>
                 <Input data-testid="input-product-cost" type="number" step="0.01" value={form.costPrice} onChange={e => setForm(f => ({ ...f, costPrice: e.target.value }))} placeholder="0.00" />
@@ -637,6 +1626,23 @@ export default function Inventory() {
                 <Label>Stock initial</Label>
                 <Input data-testid="input-product-stock" type="number" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} placeholder="0" />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-product-stock-date">Date d'entrée en stock</Label>
+              <Input
+                id="new-product-stock-date"
+                type="date"
+                value={newProductStockDate}
+                onChange={(e) => setNewProductStockDate(e.target.value)}
+                max={new Date().toISOString().slice(0, 10)}
+                data-testid="input-new-product-stock-date"
+              />
+              <p className="text-xs text-muted-foreground">Par défaut : aujourd'hui. Change-la si le stock est arrivé à une date antérieure.</p>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">📦 Frais d'emballage (DH / commande)</Label>
+              <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} data-testid="input-cout-emballage" />
+              <p className="text-xs text-muted-foreground">Utilisé automatiquement dans l'Analyseur de profit</p>
             </div>
             <div className="space-y-2">
               <Label>Description</Label>
@@ -661,7 +1667,7 @@ export default function Inventory() {
                   <img src={previewUrl} alt="Aperçu" className="w-28 h-28 rounded-xl object-cover border-2 border-primary/30" />
                   <button
                     type="button"
-                    onClick={clearFile}
+                    onClick={() => { clearFile(); setForm(f => ({ ...f, imageUrl: "" })); }}
                     className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-destructive text-white flex items-center justify-center shadow"
                   >
                     <X className="w-3.5 h-3.5" />
@@ -695,9 +1701,14 @@ export default function Inventory() {
               <div className="space-y-3 p-4 rounded-xl bg-muted/30 border">
                 <div className="flex items-center justify-between">
                   <h4 className="font-semibold text-sm">Variantes</h4>
-                  <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-add-variant">
-                    <Plus className="w-3 h-3 mr-1" /> Ajouter
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost" onClick={applyCostToAllVariants} data-testid="button-apply-cost-all-variants" title="Copier le Prix coûtant du produit vers toutes les variantes">
+                      <Copy className="w-3 h-3 mr-1" /> Appliquer le coûtant à toutes
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-add-variant">
+                      <Plus className="w-3 h-3 mr-1" /> Ajouter
+                    </Button>
+                  </div>
                 </div>
                 {variants.length === 0 && (
                   <p className="text-sm text-muted-foreground text-center py-4">Aucune variante. Cliquez sur "Ajouter" pour commencer.</p>
@@ -734,7 +1745,7 @@ export default function Inventory() {
               </div>
             )}
 
-            <div className="flex justify-end gap-3 pt-2">
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => { setAddOpen(false); resetForm(); }}>Annuler</Button>
               <Button data-testid="button-save-product" onClick={handleCreate} disabled={createProduct.isPending}>
                 {createProduct.isPending ? "Enregistrement..." : "Créer le produit"}
@@ -745,10 +1756,10 @@ export default function Inventory() {
       </Dialog>
 
       <Dialog open={editOpen} onOpenChange={(v) => { setEditOpen(v); if (!v) { setEditingProduct(null); resetForm(); } }}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6">
           <DialogHeader><DialogTitle>Modifier le produit</DialogTitle></DialogHeader>
           <div className="space-y-5 pt-2">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Nom du produit</Label>
                 <Input data-testid="input-edit-product-name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
@@ -758,7 +1769,7 @@ export default function Inventory() {
                 <Input data-testid="input-edit-product-sku" value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} />
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label>Prix coûtant (DH)</Label>
                 <Input data-testid="input-edit-product-cost" type="number" step="0.01" value={form.costPrice} onChange={e => setForm(f => ({ ...f, costPrice: e.target.value }))} />
@@ -771,6 +1782,11 @@ export default function Inventory() {
                 <Label>Stock</Label>
                 <Input data-testid="input-edit-product-stock" type="number" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">📦 Frais d'emballage (DH / commande)</Label>
+              <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} data-testid="input-edit-cout-emballage" />
+              <p className="text-xs text-muted-foreground">Utilisé automatiquement dans l'Analyseur de profit</p>
             </div>
             <div className="space-y-2">
               <Label>Description</Label>
@@ -871,7 +1887,60 @@ export default function Inventory() {
               </div>
             </div>
 
-            <div className="flex justify-end gap-3 pt-2">
+            <div className="flex items-center gap-3 pt-2 border-t">
+              <Switch id="edit-has-variants" checked={hasVariants} onCheckedChange={setHasVariants} data-testid="switch-edit-has-variants" />
+              <Label htmlFor="edit-has-variants" className="font-medium">Ce produit a des variantes</Label>
+            </div>
+
+            {hasVariants && (
+              <div className="space-y-3 p-4 rounded-xl bg-muted/30 border">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-semibold text-sm">Variantes</h4>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost" onClick={applyCostToAllVariants} data-testid="button-edit-apply-cost-all-variants" title="Copier le Prix coûtant du produit vers toutes les variantes">
+                      <Copy className="w-3 h-3 mr-1" /> Appliquer le coûtant à toutes
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-edit-add-variant">
+                      <Plus className="w-3 h-3 mr-1" /> Ajouter
+                    </Button>
+                  </div>
+                </div>
+                {variants.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">Aucune variante. Cliquez sur "Ajouter" pour commencer.</p>
+                )}
+                {variants.map((v, idx) => (
+                  <div key={idx} className="grid grid-cols-6 gap-2 items-end p-3 bg-background rounded-lg border" data-testid={`edit-variant-row-${idx}`}>
+                    <div className="col-span-2 space-y-1">
+                      <Label className="text-xs">Nom</Label>
+                      <Input size={1} value={v.name} onChange={e => updateVariant(idx, 'name', e.target.value)} placeholder="ex: Rouge / L" data-testid={`input-edit-variant-name-${idx}`} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">SKU</Label>
+                      <Input size={1} value={v.sku} onChange={e => updateVariant(idx, 'sku', e.target.value)} placeholder="SKU" data-testid={`input-edit-variant-sku-${idx}`} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Coûtant</Label>
+                      <Input size={1} type="number" step="0.01" value={v.costPrice} onChange={e => updateVariant(idx, 'costPrice', e.target.value)} placeholder="0" data-testid={`input-edit-variant-cost-${idx}`} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Vente</Label>
+                      <Input size={1} type="number" step="0.01" value={v.sellingPrice} onChange={e => updateVariant(idx, 'sellingPrice', e.target.value)} placeholder="0" data-testid={`input-edit-variant-selling-${idx}`} />
+                    </div>
+                    <div className="flex items-end gap-1">
+                      <div className="flex-1 space-y-1">
+                        <Label className="text-xs">Stock</Label>
+                        <Input size={1} type="number" value={v.stock} onChange={e => updateVariant(idx, 'stock', e.target.value)} placeholder="0" data-testid={`input-edit-variant-stock-${idx}`} />
+                      </div>
+                      <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700 shrink-0" onClick={() => removeVariant(idx)} data-testid={`button-edit-remove-variant-${idx}`}>
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => { setEditOpen(false); setEditingProduct(null); resetForm(); }}>Annuler</Button>
               <Button data-testid="button-update-product" onClick={handleEdit} disabled={updateProduct.isPending}>
                 {updateProduct.isPending ? "Enregistrement..." : "Mettre à jour"}
@@ -922,6 +1991,42 @@ export default function Inventory() {
                 {aiSaving ? "Sauvegarde..." : "💾 Sauvegarder pour l'IA"}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Link All Historical Dialog */}
+      <Dialog open={linkAllOpen} onOpenChange={(v) => { if (!linkAllLoading) { setLinkAllOpen(v); if (!v) setLinkAllResult(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Link2 className="w-5 h-5 text-violet-500" />
+              Lier tout l'historique
+            </DialogTitle>
+            <DialogDescription>
+              Rattache toutes les commandes non liées aux produits correspondants en utilisant le nom exact ou la variante (ex : "Produit - 40").
+            </DialogDescription>
+          </DialogHeader>
+          {linkAllResult ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-800 p-4 space-y-2 text-sm">
+              <div className="flex justify-between"><span className="text-muted-foreground">Commandes liées</span><span className="font-bold text-emerald-600">{linkAllResult.linked}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Non trouvées</span><span className="font-semibold text-amber-600">{linkAllResult.unmatched}</span></div>
+              <div className="flex justify-between border-t pt-2 mt-1"><span className="text-muted-foreground">Total traité</span><span className="font-semibold">{linkAllResult.total}</span></div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Cette opération va parcourir toutes vos commandes sans produit lié et les rattacher automatiquement. Les données de profit et de stock seront mises à jour.
+            </p>
+          )}
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => { setLinkAllOpen(false); setLinkAllResult(null); }} disabled={linkAllLoading}>
+              {linkAllResult ? 'Fermer' : 'Annuler'}
+            </Button>
+            {!linkAllResult && (
+              <Button data-testid="button-confirm-link-all" onClick={handleLinkAll} disabled={linkAllLoading} style={{ background: "#7c3aed", color: "#fff" }}>
+                {linkAllLoading ? 'Traitement…' : <><Link2 className="w-4 h-4 mr-2" />Lier maintenant</>}
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
@@ -1137,6 +2242,183 @@ export default function Inventory() {
         </SheetContent>
       </Sheet>
 
+      {/* ── Stock history drawer ────────────────────────────────────────── */}
+      <Sheet open={historyProduct !== null} onOpenChange={(v) => { if (!v) setHistoryProduct(null); }}>
+        <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <History className="w-5 h-5 text-orange-500" />
+              Historique — {historyProduct?.name ?? ""}
+            </SheetTitle>
+          </SheetHeader>
+
+          {historyLoading ? (
+            <div className="py-12 text-center text-muted-foreground text-sm">Chargement…</div>
+          ) : historyMovements.length === 0 ? (
+            <div className="py-12 text-center text-muted-foreground text-sm">Aucun mouvement enregistré pour ce produit.</div>
+          ) : (
+            <div className="mt-4 space-y-4">
+              {/* Summary totals */}
+              {(() => {
+                const totalRecu = historyMovements.filter((m: any) => m.type === 'restock').reduce((s: number, m: any) => s + m.quantity, 0);
+                const totalSorti = Math.abs(historyMovements.filter((m: any) => m.quantity < 0).reduce((s: number, m: any) => s + m.quantity, 0));
+                return (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Card className="p-3 rounded-xl">
+                      <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                        <ArrowUpCircle className="w-3 h-3 text-emerald-600" /> Total reçu
+                      </div>
+                      <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400">+{totalRecu}</div>
+                    </Card>
+                    <Card className="p-3 rounded-xl">
+                      <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                        <ArrowDownCircle className="w-3 h-3 text-red-500" /> Total sorti
+                      </div>
+                      <div className="text-xl font-bold text-red-600 dark:text-red-400">-{totalSorti}</div>
+                    </Card>
+                  </div>
+                );
+              })()}
+
+              {/* Timeline */}
+              <div className="space-y-2">
+                {historyMovements.map((m: any) => {
+                  const typeMap: Record<string, { label: string; cls: string }> = {
+                    restock:    { label: "Entrée",     cls: "bg-emerald-100 text-emerald-700 border border-emerald-400" },
+                    shipped:    { label: "Expédition", cls: "bg-blue-100 text-blue-700 border border-blue-400" },
+                    returned:   { label: "Retour",     cls: "bg-orange-100 text-orange-700 border border-orange-400" },
+                    delivered:  { label: "Livraison",  cls: "bg-teal-100 text-teal-700 border border-teal-400" },
+                    adjustment: { label: "Ajustement", cls: "bg-purple-100 text-purple-700 border border-purple-400" },
+                    manual:     { label: "Manuel",     cls: "bg-slate-100 text-slate-600 border border-slate-400" },
+                  };
+                  const tc = typeMap[m.type] ?? { label: m.type, cls: "bg-gray-100 text-gray-600 border border-gray-300" };
+                  const d = new Date(m.createdAt);
+                  const dateStr = d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }) +
+                    " " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+                  return (
+                    <div key={m.id} className="flex items-start gap-3 p-3 rounded-xl border border-border/40 bg-muted/20 hover:bg-muted/40 transition-colors">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${tc.cls}`}>{tc.label}</span>
+                          <span className={`font-bold text-sm font-mono ${m.quantity > 0 ? "text-emerald-600" : "text-red-600"}`}>
+                            {m.quantity > 0 ? "+" : ""}{m.quantity}
+                          </span>
+                          {m.orderId && (
+                            <span className="text-xs text-blue-600 font-medium">#{m.orderId}</span>
+                          )}
+                        </div>
+                        {m.reason && (
+                          <div className="text-xs text-muted-foreground mt-1 truncate">{m.reason}</div>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground whitespace-nowrap shrink-0 mt-0.5">{dateStr}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* ── Safe-delete confirmation dialog ─────────────────────────────── */}
+      <Dialog open={!!deleteDialog} onOpenChange={(v) => { if (!v) setDeleteDialog(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600 dark:text-red-400">
+              <ShieldAlert className="w-5 h-5" />
+              Supprimer le produit
+            </DialogTitle>
+          </DialogHeader>
+          {deleteDialog && (
+            <div className="space-y-4 py-2">
+              <p className="font-semibold text-sm">{deleteDialog.product.name}</p>
+              {deleteDialog.usage.ordersCount > 0 ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-semibold text-sm">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    Ce produit est lié à des commandes
+                  </div>
+                  <ul className="text-sm text-amber-700 dark:text-amber-400 space-y-1 pl-6 list-disc">
+                    <li>{deleteDialog.usage.ordersCount} commande{deleteDialog.usage.ordersCount > 1 ? "s" : ""} au total</li>
+                    <li>{deleteDialog.usage.deliveredCount} livrée{deleteDialog.usage.deliveredCount > 1 ? "s" : ""}</li>
+                    {deleteDialog.usage.inStockOrders > 0 && (
+                      <li className="text-red-600 dark:text-red-400 font-semibold">{deleteDialog.usage.inStockOrders} commande{deleteDialog.usage.inStockOrders > 1 ? "s" : ""} encore en cours !</li>
+                    )}
+                  </ul>
+                  <p className="text-xs text-amber-600 dark:text-amber-500 mt-2">
+                    Vous pouvez <strong>archiver</strong> ce produit — il sera masqué de l'inventaire mais les commandes liées restent intactes.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 p-3 text-sm text-red-700 dark:text-red-300">
+                  Ce produit n'a aucune commande liée. La suppression est définitive et irréversible.
+                </div>
+              )}
+              <DialogFooter className="flex-col sm:flex-row gap-2">
+                <Button variant="outline" onClick={() => setDeleteDialog(null)} className="flex-1">
+                  Annuler
+                </Button>
+                {deleteDialog.usage.ordersCount > 0 && (
+                  <Button
+                    variant="outline"
+                    className="flex-1 border-amber-400 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 gap-1.5"
+                    onClick={() => confirmDelete(true)}
+                    data-testid="button-confirm-archive"
+                  >
+                    <Archive className="w-4 h-4" /> Archiver
+                  </Button>
+                )}
+                {deleteDialog.usage.ordersCount === 0 && (
+                  <Button
+                    variant="destructive"
+                    className="flex-1 gap-1.5"
+                    onClick={() => confirmDelete(false)}
+                    data-testid="button-confirm-delete"
+                  >
+                    <Trash2 className="w-4 h-4" /> Supprimer définitivement
+                  </Button>
+                )}
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Smart Cleanup modal ──────────────────────────────────────────── */}
+      <CleanupModal
+        open={cleanupOpen}
+        onClose={() => setCleanupOpen(false)}
+        cleanupType={cleanupType}
+        setCleanupType={setCleanupType}
+        cleanupSelectedIds={cleanupSelectedIds}
+        setCleanupSelectedIds={setCleanupSelectedIds}
+        onBulkDelete={async (ids, force) => {
+          setBulkDeleting(true);
+          try {
+            const result = await apiRequest("POST", "/api/products/bulk-delete", { productIds: ids, force });
+            toast({
+              title: "Nettoyage terminé",
+              description: `${result.deleted} supprimés · ${result.archived} archivés · ${result.skipped} ignorés`,
+            });
+            queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+            queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+          } catch (err: any) {
+            toast({ title: "Erreur", description: err.message || "Erreur", variant: "destructive" });
+          } finally {
+            setBulkDeleting(false);
+          }
+        }}
+      />
+
+      {/* ── Nuclear delete modal ─────────────────────────────────────────── */}
+      <NuclearDeleteModal
+        open={nuclearOpen}
+        onClose={() => setNuclearOpen(false)}
+        selectedCount={selectedIds.size}
+        onConfirm={handleNuclearConfirm}
+      />
+
       {/* ── Restock dialog ──────────────────────────────────────────────── */}
       <Dialog open={restockProduct !== null} onOpenChange={(v) => { if (!v && !restockSaving) setRestockProduct(null); }}>
         <DialogContent className="max-w-md">
@@ -1163,6 +2445,18 @@ export default function Inventory() {
                 data-testid="input-restock-quantity"
                 autoFocus
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="restock-date">Date de l'entrée en stock</Label>
+              <Input
+                id="restock-date"
+                type="date"
+                value={restockDate}
+                onChange={(e) => setRestockDate(e.target.value)}
+                max={new Date().toISOString().slice(0, 10)}
+                data-testid="input-restock-date"
+              />
+              <p className="text-xs text-muted-foreground">Par défaut : aujourd'hui. Change-la si le stock est arrivé à une date antérieure.</p>
             </div>
             <div>
               <Label htmlFor="restock-reason">Note (optionnel)</Label>
@@ -1192,79 +2486,144 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
-      {/* Repair product links dialog (dry-run preview → confirm apply) */}
-      <Dialog open={repairOpen} onOpenChange={(o) => { if (!repairApplying) setRepairOpen(o); }}>
+      {/* ── Backfill result dialog ── */}
+      <Dialog open={!!backfillResult} onOpenChange={(v) => { if (!v) setBackfillResult(null); }}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Réparation de l'historique des stocks</DialogTitle>
+            <DialogDescription>{backfillResult?.message}</DialogDescription>
+          </DialogHeader>
+          {backfillResult?.details?.length > 0 ? (
+            <div className="space-y-2">
+              {backfillResult.details.map((d: any, i: number) => (
+                <div key={i} className="flex justify-between items-center text-sm border-b pb-1.5">
+                  <span className="truncate max-w-[60%]">{d.name}</span>
+                  <span className="text-emerald-600 font-semibold">+{d.quantity}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(d.date).toLocaleDateString('fr-FR')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Aucune entrée manquante trouvée — tout est déjà à jour.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!bulkCostResult} onOpenChange={(v) => !v && setBulkCostResult(null)}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Coûtants appliqués aux variantes</DialogTitle>
+            <DialogDescription>{bulkCostResult?.message}</DialogDescription>
+          </DialogHeader>
+          {bulkCostResult?.details?.length > 0 ? (
+            <div className="space-y-2">
+              {bulkCostResult.details.map((d: any, i: number) => (
+                <div key={i} className="flex justify-between items-center text-sm border-b pb-1.5">
+                  <span className="truncate max-w-[70%]">{d.productName}</span>
+                  <span className="text-emerald-600 font-semibold">{d.variantsUpdated} variante(s)</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Aucune variante à compléter — tout est déjà renseigné.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
+
+      {/* ── Historical link choice dialog ── */}
+      <Dialog open={!!historicalCheck} onOpenChange={(v) => { if (!v) { setHistoricalCheck(null); setPendingPayload(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Données historiques trouvées</DialogTitle>
+            <DialogDescription>
+              Des commandes existent déjà pour « <strong>{pendingPayload?.name}</strong> »
+            </DialogDescription>
+          </DialogHeader>
+          {historicalCheck && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-4 space-y-1 text-sm">
+              <div className="flex justify-between"><span className="text-muted-foreground">Total commandes</span><span className="font-semibold">{historicalCheck.total}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Confirmées</span><span className="font-semibold text-blue-600">{historicalCheck.confirmed} ({historicalCheck.confirmRate}%)</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Livrées</span><span className="font-semibold text-emerald-600">{historicalCheck.delivered} ({historicalCheck.deliveryRate}%)</span></div>
+            </div>
+          )}
+          <p className="text-sm text-muted-foreground">
+            Voulez-vous rattacher ces commandes à ce produit ? Le coût, le stock et le profit seront calculés automatiquement.
+          </p>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              data-testid="button-link-historical-no"
+              onClick={() => pendingPayload && doCreateProduct(pendingPayload, false)}
+            >
+              Non, créer sans rattacher
+            </Button>
+            <Button
+              style={{ background: "#C5A059", color: "#fff" }}
+              data-testid="button-link-historical-yes"
+              onClick={() => pendingPayload && doCreateProduct(pendingPayload, true)}
+            >
+              <Link2 className="w-4 h-4 mr-2" />
+              Oui, rattacher les données
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Fix historical stock dialog ── */}
+      <Dialog open={fixHistoricalOpen} onOpenChange={(v) => { if (!fixApplying) setFixHistoricalOpen(v); }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Wrench className="w-5 h-5 text-primary" /> Réparer les liaisons produit
+              <Wrench className="w-5 h-5 text-amber-600" />
+              Commandes expédiées sans déduction de stock
             </DialogTitle>
             <DialogDescription>
-              Ré-associe chaque article de commande au bon produit selon son nom d'origine.
-              Aucune modification n'est appliquée avant votre confirmation.
+              {fixPreviewLoading
+                ? "Chargement en cours…"
+                : fixPreviewData
+                  ? fixPreviewData.count === 0
+                    ? "Aucune commande en attente — tout le stock est à jour ✅"
+                    : `${fixPreviewData.count} commande${fixPreviewData.count !== 1 ? "s" : ""} trouvée${fixPreviewData.count !== 1 ? "s" : ""} dont le stock n'a pas été déduit.`
+                  : ""}
             </DialogDescription>
           </DialogHeader>
 
-          {repairLoading ? (
-            <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
-              <Loader2 className="w-5 h-5 animate-spin" /> Analyse en cours...
-            </div>
-          ) : repairResult ? (
-            <div className="space-y-3 py-2">
-              <div className="flex items-center gap-2 text-emerald-600 font-medium">
-                <CheckCircle2 className="w-5 h-5" /> Réparation appliquée
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {repairResult.applied ?? 0} liaison(s) mise(s) à jour
-                ({repairResult.corrected} corrigée(s), {repairResult.nulled} déliée(s) car ambiguë(s)).
-              </p>
-            </div>
-          ) : repairPreview ? (
-            <div className="space-y-3 py-2" data-testid="repair-preview">
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div className="rounded-lg border p-3">
-                  <p className="text-xs text-muted-foreground">Articles analysés</p>
-                  <p className="text-lg font-bold">{repairPreview.totalItems}</p>
-                </div>
-                <div className="rounded-lg border p-3">
-                  <p className="text-xs text-muted-foreground">Déjà corrects</p>
-                  <p className="text-lg font-bold">{repairPreview.alreadyOk}</p>
-                </div>
-                <div className="rounded-lg border p-3 border-amber-300 bg-amber-50 dark:bg-amber-950/30">
-                  <p className="text-xs text-muted-foreground">À corriger</p>
-                  <p className="text-lg font-bold text-amber-600">{repairPreview.corrected}</p>
-                </div>
-                <div className="rounded-lg border p-3">
-                  <p className="text-xs text-muted-foreground">À délier (ambigus)</p>
-                  <p className="text-lg font-bold">{repairPreview.nulled}</p>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {repairPreview.unmatched} article(s) sans produit correspondant seront laissés tels quels.
-              </p>
-              {repairPreview.samples?.length > 0 && (
-                <div className="max-h-40 overflow-y-auto rounded-lg border text-xs">
-                  {repairPreview.samples.map((s: any) => (
-                    <div key={s.itemId} className="px-3 py-1.5 border-b last:border-b-0 flex justify-between gap-2">
-                      <span className="truncate">{s.rawProductName}</span>
-                      <span className="text-muted-foreground shrink-0">#{s.from ?? '—'} → #{s.to ?? '—'}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {(repairPreview.corrected + repairPreview.nulled) === 0 && (
-                <p className="text-sm text-emerald-600 font-medium">✅ Aucune correction nécessaire — toutes les liaisons sont correctes.</p>
-              )}
-            </div>
-          ) : null}
+          {fixPreviewLoading && (
+            <div className="flex justify-center py-6 text-muted-foreground text-sm">Analyse en cours…</div>
+          )}
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRepairOpen(false)} disabled={repairApplying} data-testid="button-repair-close">
-              {repairResult ? "Fermer" : "Annuler"}
+          {!fixPreviewLoading && fixPreviewData && fixPreviewData.count > 0 && (
+            <div className="max-h-64 overflow-y-auto border rounded-lg divide-y text-sm">
+              {fixPreviewData.orders.map((o: any) => (
+                <div key={o.id} className="px-3 py-2">
+                  <span className="font-semibold text-foreground">#{o.orderNumber}</span>
+                  {o.customerName && <span className="text-muted-foreground"> — {o.customerName}</span>}
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    {o.items.map((it: any, i: number) => (
+                      <span key={i}>{i > 0 ? ", " : ""}{it.productName} × {it.qty}</span>
+                    ))}
+                    {o.items.length === 0 && <span className="italic">Aucun article lié</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setFixHistoricalOpen(false)} disabled={fixApplying}>
+              Annuler
             </Button>
-            {!repairResult && repairPreview && (repairPreview.corrected + repairPreview.nulled) > 0 && (
-              <Button onClick={applyRepair} disabled={repairApplying} data-testid="button-repair-apply">
-                {repairApplying ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Application...</>) : `Appliquer ${repairPreview.corrected + repairPreview.nulled} correction(s)`}
+            {!fixPreviewLoading && fixPreviewData && fixPreviewData.count > 0 && (
+              <Button
+                onClick={applyFixHistorical}
+                disabled={fixApplying}
+                style={{ background: "#C5A059", color: "#fff" }}
+              >
+                {fixApplying ? "Application…" : `Déduire le stock (${fixPreviewData.count} commande${fixPreviewData.count !== 1 ? "s" : ""})`}
               </Button>
             )}
           </DialogFooter>

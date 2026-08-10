@@ -9,16 +9,22 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
-import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema } from "@shared/schema";
-import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
+import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
+import { hasFeature } from "./feature-flags";
+import { planDefaults } from "./utils/plan";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
+import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
+import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost } from "./services/carrier-service";
+import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
+import { computeProfitability, resolveDateRange } from "./services/profit";
+import { resolveProductId, splitVariant, normStr } from "./services/variants";
 
 import fs from "fs";
 
@@ -300,6 +306,9 @@ const CARRIER_LOGOS_SERVER: Record<string, string> = {
   ql: '/carriers/ql.svg',
   expresscoursier: '/carriers/expresscoursier.png',
   'express coursier': '/carriers/expresscoursier.png',
+  vitipsexpress: '/carriers/vitips.png',
+  'vitips express': '/carriers/vitips.png',
+  vitips: '/carriers/vitips.png',
 };
 
 /** Auto-match a raw city name against a carrier's city list. Returns best match or null. */
@@ -457,13 +466,28 @@ export async function registerRoutes(
   /* ── Health check — used by Railway (and load balancers) ─────── */
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
+  // Update lastSeenAt on every authenticated request (fire-and-forget — no latency impact)
+  app.use((req: any, _res, next) => {
+    if (req.user?.id) {
+      db.update(users).set({ lastSeenAt: new Date() } as any).where(eq(users.id, req.user.id)).catch(() => {});
+    }
+    next();
+  });
+
+  // Fetch the EC official status table at startup (public endpoint, no auth).
+  // Runs fire-and-forget — server starts immediately even if this is slow/fails.
+  fetchEcStatusTable().catch(e => console.warn('[EC-STATUS-TABLE] Startup fetch failed:', e?.message));
+
   app.get(api.stats.get.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     const ordersList = await storage.getOrdersByStore(storeId);
 
     // Cumulative confirmed statuses: once an order is confirmed it stays "confirmed"
     // regardless of shipping progress (expédié, in_progress, delivered, refused, retourné)
-    const CONFIRMED_STATUSES = new Set(['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
+    // ── Single source of truth — subtractive definition from @shared/order-status-sets ──
+    // (see isConfirmedCumulative: everything except new/uncontacted/cancelled/no-answer
+    // counts as confirmed, so confirmed can never drop below shipped)
+    const DELIVERED_STATUSES_SET_LEGACY = new Set<string>(DELIVERED_STATUSES);
 
     let totalOrders = ordersList.length;
     let cumConfirmed = 0, inProgress = 0, delivered = 0, refused = 0;
@@ -480,9 +504,9 @@ export async function registerRoutes(
       else if (o.status === 'boite vocale') boiteVocale++;
 
       // Cumulative: count as confirmed if order ever reached confirmation stage
-      if (CONFIRMED_STATUSES.has(o.status)) cumConfirmed++;
+      if (isConfirmedCumulative(o.status)) cumConfirmed++;
       if (o.status === 'in_progress') inProgress++;
-      if (o.status === 'delivered') delivered++;
+      if (DELIVERED_STATUSES_SET_LEGACY.has(o.status)) delivered++;
       if (o.status === 'refused') refused++;
 
       if (['confirme', 'delivered'].includes(o.status)) {
@@ -588,8 +612,16 @@ export async function registerRoutes(
     const storeId = req.user!.storeId!;
     const currentUser = req.user!;
     const isAgent = currentUser.role === 'agent';
-    const { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign, magasinId } = req.query as Record<string, string>;
+    const { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign, magasinId, dateType } = req.query as Record<string, string>;
     let { agentId } = req.query as Record<string, string>;
+    // dateType: 'creation' (default) filters everything by createdAt, exactly
+    // as before. 'shipping' additionally filters the shipping/delivery cohort
+    // (totalShipped, delivered, pending, refused, carrier performance,
+    // deliveryRate) by pickupDate instead, so "EXPÉDIÉS" can reconcile with a
+    // carrier's own ship-date-based count. The lead cohort (nouveau, confirme,
+    // revenue, city stats, daily chart, product performance) always stays on
+    // createdAt — only the shipping/delivery KPIs switch.
+    const isShippingDateMode = dateType === 'shipping';
     console.log(`[STATS] storeId=${storeId} magasinId=${magasinId ?? 'all'} city=${city ?? 'all'} agent=${agentId ?? 'all'}`);
 
     let agentPermissions: Record<string, boolean> = {};
@@ -638,6 +670,14 @@ export async function registerRoutes(
       const mid = Number(magasinId);
       allOrders = allOrders.filter(o => (o as any).magasinId === mid);
     }
+
+    // Snapshot after every non-date filter, before the createdAt date filter
+    // below — used to build the pickupDate-based shipping cohort when
+    // dateType === 'shipping', since that cohort must NOT be pre-filtered by
+    // createdAt (an order created last month but shipped this month must
+    // still be included).
+    const nonDateFilteredOrders = allOrders;
+
     if (dateFrom) {
       // Parse as local calendar date (not UTC midnight) to avoid TZ shift
       const [fy, fm, fd] = dateFrom.split('-').map(Number);
@@ -650,28 +690,80 @@ export async function registerRoutes(
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
     }
 
+    // ── Shipping/delivery cohort source ───────────────────────────────────
+    // 'creation' (default): reuse the createdAt-filtered `allOrders` — exact
+    // pre-existing behavior.
+    // 'shipping': filter the non-date-filtered set by pickupDate instead,
+    // requiring pickupDate to be set and within [dateFrom, dateTo].
+    let shippedCohortOrders = allOrders;
+    if (isShippingDateMode) {
+      shippedCohortOrders = nonDateFilteredOrders.filter(o => (o as any).pickupDate);
+      if (dateFrom) {
+        const [fy, fm, fd] = dateFrom.split('-').map(Number);
+        const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
+        shippedCohortOrders = shippedCohortOrders.filter(o => new Date((o as any).pickupDate) >= from);
+      }
+      if (dateTo) {
+        const [ty, tm, td] = dateTo.split('-').map(Number);
+        const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+        shippedCohortOrders = shippedCohortOrders.filter(o => new Date((o as any).pickupDate) <= to);
+      }
+    }
+
     let totalOrders = allOrders.length;
-    // CONFIRMED = all statuses an order passes through after agent confirmation
-    // (cumulative: once confirmed, always counted as confirmed regardless of shipping stage)
-    const ADMIN_CONFIRMED = new Set(['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
+    // ── Single source of truth for status groupings ──────────────────────────
+    // CONFIRMED uses the subtractive isConfirmedCumulative() helper (everything
+    // except new/uncontacted/cancelled/no-answer counts as confirmed), so
+    // confirmed can never fall below shipped/delivered as new carrier statuses
+    // appear. DELIVERED/SHIPPED are imported from @shared/order-status-sets.
+    // Reused for EVERY metric below (cards, Statistiques, products table,
+    // commissions) so no metric can drift from another (see order-status-sets.ts).
+    // DELIVERED_STATUSES_SET replaced by isDeliveredStatus() — accent/case-insensitive
+    const SHIPPED_STATUSES_SET = new Set<string>(SHIPPED_STATUSES);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
-    let pasReponse = 0, rappel = 0;
-    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalAgentCommissions = 0;
+    let pasReponse = 0, rappel = 0, confirmeReporte = 0;
+    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0, totalAgentCommissions = 0;
 
-    // Fetch store packaging cost and agent commission rates for accurate profit calc
-    const storeData = await storage.getStore(storeId);
-    const storePackagingCost = (storeData as any)?.packagingCost ?? 0;
+    // Fetch agent commission rates for accurate profit calc
     const agentSettingsList = await storage.getStoreAgentSettings(storeId);
     const agentCommissionMap = new Map<number, number>(
       agentSettingsList.map((s: any) => [s.agentId, s.commissionRate ?? 0])
     );
 
     // Real COGS: use order_items × products.cost_price, fallback to orders.product_cost
-    const deliveredInFilter = allOrders.filter(o => o.status === 'delivered');
+    const deliveredInFilter = allOrders.filter(o => isDeliveredStatus(o.status));
     const statsCogsMap = await storage.computeOrdersCOGS(
       deliveredInFilter.map(o => ({ id: o.id, productCost: (o as any).productCost ?? 0 }))
     );
+
+    const storeProducts = await storage.getProductsByStore(storeId);
+    const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));
+
+    // Per-product packaging map (DH/commande) for accurate profit calc
+    const emballageByPid = new Map<number, number>();
+    for (const p of storeProducts as any[]) {
+      const val = Number(p.settings?.profitDefaults?.coutEmballage ?? 0);
+      if (val > 0) emballageByPid.set(p.id, val);
+    }
+    // Per-product confirmation cost map (DH/commande)
+    const confByPid = new Map<number, number>();
+    for (const p of storeProducts as any[]) {
+      const val = Number(p.settings?.profitDefaults?.coutConfirmation ?? 0);
+      if (val > 0) confByPid.set(p.id, val);
+    }
+    // Order items map for delivered orders (needed for per-order packaging)
+    const deliveredFilterIds = deliveredInFilter.map((o: any) => o.id);
+    const statsOrderItems = deliveredFilterIds.length > 0
+      ? await db.select({ orderId: orderItems.orderId, productId: orderItems.productId })
+          .from(orderItems).where(inArray(orderItems.orderId, deliveredFilterIds))
+      : [];
+    const statsItemsByOrder = new Map<number, { productId: number | null }[]>();
+    for (const item of statsOrderItems) {
+      const arr = statsItemsByOrder.get(item.orderId) ?? [];
+      arr.push({ productId: item.productId });
+      statsItemsByOrder.set(item.orderId, arr);
+    }
 
     // Delivery tracking
     let totalShipped = 0, deliveredShipped = 0, refusedShipped = 0, pendingShipped = 0;
@@ -689,29 +781,30 @@ export async function registerRoutes(
       else if (o.status === 'boite vocale') boiteVocale++;
       // Pas de réponse 1/2/3/4 grouped count for sidebar badge
       if (typeof o.status === 'string' && o.status.startsWith('Pas de réponse')) pasReponse++;
+      // Confirmé Reporté — counted separately for the dashboard breakdown
+      if (o.status === 'confirme_reporte' || o.status === 'Confirmé Reporté' || o.status === 'Confirme Reporte') confirmeReporte++;
 
-      // confirme = ALL confirmed statuses: 'confirme' + 'expédié' + 'delivered'
-      if (ADMIN_CONFIRMED.has(o.status)) confirme++;
-      // delivered = only truly delivered
-      if (o.status === 'delivered') delivered++;
-
-      // Delivery shipping tracking
-      if ((o as any).trackNumber) {
-        totalShipped++;
-        const carrier = (o as any).shippingProvider || 'Inconnu';
-        if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
-        byCarrier[carrier].total++;
-        if (o.status === 'delivered') { deliveredShipped++; byCarrier[carrier].delivered++; }
-        else if (['refused', 'retourné', 'Retour Recu'].includes(o.status)) { refusedShipped++; byCarrier[carrier].refused++; }
-        else { pendingShipped++; byCarrier[carrier].pending++; }
-      }
+      // confirme = subtractive cumulative definition (see isConfirmedCumulative)
+      if (isConfirmedCumulative(o.status)) confirme++;
+      // delivered = all "livré" statuses (single source of truth) — lead
+      // cohort (createdAt-based), always computed the same regardless of
+      // dateType. When dateType==='shipping' the shipping/delivery KPIs
+      // below are recomputed from shippedCohortOrders instead of this value.
+      if (isDeliveredStatus(o.status)) delivered++;
 
       // Revenue & costs: only from delivered orders
-      if (o.status === 'delivered') {
+      if (isDeliveredStatus(o.status)) {
         revenue += (o.totalPrice ?? 0);
         totalProductCost += statsCogsMap.get(o.id) ?? 0;
         totalShipping += (o.shippingCost ?? 0);
-        totalPackaging += storePackagingCost;
+        // Packaging: per order (not per quantity) — sum coutEmballage(DH) over items → centimes
+        const orderPkgDH = (statsItemsByOrder.get(o.id) ?? [])
+          .reduce((sum: number, item: any) => sum + (emballageByPid.get(item.productId ?? 0) ?? 0), 0);
+        totalPackaging += Math.round(orderPkgDH * 100);
+        // Confirmation cost: per order (DH) → centimes, from product settings
+        const orderConfDH = (statsItemsByOrder.get(o.id) ?? [])
+          .reduce((sum: number, item: any) => sum + (confByPid.get(item.productId ?? 0) ?? 0), 0);
+        totalConfirmationCost += Math.round(orderConfDH * 100);
         // Agent commission: stored in DH, convert to cents
         if (o.assignedToId) {
           const rate = agentCommissionMap.get(o.assignedToId) ?? 0;
@@ -720,22 +813,73 @@ export async function registerRoutes(
       }
     });
 
+    // ── LIVRÉES single source of truth — card and Statistiques must match ────
+    // deliveredShipped previously counted only delivered orders WITH a tracking
+    // number, so the Statistiques panel (e.g. 169) disagreed with the LIVRÉES
+    // card (e.g. 204). Use ONE shipped cohort (shipping status OR tracking number)
+    // for all four KPIs so delivered + refused + pending === totalShipped exactly.
+    //
+    // This cohort is `shippedCohortOrders` — same as `allOrders` (createdAt
+    // filtered) when dateType==='creation', or the pickupDate-filtered set
+    // when dateType==='shipping'. This is what lets EXPÉDIÉS reconcile with
+    // a carrier's own ship-date-based count.
+    const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
+    const shippedOrders = shippedCohortOrders.filter(o => SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
+    totalShipped = shippedOrders.length;
+    deliveredShipped = shippedOrders.filter(o => isDeliveredStatus(o.status)).length;
+    refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
+    pendingShipped = shippedOrders.filter(o => !isDeliveredStatus(o.status) && !RETURNED_STATUSES.has(o.status)).length;
+
+    // Per-carrier breakdown — recomputed from the same shipping/delivery
+    // cohort (a carrier shipment always has a tracking number).
+    shippedCohortOrders.forEach(o => {
+      if ((o as any).trackNumber) {
+        const carrier = (o as any).shippingProvider || 'Inconnu';
+        if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
+        byCarrier[carrier].total++;
+        if (isDeliveredStatus(o.status)) byCarrier[carrier].delivered++;
+        else if (RETURNED_STATUSES.has(o.status)) byCarrier[carrier].refused++;
+        else byCarrier[carrier].pending++;
+      }
+    });
+
+    // ── EN COURS single source of truth ──────────────────────────────────────
+    // Previously inProgress only counted status === 'in_progress', so orders
+    // sitting in other carrier/transit statuses (e.g. 'En transit', 'Ramassé')
+    // were invisible here and the "Autres" bucket absorbed them instead.
+    // The in-transit cohort IS pendingShipped (shipped, not delivered, not
+    // returned), so reuse it to keep "EN COURS" and "En attente / En transit"
+    // in Statistiques Livraison numerically identical.
+    inProgress = pendingShipped;
+
     // City stats
     const cityMap: Record<string, { name: string; total: number; confirmed: number; delivered: number }> = {};
     allOrders.forEach(o => {
       const city = (o as any).customerCity || 'Inconnue';
       if (!cityMap[city]) cityMap[city] = { name: city, total: 0, confirmed: 0, delivered: 0 };
       cityMap[city].total++;
-      if (ADMIN_CONFIRMED.has(o.status)) cityMap[city].confirmed++;
-      if (o.status === 'delivered') cityMap[city].delivered++;
+      if (isConfirmedCumulative(o.status)) cityMap[city].confirmed++;
+      if (isDeliveredStatus(o.status)) cityMap[city].delivered++;
     });
     const cityStats = Object.values(cityMap).sort((a, b) => b.delivered - a.delivered).slice(0, 10);
 
     const cancelled = annuleFake + annuleFauxNumero + annuleDouble;
-    // confirmationRate = (confirme + expédié + delivered) / total
+    // confirmationRate = (confirme + expédié + delivered) / total — always lead-cohort (createdAt).
     const confirmationRate = totalOrders > 0 ? Math.round(confirme / totalOrders * 100) : 0;
-    // deliveryRate = delivered / confirmed (not divided by total)
-    const deliveryRate = confirme > 0 ? Math.round(delivered / confirme * 100) : 0;
+    // deliveryRate = delivered / confirmed (not divided by total). Numerator
+    // switches to the shipping-cohort deliveredShipped when dateType==='shipping'
+    // (per the shipping/delivery KPI group); denominator (confirme) stays lead-cohort.
+    const deliveryRate = confirme > 0 ? Math.round(deliveredShipped / confirme * 100) : 0;
+    // ── Confirmation breakdown — each rate over total leads, for a 100% view ─
+    // Returned as floats so the client can render one decimal (e.g. 76.3%).
+    const confirmRate    = totalOrders > 0 ? (confirme / totalOrders) * 100 : 0;
+    const cancelRate     = totalOrders > 0 ? (cancelled / totalOrders) * 100 : 0;
+    const injoignRate    = totalOrders > 0 ? (injoignable / totalOrders) * 100 : 0;
+    const pasReponseRate = totalOrders > 0 ? (pasReponse / totalOrders) * 100 : 0;
+    const nouveauRate    = totalOrders > 0 ? (nouveau / totalOrders) * 100 : 0;
+    // Remaining bucket (rappel, boite vocale, any uncategorized) so chips sum to 100%.
+    const autres         = Math.max(0, totalOrders - (confirme + cancelled + injoignable + pasReponse + nouveau));
+    const autresRate     = totalOrders > 0 ? (autres / totalOrders) * 100 : 0;
 
     const dailyMap: Record<string, { total: number; confirmed: number; delivered: number }> = {};
     const now = new Date();
@@ -751,15 +895,12 @@ export async function registerRoutes(
         const day = new Date(o.createdAt).toISOString().slice(0, 10);
         if (dailyMap[day] !== undefined) {
           dailyMap[day].total++;
-          if (ADMIN_CONFIRMED.has(o.status)) dailyMap[day].confirmed++;
-          if (o.status === 'delivered') dailyMap[day].delivered++;
+          if (isConfirmedCumulative(o.status)) dailyMap[day].confirmed++;
+          if (isDeliveredStatus(o.status)) dailyMap[day].delivered++;
         }
       }
     });
     const daily = Object.entries(dailyMap).map(([date, d]) => ({ date, count: d.total, confirmed: d.confirmed, delivered: d.delivered }));
-
-    const storeProducts = await storage.getProductsByStore(storeId);
-    const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));
 
     const rawProductMap: Record<string, { name: string; total: number; confirme: number; inProgress: number; delivered: number; inStock: boolean }> = {};
     allOrders.forEach(o => {
@@ -789,10 +930,10 @@ export async function registerRoutes(
       }
       rawProductMap[key].total++;
       // confirme column = ALL confirmed: 'confirme' + 'expédié' + 'delivered'
-      if (ADMIN_CONFIRMED.has(o.status)) rawProductMap[key].confirme++;
+      if (isConfirmedCumulative(o.status)) rawProductMap[key].confirme++;
       // inProgress = all orders currently with the carrier
-      if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(o.status)) rawProductMap[key].inProgress++;
-      if (o.status === 'delivered') rawProductMap[key].delivered++;
+      if (['in_progress', 'expédié', 'Attente De Ramassage', 'transit', 'unreachable', 'En Cours De Retour'].includes(o.status)) rawProductMap[key].inProgress++;
+      if (isDeliveredStatus(o.status)) rawProductMap[key].delivered++;
     });
     const productPerformance = Object.values(rawProductMap).sort((a, b) => b.total - a.total);
     const topProducts = productPerformance.slice(0, 10);
@@ -878,8 +1019,24 @@ export async function registerRoutes(
     // Build a name→productId map from store products
     const productNameToId = new Map(storeProducts.map((p: any) => [p.name.toLowerCase().trim(), p.id]));
 
-    // Full net profit formula: Revenue(delivered) - ProductCost - Shipping - Packaging - AgentCommissions - AdSpend
-    const netProfit = revenue - totalProductCost - totalShipping - totalPackaging - totalAgentCommissions - adSpendTotal;
+    // ── PROFIT NET: shared computation — identical formula to Profit Analyzer Pro ─
+    // Pass the SAME resolved date bounds that filtered allOrders above, so COMMANDES,
+    // LIVRÉES and PROFIT NET always refer to exactly the same period.
+    // When no date is set the dashboard shows ALL orders → use dateRange:'all'.
+    const profDateFrom = dateFrom || undefined;   // undefined when dashboard preset = 'all'
+    const profDateTo   = dateTo   || undefined;
+    console.log('[stats/filtered] profit range', profDateFrom ?? 'all-time', profDateTo ?? 'all-time');
+    const profResult = await computeProfitability(storeId, {
+      dateFrom:  profDateFrom,
+      dateTo:    profDateTo,
+      dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
+    });
+    // computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
+    // IMPORTANT: profResult.totals.netProfit is profit *before* ad spend (Revenue − COGS −
+    // Shipping − Packaging − Commissions). Subtract adSpendTotal (already in centimes) to get
+    // the true net profit after ads, consistent with the Rentabilité Avancée formula.
+    const profitBeforeAds = Math.round(profResult.totals.netProfit * 100);
+    const netProfit = profitBeforeAds - adSpendTotal;
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
@@ -894,10 +1051,11 @@ export async function registerRoutes(
     res.json({
       totalOrders, nouveau, rappel, confirme, inProgress, cancelled, delivered, refused,
       injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
-      pasReponse,
+      pasReponse, confirmeReporte,
       confirmeReporteDueSoon: reporteCounts.dueSoon,
       confirmeReporteTotal:   reporteCounts.total,
       confirmationRate, deliveryRate,
+      confirmRate, cancelRate, injoignRate, pasReponseRate, nouveauRate, autresRate,
       totalShipped,
       deliveredShipped,
       refusedShipped,
@@ -916,6 +1074,7 @@ export async function registerRoutes(
       totalProductCost: canProfit ? totalProductCost : undefined,
       totalShipping: canProfit ? totalShipping : undefined,
       totalPackaging: canProfit ? totalPackaging : undefined,
+      totalConfirmationCost: canProfit ? totalConfirmationCost : undefined,
       totalAgentCommissions: canProfit ? totalAgentCommissions : undefined,
       daily: canCharts ? daily : [],
       topProducts: canProducts ? topProducts.map(p => ({ ...p, share: 100 })) : [],
@@ -998,6 +1157,82 @@ export async function registerRoutes(
       res.json({ message: "Mot de passe mis à jour" });
     } catch (err: any) {
       res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // ── Push Notification endpoints ──────────────────────────────────────────
+  app.get("/api/push/vapid-public-key", (_req, res) => {
+    res.json({ publicKey: PUSH_VAPID_PUBLIC_KEY || null });
+  });
+
+  app.post("/api/push/subscribe", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        endpoint:  z.string().url(),
+        p256dh:    z.string().min(1),
+        auth:      z.string().min(1),
+        userAgent: z.string().optional(),
+      });
+      const data = schema.parse(req.body);
+      const sub = await storage.upsertPushSubscription({
+        userId:    req.user!.id,
+        storeId:   req.user!.storeId,
+        endpoint:  data.endpoint,
+        p256dh:    data.p256dh,
+        auth:      data.auth,
+        userAgent: data.userAgent ?? null,
+      });
+      res.json(sub);
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/push/unsubscribe", requireAuth, async (req, res) => {
+    try {
+      const { endpoint } = z.object({ endpoint: z.string() }).parse(req.body);
+      await storage.deletePushSubscription(endpoint);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/push/test", requireAuth, async (req, res) => {
+    try {
+      const result = await sendTestPushToUser(req.user!.id);
+      const sent = result.results.filter((r) => r.error === null).length;
+      console.log(`[Push/test] user=${req.user!.id} subsFound=${result.subsFound} sent=${sent}`);
+      // Always 200 — client reads per-subscription results to determine success/failure
+      res.json({
+        ok: sent > 0,
+        subscriptions: result.subsFound,
+        sent,
+        vapidPublicKeyPrefix: result.vapidPublicKeyPrefix,
+        vapidSubject: result.vapidSubject,
+        results: result.results,
+      });
+    } catch (err: any) {
+      console.error("[Push/test] error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.put("/api/user/notification-settings", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        sound:         z.boolean().optional(),
+        newOrder:      z.boolean().optional(),
+        statusUpdate:  z.boolean().optional(),
+        importantOnly: z.boolean().optional(),
+      });
+      const settings = schema.parse(req.body);
+      await storage.updateUserNotifSettings(req.user!.id, settings);
+      res.json({ ok: true });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      res.status(500).json({ message: err.message });
     }
   });
 
@@ -1198,8 +1433,74 @@ export async function registerRoutes(
     const agentOnly = user.role === 'agent' ? user.id : undefined;
     // Media buyers only see their own attributed orders (by ID or UTM pattern CODE*%)
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
-    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
-    res.json(result);
+    try {
+      const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+      res.setHeader("Cache-Control", "private, max-age=5, stale-while-revalidate=10");
+      res.json(result);
+    } catch (err: any) {
+      console.error("[ORDERS-FILTERED-ERROR]", { storeId: user.storeId, filters, msg: err?.message, stack: err?.stack });
+      res.status(500).json({ message: err?.message || "Erreur chargement commandes" });
+    }
+  });
+
+  // ── Excel export — respects the same filters as /api/orders/filtered ────────
+  app.get("/api/orders/export", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const magasinIdRaw = req.query.magasinId as string | undefined;
+    const productIdRaw = req.query.productId as string | undefined;
+    const filters = {
+      status:      req.query.status      as string | undefined,
+      agentId:     req.query.agentId     ? Number(req.query.agentId)  : undefined,
+      city:        req.query.city        as string | undefined,
+      source:      req.query.source      as string | undefined,
+      utmSource:   req.query.utmSource   as string | undefined,
+      utmCampaign: req.query.utmCampaign as string | undefined,
+      magasinId:   magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : undefined,
+      productId:   productIdRaw && productIdRaw !== 'all' ? Number(productIdRaw) : undefined,
+      dateFrom:    req.query.dateFrom    as string | undefined,
+      dateTo:      req.query.dateTo      as string | undefined,
+      dateType:    req.query.dateType    as string | undefined,
+      search:      req.query.search      as string | undefined,
+      page:  1,
+      limit: 100_000, // no pagination for export — return everything matching the filters
+    };
+    const agentOnly      = user.role === 'agent'       ? user.id : undefined;
+    const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
+    try {
+      const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+      const orders: any[] = result.orders ?? result;
+
+      const XLSX = await import("xlsx");
+      const rows = orders.map((o: any) => ({
+        "Code":               o.trackNumber  || o.orderNumber || "",
+        "Destinataire":       o.customerName  || "",
+        "Téléphone":          o.customerPhone || "",
+        "Ville":              o.customerCity  || "",
+        "Produit":            o.rawProductName || "",
+        "Boutique":           o.magasinName   || o.source || "",
+        "Frais de livraison": o.shippingCost  ? (o.shippingCost / 100).toFixed(2)  : "0.00",
+        "Prix":               o.totalPrice    ? (o.totalPrice   / 100).toFixed(2)  : "0.00",
+        "Adresse":            o.customerAddress || "",
+        "Référence":          o.orderNumber   || "",
+        "Statut":             o.status        || "",
+        "Date":               o.createdAt     ? new Date(o.createdAt).toLocaleString('fr-FR') : "",
+      }));
+
+      const ws  = XLSX.utils.json_to_sheet(rows);
+      const wb  = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Commandes");
+      const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+      const label    = filters.status || 'export';
+      const dateSlug = new Date().toISOString().slice(0, 10);
+      const filename = `commandes_${label}_${dateSlug}.xlsx`;
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.send(buffer);
+    } catch (err: any) {
+      console.error("[ORDERS-EXPORT-ERROR]", err);
+      res.status(500).json({ message: err?.message || "Erreur export" });
+    }
   });
 
   app.get("/api/orders/all", requireAuth, async (req, res) => {
@@ -1223,7 +1524,42 @@ export async function registerRoutes(
     };
     const agentOnly = user.role === 'agent' ? user.id : undefined;
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
-    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+    try {
+      const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+      res.setHeader("Cache-Control", "private, max-age=5, stale-while-revalidate=10");
+      res.json(result);
+    } catch (err: any) {
+      console.error("[ORDERS-ALL-ERROR]", { storeId: user.storeId, filters, msg: err?.message, stack: err?.stack });
+      res.status(500).json({ message: err?.message || "Erreur chargement commandes" });
+    }
+  });
+
+  // Physical return confirmation by order id (button click from the returns list)
+  app.post("/api/orders/confirm-return-by-code", requireAuth, async (req: any, res) => {
+    const storeId = req.user!.storeId!;
+    const code = String(req.body.code || "").trim();
+    if (!code) return res.status(400).json({ success: false, message: "Code vide" });
+
+    const [order] = await db.select().from(orders).where(and(
+      eq(orders.storeId, storeId),
+      or(
+        eq(orders.trackNumber, code),
+        eq(orders.returnTrackingNumber, code),
+        eq(orders.orderNumber, code),
+      ),
+    )).limit(1);
+
+    if (!order) return res.status(404).json({ success: false, message: `Aucune commande trouvée pour le code "${code}"` });
+
+    const result = await storage.confirmReturnReceipt(storeId, order.id, req.user!.id);
+    res.status(result.success ? 200 : 400).json({ ...result, orderNumber: order.orderNumber, customerName: order.customerName });
+  });
+
+  app.post("/api/orders/:id/confirm-return", requireAuth, async (req: any, res) => {
+    const storeId = req.user!.storeId!;
+    const orderId = parseInt(req.params.id, 10);
+    const result = await storage.confirmReturnReceipt(storeId, orderId, req.user!.id);
+    if (!result.success) return res.status(400).json(result);
     res.json(result);
   });
 
@@ -1360,11 +1696,18 @@ export async function registerRoutes(
         if (blockedOrders.length > 0) broadcastProgress();
 
         // ── Helpers ─────────────────────────────────────────────────
-        const getProductName = (order: any) =>
-          order.rawProductName ||
-          (order.items?.length > 0
-            ? (order.items[0].rawProductName || order.items[0].product?.name || 'Produit')
-            : 'Produit');
+        // Returns a product name string, or null if no resolvable name exists.
+        // Uses ALL items (not just the first) so multi-item orders get a complete label.
+        // Returns null instead of the generic "Produit" fallback — callers that require
+        // a real product name (e.g. Vitips) should fail-fast rather than sending "Produit".
+        const getProductName = (order: any): string | null => {
+          if (order.rawProductName) return order.rawProductName;
+          if (!order.items || order.items.length === 0) return null;
+          const names = order.items
+            .map((it: any) => it.rawProductName || it.product?.name)
+            .filter(Boolean);
+          return names.length > 0 ? names.join(" + ") : null;
+        };
 
         // Resolve credentials per-order:
         // if user pinned an account → always use it; otherwise use city routing
@@ -1496,7 +1839,7 @@ export async function registerRoutes(
                   if (!resolved) {
                     return {
                       success:        false,
-                      error:          `Express Coursier: Ville "${resolvedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
+                      error:          `Ville « ${resolvedCity} » non synchronisée pour Express Coursier. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
                       carrierMessage: 'City not found in express_coursier_cities',
                       httpStatus:     0,
                       rawResponse:    null,
@@ -1519,7 +1862,7 @@ export async function registerRoutes(
                   if (!resolved) {
                     return {
                       success:        false,
-                      error:          `Ozon Express: Ville "${resolvedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
+                      error:          `Ville « ${resolvedCity} » non synchronisée pour Ozon Express. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
                       carrierMessage: 'City not found in ozon_express_cities',
                       httpStatus:     0,
                       rawResponse:    null,
@@ -1534,6 +1877,37 @@ export async function registerRoutes(
                   ? ((orderCreds as any).settings || {})
                   : {};
 
+                // For Vitipsexpress: resolve city name → abbr (e.g. "CASABLANCA" → "Casablanca")
+                let vitipsCityAbbr: string | undefined;
+                if (provider.toLowerCase() === 'vitipsexpress') {
+                  const resolved = await storage.getVitipsCityAbbr(storeId, resolvedCity);
+                  // Always set vitipsCityAbbr: use the resolved abbr if found, else fall back to
+                  // the raw city name so the shipment is never blocked by a missing mapping.
+                  vitipsCityAbbr = resolved || resolvedCity;
+                  if (resolved) {
+                    console.log(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → abbr="${vitipsCityAbbr}"`);
+                  } else {
+                    console.warn(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → no abbr found, sending city name directly`);
+                  }
+
+                  // Fail-fast: Vitips rejects shipments with a generic product name.
+                  // If no real product name can be resolved, surface a clear error immediately.
+                  const resolvedProductName = getProductName(order);
+                  if (!resolvedProductName) {
+                    const ref = (order as any).orderNumber || order.id;
+                    const errMsg = `Commande #${ref} — aucun produit identifiable, impossible d'expédier via Vitips. Rattachez la commande à un produit du catalogue ou renseignez le nom du produit.`;
+                    console.error(`[VITIPS-SHIP] ❌ ${errMsg}`);
+                    return {
+                      success:        false,
+                      error:          errMsg,
+                      carrierMessage: errMsg,
+                      httpStatus:     0,
+                      rawResponse:    null,
+                      permanent:      true,
+                    };
+                  }
+                }
+
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -1543,6 +1917,7 @@ export async function registerRoutes(
                   productName:      getProductName(order),
                   quantity:         bulkQty,
                   canOpen:          (order as any).canOpen === 1,
+                  isStock:          (order as any).isStock === 1,
                   orderNumber:      (order as any).orderNumber || String(order.id),
                   orderId:          order.id,
                   storeId,
@@ -1553,7 +1928,7 @@ export async function registerRoutes(
                   apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
                   apiSecret:        (orderCreds as any).apiSecret || '',
                   previousAttemptHadPlaceholder: isAmeexRetry,
-                  cityId:           ameexCityId ?? ecCityId ?? ozonCityId,
+                  cityId:           ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr,
                   ecSettings,
                   ozonSettings,
                 });
@@ -1581,6 +1956,9 @@ export async function registerRoutes(
                       status:           'Attente De Ramassage',
                     } as any)
                   );
+                  // Decrement stock for shipped order (fire-and-forget, never blocks shipment)
+                  storage.decrementStockForOrder(order.id, storeId)
+                    .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
                   allLogUpdates.push(storage.createIntegrationLog({
                     storeId, integrationId: null, provider,
                     action: 'shipping_sent', status: 'success',
@@ -1589,14 +1967,31 @@ export async function registerRoutes(
                   results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'shipped', warning: shipWarning });
                   shippedCount++;
                 } else if (!trackingNumber) {
-                  console.error(`[SHIPPING-LOG]: ❌ Order #${ref} — carrier returned success but no tracking number. Skipping DB save.`);
+                  // Carrier returned success=true but no tracking number AND no warning.
+                  // Never leave an accepted shipment stuck in "Confirmé" — move it to
+                  // "Attente De Ramassage" and surface a warning. EC webhooks will attach
+                  // the real tracking later via phone-fallback.
+                  const noTrackWarn = provider.toLowerCase() === 'expresscoursier'
+                    ? `Express Coursier a accepté la commande mais n'a retourné aucun numéro de suivi (package_id absent). Elle entre en Suivi — le tracking sera mis à jour par webhook EC.`
+                    : `${provider} a accepté la commande sans numéro de suivi. Elle entre en Suivi.`;
+                  console.warn(`[SHIPPING-LOG]: ⚠️ Order #${ref} — accepted by ${provider} but no tracking returned. Moving to Attente De Ramassage (not leaving in Confirmé).`);
+                  allDbUpdates.push(
+                    storage.updateOrder(order.id, {
+                      shippingProvider: provider,
+                      carrierName:      provider,
+                      status:           'Attente De Ramassage',
+                    } as any)
+                  );
+                  // Decrement stock for shipped order (fire-and-forget, never blocks shipment)
+                  storage.decrementStockForOrder(order.id, storeId)
+                    .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
                   allLogUpdates.push(storage.createIntegrationLog({
                     storeId, integrationId: null, provider,
-                    action: 'shipping_sent', status: 'fail',
-                    message: `❌ Commande #${ref}: ${provider} a confirmé mais sans numéro de suivi. Commande reste Confirmée.`,
+                    action: 'shipping_sent', status: 'success',
+                    message: `⚠️ Commande #${ref} acceptée par ${provider} sans numéro de suivi. ${noTrackWarn}`,
                   }));
-                  results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'failed', error: 'Pas de numéro de suivi retourné' });
-                  failedCount++;
+                  results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'shipped', warning: noTrackWarn });
+                  shippedCount++;
                 } else {
                 console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber} (saved to track_number column)`);
                 // Track retries (attempts > 1 means at least one retry was needed)
@@ -1616,8 +2011,12 @@ export async function registerRoutes(
                     status:           'Attente De Ramassage',
                   } as any)
                 );
+                // Decrement stock for shipped order (fire-and-forget, never blocks shipment)
+                storage.decrementStockForOrder(order.id, storeId)
+                  .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
+                // Static delivery fee fallback (skipped for EC — per-city table takes priority)
                 const fee = (orderCreds as any).deliveryFee || 0;
-                if (fee > 0) {
+                if (fee > 0 && provider.toLowerCase() !== 'expresscoursier') {
                   allDbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
                 }
                 // Try to get real per-city delivery cost from Digylog
@@ -1632,6 +2031,32 @@ export async function registerRoutes(
                         }
                       })
                       .catch(costErr => console.error('[DIGYLOG-COST] Failed to fetch cost:', costErr))
+                  );
+                }
+                // Per-city delivery cost for Express Coursier (replaces static deliveryFee)
+                if (provider.toLowerCase() === 'expresscoursier') {
+                  allDbUpdates.push(
+                    storage.getCarrierCityPrice(storeId, 'expresscoursier', (order as any).customerCity || '')
+                      .then(async (cityFee) => {
+                        const { EC_DEFAULT_CITY_PRICE_DH } = await import('./seed-data/ec-city-pricing');
+                        const price = cityFee ?? (EC_DEFAULT_CITY_PRICE_DH * 100);
+                        console.log(`[EC-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH fallback'})`);
+                        return storage.updateOrder(order.id, { shippingCost: price });
+                      })
+                      .catch(costErr => console.error('[EC-COST] Failed to fetch city price:', costErr))
+                  );
+                }
+                // Per-city delivery cost for Vitips Express (same mechanism as Express Coursier)
+                if (provider.toLowerCase() === 'vitipsexpress') {
+                  allDbUpdates.push(
+                    storage.getCarrierCityPrice(storeId, 'vitipsexpress', (order as any).customerCity || '')
+                      .then(async (cityFee) => {
+                        const { VITIPS_DEFAULT_CITY_PRICE_DH } = await import('./seed-data/vitips-city-pricing');
+                        const price = cityFee ?? (VITIPS_DEFAULT_CITY_PRICE_DH * 100);
+                        console.log(`[VITIPS-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH fallback'})`);
+                        return storage.updateOrder(order.id, { shippingCost: price });
+                      })
+                      .catch(costErr => console.error('[VITIPS-COST] Failed to fetch city price:', costErr))
                   );
                 }
                 allLogUpdates.push(storage.createIntegrationLog({
@@ -1695,6 +2120,46 @@ export async function registerRoutes(
       res.json({ ok: true, deleted: orderId });
     } catch (err: any) {
       res.status(err.message?.includes('not found') ? 404 : 500).json({ message: err.message || "Suppression échouée" });
+    }
+  });
+
+  // ── Bulk mark as "shipped via EC" (manual safety action) ────────────────────
+  // Sets status='Attente De Ramassage' + shippingProvider/carrierName='expresscoursier'
+  // for confirmed orders that were shipped directly at EC (not via the platform).
+  // Once EC's webhook arrives, the phone-fallback in processCarrierWebhook will attach
+  // the real tracking number and live status automatically.
+  app.post("/api/orders/bulk-mark-ec-shipped", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'agent' || user.role === 'media_buyer') {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      const storeId = user.storeId!;
+      const { orderIds } = req.body;
+      if (!Array.isArray(orderIds) || orderIds.length === 0) {
+        return res.status(400).json({ message: "orderIds (array) requis" });
+      }
+      const ids = orderIds.map(Number).filter(n => !isNaN(n));
+      let updated = 0;
+      let skipped = 0;
+      await Promise.all(ids.map(async (orderId) => {
+        const order = await storage.getOrder(orderId);
+        if (!order || (order as any).storeId !== storeId) { skipped++; return; }
+        await storage.updateOrder(orderId, {
+          status:           'Attente De Ramassage',
+          shippingProvider: 'expresscoursier',
+          carrierName:      'expresscoursier',
+        } as any);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'expresscoursier',
+          action: 'manual_mark_ec_shipped', status: 'success',
+          message: `✓ Commande #${(order as any).orderNumber} marquée manuellement comme expédiée via Express Coursier (sans numéro de suivi)`,
+        });
+        updated++;
+      }));
+      res.json({ ok: true, updated, skipped });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Mise à jour échouée" });
     }
   });
 
@@ -1792,6 +2257,8 @@ export async function registerRoutes(
       const cs = updated?.commentStatus ?? undefined;
       emitOrderUpdated(order.storeId, orderId, status, cs);
       broadcastToStore(order.storeId, "order_updated", { orderId, status, commentStatus: cs });
+      // Web push notification (fire-and-forget)
+      notifyStatusUpdate({ id: orderId, storeId: order.storeId, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, status);
       pushOrderToSheet(order.storeId, {
         action: "order.updated",
         orderNumber: (updated as any)?.orderNumber || String(orderId),
@@ -1841,7 +2308,18 @@ export async function registerRoutes(
 
   app.get(api.products.list.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    res.json(await storage.getProductsByStore(storeId));
+    const prods = await storage.getProductsByStore(storeId);
+    if (!prods.length) return res.json([]);
+    const variants = await db
+      .select()
+      .from(productVariants)
+      .where(inArray(productVariants.productId, prods.map(p => p.id)));
+    const variantsByProduct = new Map<number, any[]>();
+    for (const v of variants) {
+      if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+      variantsByProduct.get(v.productId)!.push(v);
+    }
+    res.json(prods.map(p => ({ ...p, variants: variantsByProduct.get(p.id) ?? [] })));
   });
 
   app.get(api.agents.list.path, requireAuth, async (req, res) => {
@@ -1860,6 +2338,23 @@ export async function registerRoutes(
         if (existingUser) return res.status(400).json({ message: "Cet email est déjà utilisé" });
       }
       const userRole = data.role || "agent";
+
+      // Plan limit: Starter allows max 2 confirmation agents
+      if (userRole === 'agent') {
+        const sub = await storage.getSubscription(storeId);
+        const limits = planDefaults(sub?.plan ?? 'trial');
+        if (limits.maxConfirmationAgents < Infinity) {
+          const newRoleInStore = (req.body.roleInStore as string) || "confirmation";
+          if (['confirmation', 'both'].includes(newRoleInStore)) {
+            const allSettings = await storage.getStoreAgentSettings(storeId);
+            const confCount = allSettings.filter((s: any) => ['confirmation', 'both'].includes(s.roleInStore)).length;
+            if (confCount >= limits.maxConfirmationAgents) {
+              return res.status(403).json({ message: `Le plan Starter est limité à ${limits.maxConfirmationAgents} agents de confirmation. Passez au plan Pro pour en ajouter davantage.` });
+            }
+          }
+        }
+      }
+
       const hashedPassword = await hashPassword(data.password);
       const user = await storage.createUser({
         username: data.username, email: emailVal, phone: data.phone || null,
@@ -2045,106 +2540,121 @@ export async function registerRoutes(
     const user = req.user!;
     const storeId = user.storeId!;
     const isAdmin = user.role === 'owner' || user.role === 'admin';
-    // Admin can delete any; others can only delete their own
     const userIdForDelete = isAdmin ? undefined : user.id;
     await storage.deleteAdSpendNew(Number(req.params.id), storeId, userIdForDelete);
     res.json({ ok: true });
   });
 
-  // ============================================================
-  // PRODUCT-LINK REPAIR (admin, dry-run + apply)
-  // Re-resolves each order_items.productId from its rawProductName:
-  // unique name match → correct link; ambiguous (several products share
-  // the normalized name) → NULL; no match → left untouched.
-  // ============================================================
-  app.post("/api/inventory/repair-product-links", requireAdmin, async (req, res) => {
+  app.patch("/api/publicites/:id", requireAuth, async (req, res) => {
     try {
-      const storeId = req.user!.storeId!;
-      const apply = req.body?.apply === true;
+      const user = req.user!;
+      const storeId = user.storeId!;
+      const isAdmin = user.role === 'owner' || user.role === 'admin';
+      const { date, source, amount, productId } = req.body;
+      const fields: any = {};
+      if (date !== undefined) fields.date = String(date);
+      if (source !== undefined) fields.source = String(source);
+      if (amount !== undefined) fields.amount = Math.round(Number(amount) * 100);
+      if (productId !== undefined) fields.productId = productId !== null ? Number(productId) : null;
+      if (Object.keys(fields).length === 0) return res.status(400).json({ message: "Aucun champ à mettre à jour" });
+      const userIdForUpdate = isAdmin ? undefined : user.id;
+      const updated = await storage.updateAdSpendEntry(Number(req.params.id), storeId, userIdForUpdate, fields);
+      if (!updated) return res.status(404).json({ message: "Entrée non trouvée ou non autorisée" });
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[PATCH /api/publicites/:id] error:", err);
+      res.status(500).json({ message: err?.message || "Erreur serveur" });
+    }
+  });
 
-      const normalizeName = (s: string) =>
-        s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  // ─── Campaign-product mapping (for ad-spend importer) ───────────────────
 
-      const storeProducts = await db.select({ id: products.id, name: products.name })
-        .from(products).where(eq(products.storeId, storeId));
-      const nameMap = new Map<string, number[]>();
-      for (const p of storeProducts) {
-        const key = normalizeName(p.name || "");
-        if (!key) continue;
-        const arr = nameMap.get(key) || [];
-        arr.push(p.id);
-        nameMap.set(key, arr);
+  // Normalize campaign name: lowercase, trim, strip accents, collapse spaces
+  function normalizeCampaign(s: string): string {
+    return s.toLowerCase().trim()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ");
+  }
+
+  app.get("/api/publicites/campaign-map", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const map = await storage.getCampaignMap(storeId);
+    res.json(map);
+  });
+
+  app.post("/api/publicites/import", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const storeId = user.storeId!;
+      const { magasinId, source, rows } = req.body;
+
+      if (!magasinId) return res.status(400).json({ message: "Magasin requis" });
+      if (!source) return res.status(400).json({ message: "Source requise" });
+      if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ message: "Aucune ligne à importer" });
+
+      // Validate magasin ownership exactly like POST /api/publicites
+      const owned = await storage.getStoresByOwner(user.id);
+      if (!owned.some((m: any) => m.id === Number(magasinId))) {
+        return res.status(403).json({ message: "Magasin non autorisé" });
       }
 
-      const items = await db.select({
-        id: orderItems.id,
-        productId: orderItems.productId,
-        rawProductName: orderItems.rawProductName,
-      }).from(orderItems)
-        .innerJoin(orders, eq(orderItems.orderId, orders.id))
-        .where(eq(orders.storeId, storeId));
-
-      let corrected = 0, nulled = 0, unmatched = 0, alreadyOk = 0, noName = 0;
-      // Group planned updates by (from → to) pair so apply can be conditioned on
-      // the originally-read productId — concurrent edits are skipped, not clobbered.
-      const updates = new Map<string, { from: number | null; to: number | null; ids: number[] }>();
-      const samples: { itemId: number; rawProductName: string; from: number | null; to: number | null }[] = [];
-
-      for (const item of items) {
-        const raw = (item.rawProductName || "").trim();
-        if (!raw) { noName++; continue; }
-        const matches = nameMap.get(normalizeName(raw)) || [];
-        let target: number | null;
-        if (matches.length === 1) target = matches[0];
-        else if (matches.length > 1) target = null; // ambiguous → unlink
-        else { unmatched++; continue; } // no match → leave as-is
-
-        if (target === item.productId) { alreadyOk++; continue; }
-        if (target === null && item.productId === null) { alreadyOk++; continue; }
-
-        if (target === null) nulled++; else corrected++;
-        const key = `${item.productId ?? 'null'}→${target ?? 'null'}`;
-        const group = updates.get(key) || { from: item.productId, to: target, ids: [] };
-        group.ids.push(item.id);
-        updates.set(key, group);
-        if (samples.length < 20) {
-          samples.push({ itemId: item.id, rawProductName: raw, from: item.productId, to: target });
+      // Per-row validation
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const label = `Ligne ${i + 1} (${row.campaignName || "?"})`;
+        if (!row.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(row.date))) {
+          return res.status(400).json({ message: `${label} : date invalide "${row.date}" — format attendu YYYY-MM-DD` });
+        }
+        if (row.amount == null || !isFinite(Number(row.amount)) || Number(row.amount) < 0) {
+          return res.status(400).json({ message: `${label} : montant invalide "${row.amount}"` });
         }
       }
 
-      let applied = 0;
-      if (apply) {
-        for (const group of Array.from(updates.values())) {
-          for (let i = 0; i < group.ids.length; i += 500) {
-            const chunk = group.ids.slice(i, i + 500);
-            // Condition each update on the originally-read productId so rows
-            // changed concurrently since the read are skipped, not overwritten.
-            const fromCond = group.from === null
-              ? sql`${orderItems.productId} IS NULL`
-              : eq(orderItems.productId, group.from);
-            const result = await db.update(orderItems)
-              .set({ productId: group.to })
-              .where(and(inArray(orderItems.id, chunk), fromCond));
-            applied += (result as any).rowCount ?? chunk.length;
+      let mapped = 0;
+
+      // 1. Persist campaign→product mappings for all campaigns (before grouping)
+      for (const row of rows) {
+        const { productId, campaignName } = row;
+        if (productId && campaignName) {
+          const norm = normalizeCampaign(String(campaignName));
+          if (norm) {
+            await storage.upsertCampaignMap(storeId, norm, Number(productId));
+            mapped++;
           }
         }
-        console.log(`[REPAIR-PRODUCT-LINKS] store=${storeId} applied=${applied} (planned: corrected=${corrected}, nulled=${nulled})`);
       }
 
-      res.json({
-        mode: apply ? "apply" : "dry-run",
-        totalItems: items.length,
-        corrected,
-        nulled,
-        alreadyOk,
-        unmatched,
-        noName,
-        applied: apply ? applied : undefined,
-        samples,
-      });
-    } catch (e: any) {
-      console.error("[REPAIR-PRODUCT-LINKS] error:", e);
-      res.status(500).json({ message: e.message || "Erreur lors de la réparation des liaisons produit" });
+      // 2. Group rows by productId+date — sum their DH amounts into one entry per product per date
+      type Group = { productId: number; date: string; totalDh: number };
+      const groups: Record<string, Group> = {};
+      for (const row of rows) {
+        if (!row.productId) continue; // skip unmapped rows
+        const key = `${row.productId}||${row.date}`;
+        if (!groups[key]) groups[key] = { productId: Number(row.productId), date: String(row.date), totalDh: 0 };
+        groups[key].totalDh += Number(row.amount);
+      }
+
+      // 3. Insert one entry per product per date with summed amount (properly rounded centimes)
+      let inserted = 0;
+      for (const g of Object.values(groups)) {
+        const amountCents = Math.round(g.totalDh * 100);
+        await storage.createAdSpendEntry({
+          storeId,
+          magasinId: Number(magasinId),
+          userId: user.id,
+          source,
+          date: g.date,
+          amount: amountCents,
+          productId: g.productId,
+          productSellingPrice: null,
+        });
+        inserted++;
+      }
+
+      res.json({ inserted, mapped });
+    } catch (err: any) {
+      console.error("[POST /api/publicites/import] error:", err);
+      res.status(500).json({ message: err?.message || "Erreur serveur lors de l'import" });
     }
   });
 
@@ -2158,14 +2668,277 @@ export async function registerRoutes(
     const productId = req.query.productId && req.query.productId !== 'all' ? Number(req.query.productId) : undefined;
     const mediaBuyerIdFilter = req.query.mediaBuyerId && req.query.mediaBuyerId !== 'all' ? Number(req.query.mediaBuyerId) : undefined;
     const magasinIdFilter = req.query.magasinId && req.query.magasinId !== 'all' ? Number(req.query.magasinId) : undefined;
-    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter));
+    const source = req.query.source && req.query.source !== 'all' ? (req.query.source as string) : undefined;
+    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter, source));
+  });
+
+  // ── Shopify junk-order cleanup ────────────────────────────────────────────
+  // Deletes empty Shopify orders created by cart/checkout webhook events.
+  // Conservative criteria (all must match): source=shopify, status=nouveau,
+  // phone null/empty, totalPrice=0, customer is one of the generic fallbacks.
+  // Orders with a real phone or non-zero price are NEVER touched.
+  // ── Debug: resolve a raw product name against the catalogue ─────────────────
+  app.get("/api/debug/resolve-product-name", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const rawName = String(req.query.name || '');
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const variantsByProduct = new Map<number, { name: string }[]>();
+      for (const v of allVariants) {
+        if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+        variantsByProduct.get(v.productId)!.push({ name: v.name });
+      }
+      const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+      const result = resolveProductId(rawName, storeProductsWithVariants);
+      res.json({
+        rawName,
+        normalizedRawName: normStr(rawName),
+        result,
+        candidateProductNames: storeProducts.map(p => ({ id: p.id, name: p.name, normalized: normStr(p.name) })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/admin/shopify/cleanup-empty", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const result = await db.execute(sql`
+        DELETE FROM orders
+        WHERE store_id = ${storeId}
+          AND source = 'shopify'
+          AND status = 'nouveau'
+          AND total_price = 0
+          AND (customer_phone IS NULL OR TRIM(customer_phone) = '')
+          AND customer_name IN ('Client Shopify', 'Client Anonyme')
+        RETURNING id
+      `);
+      const deletedCount = (result as any).rowCount ?? (result as any).rows?.length ?? 0;
+      console.log(`[SHOPIFY CLEANUP] Deleted ${deletedCount} empty Shopify order(s) for store ${storeId}`);
+      res.json({ deleted: deletedCount });
+    } catch (err: any) {
+      console.error("[SHOPIFY CLEANUP] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
+  });
+
+  // Removes duplicate Shopify orders created before the dedupe guard / unique
+  // index were in place. For each (store_id, order_number) group of
+  // source='shopify' orders, keeps the EARLIEST (lowest id) and deletes the
+  // rest. Scoped to the caller's store and source='shopify' only — never
+  // touches manual orders or other integrations. Child rows that lack
+  // ON DELETE CASCADE are cleared inside the same transaction first.
+  app.post("/api/admin/shopify/dedupe", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const removed = await db.transaction(async (tx) => {
+        const dupRows = await tx.execute(sql`
+          SELECT o.id FROM orders o
+          WHERE o.store_id = ${storeId}
+            AND o.source = 'shopify'
+            AND o.id > (
+              SELECT MIN(o2.id) FROM orders o2
+              WHERE o2.store_id = o.store_id
+                AND o2.source = 'shopify'
+                AND o2.order_number = o.order_number
+            )
+        `);
+        const ids = ((dupRows as any).rows ?? []).map((r: any) => Number(r.id));
+        if (ids.length === 0) return 0;
+        const idList = sql.join(ids.map((i: number) => sql`${i}`), sql`, `);
+        // Clear child references that would otherwise block the delete.
+        await tx.execute(sql`DELETE FROM order_items WHERE order_id IN (${idList})`);
+        await tx.execute(sql`DELETE FROM order_follow_up_logs WHERE order_id IN (${idList})`);
+        await tx.execute(sql`UPDATE stock_logs SET order_id = NULL WHERE order_id IN (${idList})`);
+        await tx.execute(sql`UPDATE ai_conversations SET order_id = NULL WHERE order_id IN (${idList})`);
+        await tx.execute(sql`UPDATE ai_logs SET order_id = NULL WHERE order_id IN (${idList})`);
+        const del = await tx.execute(sql`DELETE FROM orders WHERE id IN (${idList}) RETURNING id`);
+        return (del as any).rowCount ?? (del as any).rows?.length ?? ids.length;
+      });
+      console.log(`[SHOPIFY DEDUPE] Removed ${removed} duplicate Shopify order(s) for store ${storeId}`);
+      res.json({ removed });
+    } catch (err: any) {
+      console.error("[SHOPIFY DEDUPE] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
+  });
+
+  // Read-only diagnostic for the Shopify duplicate investigation. Reveals this
+  // store's Shopify integration setup, any OTHER stores whose Shopify connection
+  // name matches this one (a single Shopify shop wired to two accounts duplicates
+  // every order), and today's duplicate order groups. NOTE: Shopify integrations
+  // store no shop domain — credentials are only { verified, canOpen, ramassage,
+  // stock } — so cross-account matching is by connectionName (case-insensitive).
+  // NO DATA IS MODIFIED.
+  app.get("/api/admin/diag/shopify-setup", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const thisStoreId = req.user!.storeId!;
+
+      // 1) This store's Shopify integrations
+      const mine = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.storeId, thisStoreId), eq(storeIntegrations.provider, "shopify")));
+      const myIntegrations = mine.map(i => ({
+        id: i.id,
+        storeId: i.storeId,
+        magasinId: i.magasinId,
+        isActive: i.isActive,
+        webhookKeyLast6: i.webhookKey ? i.webhookKey.slice(-6) : null,
+        createdAt: i.createdAt,
+      }));
+
+      // 2) Same Shopify shop (matched by connectionName) across ALL stores
+      const myNames = new Set(
+        mine.map(i => (i.connectionName || "").trim().toLowerCase()).filter(Boolean)
+      );
+      const allShopify = await db.select().from(storeIntegrations)
+        .where(eq(storeIntegrations.provider, "shopify"));
+      const sameShopAcrossStores = allShopify
+        .filter(i => myNames.has((i.connectionName || "").trim().toLowerCase()))
+        .map(i => ({
+          id: i.id,
+          storeId: i.storeId,
+          isActive: i.isActive,
+          createdAt: i.createdAt,
+          connectionName: i.connectionName,
+        }));
+
+      // 3) Today's (Africa/Casablanca) duplicate order groups for this store
+      const ymd = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Africa/Casablanca",
+        year: "numeric", month: "2-digit", day: "2-digit",
+      }).format(new Date());
+      const from = new Date(`${ymd}T00:00:00.000+01:00`);
+      const to = new Date(`${ymd}T23:59:59.999+01:00`);
+
+      const allStoreOrders = await storage.getOrdersByStore(thisStoreId);
+      const todays = allStoreOrders.filter(o => {
+        if (!o.createdAt) return false;
+        const c = new Date(o.createdAt as any);
+        return c >= from && c <= to;
+      });
+      const groups = new Map<string, { orderNumber: string; count: number; ids: number[]; createdAts: string[]; sources: (string | null)[] }>();
+      for (const o of todays) {
+        const key = String((o as any).orderNumber ?? "");
+        if (!groups.has(key)) groups.set(key, { orderNumber: key, count: 0, ids: [], createdAts: [], sources: [] });
+        const g = groups.get(key)!;
+        g.count++;
+        g.ids.push(o.id);
+        g.createdAts.push(o.createdAt instanceof Date ? o.createdAt.toISOString() : String(o.createdAt));
+        g.sources.push((o as any).source ?? null);
+      }
+      const todayDuplicates = Array.from(groups.values()).filter(g => g.count > 1);
+      const duplicateExtraCount = todayDuplicates.reduce((s, g) => s + (g.count - 1), 0);
+
+      res.json({
+        thisStoreId,
+        matchedBy: "connectionName (Shopify integrations store no shop domain)",
+        casablancaDate: ymd,
+        myIntegrations,
+        sameShopAcrossStores,
+        todayDuplicates,
+        duplicateExtraCount,
+      });
+    } catch (err: any) {
+      console.error("[DIAG shopify-setup] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
+  });
+
+  // ── PART A diagnostic — exposes the truth behind CONFIRMÉES/LIVRÉES numbers ──
+  // Read-only. Computes every candidate definition for the CURRENTLY SELECTED
+  // range (dateFrom/dateTo query params, Africa/Casablanca +01:00 boundary)
+  // plus duplicate Shopify orders, so support/admins can see exactly why two
+  // cards might disagree. Does not modify any data.
+  app.get("/api/admin/diag/stats-truth", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { dateFrom, dateTo } = req.query as Record<string, string>;
+
+      let allOrders = await storage.getOrdersByStore(storeId);
+
+      // Apply the SAME +01:00 Africa/Casablanca date-boundary semantics used
+      // by the rest of the diag/stats endpoints.
+      if (dateFrom) {
+        const from = new Date(`${dateFrom.substring(0, 10)}T00:00:00.000+01:00`);
+        allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt as any) >= from);
+      }
+      if (dateTo) {
+        const to = new Date(`${dateTo.substring(0, 10)}T23:59:59.999+01:00`);
+        allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt as any) <= to);
+      }
+
+      const total = allOrders.length;
+
+      // ── Duplicate Shopify orders — group by orderNumber ─────────────────
+      const groups = new Map<string, { orderNumber: string; count: number; ids: number[] }>();
+      for (const o of allOrders) {
+        const key = String((o as any).orderNumber ?? "");
+        if (!groups.has(key)) groups.set(key, { orderNumber: key, count: 0, ids: [] });
+        const g = groups.get(key)!;
+        g.count++;
+        g.ids.push(o.id);
+      }
+      const duplicates = Array.from(groups.values()).filter(g => g.count > 1);
+      const duplicateExtra = duplicates.reduce((s, g) => s + (g.count - 1), 0);
+
+      // ── Single-source-of-truth sets (identical to /api/stats/filtered) ──
+      // confirmed uses the subtractive definition (isConfirmedCumulative) so
+      // this diagnostic reports the same truth as the dashboard, not the
+      // stale enumerated CONFIRMED_STATUSES list.
+      const DELIVERED_SET = new Set<string>(DELIVERED_STATUSES);
+      const SHIPPED_SET = new Set<string>(SHIPPED_STATUSES);
+
+      let confirmedCount = 0, deliveredCount = 0, shippedCount = 0;
+      for (const o of allOrders) {
+        if (isConfirmedCumulative(o.status)) confirmedCount++;
+        if (DELIVERED_SET.has(o.status)) deliveredCount++;
+        if (SHIPPED_SET.has(o.status) || (o as any).trackNumber) shippedCount++;
+      }
+
+      // ── Commission-livrées — count of delivered orders that have an
+      // assigned agent with a commission rate configured (> 0). ──────────
+      const agentSettingsList = await storage.getStoreAgentSettings(storeId);
+      const agentCommissionMap = new Map<number, number>(
+        agentSettingsList.map((s: any) => [s.agentId, s.commissionRate ?? 0])
+      );
+      let commissionLivrees = 0;
+      for (const o of allOrders) {
+        if (!DELIVERED_SET.has(o.status)) continue;
+        const rate = o.assignedToId ? (agentCommissionMap.get(o.assignedToId) ?? 0) : 0;
+        if (o.assignedToId && rate > 0) commissionLivrees++;
+      }
+
+      res.json({
+        range: { dateFrom: dateFrom ?? null, dateTo: dateTo ?? null, timezone: "Africa/Casablanca (+01:00)" },
+        total,
+        duplicates: { groups: duplicates, duplicateExtra },
+        confirmedCount,
+        deliveredCount,
+        shippedCount,
+        commissionLivrees,
+        setsUsed: {
+          confirmed: "subtractive: all statuses except NOT_CONFIRMED_STATUSES and 'Pas de réponse*' (see @shared/order-status-sets)",
+          delivered: Array.from(DELIVERED_SET),
+          shipped: Array.from(SHIPPED_SET),
+        },
+      });
+    } catch (err: any) {
+      console.error("[DIAG stats-truth] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
   });
 
   app.get("/api/profit/team-summary", requireAdmin, async (req, res) => {
     const storeId = req.user!.storeId!;
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
-    res.json(await storage.getTeamProfitSummary(storeId, dateFrom, dateTo));
+    const productId = req.query.productId && req.query.productId !== 'all' ? Number(req.query.productId) : undefined;
+    const mediaBuyerIdFilter = req.query.mediaBuyerId && req.query.mediaBuyerId !== 'all' ? Number(req.query.mediaBuyerId) : undefined;
+    const magasinIdFilter = req.query.magasinId && req.query.magasinId !== 'all' ? Number(req.query.magasinId) : undefined;
+    const source = req.query.source && req.query.source !== 'all' ? (req.query.source as string) : undefined;
+    res.json(await storage.getTeamProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter, source));
   });
 
   app.get("/api/media-buyer/profit", requireAuth, async (req, res) => {
@@ -2524,6 +3297,20 @@ export async function registerRoutes(
       const { randomBytes: _rb } = await import("crypto");
       const webhookToken = `${carrierName}-${storeId}-${_rb(16).toString("hex")}`;
 
+      // Plan limit: Starter allows max 1 distinct carrier
+      {
+        const sub = await storage.getSubscription(storeId);
+        const limits = planDefaults(sub?.plan ?? 'trial');
+        if (limits.maxLinkedCarriers < Infinity) {
+          const allAccounts = await storage.getCarrierAccounts(storeId);
+          const distinctCarriers = new Set(allAccounts.map((a: any) => a.carrierName.toLowerCase()));
+          const isNewCarrier = !distinctCarriers.has((carrierName as string).toLowerCase());
+          if (isNewCarrier && distinctCarriers.size >= limits.maxLinkedCarriers) {
+            return res.status(403).json({ message: `Le plan Starter permet de lier ${limits.maxLinkedCarriers} société de livraison. Passez au plan Pro pour en lier plusieurs.` });
+          }
+        }
+      }
+
       // Auto-number the connection if no name given
       const existing = await storage.getCarrierAccounts(storeId, carrierName);
       const name = connectionName || `Connection ${existing.length + 1}`;
@@ -2663,6 +3450,11 @@ export async function registerRoutes(
       const acct = await storage.getCarrierAccount(id);
       if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
       await storage.deleteCarrierAccount(id);
+      // Clear webhook activity logs so the badge resets immediately
+      const providerKey = (acct.carrierName || "").toLowerCase().trim();
+      if (providerKey) {
+        await storage.clearIntegrationLogsByProvider(storeId, providerKey);
+      }
       res.json({ message: "Supprimé" });
     } catch (error: any) {
       console.error('[DB-ERROR] DELETE /api/carrier-accounts:', error?.message || error);
@@ -2848,7 +3640,163 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
+  // ── Vitips: diagnostic — discover products endpoint ──────────────────────────
+  app.get("/api/debug/vitips-discover-products-endpoint", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accts = await db.select().from(carrierAccounts)
+        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+      if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+      const apiKey = (accts[0] as any).apiKey;
+
+      const axios = (await import("axios")).default;
+      const https = new (await import("https")).default.Agent({ rejectUnauthorized: false });
+      const candidateUrls = [
+        "https://app.vitipsexpress.com/api/client/produits",
+        "https://app.vitipsexpress.com/api/client/products",
+        "https://app.vitipsexpress.com/api/client/produit",
+        "https://app.vitipsexpress.com/api/client/get/produits",
+        "https://app.vitipsexpress.com/api/client/list/produits",
+      ];
+
+      const results: any[] = [];
+      for (const url of candidateUrls) {
+        try {
+          const resp = await axios.get(url, {
+            headers: { "api-token": apiKey, "Accept": "application/json" },
+            timeout: 10_000, httpsAgent: https, validateStatus: () => true,
+          });
+          results.push({ url, status: resp.status, dataPreview: JSON.stringify(resp.data).slice(0, 500) });
+        } catch (err: any) {
+          results.push({ url, error: err.message });
+        }
+      }
+      res.json({ results });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── Vitips: diagnostic — inspect raw city list for failing cities ────────────
+  app.get("/api/debug/vitips-city-list", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accts = await db.select().from(carrierAccounts)
+        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+      if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+      const apiKey = (accts[0] as any).apiKey;
+
+      const axios = (await import("axios")).default;
+      const resp = await axios.get("https://app.vitipsexpress.com/api/client/villes", {
+        headers: { "api-token": apiKey, "Accept": "application/json" },
+        timeout: 15_000,
+        validateStatus: () => true,
+      });
+
+      const allCities = resp.data?.data || resp.data || [];
+      const search = ["oujda", "agadir", "laayoun", "mellouk", "sidi"];
+      const matches = Array.isArray(allCities)
+        ? allCities.filter((c: any) => {
+            const name = (typeof c === "string"
+              ? c
+              : (c.name || c.ville || c.title || JSON.stringify(c))
+            ).toLowerCase();
+            return search.some(s => name.includes(s));
+          })
+        : [];
+
+      res.json({
+        httpStatus: resp.status,
+        totalCitiesInVitipsList: Array.isArray(allCities) ? allCities.length : "not an array",
+        rawSampleFirst5: Array.isArray(allCities) ? allCities.slice(0, 5) : allCities,
+        matchingEntries: matches,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/debug/vitips-try-create-product", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accts = await db.select().from(carrierAccounts)
+        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+      if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+      const apiKey = (accts[0] as any).apiKey;
+      const testProductName = String(req.body.productName || "Produit Test API");
+
+      const axios = (await import("axios")).default;
+      const candidates = [
+        { url: "https://app.vitipsexpress.com/api/client/post/produit/add-produit", body: { title: testProductName, code: "TEST-API-001" } },
+        { url: "https://app.vitipsexpress.com/api/client/post/produit/add-produit", body: { name: testProductName, code: "TEST-API-001" } },
+        { url: "https://app.vitipsexpress.com/api/client/post/product/add-product", body: { title: testProductName, reference: "TEST-API-001" } },
+        { url: "https://app.vitipsexpress.com/api/client/produit/add", body: { title: testProductName } },
+        { url: "https://app.vitipsexpress.com/api/client/product/add", body: { title: testProductName } },
+      ];
+
+      const results: any[] = [];
+      for (const c of candidates) {
+        try {
+          const resp = await axios.post(c.url, c.body, {
+            headers: { "api-token": apiKey, "Accept": "application/json", "Content-Type": "application/json" },
+            timeout: 10_000, validateStatus: () => true,
+          });
+          results.push({ url: c.url, sentBody: c.body, status: resp.status, response: resp.data });
+        } catch (err: any) {
+          results.push({ url: c.url, sentBody: c.body, error: err.message });
+        }
+      }
+      res.json({ results });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ── Sync carrier cities from live API → carrier_cities table ────────────────
+  /** GET /api/carrier-accounts/vitipsexpress/synced-cities — returns locally stored city list */
+  app.get("/api/carrier-accounts/vitipsexpress/synced-cities", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const cities = await storage.getCarrierCities(storeId, 'vitipsexpress');
+      res.json({ cities });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  /** GET /api/carrier-accounts/vitipsexpress/delivery-fees */
+  app.get("/api/carrier-accounts/vitipsexpress/delivery-fees", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const rows = await storage.getCarrierCityPricing(storeId, 'vitipsexpress');
+      const defaultRow = rows.find((r: any) => r.cityName === '__default__');
+      const cityRows = rows.filter((r: any) => r.cityName !== '__default__');
+      res.json({
+        defaultFee: defaultRow ? defaultRow.priceDh / 100 : 35,
+        fees: cityRows.map((r: any) => ({ city: r.cityName, deliveryFee: r.priceDh / 100 })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  /** POST /api/carrier-accounts/vitipsexpress/delivery-fees */
+  app.post("/api/carrier-accounts/vitipsexpress/delivery-fees", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { fees = [], defaultFee = 35 } = req.body;
+      await storage.upsertCarrierCityPrice(storeId, 'vitipsexpress', '__default__', Math.round(Number(defaultFee) * 100));
+      for (const { city, deliveryFee } of fees) {
+        if (city && deliveryFee !== undefined) {
+          await storage.upsertCarrierCityPrice(storeId, 'vitipsexpress', city, Math.round(Number(deliveryFee) * 100));
+        }
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
   app.post("/api/carrier-accounts/:id/sync-cities", requireAuth, async (req, res) => {
     try {
       const accountId = Number(req.params.id);
@@ -2876,7 +3824,153 @@ export async function registerRoutes(
       } else if (carrierKey === "expresscoursier") {
         citiesUrl = `https://expresscoursier.ma/v1.0/cities/${encodeURIComponent(apiKey)}`;
       } else if (carrierKey === "ozonexpress") {
-        citiesUrl = "https://api.ozonexpress.ma/cities";
+        // ── Ozon Express city sync ────────────────────────────────────────────
+        // Confirmed working endpoint: GET https://api.ozonexpress.ma/cities (public, no auth)
+        // Response shape: { CITIES: { "37": { ID, REF, NAME, "DELIVERED-PRICE", ... } } }
+        const settings = (acct.settings as any) || {};
+        // Accept both key variants: ozonExpressCustomerId (current) and ozonCustomerId (legacy)
+        const customerId = String(settings.ozonExpressCustomerId || settings.ozonCustomerId || "").trim();
+
+        // Parser that handles ALL known Ozon / Moroccan carrier response shapes
+        const normNameOzon = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+        function extractOzonCities(data: any): { externalId: string; name: string; nameNorm: string }[] {
+          if (!data) return [];
+          // ① Official Ozon Express shape: { CITIES: { "37": { ID, NAME, "DELIVERED-PRICE" } } }
+          if (data.CITIES && typeof data.CITIES === "object" && !Array.isArray(data.CITIES)) {
+            return Object.entries(data.CITIES as Record<string, any>)
+              .map(([key, c]: [string, any]) => ({
+                externalId: String(c?.ID ?? key).trim(),
+                name:       String(c?.NAME ?? "").trim(),
+                nameNorm:   normNameOzon(String(c?.NAME ?? "")),
+              }))
+              .filter(x => /^\d+$/.test(x.externalId) && x.name);
+          }
+          // ② Bare array: [{ id, name }]
+          if (Array.isArray(data)) {
+            return data
+              .map((c: any) => {
+                const name = String(typeof c === "string" ? c : (c?.NAME ?? c?.name ?? c?.city_name ?? c?.ville ?? c?.label ?? "")).trim();
+                const id   = String(c?.ID ?? c?.id ?? c?.city_id ?? c?.cityId ?? "");
+                return { externalId: id, name, nameNorm: normNameOzon(name) };
+              })
+              .filter(x => /^\d+$/.test(x.externalId) && x.name);
+          }
+          // ③ Wrapped array: { cities: [...] } | { data: [...] } | { data: { cities: [...] } }
+          const arr =
+            (Array.isArray(data?.cities)       && data.cities)       ||
+            (Array.isArray(data?.data)         && data.data)         ||
+            (Array.isArray(data?.data?.cities) && data.data.cities)  ||
+            (Array.isArray(data?.result)       && data.result)       ||
+            null;
+          if (arr) {
+            return arr
+              .map((c: any) => {
+                const name = String(typeof c === "string" ? c : (c?.NAME ?? c?.name ?? c?.city_name ?? c?.ville ?? "")).trim();
+                const id   = String(c?.ID ?? c?.id ?? c?.city_id ?? "");
+                return { externalId: id, name, nameNorm: normNameOzon(name) };
+              })
+              .filter(x => /^\d+$/.test(x.externalId) && x.name);
+          }
+          // ④ Top-level object keyed by numeric IDs: { "37": { NAME: "Agadir" } }
+          const topEntries = Object.entries(data as Record<string, any>)
+            .filter(([k, v]) => /^\d+$/.test(k) && v && typeof v === "object");
+          if (topEntries.length > 0) {
+            return topEntries
+              .map(([key, c]: [string, any]) => {
+                const name = String(c?.NAME ?? c?.name ?? c?.ville ?? "").trim();
+                return { externalId: String(c?.ID ?? key), name, nameNorm: normNameOzon(name) };
+              })
+              .filter(x => /^\d+$/.test(x.externalId) && x.name);
+          }
+          return [];
+        }
+
+        // Confirmed-working URL first; authenticated URL as fallback
+        const candidateUrls = [
+          `https://api.ozonexpress.ma/cities`,
+          ...(customerId
+            ? [`https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}/cities`]
+            : []),
+        ];
+        let lastOzonError: string | null = null;
+        let ozonFinalEntries: { externalId: string; name: string; nameNorm: string }[] = [];
+        let usedOzonUrl = "";
+        const axiosOzon = (await import("axios")).default;
+        for (const url of candidateUrls) {
+          try {
+            console.log(`[Ozon-SyncCities] Trying ${url}`);
+            const r = await axiosOzon.get(url, {
+              headers: { Accept: "application/json" },
+              timeout: 15_000,
+              httpsAgent: new (await import("https")).default.Agent({ rejectUnauthorized: false }),
+              validateStatus: () => true,
+            });
+            const preview = JSON.stringify(r.data).slice(0, 300);
+            console.log(`[Ozon-SyncCities] ${url} → HTTP ${r.status} — preview: ${preview}`);
+            if (r.status !== 200) { lastOzonError = `HTTP ${r.status} on ${url}`; continue; }
+            const parsed = extractOzonCities(r.data);
+            if (parsed.length > 0) {
+              ozonFinalEntries = parsed;
+              usedOzonUrl = url;
+              break;
+            }
+            lastOzonError = `Empty parsed cities from ${url}`;
+          } catch (e: any) {
+            lastOzonError = `Fetch error on ${url}: ${e.message}`;
+          }
+        }
+        if (ozonFinalEntries.length === 0) {
+          return res.status(422).json({
+            message: `Aucune ville reçue de Ozon Express. Dernière erreur : ${lastOzonError || "inconnu"}. Vérifiez votre Customer ID et API Key, ou utilisez "Importer villes (JSON)".`,
+          });
+        }
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, ozonFinalEntries.map(e => e.name));
+        await storage.upsertOzonExpressCities(storeId, ozonFinalEntries);
+        console.log(`[Ozon-SyncCities] ✅ Parsed ${ozonFinalEntries.length} cities from ${usedOzonUrl}`);
+        return res.json({ count: ozonFinalEntries.length, usedUrl: usedOzonUrl, cities: ozonFinalEntries.map(e => e.name), syncedAt: new Date().toISOString() });
+      } else if (carrierKey === "vitipsexpress") {
+        // Vitipsexpress city sync — GET /villes, auth: "API Token" header
+        // Response: { data: [{ name: "CASABLANCA", abbr: "Casablanca" }, ...] }
+        // City label = abbr (human-readable), fallback to name
+        const axiosVitips = (await import("axios")).default;
+        const httpsVitips = new (await import("https")).default.Agent({ rejectUnauthorized: false });
+        console.log(`[VITIPS-CITIES-SYNC] Fetching cities for account #${accountId}`);
+        const vitipsResp = await axiosVitips.get("https://app.vitipsexpress.com/api/client/villes", {
+          headers: { "api-token": apiKey, "Accept": "application/json" },
+          timeout: 15_000,
+          httpsAgent: httpsVitips,
+          validateStatus: () => true,
+        });
+        console.log(`[VITIPS-CITIES-SYNC] HTTP ${vitipsResp.status}: ${JSON.stringify(vitipsResp.data).slice(0, 300)}`);
+        if (vitipsResp.status !== 200 || !vitipsResp.data?.data) {
+          return res.status(502).json({
+            message: `Erreur API Vitipsexpress: HTTP ${vitipsResp.status}`,
+            raw: vitipsResp.data,
+          });
+        }
+        const rawList: any[] = Array.isArray(vitipsResp.data.data) ? vitipsResp.data.data : [];
+        // Display names: use c.name (full uppercase, e.g. "CASABLANCA")
+        const vitipsCityNames: string[] = rawList
+          .map((c: any) => (c.name || "").trim())
+          .filter(Boolean);
+        if (vitipsCityNames.length === 0) {
+          return res.status(422).json({ message: "Aucune ville reçue de Vitipsexpress." });
+        }
+        // abbr mapping: name → abbr (e.g. "CASABLANCA" → "Casablanca")
+        const normVitips = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+        const vitipsMappings = rawList
+          .map((c: any) => ({
+            externalId: (c.abbr || c.name || "").trim(),  // abbr is what Vitips API expects
+            name:       (c.name || "").trim(),
+            nameNorm:   normVitips(c.name || ""),
+          }))
+          .filter(m => m.name && m.externalId);
+        // Save full names for dropdown display
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, vitipsCityNames);
+        // Save name→abbr mapping for shipment creation
+        await storage.upsertVitipsCities(storeId, vitipsMappings);
+        console.log(`[VITIPS-CITIES-SYNC] ✅ Saved ${vitipsCityNames.length} cities (${vitipsMappings.length} with abbr) for account #${accountId}`);
+        return res.json({ count: vitipsCityNames.length, cities: vitipsCityNames, syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }
@@ -2890,8 +3984,6 @@ export async function registerRoutes(
         reqHeaders["C-Api-Id"]  = stripHtml((acct as any).apiSecret || (acct as any).storeName || "");
       } else if (carrierKey === "expresscoursier") {
         // Token is embedded in the URL path — no Authorization header needed
-      } else if (carrierKey === "ozonexpress") {
-        // Public cities endpoint — no Authorization header needed
       } else {
         reqHeaders["Authorization"] = `Bearer ${apiKey}`;
         reqHeaders["Referer"] = "https://apiseller.digylog.com";
@@ -3065,35 +4157,355 @@ export async function registerRoutes(
     }
   });
 
+  // ── Manual city seed — Ozon Express ─────────────────────────────────────────
+  // Accepts JSON array: [{cityId, cityName}] or {id, name} or plain objects.
+  app.post("/api/carriers/ozonexpress/seed-cities/:accountId", requireAuth, async (req: any, res: any) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const storeId   = req.user!.storeId!;
+      const acct = await storage.getCarrierAccount(accountId);
+      if (!acct || acct.storeId !== storeId || (acct.carrierName || "").toLowerCase() !== "ozonexpress") {
+        return res.status(404).json({ message: "Compte Ozon Express introuvable" });
+      }
+      const raw: any[] = req.body?.cities || req.body;
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return res.status(400).json({ message: "JSON invalide. Attendu: [{cityId, cityName}, ...]" });
+      }
+      const normName = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+      const entries: { externalId: string; name: string; nameNorm: string }[] = [];
+      let skipped = 0;
+      for (const c of raw) {
+        const id   = String(c?.cityId ?? c?.id ?? c?.city_id ?? c?.ID ?? "").trim();
+        const name = String(c?.cityName ?? c?.name ?? c?.ville ?? c?.label ?? "").trim();
+        if (!id || !/^\d+$/.test(id) || !name) { skipped += 1; continue; }
+        entries.push({ externalId: id, name, nameNorm: normName(name) });
+      }
+      if (entries.length === 0) {
+        return res.status(422).json({ message: `Aucune ville valide. Vérifiez le format : [{cityId, cityName}]. ${skipped} lignes ignorées.` });
+      }
+      await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, entries.map(e => e.name));
+      await storage.upsertOzonExpressCities(storeId, entries);
+      return res.json({ ok: true, inserted: entries.length, skipped, message: `${entries.length} villes importées, ${skipped} ignorées.` });
+    } catch (err: any) {
+      console.error("[Ozon SeedCities] error:", err);
+      return res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // ── Manual city seed — Express Coursier ─────────────────────────────────────
+  app.post("/api/carriers/expresscoursier/seed-cities/:accountId", requireAuth, async (req: any, res: any) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const storeId   = req.user!.storeId!;
+      const acct = await storage.getCarrierAccount(accountId);
+      if (!acct || acct.storeId !== storeId || (acct.carrierName || "").toLowerCase() !== "expresscoursier") {
+        return res.status(404).json({ message: "Compte Express Coursier introuvable" });
+      }
+      const raw: any[] = req.body?.cities || req.body;
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return res.status(400).json({ message: "JSON invalide. Attendu: [{cityId, cityName}, ...]" });
+      }
+      const normName = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+      const entries: { externalId: string; name: string; nameNorm: string }[] = [];
+      let skipped = 0;
+      for (const c of raw) {
+        const id   = String(c?.cityId ?? c?.id ?? c?.city_id ?? c?.ID ?? "").trim();
+        const name = String(c?.cityName ?? c?.name ?? c?.ville ?? c?.label ?? "").trim();
+        if (!id || !/^\d+$/.test(id) || !name) { skipped += 1; continue; }
+        entries.push({ externalId: id, name, nameNorm: normName(name) });
+      }
+      if (entries.length === 0) {
+        return res.status(422).json({ message: `Aucune ville valide. Vérifiez le format : [{cityId, cityName}]. ${skipped} lignes ignorées.` });
+      }
+      await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, entries.map(e => e.name));
+      await storage.upsertExpressCoursierCities(storeId, entries);
+      return res.json({ ok: true, inserted: entries.length, skipped, message: `${entries.length} villes importées, ${skipped} ignorées.` });
+    } catch (err: any) {
+      console.error("[EC SeedCities] error:", err);
+      return res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // ── One-shot: repair orders with no order_item rows ─────────────────────────
+  app.post("/api/orders/repair-unlinked", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const variantsByProduct = new Map<number, { name: string }[]>();
+      for (const v of allVariants) {
+        if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+        variantsByProduct.get(v.productId)!.push({ name: v.name });
+      }
+      const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+      const allOrders = await storage.getOrdersByStore(storeId);
+
+      // Find order IDs that already have at least one item row
+      const itemRows = await db.select({ orderId: orderItems.orderId }).from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(eq(orders.storeId, storeId));
+      const covered = new Set(itemRows.map((r: any) => r.orderId));
+
+      let repaired = 0;
+      const stillUnmatched: { id: number; orderNumber: string; rawProductName: string | null }[] = [];
+
+      for (const order of allOrders) {
+        if (covered.has(order.id)) continue;
+        const raw = (order as any).rawProductName || '';
+        if (!raw) {
+          stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: null });
+          continue;
+        }
+
+        // Split "Produit A 43 + Produit B 44" en parties individuelles.
+        const parts = raw.split(/\s*\+\s*/).map((p: string) => p.trim()).filter(Boolean);
+
+        const matchedParts: { productId: number; variantName: string | null; part: string }[] = [];
+        const unmatchedParts: string[] = [];
+        for (const part of parts) {
+          const resolved = resolveProductId(part, storeProductsWithVariants);
+          if (resolved.productId) {
+            matchedParts.push({ productId: resolved.productId, variantName: resolved.variantName, part });
+          } else {
+            unmatchedParts.push(part);
+          }
+        }
+
+        if (matchedParts.length === 0) {
+          // Rien n'a matché, même en splittant — inchangé par rapport à avant.
+          stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: raw });
+          continue;
+        }
+
+        // Répartir le prix total de la commande également entre les parties matchées
+        // (approximation raisonnable en l'absence de détail par ligne dans la source).
+        const totalPrice = (order as any).totalPrice || 0;
+        const pricePerPart = matchedParts.length > 0 ? Math.round(totalPrice / matchedParts.length) : 0;
+        const qtyPerPart = Math.max(1, Math.floor(((order as any).rawQuantity || matchedParts.length) / matchedParts.length));
+
+        let orderProductCost = 0;
+        for (const mp of matchedParts) {
+          const product = storeProducts.find(p => p.id === mp.productId)!;
+          await db.insert(orderItems).values({
+            orderId: order.id,
+            productId: product.id,
+            quantity: qtyPerPart,
+            price: pricePerPart,
+            rawProductName: mp.part,
+            variantInfo: mp.variantName || null,
+          } as any);
+          orderProductCost += (product.costPrice || 0) * qtyPerPart;
+        }
+        await storage.updateOrder(order.id, { productCost: orderProductCost } as any);
+        repaired++;
+
+        // Si certaines parties n'ont pas matché (commande mixte partiellement liée),
+        // les signaler quand même pour review manuelle, sans bloquer les parties réussies.
+        if (unmatchedParts.length > 0) {
+          stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: `PARTIEL — non matché: ${unmatchedParts.join(' | ')}` });
+        }
+      }
+
+      console.log(`[REPAIR-UNLINKED] store=${storeId} repaired=${repaired} stillUnmatched=${stillUnmatched.length}`);
+      res.json({ repaired, stillUnmatched: stillUnmatched.length, details: stillUnmatched });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── Per-city pricing endpoints ───────────────────────────────────────────────
+
+  // Bulk import seed from historical data (call once after deploy)
+  app.post("/api/carriers/expresscoursier/import-city-pricing", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { EC_CITY_PRICING_SEED } = await import("./seed-data/ec-city-pricing");
+      let count = 0;
+      for (const [city, priceDh] of EC_CITY_PRICING_SEED) {
+        await storage.upsertCarrierCityPrice(storeId, "expresscoursier", city, priceDh * 100, "import_historique");
+        count++;
+      }
+      res.json({ message: `${count} tarifs de ville importés pour Express Coursier`, count });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/carriers/vitipsexpress/import-city-pricing", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { VITIPS_CITY_PRICING_SEED } = await import("./seed-data/vitips-city-pricing");
+      let count = 0;
+      for (const [city, priceDh] of VITIPS_CITY_PRICING_SEED) {
+        await storage.upsertCarrierCityPrice(storeId, "vitipsexpress", city, priceDh * 100, "manual");
+        count++;
+      }
+      res.json({ message: `${count} tarif(s) de ville importé(s) pour Vitips Express`, count });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/carriers/vitipsexpress/backfill-shipping-cost", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { VITIPS_DEFAULT_CITY_PRICE_DH } = await import("./seed-data/vitips-city-pricing");
+      const orders = await storage.getOrdersByStoreAndCarrier(storeId, "vitipsexpress");
+
+      let updated = 0, skippedNoCity = 0, usedDefault = 0;
+      for (const order of orders) {
+        if ((order as any).shippingCost && (order as any).shippingCost > 0) continue;
+        if (!(order as any).customerCity) { skippedNoCity++; continue; }
+
+        const cityFee = await storage.getCarrierCityPrice(storeId, "vitipsexpress", (order as any).customerCity);
+        const fee = cityFee ?? (VITIPS_DEFAULT_CITY_PRICE_DH * 100);
+        if (!cityFee) usedDefault++;
+
+        await storage.updateOrder(order.id, { shippingCost: fee });
+        updated++;
+      }
+
+      console.log(`[VITIPS-BACKFILL] store=${storeId} total=${orders.length} updated=${updated} usedDefault=${usedDefault} skippedNoCity=${skippedNoCity}`);
+      res.json({ message: `${updated} commandes mises à jour`, updated, usedDefault, skippedNoCity, total: orders.length });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Backfill shippingCost for all existing EC orders that still have 0/null
+  app.post("/api/carriers/expresscoursier/backfill-shipping-cost", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { EC_DEFAULT_CITY_PRICE_DH } = await import("./seed-data/ec-city-pricing");
+      const orders = await storage.getOrdersByStoreAndCarrier(storeId, "expresscoursier");
+
+      let updated = 0, skippedNoCity = 0, usedDefault = 0;
+      for (const order of orders) {
+        if ((order as any).shippingCost && (order as any).shippingCost > 0) continue;
+        if (!(order as any).customerCity) { skippedNoCity++; continue; }
+
+        const cityFee = await storage.getCarrierCityPrice(storeId, "expresscoursier", (order as any).customerCity);
+        const fee = cityFee ?? (EC_DEFAULT_CITY_PRICE_DH * 100);
+        if (!cityFee) usedDefault++;
+
+        await storage.updateOrder(order.id, { shippingCost: fee });
+        updated++;
+      }
+
+      console.log(`[EC-BACKFILL] store=${storeId} total=${orders.length} updated=${updated} usedDefault=${usedDefault} skippedNoCity=${skippedNoCity}`);
+      res.json({ message: `${updated} commandes mises à jour`, updated, usedDefault, skippedNoCity, total: orders.length });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // List all city pricing rows for a carrier
+  app.get("/api/carriers/:carrierName/city-pricing", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { carrierName } = req.params;
+      const rows = await storage.getCarrierCityPricing(storeId, carrierName);
+      // Sort alphabetically by cityName
+      rows.sort((a: any, b: any) => a.cityName.localeCompare(b.cityName, 'fr', { sensitivity: 'base' }));
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Upsert a single city price
+  app.post("/api/carriers/:carrierName/city-pricing", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { carrierName } = req.params;
+      const { cityName, priceDh } = req.body;
+      if (!cityName || typeof priceDh !== 'number' || priceDh < 0) {
+        return res.status(400).json({ message: "cityName (string) and priceDh (number ≥ 0) are required" });
+      }
+      await storage.upsertCarrierCityPrice(storeId, carrierName, cityName, Math.round(priceDh * 100), "manual");
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ── Shared carrier webhook processor ────────────────────────────────────────
   // Maps Digylog/carrier raw status strings to internal system statuses,
   // captures driver info into the follow-up journal, updates commentStatus,
   // and broadcasts real-time events to the store's connected clients.
+  // Some carriers report themselves under a different name than the one
+  // configured on the carrier account (e.g. Express Coursier's webhook
+  // payload/sender identifies as "olivraison"). Normalize known aliases so
+  // the correct status map (mapEcStatus etc.) is applied.
+  const CARRIER_NAME_ALIASES: Record<string, string> = {
+    olivraison: "expresscoursier",
+  };
+
   async function processCarrierWebhook(
     storeId: number,
-    carrierName: string,
+    carrierNameRaw: string,
     body: Record<string, any>,
   ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string }> {
-    const rawPayload = JSON.stringify(body);
+    body = body || {};   // guard against undefined when caller has no body (e.g. GET ping)
+    const rawPayload = JSON.stringify(body) || '{}';   // JSON.stringify(undefined) → undefined, not a string
+    const carrierName = CARRIER_NAME_ALIASES[(carrierNameRaw || '').toLowerCase().trim()] || carrierNameRaw;
+    if (carrierName !== carrierNameRaw) {
+      console.log(`[WEBHOOK-ALIAS]: carrierName "${carrierNameRaw}" normalized to "${carrierName}"`);
+    }
 
     console.log(`[WEBHOOK-INCOMING]: Received from ${carrierName} (store ${storeId}) — keys: ${Object.keys(body).join(', ')}`);
     console.log(`[WEBHOOK-INCOMING]: Full payload: ${rawPayload}`);
 
+    // ── Parse Ameex nested payload FIRST — needed for order_id below ─────────
+    // Real Ameex body shape:
+    //   { event: "package_updated",
+    //     payload: { order_id, status, description, return_status,
+    //                return_status_date, reported_date, current_driver },
+    //     code_colis, commentaire, date_reporte_colis, timestamp }
+    // NOTE: body.event is ALWAYS "package_updated" — it is NOT the status.
+    //       The real status enum is inside body.payload.status.
+    //       current_driver.phone is the DRIVER phone — never use for order matching.
+    let ameexNestedPayload: Record<string, any> = {};
+    if (body.code_colis || body.event === 'package_updated') {
+      if (body.payload) {
+        if (typeof body.payload === 'object') {
+          ameexNestedPayload = body.payload as Record<string, any>;
+        } else {
+          try { ameexNestedPayload = JSON.parse(String(body.payload)); } catch { /* ignore */ }
+        }
+      }
+      console.log(`[AMEEX-SHAPE] event="${body.event}" code_colis="${body.code_colis}" commentaire="${body.commentaire || ''}"`);
+      console.log(`[AMEEX-SHAPE] payload.order_id="${ameexNestedPayload.order_id || ''}" payload.status="${ameexNestedPayload.status || ''}" return_status=${ameexNestedPayload.return_status}`);
+      console.log(`[AMEEX-SHAPE] payload.description="${ameexNestedPayload.description || ''}" reported_date="${ameexNestedPayload.reported_date || body.date_reporte_colis || ''}"`);
+    }
+
     // ── Extract all possible identifiers from the payload ─────────────────
     // Carriers differ: some send tracking IDs, some send our order reference
     const trackingNumber = (
-      body.CODE           ||  // Ameex webhook field (uppercase)
-      body.code           ||  // Ameex webhook field (lowercase)
+      ameexNestedPayload.order_id ||  // Ameex: real tracking id lives in nested payload.order_id
+      body.code_colis     ||          // Ameex: top-level field (secondary)
+      body.CODE           ||  // Ameex urlencoded webhook field (documented API)
+      body.code           ||  // lowercase variant
       body.traking        ||  // Digylog field (typo in their API)
       body.tracking_number || body.barcode   || body.code_suivi ||
       body.track_number   || body.colis_id  || body.tracking   ||
-      body.colis          || body.id        || ""
+      body.colis          || body.id        ||
+      // Express Coursier (aliased "olivraison") and other nested-payload carriers
+      body.package_id      || body.data?.tracking_number || body.data?.package_id ||
+      body.colis?.code     || ""
     ).toString().trim();
 
+    // internal_id is what we send to Express Coursier as OUR order reference
+    // when shipping — treat it as an order-number fallback for matching.
     const orderNumber = (
       body.order_number || body.reference || body.num       ||
-      body.ref          || body.order_id  || body.numero_commande || ""
+      body.ref          || body.order_id  || body.numero_commande ||
+      body.internal_id  || body.data?.internal_id           || ""
     ).toString().trim();
+
+    if (!trackingNumber && !orderNumber) {
+      console.warn(`[WEBHOOK-NO-ID]: No identifier field recognised in payload from ${carrierName} — top-level keys: ${Object.keys(body).join(', ')}`);
+    }
 
     // ── Extract raw status — cover every field name carriers use ──────────
     // Digylog and other Moroccan carriers vary widely: status, etat, libelle,
@@ -3179,22 +4591,156 @@ export async function registerRoutes(
       console.warn(`[WEBHOOK-SEC] ${carrierName} store=${storeId}: order not found, cross-store fallback DISABLED for tokened carrier (tenant isolation)`);
     }
 
+    // ── Phone-number match fallback ───────────────────────────────────────
+    // Digylog status webhooks carry name/phone/address but NO product name. If
+    // we don't recognise the tracking/order number, auto-creating an order would
+    // produce a product-less "<carrier>_webhook" duplicate (PRODUIT = "-").
+    // Instead, try to link the status onto the ORIGINAL order (e.g. the Shopify
+    // order that already has the product) by matching the customer's phone.
     if (!order) {
-      console.warn(`[WEBHOOK-RESULT]: Not Found — tracking="${trackingNumber}" order="${orderNumber}" — attempting auto-create from carrier API`);
+      let webhookPhone = (
+        body.phone         || body.receiver_phone  || body.telephone         ||
+        body.tel           || body.gsm             || body.customer_phone    ||
+        body.client_phone  || body.destinataire_phone || body.phone_number   ||
+        body.numero        || body.num_tel         ||
+        body.data?.phone   || body.data?.telephone || body.data?.receiver_phone || ""
+      ).toString().trim();
 
-      // ── Auto-create fallback ──────────────────────────────────────────────
+      // Payload had no phone — ask the carrier API for the order's phone.
+      if (!webhookPhone && trackingNumber) {
+        try {
+          const accounts = await storage.getCarrierAccounts(storeId, carrierName);
+          const acct = accounts[0];
+          if (acct) {
+            const { fetchOrderDetails } = await import("./services/carrier-service");
+            const det = await fetchOrderDetails(carrierName, trackingNumber, acct);
+            if (det?.customerPhone) webhookPhone = det.customerPhone;
+          }
+        } catch (e: any) {
+          console.warn(`[WEBHOOK-PHONE-FALLBACK] Failed to fetch phone from carrier: ${e?.message}`);
+        }
+      }
+
+      // Also check UPPERCASE PHONE field — Ameex and some carriers use it
+      if (!webhookPhone) {
+        webhookPhone = (body.PHONE || body.TELEPHONE || '').toString().trim();
+      }
+
+      if (webhookPhone) {
+        const candidates = await storage.getActiveOrdersByPhone(storeId, webhookPhone);
+        // Safe-match ONLY: attach to a candidate whose trackNumber is empty or
+        // already equals this tracking number. Never attach to an order already
+        // on a DIFFERENT tracking number — that would clobber another shipment.
+        //
+        // For EC/olivraison specifically, PREFER a 'confirme' order with no
+        // trackNumber — these are orders confirmed in the platform but shipped
+        // directly at the carrier, so the webhook is the first time we see the
+        // tracking number. Only fall back to the generic "empty or matching"
+        // logic if no such confirme order exists.
+        let safe: (typeof candidates)[0] | undefined;
+        if (carrierName === 'expresscoursier') {
+          safe = candidates.find(
+            c => (c as any).status?.toLowerCase() === 'confirme' && !(c as any).trackNumber,
+          );
+        }
+        if (!safe) {
+          safe = candidates.find(
+            c => !(c as any).trackNumber || (c as any).trackNumber === trackingNumber,
+          );
+        }
+        if (safe) {
+          order = safe as any;
+          matchedBy = `phone_fallback="${webhookPhone}"`;
+          console.log(`[WEBHOOK-PHONE-FALLBACK]: Linked tracking="${trackingNumber}" onto existing order #${order!.id} via phone="${webhookPhone}" — no duplicate created`);
+        } else if (candidates.length > 0) {
+          console.warn(`[WEBHOOK-PHONE-FALLBACK]: phone="${webhookPhone}" matched ${candidates.length} active order(s) but all carry a different tracking number — not attaching (avoids clobbering)`);
+        }
+      }
+    }
+
+    // ── Ameex: AMEEX-PENDING placeholder — ORDER_NUM-only fallback ──────────
+    // SAFETY RULES enforced here:
+    //  ✗ NEVER match by phone — payload.current_driver.phone is the DRIVER's
+    //    phone (shared across all deliveries). Matching on it corrupts every
+    //    other order to the same record.
+    //  ✗ NEVER match by scanning all AMEEX-PENDING orders and taking the first
+    //    hit — Ameex's payload.order_id is Ameex's own code, NOT our ref, so
+    //    there is no reliable 1-to-1 mapping without an explicit echo.
+    //  ✓ ONLY match by ORDER_NUM / REFERENCE if Ameex explicitly echoes our
+    //    order number back in the payload (rare but possible).
+    if (!order && carrierName === 'ameex' && trackingNumber) {
+      // Check every field Ameex might use to echo our order reference back.
+      // We now send partner_id / partnerTrackingID / ref / external_ref at
+      // ship time, so any of them could appear here once Ameex starts echoing.
+      const wOrderNum = (
+        ameexNestedPayload.partner_id        ||
+        ameexNestedPayload.partnerTrackingID ||
+        ameexNestedPayload.external_ref      ||
+        ameexNestedPayload.ref               ||
+        body.partner_id    || body.partnerTrackingID ||
+        body.external_ref  || body.ref        ||
+        body.ORDER_NUM     || body.order_num  ||
+        body.REFERENCE     || body.reference  ||
+        body.internal_id   || body.ORDER_ID   || ''
+      ).toString().trim();
+
+      if (wOrderNum) {
+        const allStoreOrders = await storage.getOrdersByStore(storeId);
+        const stripped = wOrderNum.replace(/^TJG-/i, '');
+        for (const o of allStoreOrders as any[]) {
+          if (!String(o.trackNumber || '').startsWith('AMEEX-PENDING-')) continue;
+          const m = String(o.trackNumber).match(/^AMEEX-PENDING-TJG-(.+)$/);
+          if (m && m[1] === stripped) {
+            order = o;
+            matchedBy = `AMEEX-PENDING+order_num=${wOrderNum}`;
+            // Backfill real CODE so future webhooks match directly by trackNumber
+            await storage.updateOrder((order as any).id, { trackNumber: trackingNumber } as any);
+            console.log(`[AMEEX-PENDING] CODE=${trackingNumber} backfilled onto order #${(order as any).orderNumber} via ORDER_NUM echo (was ${(order as any).trackNumber})`);
+            break;
+          }
+        }
+      }
+
+      if (!order) {
+        console.warn(`[AMEEX-PENDING] CODE=${trackingNumber} — no ORDER_NUM in payload, cannot safely match AMEEX-PENDING order — logging webhook_no_match for later replay`);
+      }
+    }
+
+    if (!order) {
+      // ── Auto-create fallback (opt-in per carrier account) ─────────────────
       // Pull full order details from the carrier so historical orders (shipped
       // before the webhook was wired up) materialize in the platform.
-      let details: Awaited<ReturnType<typeof import("./services/carrier-service").fetchOrderDetails>> = null;
+      // GATED: only runs when the carrier account explicitly enables it
+      // (settings.autoCreateFromWebhook === true). Default OFF so unmatched
+      // Digylog webhooks never create product-less duplicates.
       let carrierAccount: any = null;
       try {
-        if (trackingNumber) {
-          const accounts = await storage.getCarrierAccounts(storeId, carrierName);
-          carrierAccount = accounts[0];
-          if (carrierAccount) {
-            const { fetchOrderDetails } = await import("./services/carrier-service");
-            details = await fetchOrderDetails(carrierName, trackingNumber, carrierAccount);
-          }
+        const accounts = await storage.getCarrierAccounts(storeId, carrierName);
+        carrierAccount = accounts[0] || null;
+      } catch (e: any) {
+        console.warn(`[WEBHOOK-AUTO-CREATE] Failed to load carrier account: ${e?.message}`);
+      }
+
+      const autoCreateEnabled = (carrierAccount?.settings as any)?.autoCreateFromWebhook === true;
+
+      if (!autoCreateEnabled) {
+        console.warn(`[WEBHOOK-RESULT]: Not Found and auto-create disabled — tracking="${trackingNumber}" order="${orderNumber}" — skipping (no duplicate created)`);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: carrierName,
+          action: 'webhook_no_match', status: 'fail',
+          message: `⚠️ Commande introuvable (création automatique désactivée) — tracking: "${trackingNumber}" | ref: "${orderNumber}" | statut: "${rawText}"`,
+          payload: rawPayload.slice(0, 1000),
+        });
+        return { tracked: false };
+      }
+
+      console.warn(`[WEBHOOK-RESULT]: Not Found — auto-create ENABLED — tracking="${trackingNumber}" order="${orderNumber}" — attempting auto-create from carrier API`);
+
+      let details: Awaited<ReturnType<typeof import("./services/carrier-service").fetchOrderDetails>> = null;
+      try {
+        if (trackingNumber && carrierAccount) {
+          const { fetchOrderDetails } = await import("./services/carrier-service");
+          details = await fetchOrderDetails(carrierName, trackingNumber, carrierAccount);
         }
       } catch (e: any) {
         console.warn(`[WEBHOOK-AUTO-CREATE] Failed to fetch details: ${e?.message}`);
@@ -3218,6 +4764,7 @@ export async function registerRoutes(
           shippingCost:    details.shippingCost,
           status:          details.status || 'Attente De Ramassage',
           rawStatus:       details.rawStatus || rawText,
+          productName:     details.productName,
         });
         matchedBy = `auto_created_from_${carrierName}_api`;
 
@@ -3249,9 +4796,10 @@ export async function registerRoutes(
     // carrier is now reporting one, persist it so the UI can show it everywhere.
     if (!(order as any).trackNumber && trackingNumber) {
       await storage.updateOrder(order.id, {
-        trackNumber: trackingNumber,
+        trackNumber:      trackingNumber,
         shippingProvider: carrierName,
-        status: 'Attente De Ramassage',
+        carrierName:      carrierName,   // keep both columns in sync
+        status:           'Attente De Ramassage',
       } as any);
       console.log(`[WEBHOOK-TRACK] Order #${(order as any).orderNumber} → trackNumber saved: ${trackingNumber}`);
     }
@@ -3310,11 +4858,16 @@ export async function registerRoutes(
       newStatus = "delivered";
     } else if (rawStatus.includes("livr") || rawStatus.includes("cours de livr")) {
       newStatus = "in_progress"; // "en cours de livraison", "sorti en livraison" etc = still in transit
-    } else if (
-      rawStatus.includes("refus") || rawStatus.includes("retour") ||
-      rawStatus.includes("annul") || rawStatus === "refused"
-    ) {
+    } else if (rawStatus.includes("supprim")) {
+      newStatus = "Supprimée";
+    } else if (rawStatus.includes("refus") || rawStatus === "refused") {
       newStatus = "refused";
+    } else if (rawStatus.includes("retour")) {
+      // Physical return in transit → needs scan confirmation (confirmReturnReceipt).
+      // Stored as "retourné" so it appears on the Retours page, NOT Refusées.
+      newStatus = "retourné";
+    } else if (rawStatus.includes("annul")) {
+      newStatus = "refused"; // administrative cancellation — auto stock restore applies
     } else if (
       rawStatus.includes("injoignable") || rawStatus.includes("unreachable") ||
       rawStatus.includes("pas de réponse")
@@ -3335,21 +4888,74 @@ export async function registerRoutes(
     // Anything else also falls through to "in_progress" (the default above).
     // The commentStatus column carries the real display text shown in the Suivi tab.
 
-    // ── Ameex status code override (takes priority over text fuzzy match) ──
-    const AMEEX_WEBHOOK_STATUS_MAP: Record<string, string> = {
-      'DELIVERED':   'delivered',
-      'IN_PROGRESS': 'in_progress',
-      'CANCELLED':   'refused',
-      'RETURNED':    'retourné',
-      'PICKUP':      'Attente De Ramassage',
-      'NO_ANSWER':   'Injoignable',
-    };
-    const ameexCode = (body.STATUT || '').toString().toUpperCase();
-    if (ameexCode && AMEEX_WEBHOOK_STATUS_MAP[ameexCode]) {
-      newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexCode];
+    // ── Ameex FORMAT B status mapping ────────────────────────────────────────
+    // Single source of truth: mapAmeexStatus() from carrier-service.ts.
+    // payload.status holds the enum code; body.event is always "package_updated"
+    // (never a status). return_status=true overrides to retourné.
+    // reported_date/date_reporte_colis set → in_progress + "Reporté" label.
+    // NEVER use current_driver.phone for matching — that is the driver phone.
+
+    if (body.code_colis || body.event === 'package_updated') {
+      const ameexPayloadStatus = (ameexNestedPayload.status || '').toString().toUpperCase().trim();
+      const ameexDescription   = ameexNestedPayload.description || body.commentaire || '';
+      const ameexReturnStatus  = ameexNestedPayload.return_status;
+      const ameexReportedDate  = ameexNestedPayload.reported_date || body.date_reporte_colis || null;
+
+      console.log(`[AMEEX-STATUS] payload.status="${ameexPayloadStatus}" return_status=${ameexReturnStatus} reported_date="${ameexReportedDate || ''}"`);
+
+      // return_status=true overrides everything — package is being returned
+      if (ameexReturnStatus === true) {
+        newStatus = 'retourné';
+        console.log(`[AMEEX-STATUS] return_status=true → retourné`);
+      } else if (ameexPayloadStatus) {
+        // mapAmeexStatus() is the single source of truth (AMEEX_STATUS_MAP in carrier-service.ts).
+        // Unknown codes safely default to 'in_progress' — we never guess terminal states.
+        newStatus = mapAmeexStatus(ameexPayloadStatus);
+        console.log(`[AMEEX-STATUS] payload.status="${ameexPayloadStatus}" → internal="${newStatus}"`);
+      }
+
+      // Postpone date set → force in_progress + readable label (unless already terminal)
+      const TERMINAL_SET = new Set(['delivered', 'refused', 'retourné']);
+      if (ameexReportedDate && !TERMINAL_SET.has(newStatus)) {
+        newStatus = 'in_progress';
+        await storage.updateOrder(order.id, { commentStatus: `Reporté — ${ameexReportedDate}` });
+        console.log(`[AMEEX-STATUS] reported_date="${ameexReportedDate}" → in_progress + "Reporté" label`);
+      } else if (ameexDescription) {
+        await storage.updateOrder(order.id, { commentStatus: ameexDescription });
+      }
+    }
+
+    // ── Ameex FORMAT A (STATUT/CODE fields) — kept for backward compat ───────
+    // Hits /api/webhooks/shipping/ameex/:token directly with urlencoded fields.
+    // Uses the same mapAmeexStatus() so both formats share one status map.
+    const ameexLegacyCode = (!body.code_colis && body.event !== 'package_updated')
+      ? (body.STATUT || body.statut || '').toString().toUpperCase().trim()
+      : '';
+    if (ameexLegacyCode) {
+      const legacyMapped = mapAmeexStatus(ameexLegacyCode);
+      newStatus = legacyMapped;
+      console.log(`[AMEEX-STATUS-LEGACY] STATUT="${ameexLegacyCode}" → internal="${newStatus}"`);
+    }
+
+    // ── Express Coursier (aliased "olivraison") status override ───────────
+    // ALWAYS route EC statuses through EC_NUMERIC_STATUS_MAP — NEVER through
+    // the generic Digylog fuzzy matcher. The fuzzy matcher is calibrated for
+    // Digylog status labels and will produce wrong/raw values for EC codes.
+    // mapEcNumericStatus() guarantees a valid ORDER_STATUS for any input
+    // (unknown codes → 'in_progress'). mapEcStatus() handles both numeric
+    // codes and French text labels, falling back to mapEcNumericStatus.
+    // Guard: skip EC mapping when this is actually an Ameex payload.
+    if (carrierName === "expresscoursier" && !body.code_colis) {
+      const ecMapped = mapEcStatus(rawStatus) ?? 'in_progress';
+      if (ecMapped !== newStatus) {
+        console.log(`[EC-WEBHOOK-STATUS] EC status override: fuzzy="${newStatus}" → ec_map="${ecMapped}" (raw="${rawText}")`);
+      }
+      // Unconditionally replace whatever the fuzzy matcher produced
+      newStatus = ecMapped;
     }
 
     await storage.updateOrderStatus(order.id, newStatus);
+    notifyStatusUpdate({ id: order.id, storeId: (order as any).storeId, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, newStatus);
 
     // Auto-set shippingCost when order is delivered
     if (newStatus === 'delivered') {
@@ -3368,13 +4974,20 @@ export async function registerRoutes(
           );
           if (cost && cost > 0) {
             await storage.updateOrder(order.id, { shippingCost: cost });
-            console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cost} (per-city)`);
+            console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cost} (per-city API)`);
           } else {
-            // Fallback to static deliveryFee from account
-            const fee = (acct as any)?.deliveryFee || 0;
-            if (fee > 0) {
-              await storage.updateOrder(order.id, { shippingCost: fee });
-              console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee} (static fee)`);
+            // Middle tier: per-city price table (covers EC and any carrier without a cost API)
+            const cityFee = await storage.getCarrierCityPrice((order as any).storeId, carrierName, (order as any).customerCity || '');
+            if (cityFee && cityFee > 0) {
+              await storage.updateOrder(order.id, { shippingCost: cityFee });
+              console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cityFee} (per-city table)`);
+            } else {
+              // Final fallback: static deliveryFee from account
+              const fee = (acct as any)?.deliveryFee || 0;
+              if (fee > 0) {
+                await storage.updateOrder(order.id, { shippingCost: fee });
+                console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee} (static fee)`);
+              }
             }
           }
         }
@@ -3482,12 +5095,18 @@ export async function registerRoutes(
   // Accept all HTTP methods — Digylog uses PUT, others use POST:
   app.all("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
     // ── STEP 0: Log every hit immediately — even before validation ────────
+    const safeBody = req.body || {};   // guard: GET pings / non-JSON POSTs arrive with no body
     console.log('--- INCOMING WEBHOOK DATA ---');
-    console.log(JSON.stringify(req.body, null, 2));
+    console.log(JSON.stringify(safeBody, null, 2));
     console.log(`[DEBUG-WEBHOOK]: Params — storeId=${req.params.storeId} carrier=${req.params.carrierName}`);
 
     const storeId     = Number(req.params.storeId);
     const carrierName = req.params.carrierName.toLowerCase();
+
+    // ── GET = carrier ping / URL verification — respond immediately ───────
+    if (req.method === "GET") {
+      return res.status(200).json({ status: "ok", message: "Webhook endpoint alive" });
+    }
 
     // ── Webhook auth (P0-7) ─────────────────────────────────────────────────
     // For carriers that support a webhook token (Ameex), require it to be
@@ -3500,33 +5119,43 @@ export async function registerRoutes(
     // secret at the carrier side, so we skip the header check for them
     // and rely on the existing storeId+carrier-account validation below.
     // TODO: extend this check to all carriers once each one supports a
-    // configurable webhook token at the carrier side.
-    const TOKENED_CARRIERS = new Set(["ameex"]);
-    if (TOKENED_CARRIERS.has(carrierName)) {
+    // ── Optional token validation for Ameex ──────────────────────────────────
+    // Ameex does NOT support appending ?token= or custom headers to the webhook
+    // URL configured in their portal — they POST to a plain URL with no auth.
+    // Safety is provided by CODE-based order matching: we only act on payloads
+    // whose CODE exactly matches an existing order's trackNumber in this store,
+    // so a random POST cannot create or modify any order it doesn't already know.
+    // (Same model as garean.com and similar Moroccan OMS platforms.)
+    //
+    // If a token IS present (X-Webhook-Token header or ?token= query param),
+    // we still validate it for defense-in-depth — but NEVER hard-reject for
+    // a missing or invalid token.
+    if (carrierName === 'ameex') {
       const headerToken = (req.header("x-webhook-token") || "").trim();
       const queryToken  = (typeof req.query.token === "string" ? req.query.token : "").trim();
       const provided    = headerToken || queryToken;
-      if (!provided || provided.length < 18) {
-        console.warn(`[CARRIER-WEBHOOK-SEC] ${carrierName} store=${storeId} missing/short token — rejected`);
-        return res.status(401).json({ message: "Webhook token required" });
-      }
-      try {
-        const [validAcct] = await db
-          .select()
-          .from(carrierAccounts)
-          .where(and(
-            eq(carrierAccounts.storeId, storeId),
-            eq(carrierAccounts.carrierName, carrierName),
-            eq(carrierAccounts.webhookToken, provided),
-            eq(carrierAccounts.isActive, 1),
-          ));
-        if (!validAcct) {
-          console.warn(`[CARRIER-WEBHOOK-SEC] ${carrierName} store=${storeId} invalid token — rejected`);
-          return res.status(401).json({ message: "Invalid webhook token" });
+      if (provided && provided.length >= 18) {
+        try {
+          const [validAcct] = await db
+            .select()
+            .from(carrierAccounts)
+            .where(and(
+              eq(carrierAccounts.storeId, storeId),
+              eq(carrierAccounts.carrierName, 'ameex'),
+              eq(carrierAccounts.webhookToken, provided),
+              eq(carrierAccounts.isActive, 1),
+            ));
+          if (validAcct) {
+            console.log(`[CARRIER-WEBHOOK-SEC] ameex store=${storeId} optional token validated ✅`);
+          } else {
+            console.warn(`[CARRIER-WEBHOOK-SEC] ameex store=${storeId} token provided but not matched — proceeding anyway (CODE-match safety)`);
+          }
+        } catch (lookupErr) {
+          console.error("[CARRIER-WEBHOOK-SEC] ameex token lookup failed:", lookupErr);
+          // Non-fatal — proceed without token validation
         }
-      } catch (lookupErr) {
-        console.error("[CARRIER-WEBHOOK-SEC] token lookup failed:", lookupErr);
-        return res.status(500).json({ message: "Webhook auth error" });
+      } else {
+        console.log(`[CARRIER-WEBHOOK-SEC] ameex store=${storeId} no token — relying on CODE-based order matching`);
       }
     }
 
@@ -3550,7 +5179,12 @@ export async function registerRoutes(
       const rows = await db.select().from(tbl).where(
         and(eq(tbl.storeId, storeId), eq(tbl.isActive, 1))
       );
-      const account = rows.find(r => r.carrierName.toLowerCase() === carrierName)
+      // Normalize known aliases (e.g. Express Coursier's webhook identifies
+      // itself as "olivraison") so the URL param still matches the right
+      // carrier_account row instead of silently falling through to the
+      // default account.
+      const normalizedCarrierName = CARRIER_NAME_ALIASES[carrierName] || carrierName;
+      const account = rows.find(r => r.carrierName.toLowerCase() === normalizedCarrierName)
         || rows.find(r => r.isDefault === 1)
         || rows[0];
 
@@ -3560,13 +5194,104 @@ export async function registerRoutes(
           storeId, integrationId: null, provider: carrierName,
           action: 'webhook_ping', status: 'fail',
           message: `⚠️ Aucun compte transporteur actif trouvé pour ce magasin (carrier: ${carrierName})`,
-          payload: JSON.stringify(req.body).slice(0, 1000),
+          payload: JSON.stringify(safeBody).slice(0, 1000),
         });
         return res.status(404).json({ message: "Aucun compte transporteur trouvé pour ce magasin" });
       }
 
-      const body = req.body;
-      const rawStatus = (body.status || body.etat || body.statut || body.etat_libelle || "").trim();
+      const body = safeBody;
+
+      // ── Ameex/olivraison payload detection ──────────────────────────────────
+      // Ameex and Express Coursier BOTH post to .../olivraison but with totally
+      // different payload shapes. Detect Ameex by code_colis OR event='package_updated'
+      // and switch to the ameex carrier_account so processCarrierWebhook gets the right name.
+      if (body?.code_colis || body?.event === 'package_updated') {
+        const ameexAcct = rows.find((r: any) => r.carrierName.toLowerCase() === 'ameex');
+        if (ameexAcct && account.carrierName.toLowerCase() !== 'ameex') {
+          console.log(`[WEBHOOK-AMEEX-DETECT] code_colis="${body.code_colis}" event="${body.event}" — switching from "${account.carrierName}" → ameex account #${ameexAcct.id}`);
+          account = ameexAcct;
+        }
+      }
+
+      // ── Ozon Express: fields differ from all other carriers ─────────────────
+      if (carrierName === "ozonexpress") {
+        // Full raw payload — used to locate driver/livreur field name in Ozon's schema
+        console.log(`[OZON-WEBHOOK-RAW] ${JSON.stringify(req.body)}`);
+
+        const tracking   = (body.orderId || body.tracking_number || body.code || "").toString().trim();
+        const statusCode = (body.orderStatus || body.status || "").toString().trim();
+        const note       = (body.note || "").toString();
+        console.log(`[OZON-WEBHOOK] store=${storeId} orderId=${tracking} orderStatus=${statusCode}`);
+
+        await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+          action: "webhook_received", status: "ok",
+          message: `Ozon webhook: orderId=${tracking} status=${statusCode}` });
+
+        if (!tracking) return res.json({ success: true, matched: false });
+        const ozonOrder = await storage.getOrderByTrackingNumber(storeId, tracking);
+        if (!ozonOrder) {
+          await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+            action: "webhook_no_match", status: "ok",
+            message: `⚠️ Ozon: aucune commande pour orderId=${tracking} — statut: "${statusCode}"` });
+          return res.json({ success: true, matched: false });
+        }
+        const mapped = mapOzonStatus(statusCode);
+        if (mapped && mapped !== ozonOrder.status) {
+          await storage.updateOrderStatus(ozonOrder.id, mapped);
+          notifyStatusUpdate({ id: ozonOrder.id, storeId, assignedToId: (ozonOrder as any).assignedToId ?? null, customerName: ozonOrder.customerName || "" }, mapped);
+          await storage.createOrderFollowUpLog({ orderId: ozonOrder.id, agentId: null,
+            agentName: "Ozon Express Webhook",
+            note: `Statut via webhook: ${statusCode} → ${mapped}${note ? " · " + note : ""}` });
+          await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+            action: "status_update", status: "ok",
+            message: `✅ Ozon #${ozonOrder.orderNumber}: ${ozonOrder.status} → ${mapped} (${statusCode})` });
+        }
+
+        // Fee backfill: runs regardless of whether status changed, whenever fee is missing
+        const FINAL_STATES = ["delivered", "Retour Recu", "refused"] as const;
+        const finalState = FINAL_STATES.includes(mapped as any) ? mapped
+          : FINAL_STATES.includes(ozonOrder.status as any) ? ozonOrder.status
+          : null;
+        const needsFee = finalState && (!ozonOrder.shippingCost || ozonOrder.shippingCost === 0);
+        if (needsFee) {
+          try {
+            const ozonAcct = (await storage.getCarrierAccounts(storeId, "ozonexpress"))[0];
+            const ozonCid  = ozonAcct?.settings?.ozonExpressCustomerId;
+            const ozonKey  = ozonAcct?.apiKey;
+            if (ozonCid && ozonKey) {
+              const axiosFee   = (await import("axios")).default;
+              const FormDataFee = (await import("form-data")).default;
+              const fdFee = new FormDataFee();
+              fdFee.append("tracking-number", tracking);
+              const feeResp = await axiosFee.post(
+                `https://api.ozonexpress.ma/customers/${ozonCid}/${ozonKey}/parcel-info`,
+                fdFee, { headers: fdFee.getHeaders(), timeout: 15000, validateStatus: () => true }
+              );
+              const infos  = feeResp.data?.["PARCEL-INFO"]?.["INFOS"];
+              const feeRaw = finalState === "delivered"   ? infos?.["DELIVERED-PRICE"]
+                           : finalState === "Retour Recu" ? infos?.["RETURNED-PRICE"]
+                           :                               infos?.["REFUSED-PRICE"];
+              const fee = Number(feeRaw);
+              if (Number.isFinite(fee) && fee > 0) {
+                await storage.updateOrder(ozonOrder.id, { shippingCost: Math.round(fee * 100) });
+                console.log(`[OZON-FEE] #${ozonOrder.orderNumber} fee=${fee} DH stored`);
+              }
+            }
+          } catch (feeErr: any) {
+            console.log(`[OZON-FEE] ${tracking} fee fetch failed: ${feeErr?.message}`);
+          }
+        }
+        return res.json({ success: true, matched: true, newStatus: mapped });
+      }
+
+      // Capture rawStatus for the integration_log message — cover all field names.
+      // Ameex sends STATUT (uppercase); other carriers send status/statut (lowercase).
+      const rawStatus = (
+        body.STATUT_NAME || body.statut_name ||   // Ameex: French label (most readable)
+        body.STATUT      || body.STATUS      ||   // Ameex: enum code (uppercase)
+        body.status      || body.etat        ||
+        body.statut      || body.etat_libelle || ""
+      ).trim();
 
       let result: { tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string };
       try {
@@ -3587,7 +5312,7 @@ export async function registerRoutes(
         action: 'webhook_received', status: result.tracked ? 'success' : 'fail',
         message: result.tracked
           ? `✅ Commande #${result.orderId} mise à jour via ${result.matchedBy} — statut: "${rawStatus}" → ${result.newStatus || 'commentStatus uniquement'}`
-          : `⚠️ Webhook reçu mais aucune commande trouvée — statut: "${rawStatus}"`,
+          : `⚠️ Webhook reçu mais aucune commande trouvée — CODE=${body.CODE || body.code || '?'} statut: "${rawStatus}"`,
         payload: JSON.stringify(body).slice(0, 1000),
       });
 
@@ -3625,7 +5350,12 @@ export async function registerRoutes(
       });
 
       const body = req.body;
-      const rawStatus = (body.status || body.etat || body.statut || body.etat_libelle || "").trim();
+      const rawStatus = (
+        body.STATUT_NAME || body.statut_name ||
+        body.STATUT      || body.STATUS      ||
+        body.status      || body.etat        ||
+        body.statut      || body.etat_libelle || ""
+      ).trim();
 
       let result: { tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string };
       try {
@@ -3751,16 +5481,29 @@ export async function registerRoutes(
       const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
 
       for (const item of parsed.lineItems) {
-        const matchedProduct = storeProducts.find(
-          p => (item.sku && p.sku === item.sku) || p.name === item.title
+        // 1) Try SKU match (most reliable)
+        let matchedProduct: typeof storeProducts[0] | undefined = storeProducts.find(
+          p => item.sku && p.sku === item.sku
         );
+        let resolvedVariantName: string | null = null;
+
+        if (!matchedProduct) {
+          // 2) Resolve by name — handles "Parent - Size" patterns
+          const resolved = resolveProductId(item.title, storeProducts);
+          if (resolved.productId) {
+            matchedProduct = storeProducts.find(p => p.id === resolved.productId);
+            resolvedVariantName = resolved.variantName;
+          }
+        }
+
+        const variantInfo = resolvedVariantName || (item as any).variantInfo || '';
         orderItemsToCreate.push({
           productId: matchedProduct?.id ?? null,
           quantity: item.quantity,
           price: item.price,
           rawProductName: item.title,
           sku: item.sku || '',
-          variantInfo: (item as any).variantInfo || '',
+          variantInfo,
         });
         if (matchedProduct) productCost += matchedProduct.costPrice * item.quantity;
       }
@@ -3830,6 +5573,7 @@ export async function registerRoutes(
 
       // Real-time: push new order to all connected store clients
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: provider });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -3864,6 +5608,208 @@ export async function registerRoutes(
     }
   });
 
+  // ─── YouCan OAuth webhook — order.create (signed with YOUCAN_CLIENT_SECRET) ──
+  app.post("/api/webhooks/youcan/order/:webhookKey", async (req: any, res: any) => {
+    try {
+      const { webhookKey } = req.params;
+      const integrationRows = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.webhookKey, webhookKey), eq(storeIntegrations.provider, "youcan")))
+        .limit(1);
+      const integration = integrationRows[0];
+      if (!integration || !integration.oauthAccessToken) {
+        console.warn(`[YOUCAN-WEBHOOK] Unknown or unconfigured webhookKey: ${webhookKey}`);
+        return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
+      }
+
+      // Use webhookRawBody captured by global middleware (server/index.ts) before express.json().
+      const rawBody = (req as any).webhookRawBody as Buffer | undefined;
+      const signature = req.headers["x-youcan-signature"] as string | undefined;
+      const clientSecret = process.env.YOUCAN_CLIENT_SECRET!;
+
+      console.log(`[YOUCAN-WEBHOOK] Hit — webhookKey=${webhookKey}, hasSignature=${!!signature}, rawBodyLength=${rawBody?.length}`);
+
+      if (signature) {
+        if (!rawBody) {
+          console.warn("[YOUCAN-WEBHOOK] No raw body captured — cannot verify signature, rejecting");
+          return res.status(401).json({ message: "Invalid signature" });
+        }
+        const expected = createHmac("sha256", clientSecret).update(rawBody).digest("hex");
+        if (expected !== signature) {
+          console.warn(`[YOUCAN-WEBHOOK] Invalid signature — expected=${expected.slice(0, 12)}... received=${signature.slice(0, 12)}... rejecting`);
+          return res.status(401).json({ message: "Invalid signature" });
+        }
+        console.log("[YOUCAN-WEBHOOK] Signature verified OK");
+      } else {
+        console.warn("[YOUCAN-WEBHOOK] No x-youcan-signature header — proceeding without verification");
+      }
+
+      const storeId = integration.storeId;
+      const payload = req.body as any;
+      console.log("[YOUCAN-WEBHOOK] Payload parsed — ref:", payload.ref, "id:", payload.id);
+      const orderRef = payload.ref || payload.id;
+      if (!orderRef) return res.status(400).json({ message: "Missing order ref" });
+
+      // Resolve magasinId: prefer the one stored on the integration itself,
+      // then fall back to checking which magasin has this integration's ID
+      // in its linkedPlatforms array (set by the user in the Magasins page).
+      let resolvedMagasinId: number | null = integration.magasinId ?? null;
+      if (!resolvedMagasinId) {
+        try {
+          const storeRow = await db.select({ ownerId: stores.ownerId })
+            .from(stores).where(eq(stores.id, storeId)).limit(1);
+          const ownerId = storeRow[0]?.ownerId;
+          if (ownerId) {
+            const allMagasins = await storage.getStoresByOwner(ownerId);
+            const linked = allMagasins.find((m: any) => {
+              const platforms: any[] = Array.isArray(m.linkedPlatforms) ? m.linkedPlatforms : [];
+              return platforms.some((p: any) =>
+                String(p) === String(integration.id) || p === "youcan"
+              );
+            });
+            if (linked) {
+              resolvedMagasinId = linked.id;
+              console.log(`[YOUCAN-WEBHOOK] Resolved magasinId=${linked.id} ("${linked.name}") from linkedPlatforms`);
+            }
+          }
+        } catch (magasinErr: any) {
+          console.warn("[YOUCAN-WEBHOOK] Could not resolve magasinId from linkedPlatforms (non-fatal):", magasinErr.message);
+        }
+      }
+
+      // Duplicate check
+      const existingOrder = await storage.getOrderByNumber(storeId, `YC-${orderRef}`);
+      if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
+
+      // Paywall check
+      const paywallCheck = await storage.checkPaywall(storeId);
+      if (paywallCheck.isBlocked) return res.status(402).json({ message: paywallCheck.reason === "expired" ? "Subscription expired" : "Order limit reached" });
+
+      const customerName = [payload.customer?.first_name, payload.customer?.last_name].filter(Boolean).join(" ") || payload.customer?.full_name || "Client YouCan";
+      const customerPhone = payload.customer?.phone || payload.shipping_address?.phone || "";
+      let customerCity = payload.shipping_address?.city || "";
+      let customerAddress = payload.shipping_address?.address || "";
+
+      // Re-fetch full order — webhook payload is partial; real address is in customer.city/region/location.
+      const accessToken = await refreshYouCanToken(integration);
+      if (accessToken && payload.id) {
+        try {
+          const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          const fullOrder = await fullOrderResp.json() as any;
+
+          const customer = fullOrder?.customer || {};
+          const shippingAddr = fullOrder?.shipping?.address && !Array.isArray(fullOrder.shipping.address)
+            ? fullOrder.shipping.address
+            : null;
+
+          // City: prefer shipping.address.city (structured orders), else customer.city (COD text).
+          customerCity = shippingAddr?.city || customer.city || customerCity;
+
+          // Address: customer.location / region hold the free-text address for COD orders.
+          customerAddress = shippingAddr?.address
+            || customer.location
+            || customer.region
+            || customerAddress;
+
+          // If city looks like a raw numeric code, fall back to region/location text.
+          if (customerCity && /^\d+$/.test(customerCity.trim())) {
+            console.warn(`[YOUCAN-WEBHOOK] city is numeric code ("${customerCity}") for order ${payload.id}, falling back to region/location`);
+            customerCity = customer.region || customer.location || customerCity;
+          }
+
+          if (!customerCity) console.warn(`[YOUCAN-WEBHOOK] No usable city for order ${payload.id}`);
+        } catch (fetchErr: any) {
+          console.error("[YOUCAN-WEBHOOK] Failed to fetch full order for address:", fetchErr.message);
+        }
+      }
+
+      const totalPriceCents = Math.round((payload.total || payload.total_price || 0) * 100);
+      const shippingCostCents = Math.round((payload.shipping?.price || 0) * 100);
+
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const variantsByProduct = new Map<number, { name: string }[]>();
+      for (const v of allVariants) {
+        if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+        variantsByProduct.get(v.productId)!.push({ name: v.name });
+      }
+      const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+
+      const lineItems: any[] = payload.variants || payload.items || payload.line_items || [];
+      const orderItemsToCreate: any[] = [];
+      let orderProductCost = 0;
+
+      for (const v of lineItems) {
+        const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
+        const sku = v.variant?.sku || v.sku || "";
+        let matchedProduct = storeProducts.find(p => sku && p.sku === sku);
+        let resolvedVariantName: string | null = null;
+        if (!matchedProduct) {
+          const resolved = resolveProductId(rawName, storeProductsWithVariants);
+          if (resolved.productId) {
+            matchedProduct = storeProducts.find(p => p.id === resolved.productId);
+            resolvedVariantName = resolved.variantName;
+          }
+        }
+        orderItemsToCreate.push({
+          productId: matchedProduct?.id ?? null,
+          rawProductName: rawName,
+          variantInfo: resolvedVariantName || v.variant?.sku || null,
+          quantity: v.quantity || 1,
+          price: Math.round((v.price || 0) * 100),
+          orderId: 0,
+        });
+        orderProductCost += (matchedProduct?.costPrice || 0) * (v.quantity || 1);
+      }
+
+      const rawProductName = orderItemsToCreate.map(i => i.rawProductName).join(" + ") || null;
+      const rawQuantity = orderItemsToCreate.reduce((s, i) => s + i.quantity, 0) || null;
+
+      const order = await storage.createOrder({
+        storeId,
+        magasinId: resolvedMagasinId,
+        orderNumber: `YC-${orderRef}`,
+        customerName,
+        customerPhone,
+        customerAddress,
+        customerCity,
+        status: "nouveau",
+        totalPrice: totalPriceCents,
+        shippingCost: shippingCostCents,
+        productCost: orderProductCost,
+        adSpend: 0,
+        source: "youcan",
+        rawProductName,
+        rawQuantity,
+      } as any, orderItemsToCreate);
+
+      await db.update(storeIntegrations)
+        .set({ ordersCount: (integration.ordersCount || 0) + 1 })
+        .where(eq(storeIntegrations.id, integration.id));
+
+      const firstProductId = orderItemsToCreate.find(i => i.productId)?.productId ?? undefined;
+      const nextAgentId = await storage.getNextAgent(storeId, integration.magasinId, firstProductId, customerCity);
+      if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
+      await storage.incrementMonthlyOrders(storeId);
+      await storage.createIntegrationLog({ storeId, integrationId: integration.id, provider: "youcan", action: "order_synced", status: "success", message: `Commande YouCan YC-${orderRef} importée` });
+
+      emitNewOrder(storeId, { id: order.id, orderNumber: `YC-${orderRef}`, customerName, status: "nouveau", source: "youcan" });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: order.totalPrice || 0 });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: `YC-${orderRef}` });
+
+      res.json({ success: true, orderId: order.id });
+
+      if (getWaAutoSettings(storeId).aiConfirmation) {
+        triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, firstProductId)
+          .catch(err => console.error(`[AI] YouCan trigger failed for order ${order.id}:`, err.message));
+      }
+    } catch (err: any) {
+      console.error("[YOUCAN-WEBHOOK] Error:", err);
+      res.status(500).json({ success: false, message: "Processing failed" });
+    }
+  });
+
   // Universal webhook via token URL: POST /api/webhooks/:provider/order/:webhookKey
   app.post("/api/webhooks/:provider/order/:webhookKey", async (req, res) => {
     const provider = req.params.provider;
@@ -3885,6 +5831,25 @@ export async function registerRoutes(
       const storeId = store.id;
 
       const payload = req.body;
+
+      // ── Shopify topic guard (universal route) ─────────────────────────────
+      // Ignore cart/checkout events that arrive with a token id but no real
+      // order data (empty customer, 0 total). Only process orders/* topics.
+      if (provider === "shopify") {
+        const _uTopic = ((req.headers["x-shopify-topic"] as string) || "").toLowerCase();
+        const _uIsOrderTopic =
+          _uTopic.startsWith("orders/") ||
+          (_uTopic === "" && (payload?.order_number != null ||
+                              (Array.isArray(payload?.line_items) && payload.line_items.length > 0 &&
+                               payload?.total_price != null)));
+        const _uIsCartOrCheckout = _uTopic.startsWith("carts/") || _uTopic.startsWith("checkouts/");
+        const _uIsTestPing = !payload?.id || _uTopic === "hmac-verification";
+        if (!_uIsTestPing && (_uIsCartOrCheckout || !_uIsOrderTopic)) {
+          console.log(`[TOKEN-WEBHOOK shopify] Ignored non-order topic "${_uTopic}" (no order created)`);
+          return res.status(200).json({ received: true, ignored: true, topic: _uTopic });
+        }
+      }
+
       const parsed = parseWebhookOrder(provider, payload);
       if (!parsed.orderNumber) {
         await storage.createIntegrationLog({ storeId, integrationId: null, provider, action: 'webhook_received', status: 'fail', message: 'Payload invalide — numéro de commande manquant', payload: JSON.stringify(payload).slice(0, 2000) });
@@ -3980,6 +5945,7 @@ export async function registerRoutes(
 
       // ── Real-time push — Socket.io + SSE ─────────────────────────────────────
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: provider });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -4053,8 +6019,18 @@ export async function registerRoutes(
       const gsheetsPaywall = await storage.checkPaywall(storeId);
       if (gsheetsPaywall.isBlocked) return res.status(402).json({ message: gsheetsPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
-      const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
-      const orderItems = matched ? [{ productId: matched.id, quantity: 1, price: totalPrice, orderId: 0 }] : [];
+      const allVariantsGS1 = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const vByProdGS1 = new Map<number, { name: string }[]>();
+      for (const v of allVariantsGS1) { if (!vByProdGS1.has(v.productId)) vByProdGS1.set(v.productId, []); vByProdGS1.get(v.productId)!.push({ name: v.name }); }
+      const storeProductsGS1 = storeProducts.map(p => ({ ...p, variants: vByProdGS1.get(p.id) || [] }));
+      let matched = storeProducts.find(p => p.sku && p.sku === productName);
+      if (!matched) {
+        const resolved = resolveProductId(productName, storeProductsGS1);
+        if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
+      }
+      const orderItems = productName
+        ? [{ productId: matched?.id ?? null, rawProductName: productName, quantity: 1, price: totalPrice, orderId: 0 }]
+        : [];
       console.log("━━━ NEW WEBHOOK ARRIVED (GSheets) ━━━");
       console.log(`[Webhook] Customer: ${customerName} | Phone: ${customerPhone} | Product: ${productName}`);
       const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
@@ -4062,6 +6038,7 @@ export async function registerRoutes(
       const order = await storage.createOrder({
         storeId, magasinId: gsheetsMagasinId,
         orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        rawProductName: productName || null,
         status: 'nouveau', totalPrice, productCost: matched ? matched.costPrice : 0,
         shippingCost: 0, adSpend: 0, source: 'gsheets', comment: null,
       } as any, orderItems);
@@ -4071,6 +6048,7 @@ export async function registerRoutes(
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: 'gsheets', action: 'order_synced', status: 'success', message: `Commande Google Sheets ${orderNumber} importée` });
       // Real-time push
       emitNewOrder(storeId, { id: order.id, orderNumber, customerName, status: 'nouveau', source: 'gsheets' });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: order.totalPrice || 0 });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -4155,8 +6133,18 @@ export async function registerRoutes(
       const paywall = await storage.checkPaywall(storeId);
       if (paywall.isBlocked) return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
-      const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
-      const orderItems = matched ? [{ productId: matched.id, quantity, price: matched.sellingPrice || totalPrice, orderId: 0 }] : [];
+      const allVariantsGS2 = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const vByProdGS2 = new Map<number, { name: string }[]>();
+      for (const v of allVariantsGS2) { if (!vByProdGS2.has(v.productId)) vByProdGS2.set(v.productId, []); vByProdGS2.get(v.productId)!.push({ name: v.name }); }
+      const storeProductsGS2 = storeProducts.map(p => ({ ...p, variants: vByProdGS2.get(p.id) || [] }));
+      let matched = storeProducts.find(p => p.sku && p.sku === productName);
+      if (!matched) {
+        const resolved = resolveProductId(productName, storeProductsGS2);
+        if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
+      }
+      const orderItems = productName
+        ? [{ productId: matched?.id ?? null, rawProductName: productName, quantity, price: matched?.sellingPrice || totalPrice, orderId: 0 }]
+        : [];
       const integration = await storage.getIntegrationByProvider(storeId, "gsheets");
       const gsheetsApiMagasinId = integration?.magasinId ?? null;
       // Build comment: note + offer prefix
@@ -4167,6 +6155,7 @@ export async function registerRoutes(
       const order = await storage.createOrder({
         storeId, magasinId: gsheetsApiMagasinId,
         orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        rawProductName: productName || null,
         status: "nouveau", totalPrice, productCost: matched ? matched.costPrice : 0,
         shippingCost: 0, adSpend: 0, source: "gsheets",
         comment: orderComment,
@@ -4179,6 +6168,7 @@ export async function registerRoutes(
       await storage.incrementMonthlyOrders(storeId);
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: "gsheets", action: "order_synced", status: "success", message: `Commande Google Sheets ${orderNumber} importée (API key)` });
       console.log(`[GSheets-API] New order #${orderNumber} for store ${storeId} — ${customerName} / ${customerPhone}`);
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: order.totalPrice || 0 });
       res.json({ success: true, orderId: order.id });
       if (getWaAutoSettings(storeId).aiConfirmation) {
         triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id)
@@ -4796,12 +6786,234 @@ function ensureHeaders(sheet) {
   });
 
   // POST /api/integrations/google-sheets/disconnect  (URL-based)
+  // Deactivates (pauses) the sync but keeps all credentials and URL data in the DB
+  // so the user can re-enable without re-entering the sheet URL.
+  // Use DELETE /api/integrations/google-sheets/disconnect to fully remove OAuth credentials.
   app.post("/api/integrations/google-sheets/disconnect", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     await db.update(storeIntegrations)
-      .set({ status: "inactive", gsheetUrl: null, gsheetId: null, gsheetTabs: null, gsheetSyncState: null })
+      .set({ status: "inactive", isActive: 0 } as any)
       .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")));
     res.json({ success: true });
+  });
+
+  // POST /api/integrations/google-sheets/reconnect  (URL-based re-enable)
+  // Re-activates a previously paused Google Sheets connection without re-entering setup.
+  app.post("/api/integrations/google-sheets/reconnect", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const existing = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
+      .limit(1);
+    if (!existing.length || !(existing[0] as any).gsheetId) {
+      return res.status(400).json({ success: false, message: "Aucune connexion Google Sheets à réactiver. Veuillez connecter une nouvelle feuille." });
+    }
+    await db.update(storeIntegrations)
+      .set({ status: "active", isActive: 1 } as any)
+      .where(eq(storeIntegrations.id, existing[0].id));
+    res.json({ success: true });
+  });
+
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // YOUCAN OAUTH INTEGRATION
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async function refreshYouCanToken(integration: any): Promise<string | null> {
+    const refreshToken = decrypt(integration.oauthRefreshToken || "");
+    if (!refreshToken) return decrypt(integration.oauthAccessToken || "");
+    const expiresAt = integration.oauthExpiresAt ? new Date(integration.oauthExpiresAt).getTime() : 0;
+    if (expiresAt - Date.now() > 24 * 60 * 60 * 1000) return decrypt(integration.oauthAccessToken || "");
+    try {
+      const resp = await fetch("https://api.youcan.shop/oauth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: process.env.YOUCAN_CLIENT_ID!,
+          client_secret: process.env.YOUCAN_CLIENT_SECRET!,
+          refresh_token: refreshToken,
+        }),
+      });
+      const tokens = await resp.json() as any;
+      if (!tokens.access_token) return decrypt(integration.oauthAccessToken || "");
+      await db.update(storeIntegrations).set({
+        oauthAccessToken: encrypt(tokens.access_token),
+        oauthRefreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : integration.oauthRefreshToken,
+        oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
+      }).where(eq(storeIntegrations.id, integration.id));
+      return tokens.access_token;
+    } catch {
+      return decrypt(integration.oauthAccessToken || "");
+    }
+  }
+
+  function signYouCanState(storeId: number): string {
+    const payload = `${storeId}.${Date.now()}`;
+    const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+    const sig = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+    return `${payload}.${sig}`;
+  }
+
+  function verifyYouCanState(state: string): number | null {
+    const parts = (state || "").split(".");
+    if (parts.length !== 3) return null;
+    const [storeIdStr, ts, sig] = parts;
+    const payload = `${storeIdStr}.${ts}`;
+    const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+    const expected = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+    if (expected !== sig) return null;
+    if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
+    const storeId = parseInt(storeIdStr, 10);
+    return isNaN(storeId) ? null : storeId;
+  }
+
+  app.get("/api/integrations/youcan/oauth/start", requireAuth, (req: any, res: any) => {
+    const clientId = process.env.YOUCAN_CLIENT_ID;
+    if (!clientId) return res.redirect("/integrations?youcan_error=not_configured");
+    const storeId = req.user!.storeId!;
+    const state = signYouCanState(storeId);
+    const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+      `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+    const url = new URL("https://seller-area.youcan.shop/admin/oauth/authorize");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.append("scope[]", "*");
+    url.searchParams.set("state", state);
+    console.log(`[YOUCAN-OAUTH] start — storeId=${storeId}, redirectUri=${redirectUri}`);
+    res.redirect(url.toString());
+  });
+
+  app.get("/api/integrations/youcan/oauth/callback", async (req: any, res: any) => {
+    console.log("[YOUCAN-OAUTH] callback hit — query:", JSON.stringify(req.query));
+    const { code, state, error } = req.query;
+    if (error) {
+      console.error("[YOUCAN-OAUTH] YouCan returned error:", error);
+      return res.redirect(`/integrations?youcan_error=${error}`);
+    }
+    const storeId = verifyYouCanState(state as string);
+    if (!storeId) {
+      console.error("[YOUCAN-OAUTH] Invalid or expired state:", state);
+      return res.redirect("/integrations?youcan_error=invalid_state");
+    }
+    console.log(`[YOUCAN-OAUTH] callback verified — storeId=${storeId}`);
+    const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+      `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+    try {
+      const tokenResp = await fetch("https://api.youcan.shop/oauth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: process.env.YOUCAN_CLIENT_ID!,
+          client_secret: process.env.YOUCAN_CLIENT_SECRET!,
+          redirect_uri: redirectUri,
+          code: code as string,
+        }),
+      });
+      const tokens = await tokenResp.json() as any;
+      if (!tokens.access_token) {
+        console.error("[YOUCAN-OAUTH] Token exchange failed:", tokens);
+        return res.redirect("/integrations?youcan_error=token_exchange_failed");
+      }
+
+      const webhookKey = await storage.getOrGenerateWebhookKey(storeId);
+      const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${webhookKey}`;
+
+      const oauthData: any = {
+        oauthAccessToken: encrypt(tokens.access_token),
+        oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
+        isActive: 1,
+      };
+      if (tokens.refresh_token) oauthData.oauthRefreshToken = encrypt(tokens.refresh_token);
+
+      // Try to fetch the YouCan shop name and save it as connectionName
+      let youcanStoreName: string | null = null;
+      try {
+        const storeResp = await fetch("https://api.youcan.shop/store", {
+          headers: { Authorization: `Bearer ${tokens.access_token}` },
+        });
+        if (storeResp.ok) {
+          const storeData = await storeResp.json() as any;
+          youcanStoreName = storeData?.name || storeData?.store?.name || storeData?.domain || null;
+        }
+      } catch (storeErr: any) {
+        console.warn("[YOUCAN-OAUTH] Could not fetch store name (non-fatal):", storeErr.message);
+      }
+      if (youcanStoreName) oauthData.connectionName = youcanStoreName;
+
+      const existing = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+        .limit(1);
+      if (existing.length > 0) {
+        await db.update(storeIntegrations).set(oauthData).where(eq(storeIntegrations.id, existing[0].id));
+      } else {
+        await db.insert(storeIntegrations).values({
+          storeId, provider: "youcan", type: "webhook", credentials: "{}", webhookKey, ...oauthData,
+        });
+      }
+
+      // Abonner automatiquement au webhook "order.create".
+      try {
+        const subResp = await fetch("https://api.youcan.shop/resthooks/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.access_token}` },
+          body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
+        });
+        const subJson = await subResp.json();
+        console.log("[YOUCAN-OAUTH] resthooks/subscribe response:", subJson);
+      } catch (subErr: any) {
+        console.error("[YOUCAN-OAUTH] Failed to subscribe webhook (non-fatal):", subErr.message);
+      }
+
+      res.redirect("/integrations?youcan=connected");
+    } catch (err: any) {
+      console.error("[YOUCAN-OAUTH] Callback error — full stack:", err);
+      res.redirect("/integrations?youcan_error=server_error");
+    }
+  });
+
+  app.get("/api/integrations/youcan/status", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const rows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+      .limit(1);
+    const row = rows[0];
+    res.json({
+      connected: !!(row?.oauthAccessToken),
+      ordersCount: row?.ordersCount ?? 0,
+      connectionName: row?.connectionName ?? null,
+      createdAt: row?.createdAt ?? null,
+    });
+  });
+
+  app.post("/api/integrations/youcan/disconnect", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    await db.update(storeIntegrations)
+      .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
+    res.json({ success: true });
+  });
+
+  // Diagnostic: list active YouCan resthook subscriptions for this store.
+  app.get("/api/integrations/youcan/resthooks", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const rows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+      .limit(1);
+    const integration = rows[0];
+    if (!integration?.oauthAccessToken) return res.status(400).json({ message: "not_connected" });
+    const accessToken = await refreshYouCanToken(integration);
+    if (!accessToken) return res.status(400).json({ message: "token_unavailable" });
+    try {
+      const resp = await fetch("https://api.youcan.shop/resthooks", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const json = await resp.json();
+      res.json(json);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
   });
 
   // Verify connection: check if integration has received recent logs
@@ -4858,6 +7070,30 @@ function ensureHeaders(sheet) {
       const payload = req.body;
       const topic = (req.headers["x-shopify-topic"] as string) || "";
       const isTestPing = !payload?.id || topic === "hmac-verification";
+
+      // ── Topic guard: only process real order topics ───────────────────────
+      // Cart/checkout events (carts/create, checkouts/create, etc.) arrive
+      // with a token id + empty customer + 0 total and must be ignored.
+      const _t = topic.toLowerCase();
+      const isOrderTopic =
+        _t.startsWith("orders/") ||
+        // No topic header (some setups): accept only if it looks like an order
+        (_t === "" && (payload?.order_number != null ||
+                       (Array.isArray(payload?.line_items) && payload.line_items.length > 0 &&
+                        payload?.total_price != null)));
+      const isCartOrCheckout = _t.startsWith("carts/") || _t.startsWith("checkouts/");
+
+      if (!isTestPing && (isCartOrCheckout || !isOrderTopic)) {
+        console.log(`[SHOPIFY WEBHOOK] Ignored non-order topic "${topic}" (no order created)`);
+        try {
+          await storage.createIntegrationLog({
+            storeId, integrationId: integration.id, provider: "shopify",
+            action: "webhook_ignored", status: "success",
+            message: `Topic ignoré (non-commande): ${topic || "n/a"}`,
+          });
+        } catch (_) {}
+        return res.status(200).json({ received: true, ignored: true, topic });
+      }
 
       // ── DIAGNOSTIC: log every line item Shopify sends ────────────────────
       // Critical for upsell apps (EasySell, ReConvert, OneClickUpsell) that
@@ -5002,6 +7238,22 @@ function ensureHeaders(sheet) {
           mediaBuyerId: mediaBuyer?.id || null,
         } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
       } catch (dbErr: any) {
+        // Race-safe dedupe: the app-level guard above (getOrderByNumber) can be
+        // bypassed when two concurrent Shopify webhook retries both pass the
+        // check before either insert lands. The partial UNIQUE index on
+        // (storeId, orderNumber) WHERE source='shopify' then makes the losing
+        // insert fail with Postgres unique-violation (23505). Treat that as a
+        // duplicate (200) instead of a 500, so Shopify stops retrying.
+        const isShopifyDupViolation =
+          dbErr?.code === "23505" &&
+          (dbErr?.constraint === "orders_shopify_order_number_unique" ||
+            /orders_shopify_order_number_unique/.test(String(dbErr?.message ?? "")));
+        if (isShopifyDupViolation) {
+          console.log(`[SHOPIFY WEBHOOK] Duplicate (unique-violation) — order #${parsed.orderNumber} already exists`);
+          try { await storage.incrementIntegrationOrdersCount(integration.id); } catch (_) {}
+          const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+          return res.json({ success: true, orderId: dup?.id ?? null, duplicate: true });
+        }
         console.error(`[DATABASE ERROR]: Failed to save webhook order: ${dbErr?.message || dbErr}`);
         return res.status(500).json({ message: "Failed to save order", detail: dbErr?.message });
       }
@@ -5029,6 +7281,7 @@ function ensureHeaders(sheet) {
           status: "nouveau",
           source: "shopify",
         });
+        notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
         broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
         pushOrderToSheet(storeId, {
           action: "order.created",
@@ -5126,6 +7379,7 @@ function ensureHeaders(sheet) {
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: 'shopify' });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -5169,6 +7423,8 @@ function ensureHeaders(sheet) {
         isStock: z.number().optional().default(0),
         replace: z.number().optional().default(0),
         agentId: z.number().nullable().optional(),
+        source: z.string().optional().default('manual'),
+        utmSource: z.string().nullable().optional(),
         comment: z.string().nullable().optional(),
         totalPrice: z.number().optional().default(0),
         items: z.array(z.object({
@@ -5221,7 +7477,7 @@ function ensureHeaders(sheet) {
       const manualMagasinId = (data as any).magasinId ?? null;
       const order = await storage.createOrder({
         storeId,
-        magasinId: manualMagasinId,
+        magasinId: manualMagasinId ?? storeId,
         orderNumber,
         customerName: data.customerName,
         customerPhone: data.customerPhone,
@@ -5232,7 +7488,8 @@ function ensureHeaders(sheet) {
         productCost: computedProductCost,
         shippingCost: 0,
         adSpend: 0,
-        source: 'manual',
+        source: data.source || 'manual',
+        utmSource: data.utmSource || null,
         comment: data.comment || null,
         rawProductName,
         canOpen: data.canOpen,
@@ -5252,13 +7509,14 @@ function ensureHeaders(sheet) {
         await storage.updateOrderStatus(order.id, 'confirme');
       }
 
-      const agentId = data.agentId || await storage.getNextAgent(storeId, manualMagasinId, undefined, data.customerCity);
-      if (agentId) await storage.assignOrder(order.id, agentId);
+      const finalAgent = data.agentId ?? await storage.getNextAgent(storeId, manualMagasinId, undefined, data.customerCity);
+      if (finalAgent) await storage.assignOrder(order.id, finalAgent);
 
       await storage.incrementMonthlyOrders(storeId);
 
       // Real-time push
-      emitNewOrder(storeId, { id: order.id, orderNumber, customerName: data.customerName, status: data.status, source: 'manual' });
+      emitNewOrder(storeId, { id: order.id, orderNumber, customerName: data.customerName, status: data.status, source: data.source || 'manual' });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: finalAgent ?? null, customerName: data.customerName, customerCity: data.customerCity ?? null, totalPrice: totalPriceCents });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -5272,7 +7530,7 @@ function ensureHeaders(sheet) {
         quantity: data.items?.[0]?.quantity || 1,
         note: data.comment || null,
         status: data.status || "nouveau",
-        utmSource: (data as any).utmSource || null,
+        utmSource: data.utmSource || null,
         utmCampaign: (data as any).utmCampaign || null,
         productId: null,
         magasin: null,
@@ -5507,6 +7765,8 @@ function ensureHeaders(sheet) {
       }
 
       const results = { created: 0, skipped: 0, errors: [] as { row: number; message: string }[] };
+      // Pre-load store products once for resolveProductId lookups
+      const importStoreProducts = await storage.getProductsByStore(storeId);
 
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] || {};
@@ -5532,20 +7792,28 @@ function ensureHeaders(sheet) {
 
           const productName = String(row.productName ?? "").trim();
           let productId: number | null = null;
+          let importVariantInfo: string | null = null;
           if (productName) {
-            const product = await storage.getOrCreateProductByName(storeId, {
-              name: productName,
-              sku: row.productSku ? String(row.productSku).trim() : null,
-              sellingPrice: Math.round(unitPriceDh * 100),
-            });
-            productId = product?.id ?? null;
+            // First try to resolve via parent-name matching (handles "Parent - Size" imports)
+            const resolved = resolveProductId(productName, importStoreProducts);
+            if (resolved.productId) {
+              productId = resolved.productId;
+              importVariantInfo = resolved.variantName;
+            } else {
+              const product = await storage.getOrCreateProductByName(storeId, {
+                name: productName,
+                sku: row.productSku ? String(row.productSku).trim() : null,
+                sellingPrice: Math.round(unitPriceDh * 100),
+              });
+              productId = product?.id ?? null;
+            }
           }
 
           const carrierName = String(row.carrierProvider ?? "").trim();
           const phoneTail = phone.slice(-6);
           const orderNumber = `IMP-${Date.now()}-${i}-${phoneTail || Math.random().toString(36).slice(2, 6)}`;
 
-          await storage.createOrder({
+          const createdOrder = await storage.createOrder({
             storeId,
             magasinId: safeMagasinId,
             orderNumber,
@@ -5572,7 +7840,18 @@ function ensureHeaders(sheet) {
             sku: row.productSku ? String(row.productSku).trim() : null,
             quantity,
             price: Math.round(unitPriceDh * 100),
+            variantInfo: importVariantInfo || '',
           }] as any : []);
+
+          // If the imported order already has an advanced status (delivered/shipped),
+          // decrement stock immediately — no status transition will ever fire for it.
+          if (productId && SHIPPED_STATUS_SET.has(status)) {
+            try {
+              await storage.decrementStockForOrder(createdOrder.id, storeId);
+            } catch (stockErr) {
+              console.warn(`[ImportBulk] stock decrement failed for order ${createdOrder.id}:`, stockErr);
+            }
+          }
 
           // Track within this batch so later rows dedupe against earlier ones
           if (phone) phoneNameSet.add(dupKey);
@@ -5678,6 +7957,8 @@ function ensureHeaders(sheet) {
       } else {
         console.log('[WA] AI confirmation disabled — skipping auto-send');
       }
+      // Fire-and-forget: web push for new order
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: data.customerName, customerCity: data.customerCity, totalPrice });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -5716,6 +7997,18 @@ function ensureHeaders(sheet) {
       });
       const data = schema.parse(req.body);
 
+      // ── Authorize shippingCost edits ────────────────────────────────────────
+      if (data.shippingCost !== undefined) {
+        const role = req.user!.role;
+        const isAdmin = role === 'owner' || role === 'admin' || role === 'superadmin';
+        if (!isAdmin) {
+          const perms: any = (req.user as any).dashboardPermissions || {};
+          if (!perms.can_edit_shipping_fee) {
+            return res.status(403).json({ message: "Permission insuffisante pour modifier les frais de livraison." });
+          }
+        }
+      }
+
       // ── Validate scheduledFor when transitioning to confirme_reporte ───
       // Server-side rule mirrors the client modal: must be strictly after today
       // in Casablanca local time (>= tomorrow Casablanca). We parse YYYY-MM-DD
@@ -5752,6 +8045,7 @@ function ensureHeaders(sheet) {
       if (data.status && data.status !== order.status) {
         console.log(`[PATCH /api/orders/${orderId}] Updating status ${order.status} → ${data.status}`);
         await storage.updateOrderStatus(orderId, data.status, req.user!.id);
+        notifyStatusUpdate({ id: orderId, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, data.status);
 
         if (data.status === 'delivered') {
           await storage.syncCustomerOnDelivery(order.storeId!, {
@@ -5881,25 +8175,136 @@ function ensureHeaders(sheet) {
         reference: z.string().nullable().optional(),
         hasVariants: z.number().optional().default(0),
         variants: z.array(variantSchema).optional(),
+        coutAchat: z.number().min(0).optional(),
+        prixVente: z.number().min(0).optional(),
+        coutEmballage: z.number().min(0).optional(),
+        coutLivraison: z.number().min(0).optional(),
+        coutConfirmation: z.number().min(0).optional(),
+        stockDate: z.string().datetime().optional(),  // ISO — date du stock initial, défaut = maintenant
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
-      const { variants, ...productData } = data;
-      
+      const { variants, coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, stockDate, ...productData } = data;
+      const productSettings = { profitDefaults: { coutAchat: coutAchat ?? 0, prixVente: prixVente ?? 0, coutEmballage: coutEmballage ?? 0, coutLivraison: coutLivraison ?? 0, coutConfirmation: coutConfirmation ?? 0 } };
+      const movementDate = stockDate ? new Date(stockDate) : new Date();
+
       if (variants && variants.length > 0) {
         const product = await storage.createProductWithVariants(
-          { ...productData, storeId, hasVariants: 1, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null },
+          { ...productData, storeId, hasVariants: 1, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null, settings: productSettings } as any,
           variants.map(v => ({ ...v, productId: 0, storeId, imageUrl: v.imageUrl || null }))
         );
+        // Journaliser le stock initial de chaque variante ayant un stock > 0
+        for (const v of (product as any).variants || []) {
+          if (v.stock > 0) {
+            await db.insert(stockMovements).values({
+              storeId, productId: product.id, variantId: v.id,
+              type: 'restock', quantity: v.stock, userId: req.user!.id,
+              reason: `Stock initial — variante ${v.name}`,
+              createdAt: movementDate,
+            });
+          }
+        }
         res.status(201).json(product);
       } else {
-        const product = await storage.createProduct({ ...productData, storeId, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null });
+        const product = await storage.createProduct({ ...productData, storeId, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null, settings: productSettings } as any);
+        if (productData.stock > 0) {
+          await db.insert(stockMovements).values({
+            storeId, productId: product.id,
+            type: 'restock', quantity: productData.stock, userId: req.user!.id,
+            reason: 'Stock initial',
+            createdAt: movementDate,
+          });
+        }
         res.status(201).json(product);
       }
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
     }
+  });
+
+  // POST /api/products/import — bulk-create products from Shopify CSV/Excel parse result
+  app.post("/api/products/import", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { products: importProducts, overwrite = false } = req.body as {
+      products: Array<{
+        name: string; sku?: string; reference?: string; description?: string; imageUrl?: string;
+        hasVariants: number; stock: number; costPrice: number; sellingPrice: number;
+        variants?: Array<{ name: string; sku: string; costPrice: number; sellingPrice: number; stock: number; imageUrl?: string | null }>;
+      }>;
+      overwrite?: boolean;
+    };
+
+    if (!Array.isArray(importProducts) || importProducts.length === 0)
+      return res.status(400).json({ message: "Aucun produit à importer" });
+
+    // Load existing non-archived products for dedup check
+    const existingProds = await storage.getProductsByStore(storeId);
+    const activeProds = existingProds.filter((p: any) => !p.archivedAt);
+    const existingSkus  = new Set(activeProds.filter((p: any) => p.sku).map((p: any) => (p.sku as string).toLowerCase()));
+    const existingNames = new Set(activeProds.map((p: any) => (p.name as string).toLowerCase()));
+
+    let created = 0;
+    let skipped = 0;
+    const errors: { name: string; error: string }[] = [];
+    const BATCH = 50;
+
+    for (let i = 0; i < importProducts.length; i += BATCH) {
+      const batch = importProducts.slice(i, i + BATCH);
+      for (const p of batch) {
+        try {
+          const nameLower = (p.name || '').trim().toLowerCase();
+          const skuLower  = (p.sku  || '').trim().toLowerCase();
+          if (!nameLower) { errors.push({ name: '(sans nom)', error: 'Nom manquant' }); continue; }
+
+          if (!overwrite) {
+            const dup = (skuLower && existingSkus.has(skuLower)) || existingNames.has(nameLower);
+            if (dup) { skipped++; continue; }
+          }
+
+          const productSettings = {
+            profitDefaults: {
+              coutAchat: p.costPrice ?? 0,
+              prixVente: p.sellingPrice ?? 0,
+              coutEmballage: 0,
+              coutLivraison: 0,
+              coutConfirmation: 0,
+            },
+          };
+
+          const base = {
+            name: p.name.trim(),
+            sku: p.sku?.trim() || null,
+            stock: p.stock ?? 0,
+            costPrice: p.costPrice ?? 0,
+            sellingPrice: p.sellingPrice ?? 0,
+            description: p.description || null,
+            imageUrl: p.imageUrl || null,
+            reference: p.reference || null,
+            storeId,
+            settings: productSettings,
+          } as any;
+
+          if (p.variants && p.variants.length > 0) {
+            await storage.createProductWithVariants(
+              { ...base, hasVariants: 1 },
+              p.variants.map((v) => ({ ...v, productId: 0, storeId, imageUrl: v.imageUrl || null })),
+            );
+          } else {
+            await storage.createProduct({ ...base, hasVariants: 0 });
+          }
+
+          // Track to avoid in-batch duplicates
+          if (skuLower)  existingSkus.add(skuLower);
+          existingNames.add(nameLower);
+          created++;
+        } catch (err: any) {
+          errors.push({ name: p.name || '(inconnu)', error: err.message });
+        }
+      }
+    }
+
+    res.json({ created, skipped, errors });
   });
 
   app.get("/api/products/name-check", requireAuth, async (req, res) => {
@@ -5944,6 +8349,84 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // Backfill order_items.product_id for orders whose rawProductName matches the given product
+  // POST /api/products/link-all-historical — admin: link ALL unlinked order items to catalog
+  app.post("/api/products/link-all-historical", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const unlinkedItems = await db
+        .select({ id: orderItems.id, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`${orderItems.productId} IS NULL`,
+          sql`${orderItems.rawProductName} IS NOT NULL`,
+        ));
+
+      const storeProds = await storage.getProductsByStore(storeId);
+      let linked = 0;
+      let unmatched = 0;
+
+      for (const item of unlinkedItems) {
+        const { productId: resolvedPid, variantName } = resolveProductId(item.rawProductName || '', storeProds);
+        if (resolvedPid) {
+          await db.update(orderItems)
+            .set({ productId: resolvedPid, variantInfo: variantName || item.variantInfo || '' } as any)
+            .where(eq(orderItems.id, item.id));
+          linked++;
+        } else {
+          unmatched++;
+        }
+      }
+
+      res.json({ linked, unmatched, total: unlinkedItems.length });
+    } catch (err) {
+      throw err;
+    }
+  });
+
+  app.post("/api/products/:id/link-historical", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const productId = Number(req.params.id);
+      const { name } = req.body as { name?: string };
+      if (!name || isNaN(productId)) return res.status(400).json({ message: "Paramètres invalides" });
+
+      // Verify product belongs to this store
+      const [product] = await db.select({ id: products.id, name: products.name }).from(products)
+        .where(and(eq(products.id, productId), eq(products.storeId, storeId)));
+      if (!product) return res.status(404).json({ message: "Produit introuvable" });
+
+      // Fetch all unlinked items for this store and match against this product
+      const unlinkedItems = await db
+        .select({ id: orderItems.id, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`${orderItems.productId} IS NULL`,
+          sql`${orderItems.rawProductName} IS NOT NULL`,
+        ));
+
+      let linked = 0;
+      for (const item of unlinkedItems) {
+        // Only match against THIS product (exact name + base-name variant)
+        const { productId: resolvedPid, variantName } = resolveProductId(item.rawProductName || '', [{ id: productId, name: product.name }]);
+        if (resolvedPid === productId) {
+          await db.update(orderItems)
+            .set({ productId, variantInfo: variantName || item.variantInfo || '' } as any)
+            .where(eq(orderItems.id, item.id));
+          linked++;
+        }
+      }
+
+      res.json({ linked });
+    } catch (err) {
+      throw err;
+    }
+  });
+
   app.get("/api/products/inventory", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     const stats = await storage.getInventoryStats(storeId);
@@ -5963,227 +8446,80 @@ function ensureHeaders(sheet) {
     res.json(logs);
   });
 
+  /** GET /api/stock-movements — all stock movements with product name/SKU joined */
+  app.get("/api/stock-movements", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const movements = await storage.getStockMovementsWithProducts(storeId);
+      res.json(movements);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  /** GET /api/stock-movements/:productId — movements for a single product */
+  app.get("/api/stock-movements/:productId", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const productId = Number(req.params.productId);
+      const movements = await storage.getStockMovementsWithProducts(storeId, isNaN(productId) ? undefined : productId);
+      res.json(movements);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // GET /api/products/profitability — per-product revenue, cost, and profit
   // computed directly from orders + order_items (no CSV needed).
   // ─────────────────────────────────────────────────────────────────────────
   app.get("/api/products/profitability", requireAuth, async (req, res) => {
     try {
-      const user = req.user!;
-      const storeId = user.storeId!;
+      const storeId = req.user!.storeId!;
       const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
+      const result = await computeProfitability(storeId, { dateFrom, dateTo, dateRange });
+      res.json({ products: result.products, platforms: result.platforms, totals: result.totals, globalAdSpend: result.globalAdSpend });
+    } catch (err) {
+      throw err;
+    }
+  });
 
-      const now = new Date();
-      let cutoff: Date;
-      let endDate: Date = new Date();
-
-      if (dateFrom) {
-        cutoff  = new Date(dateFrom + 'T00:00:00');
-        endDate = dateTo ? new Date(dateTo + 'T23:59:59') : new Date();
-      } else if (dateRange === 'today') {
-        cutoff = new Date(); cutoff.setHours(0, 0, 0, 0);
-      } else if (dateRange === 'yesterday') {
-        cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 1); cutoff.setHours(0, 0, 0, 0);
-        endDate = new Date(); endDate.setDate(endDate.getDate() - 1); endDate.setHours(23, 59, 59, 999);
-      } else if (dateRange === '7days') {
-        cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 6); cutoff.setHours(0, 0, 0, 0);
-      } else if (dateRange === 'lastmonth') {
-        cutoff  = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-      } else if (dateRange === 'all') {
-        cutoff = new Date('2020-01-01');
-      } else {
-        cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
-      }
-
-      const storeOrders = await db
-        .select()
-        .from(orders)
-        .where(and(
-          eq(orders.storeId, storeId),
-          gte(orders.createdAt, cutoff),
-          lte(orders.createdAt, endDate),
-        ));
-
-      const orderIds = storeOrders.map(o => o.id);
-
-      // ── Fetch ad spend from BOTH tables ──────────────────────────────────
-      const cutoffDateStr  = cutoff.toISOString().slice(0, 10);
-      const endDateStr     = endDate.toISOString().slice(0, 10);
-
-      // 1. adSpendTracking (legacy) — amount in DH
-      const legacyAdRows = await db.select({
-        productId: adSpendTracking.productId,
-        amount:    adSpendTracking.amount,
-      }).from(adSpendTracking).where(and(
-        eq(adSpendTracking.storeId, storeId),
-        sql`${adSpendTracking.date} >= ${cutoffDateStr}`,
-        sql`${adSpendTracking.date} <= ${endDateStr}`,
-      ));
-
-      // 2. adSpend (Publicités module) — amount in centimes → divide by 100
-      const newAdEntries = await storage.getAdSpendEntries(storeId, {
-        dateFrom: cutoffDateStr,
-        dateTo:   endDateStr,
-        allUsers: true,
-      });
-
-      // Combined for platform totals (all normalized to DH)
-      const adSpendRows = [
-        ...legacyAdRows.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) })),
-        ...newAdEntries.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) / 100 })),
-      ];
-
-      // Build map: productId → total adSpend (DH)
-      const productAdSpendMap: Record<number, number> = {};
-      let globalAdSpend = 0;
-      for (const row of adSpendRows) {
-        if (row.productId) {
-          productAdSpendMap[row.productId] = (productAdSpendMap[row.productId] || 0) + row.amountDH;
-        } else {
-          globalAdSpend += row.amountDH;
-        }
-      }
-
-      // Fetch orderItems with product info (skip if no orders in range)
-      const itemRows = orderIds.length > 0 ? await db
+  // POST /api/products/backfill-variants — one-time backfill: links existing unlinked order items
+  // to their parent product when rawProductName matches "Parent - Size" pattern.
+  app.post("/api/products/backfill-variants", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const unlinkedItems = await db
         .select({
-          orderId:          orderItems.orderId,
-          productId:        orderItems.productId,
-          rawProductName:   orderItems.rawProductName,
-          quantity:         orderItems.quantity,
-          price:            orderItems.price,
-          productName:      products.name,
-          productCostPrice: products.costPrice,
+          id: orderItems.id,
+          rawProductName: orderItems.rawProductName,
+          variantInfo: orderItems.variantInfo,
         })
         .from(orderItems)
-        .leftJoin(products, eq(orderItems.productId, products.id))
-        .where(inArray(orderItems.orderId, orderIds)) : [];
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`${orderItems.productId} IS NULL`,
+          sql`${orderItems.rawProductName} IS NOT NULL`,
+        ));
 
-      const orderMap = new Map(storeOrders.map(o => [o.id, o]));
+      const storeProducts = await storage.getProductsByStore(storeId);
+      let linked = 0;
 
-      type ProductStats = {
-        id: number; name: string;
-        totalOrders: number; confirmedOrders: number; deliveredOrders: number;
-        refusedOrders: number; returnedOrders: number;
-        revenue: number; productCost: number; shippingCost: number; adSpend: number;
-        netProfit: number; margin: number; roi: number;
-        confirmRate: number; deliveryRate: number;
-      };
-
-      const statsMap: Record<string, ProductStats> = {};
-      const CONFIRMED_SET = new Set(["confirme","confirmé","expédié","attente de ramassage","in_progress","delivered","livré","livrée"]);
-      const REFUSED_SET   = new Set(["refused","refusé"]);
-      const RETURN_SET    = new Set(["retourné","retour en cours","retourné à l'expéditeur","tentative échouée","article retourné"]);
-
-      for (const item of itemRows) {
-        const order = orderMap.get(item.orderId);
-        if (!order) continue;
-
-        const name = (item.rawProductName || item.productName || 'Produit inconnu').trim();
-        const pid  = item.productId || 0;
-        const key  = `${pid}_${name}`;
-
-        if (!statsMap[key]) {
-          statsMap[key] = {
-            id: pid, name,
-            totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
-            refusedOrders: 0, returnedOrders: 0,
-            revenue: 0, productCost: 0, shippingCost: 0, adSpend: 0,
-            netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
-          };
-        }
-
-        const s = statsMap[key];
-        const status = ((order as any).status || '').toLowerCase().trim();
-        const isDelivered = status === 'delivered' || status === 'livré' || status === 'livrée';
-
-        s.totalOrders++;
-        if (CONFIRMED_SET.has(status)) s.confirmedOrders++;
-        if (isDelivered)               s.deliveredOrders++;
-        if (REFUSED_SET.has(status))   s.refusedOrders++;
-        if (RETURN_SET.has(status))    s.returnedOrders++;
-
-        if (isDelivered) {
-          // All amounts stored in centimes — divide by 100 to get DH
-          s.revenue      += Number((order as any).totalPrice  || 0) / 100;
-          s.productCost  += (Number(item.productCostPrice ?? (order as any).productCost ?? 0) / 100) * Number(item.quantity || 1);
-          s.shippingCost += Number((order as any).shippingCost || 0) / 100;
-          // adSpend comes from adSpendTracking table, applied after aggregation
+      for (const item of unlinkedItems) {
+        const { productId, variantName } = resolveProductId(item.rawProductName || '', storeProducts);
+        if (productId) {
+          await db.update(orderItems)
+            .set({
+              productId,
+              variantInfo: variantName || item.variantInfo || '',
+            } as any)
+            .where(eq(orderItems.id, item.id));
+          linked++;
         }
       }
 
-      const productResult = Object.values(statsMap).map(s => {
-        // ONLY use spend explicitly tagged to this product — never split global spend
-        const totalAdSpend = productAdSpendMap[s.id] || 0;
-
-        const netProfit    = s.revenue - s.productCost - s.shippingCost - totalAdSpend;
-        const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
-        const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
-        const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders  / s.totalOrders)   * 100 : 0;
-        const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
-        return { ...s, adSpend: totalAdSpend, netProfit, margin, roi, confirmRate, deliveryRate };
-      }).sort((a, b) => b.netProfit - a.netProfit);
-
-      // Global ad spend (not tagged to any product) shown separately in summary
-      const globalAdSpendTotal = globalAdSpend;
-
-      // ── Merge stock products that have no orders yet ─────────────────────
-      // Fetch ALL products in the store so new/untested products appear with zeros
-      const allStoreProducts = await db.select({
-        id: products.id,
-        name: products.name,
-        costPrice: products.costPrice,
-        stock: products.stock,
-      }).from(products).where(eq(products.storeId, storeId));
-
-      const existingProductIds = new Set(productResult.map((p: any) => p.id));
-      for (const sp of allStoreProducts) {
-        if (!existingProductIds.has(sp.id)) {
-          productResult.push({
-            id: sp.id, name: sp.name,
-            totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
-            refusedOrders: 0, returnedOrders: 0,
-            revenue: 0, productCost: 0, shippingCost: 0, adSpend: 0,
-            netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
-            noData: true,
-          } as any);
-        }
-      }
-
-      // ── Per-platform aggregation ──────────────────────────────────
-      type PlatStat = { platform: string; orders: number; delivered: number; revenue: number; adSpend: number; netProfit: number; roas: number; cpo: number };
-      const platMap: Record<string, PlatStat> = {};
-      for (const o of storeOrders) {
-        const raw   = (o as any).trafficPlatform || (o as any).utmSource || "";
-        const low   = raw.toLowerCase();
-        const label = low.includes("facebook") || low.includes("fb") || low.includes("meta") ? "Facebook / Meta"
-                    : low.includes("tiktok") || low.includes("tik") ? "TikTok"
-                    : low.includes("google") ? "Google"
-                    : low.includes("organic") || low.includes("organique") ? "Organique"
-                    : raw || "Non défini";
-        if (!platMap[label]) platMap[label] = { platform: label, orders: 0, delivered: 0, revenue: 0, adSpend: 0, netProfit: 0, roas: 0, cpo: 0 };
-        const p = platMap[label];
-        const isDel = ["delivered","livré","livrée"].includes(((o as any).status || "").toLowerCase());
-        p.orders++;
-        if (isDel) {
-          p.delivered++;
-          p.revenue += Number((o as any).totalPrice || 0) / 100;
-        }
-      }
-      // Distribute total adSpend from adSpendTracking proportionally by revenue
-      const totalAdSpendDH = adSpendRows.reduce((s: number, r: any) => s + r.amountDH, 0);
-      const platformResult = Object.values(platMap).map(p => {
-        // Platform view: distribute total spend proportionally (acceptable at platform level)
-        const totalPlatRev = Object.values(platMap).reduce((s, x) => s + x.revenue, 0);
-        const platAdSpend  = totalPlatRev > 0 ? totalAdSpendDH * (p.revenue / totalPlatRev) : 0;
-        const netProfit    = p.revenue - platAdSpend;
-        const roas         = platAdSpend > 0 ? p.revenue / platAdSpend : 0;
-        const cpo          = p.orders   > 0 ? platAdSpend / p.orders  : 0;
-        return { ...p, adSpend: platAdSpend, netProfit, roas, cpo };
-      }).sort((a, b) => b.revenue - a.revenue);
-
-      res.json({ products: productResult, platforms: platformResult, globalAdSpend: globalAdSpendTotal });
+      res.json({ linked, total: unlinkedItems.length });
     } catch (err) {
       throw err;
     }
@@ -6206,39 +8542,235 @@ function ensureHeaders(sheet) {
         reference: z.string().nullable().optional(),
         descriptionDarija: z.string().nullable().optional(),
         aiFeatures: z.string().nullable().optional(), // stored as JSON string
+        coutAchat: z.number().min(0).optional(),
+        prixVente: z.number().min(0).optional(),
+        coutEmballage: z.number().min(0).optional(),
+        coutLivraison: z.number().min(0).optional(),
+        coutConfirmation: z.number().min(0).optional(),
+        hasVariants: z.number().optional(),
+        variants: z.array(z.object({
+          name: z.string().min(1),
+          sku: z.string().optional().default(''),
+          costPrice: z.number().min(0).default(0),
+          sellingPrice: z.number().min(0).default(0),
+          stock: z.number().min(0).default(0),
+        })).optional(),
       });
       const data = schema.parse(req.body);
+      const { coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, variants: variantsPayload, ...updateData } = data;
+      const hasCostFields = [coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation].some(v => v !== undefined);
+      if (hasCostFields) {
+        const existingSettings = (product.settings as any) || {};
+        const existingDefs = existingSettings.profitDefaults || {};
+        (updateData as any).settings = { ...existingSettings, profitDefaults: {
+          coutAchat: coutAchat ?? existingDefs.coutAchat ?? 0,
+          prixVente: prixVente ?? existingDefs.prixVente ?? 0,
+          coutEmballage: coutEmballage ?? existingDefs.coutEmballage ?? 0,
+          coutLivraison: coutLivraison ?? existingDefs.coutLivraison ?? 0,
+          coutConfirmation: coutConfirmation ?? existingDefs.coutConfirmation ?? 0,
+        }};
+      }
 
       // If a manual stock edit slipped in via PATCH (legacy path — restock UI
       // should use POST /restock instead), record an 'adjustment' ledger row
       // for the delta so the audit trail is never silently broken.
-      if (typeof data.stock === 'number' && data.stock !== product.stock) {
-        const delta = data.stock - product.stock;
+      if (typeof updateData.stock === 'number' && updateData.stock !== product.stock) {
+        const delta = updateData.stock - product.stock;
         await db.insert(stockMovements).values({
           storeId: product.storeId!,
           productId: product.id,
           type: 'adjustment',
           quantity: delta,
           userId: req.user!.id,
-          reason: `Édition manuelle du stock (${product.stock} → ${data.stock})`,
+          reason: `Édition manuelle du stock (${product.stock} → ${updateData.stock})`,
         });
       }
 
-      const updated = await storage.updateProduct(productId, data);
-      res.json(updated);
+      const updated = await storage.updateProduct(productId, updateData as any);
+
+      // Replace variants if provided
+      if (variantsPayload !== undefined) {
+        await db.delete(productVariants).where(eq(productVariants.productId, productId));
+        if (variantsPayload.length > 0) {
+          for (const v of variantsPayload) {
+            await db.insert(productVariants).values({
+              productId,
+              storeId: product.storeId!,
+              name: v.name,
+              sku: v.sku || null,
+              costPrice: v.costPrice,
+              sellingPrice: v.sellingPrice,
+              stock: v.stock,
+              imageUrl: null,
+            } as any);
+          }
+        }
+        // Sync hasVariants flag on the product
+        await db.update(products)
+          .set({ hasVariants: variantsPayload.length > 0 ? 1 : 0 } as any)
+          .where(eq(products.id, productId));
+      }
+
+      // Return the updated product (re-fetch to include any variant flag changes)
+      const final = await storage.getProduct(productId);
+      res.json(final || updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
     }
   });
 
-  app.delete("/api/products/:id", requireAuth, async (req, res) => {
+  // GET /api/products/cleanup-suggestions — smart filter for deletable products
+  // NOTE: must be BEFORE /:id to prevent "cleanup-suggestions" being parsed as an id
+  app.get("/api/products/cleanup-suggestions", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const type = String(req.query.type || "no_orders");
+    try {
+      let prods: any[] = [];
+      if (type === "no_orders") prods = await storage.getProductsWithoutOrders(storeId);
+      else if (type === "duplicates") prods = await storage.getDuplicateProducts(storeId);
+      else if (type === "archived") prods = await storage.getArchivedProducts(storeId);
+      res.json({ type, count: prods.length, products: prods });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // GET /api/products/:id — fetch a single product with its variants
+  app.get("/api/products/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = parseInt(req.params.id);
+    if (isNaN(productId)) return res.status(400).json({ message: "ID invalide" });
+    try {
+      const product = await storage.getProduct(productId);
+      if (!product || product.storeId !== storeId) return res.status(404).json({ message: "Produit introuvable" });
+      const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
+      res.json({ ...product, variants });
+    } catch (err) {
+      throw err;
+    }
+  });
+
+  // GET /api/products/:id/usage — check how many orders link to a product
+  app.get("/api/products/:id/usage", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = parseInt(req.params.id);
+    try {
+      const product = await storage.getProduct(productId);
+      if (!product || product.storeId !== storeId) return res.status(404).json({ message: "Produit introuvable" });
+      const usage = await storage.getProductUsage(storeId, productId);
+      res.json(usage);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // GET /api/products/all-ids — lightweight: returns only IDs for "select all across pages"
+  app.get("/api/products/all-ids", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await storage.getProductsByStore(storeId);
+      res.json({ ids: rows.map((r: any) => r.id), total: rows.length });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // POST /api/products/bulk-delete
+  app.post("/api/products/bulk-delete", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const { productIds, force = false } = req.body || {};
+    if (!Array.isArray(productIds) || productIds.length === 0)
+      return res.status(400).json({ message: "Liste de produits vide" });
+    try {
+      const results = await storage.bulkDeleteProducts(storeId, productIds, !!force);
+      res.json(results);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // POST /api/products/bulk-delete-all — handles unlimited quantities with server-side chunking
+  app.post("/api/products/bulk-delete-all", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const { mode, productIds, archiveIfHasOrders = true, confirmText } = req.body || {};
+
+    if (mode === "all" && confirmText !== "SUPPRIMER TOUT") {
+      return res.status(400).json({ message: "Confirmation requise. Tapez exactement 'SUPPRIMER TOUT' pour confirmer." });
+    }
+
+    try {
+      let candidates: any[] = [];
+      if (mode === "no_orders") {
+        candidates = await storage.getProductsWithoutOrders(storeId);
+      } else if (mode === "all") {
+        candidates = await storage.getProductsByStore(storeId);
+        // exclude already archived
+        candidates = candidates.filter((p: any) => !p.archivedAt);
+      } else if (mode === "selected_ids") {
+        if (!Array.isArray(productIds) || productIds.length === 0)
+          return res.status(400).json({ message: "Liste de produits vide" });
+        if (confirmText !== "SUPPRIMER TOUT")
+          return res.status(400).json({ message: "Confirmation requise. Tapez exactement 'SUPPRIMER TOUT' pour confirmer." });
+        // Validate ownership
+        const allRows = await storage.getProductsByStore(storeId);
+        const owned = new Set(allRows.map((r: any) => r.id));
+        candidates = productIds
+          .map((id: any) => allRows.find((r: any) => r.id === Number(id)))
+          .filter((p: any) => p && owned.has(p.id) && !p.archivedAt);
+      } else {
+        return res.status(400).json({ message: "Mode invalide" });
+      }
+
+      const results = { total: candidates.length, deleted: 0, archived: 0, skipped: 0, errors: [] as any[] };
+      const CHUNK = 100;
+      for (let i = 0; i < candidates.length; i += CHUNK) {
+        const slice = candidates.slice(i, i + CHUNK);
+        for (const product of slice) {
+          try {
+            const usage = await storage.getProductUsage(storeId, product.id);
+            if (usage.ordersCount > 0) {
+              if (archiveIfHasOrders) {
+                await storage.archiveProduct(product.id);
+                results.archived += 1;
+              } else {
+                results.skipped += 1;
+              }
+            } else {
+              await storage.deleteProduct(product.id);
+              results.deleted += 1;
+            }
+          } catch (err: any) {
+            results.errors.push({ id: product.id, message: err.message });
+          }
+        }
+      }
+
+      console.log(`[BulkDeleteAll] storeId=${storeId} mode=${mode} total=${results.total} deleted=${results.deleted} archived=${results.archived} skipped=${results.skipped} errors=${results.errors.length}`);
+      res.json(results);
+    } catch (err: any) {
+      console.error("[BulkDeleteAll] error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/products/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
     const productId = Number(req.params.id);
+    const force = req.query.force === "true";
     const product = await storage.getProduct(productId);
     if (!product) return res.status(404).json({ message: "Produit non trouvé" });
-    if (product.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+    if (product.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
+    const usage = await storage.getProductUsage(storeId, productId);
+    if (usage.ordersCount > 0 && !force) {
+      return res.status(409).json({ message: "Ce produit est lié à des commandes", usage });
+    }
+    if (usage.ordersCount > 0 && force) {
+      await storage.archiveProduct(productId);
+      return res.json({ ok: true, mode: "archived" });
+    }
     await storage.deleteProduct(productId);
-    res.json({ message: "Supprimé" });
+    res.json({ ok: true, mode: "deleted" });
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -6257,8 +8789,10 @@ function ensureHeaders(sheet) {
       const schema = z.object({
         quantity: z.number().int().positive("La quantité doit être > 0"),
         reason:   z.string().max(500).optional(),
+        date:     z.string().datetime().optional(),  // ISO string — optionnel, défaut = maintenant
       });
-      const { quantity, reason } = schema.parse(req.body);
+      const { quantity, reason, date } = schema.parse(req.body);
+      const movementDate = date ? new Date(date) : new Date();
 
       await db.transaction(async (tx) => {
         await tx.update(products)
@@ -6271,6 +8805,7 @@ function ensureHeaders(sheet) {
           quantity,
           userId: req.user!.id,
           reason: reason || 'Réapprovisionnement manuel',
+          createdAt: movementDate,
         });
       });
 
@@ -6278,6 +8813,742 @@ function ensureHeaders(sheet) {
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /api/products/backfill-initial-stock-history
+  // Creates a single "restock" ledger entry for every product / variant that
+  // has stock > 0 but no restock row yet, covering the gap between the
+  // recorded movements and the actual current stock level.
+  // ─────────────────────────────────────────────────────────────────────────
+  app.post("/api/products/backfill-initial-stock-history", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const allProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const allMovements = await db.select().from(stockMovements).where(eq(stockMovements.storeId, storeId));
+
+      const movementsByProduct: Record<number, typeof allMovements> = {};
+      for (const m of allMovements) {
+        const key = m.productId;
+        if (!movementsByProduct[key]) movementsByProduct[key] = [];
+        movementsByProduct[key].push(m);
+      }
+
+      let created = 0;
+      const details: any[] = [];
+
+      // ── Produits sans variantes ──────────────────────────────────────────
+      for (const p of allProducts) {
+        if (p.hasVariants) continue; // traités séparément ci-dessous
+        const movs = (movementsByProduct[p.id] || []).filter((m) => !m.variantId);
+        const alreadyHasEntry = movs.some((m) => m.type === "restock");
+        if (alreadyHasEntry) continue;
+
+        const netLogged = movs.reduce((s, m) => s + m.quantity, 0);
+        const missing = (p.stock || 0) - netLogged;
+        if (missing <= 0) continue;
+
+        const earliestMovDate = movs.length > 0
+          ? movs.reduce((min, m) => (m.createdAt! < min ? m.createdAt! : min), movs[0].createdAt!)
+          : null;
+        const entryDate = p.createdAt || earliestMovDate || new Date();
+
+        await db.insert(stockMovements).values({
+          storeId, productId: p.id, type: "restock", quantity: missing,
+          reason: "Initial backfill - pre-ledger inventory",
+          createdAt: entryDate,
+        });
+        created++;
+        details.push({ productId: p.id, name: p.name, quantity: missing, date: entryDate });
+      }
+
+      // ── Variantes ────────────────────────────────────────────────────────
+      for (const v of allVariants) {
+        const movs = (movementsByProduct[v.productId] || []).filter((m) => m.variantId === v.id);
+        const alreadyHasEntry = movs.some((m) => m.type === "restock");
+        if (alreadyHasEntry) continue;
+
+        const netLogged = movs.reduce((s, m) => s + m.quantity, 0);
+        const missing = (v.stock || 0) - netLogged;
+        if (missing <= 0) continue;
+
+        const parentProduct = allProducts.find((p) => p.id === v.productId);
+        const earliestMovDate = movs.length > 0
+          ? movs.reduce((min, m) => (m.createdAt! < min ? m.createdAt! : min), movs[0].createdAt!)
+          : null;
+        const entryDate = parentProduct?.createdAt || earliestMovDate || new Date();
+
+        await db.insert(stockMovements).values({
+          storeId, productId: v.productId, variantId: v.id, type: "restock", quantity: missing,
+          reason: `Initial backfill - pre-ledger inventory (variante ${v.name})`,
+          createdAt: entryDate,
+        });
+        created++;
+        details.push({ productId: v.productId, variantId: v.id, name: `${parentProduct?.name || ""} — ${v.name}`, quantity: missing, date: entryDate });
+      }
+
+      res.json({ message: `${created} entrée(s) "Stock initial" créée(s)`, created, details });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /api/products/backfill-missing-stock-movements
+  // One-shot audit repair: retroactively creates stock_movements ledger rows
+  // for orders whose products.stock was already adjusted (by a previous run or
+  // by RULE 0/RULE 1) but that have NO corresponding row in stock_movements.
+  //
+  // This endpoint NEVER touches products.stock — it is purely an audit/history
+  // repair. All physical stock adjustments are now done automatically at
+  // status-transition time (RULE 0 / RULE 0.5 / RULE 1 in updateOrderStatus,
+  // and decrementStockForOrder in import-bulk).
+  //
+  // createdAt of each inserted movement is set to the order's updatedAt (or
+  // createdAt), NOT the current timestamp, so the Historique panel shows the
+  // real delivery/ship date rather than today.
+  // ─────────────────────────────────────────────────────────────────────────
+  app.post("/api/products/backfill-missing-stock-movements", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      const ADVANCED_DELIVERED = ['delivered', 'livré', 'livre', 'livrée', 'Livré', 'Livrée'];
+      const ADVANCED_SHIPPED   = [
+        'in_progress', 'expédié', 'Attente De Ramassage', 'transit',
+        'unreachable', 'En Cours De Retour', 'refused', 'Retour Recu',
+        'confirme', 'confirme_reporte',
+      ];
+      const ALL_ADVANCED = [...ADVANCED_DELIVERED, ...ADVANCED_SHIPPED];
+      const deliveredSet = new Set<string>(ADVANCED_DELIVERED);
+
+      // 1. All orders in advanced statuses for this store
+      const advancedOrders = await db
+        .select({ id: orders.id, status: orders.status, updatedAt: orders.updatedAt, createdAt: orders.createdAt })
+        .from(orders)
+        .where(and(eq(orders.storeId, storeId), inArray(orders.status, ALL_ADVANCED)));
+
+      if (advancedOrders.length === 0) {
+        return res.json({ message: "Aucune commande en statut avancé trouvée.", created: 0, byProduct: [] });
+      }
+
+      const advancedIds = advancedOrders.map(o => o.id);
+      const orderMeta  = new Map(advancedOrders.map(o => [o.id, o]));
+
+      // 2. All order_items for those orders that are linked to a product
+      const allItems = await db
+        .select()
+        .from(orderItems)
+        .where(and(
+          inArray(orderItems.orderId, advancedIds),
+          sql`${orderItems.productId} IS NOT NULL`,
+        ));
+
+      if (allItems.length === 0) {
+        return res.json({ message: "Aucun article de commande trouvé.", created: 0, byProduct: [] });
+      }
+
+      // 3. Existing stock_movements (shipped / delivered / returned) for these orders
+      //    → we never insert a duplicate for the same (orderId, productId) pair.
+      const existingMovs = await db
+        .select({ orderId: stockMovements.orderId, productId: stockMovements.productId })
+        .from(stockMovements)
+        .where(and(
+          eq(stockMovements.storeId, storeId),
+          inArray(stockMovements.orderId, advancedIds),
+          inArray(stockMovements.type, ['shipped', 'delivered']),
+        ));
+      const movKey = new Set(existingMovs.map(m => `${m.orderId}:${m.productId}`));
+
+      // 4. Create missing movements — movement-only, NO products.stock change
+      //    (stock was already corrected by a previous run or by RULE 0/0.5/1).
+      let created = 0;
+      const byProduct: Record<number, { productId: number; movements: number; qtyLogged: number }> = {};
+
+      for (const item of allItems) {
+        if (!item.productId) continue;
+        const key = `${item.orderId}:${item.productId}`;
+        if (movKey.has(key)) continue; // already has a movement — skip
+
+        const meta    = orderMeta.get(item.orderId)!;
+        const qty     = item.quantity || 1;
+        const isDelivered = deliveredSet.has(meta.status);
+        const movType = isDelivered ? 'delivered' : 'shipped';
+        // Use the order's own date, not NOW — so the Historique reflects reality.
+        const movDate = (meta.updatedAt || meta.createdAt) ?? new Date();
+
+        await db.insert(stockMovements).values({
+          storeId,
+          productId: item.productId,
+          type: movType,
+          quantity: -qty,
+          orderId: item.orderId,
+          reason: `Backfill: commande #${item.orderId} ${isDelivered ? 'livrée' : 'expédiée'} (historique manquant)`,
+          createdAt: movDate,
+        });
+        movKey.add(key); // guard against duplicates within this run
+
+        created++;
+        if (!byProduct[item.productId]) byProduct[item.productId] = { productId: item.productId, movements: 0, qtyLogged: 0 };
+        byProduct[item.productId].movements++;
+        byProduct[item.productId].qtyLogged += qty;
+      }
+
+      res.json({
+        message: created > 0
+          ? `${created} mouvement(s) d'historique créé(s) — stock non modifié`
+          : "Aucun mouvement manquant — historique déjà complet",
+        created,
+        byProduct: Object.values(byProduct),
+      });
+    } catch (err: any) {
+      console.error("[BackfillMovements]", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // GET /api/products/audit-product-links
+  // READ-ONLY audit: finds order_items where the current product_id does NOT match what
+  // resolveProductId() (with the corrected normStr) would compute from raw_product_name.
+  // Call this BEFORE running any data repair. Returns a JSON report — never writes anything.
+  app.get("/api/products/audit-product-links", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      // Load all products (with variants) for this store
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const storeProdsWithVariants = await Promise.all(
+        storeProducts.map(async (p: any) => ({
+          id: p.id,
+          name: p.name,
+          variants: await db.select({ name: productVariants.name })
+            .from(productVariants)
+            .where(eq(productVariants.productId, p.id)),
+        }))
+      );
+
+      // Load all order_items for this store that have a raw_product_name
+      const items = await db
+        .select({
+          oi_id: orderItems.id,
+          orderId: orderItems.orderId,
+          rawProductName: orderItems.rawProductName,
+          currentProductId: orderItems.productId,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            sql`${orderItems.rawProductName} IS NOT NULL`,
+            sql`${orderItems.rawProductName} != ''`,
+          )
+        );
+
+      if (items.length === 0) {
+        return res.json({
+          total: 0,
+          mismatches: 0,
+          unresolved: 0,
+          rows: [],
+          message: "Aucun order_item avec raw_product_name trouvé dans ce store.",
+        });
+      }
+
+      // Build lookup maps
+      const productNameById = new Map(storeProducts.map((p: any) => [p.id, p.name]));
+
+      const rows: {
+        oi_id: number; orderId: number; rawProductName: string;
+        currentProductId: number | null; currentProductName: string | null;
+        computedProductId: number | null; computedProductName: string | null;
+        status: 'ok' | 'mismatch' | 'unresolved_now' | 'unresolved_before';
+      }[] = [];
+
+      let mismatches = 0;
+      let unresolved = 0;
+
+      for (const item of items) {
+        const { productId: computedId } = resolveProductId(item.rawProductName || '', storeProdsWithVariants);
+        const currentName = item.currentProductId ? (productNameById.get(item.currentProductId) ?? null) : null;
+        const computedName = computedId ? (productNameById.get(computedId) ?? null) : null;
+
+        let status: 'ok' | 'mismatch' | 'unresolved_now' | 'unresolved_before';
+        if (!computedId && !item.currentProductId) {
+          status = 'unresolved_before'; // was already unresolved, still unresolved — no change
+        } else if (!computedId && item.currentProductId) {
+          // Previously resolved (possibly wrong), now correctly unresolved — this IS a mismatch type
+          status = 'mismatch';
+          mismatches++;
+        } else if (computedId && !item.currentProductId) {
+          // Was unresolved before, now resolves correctly
+          status = 'unresolved_now';
+          unresolved++;
+        } else if (computedId !== item.currentProductId) {
+          status = 'mismatch';
+          mismatches++;
+        } else {
+          status = 'ok';
+        }
+
+        if (status !== 'ok') {
+          rows.push({
+            oi_id: item.oi_id,
+            orderId: item.orderId,
+            rawProductName: item.rawProductName || '',
+            currentProductId: item.currentProductId ?? null,
+            currentProductName: currentName ?? null,
+            computedProductId: computedId,
+            computedProductName: computedName,
+            status,
+          });
+        }
+      }
+
+      res.json({
+        total: items.length,
+        mismatches,
+        unresolved,
+        rows,
+        message: mismatches === 0 && unresolved === 0
+          ? `✅ Tous les ${items.length} order_items sont correctement liés.`
+          : `⚠️ ${mismatches} mismatch(es) détecté(s) sur ${items.length} lignes. Validez ce rapport avant toute correction automatique.`,
+      });
+    } catch (err: any) {
+      console.error("[AuditProductLinks]", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // POST /api/products/apply-product-link-corrections
+  // Applies the corrections identified by the audit:
+  //   - Updates order_items.product_id to the value computed by the corrected normStr
+  //   - Skips 'unresolved_before' rows (both sides null — no change possible)
+  //   - When newProductId is null: updates order_item to null but leaves stock_movements
+  //     untouched (cannot set NOT NULL movement column to null)
+  //   - Migrates stock_movements only when (orderId, oldProductId) maps unambiguously to
+  //     a single newProductId; ambiguous orders are reported for manual review
+  //   - Recalculates products.stock = SUM(movements) for EVERY product in the store
+  //     (full-catalog reconciliation, not only affected products)
+  //   - All writes are in a single transaction (auto-rollback on error)
+  app.post("/api/products/apply-product-link-corrections", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      // ── Re-run the audit to identify mismatches ─────────────────────────────
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const storeProdsWithVariants = await Promise.all(
+        storeProducts.map(async (p: any) => ({
+          id: p.id,
+          name: p.name,
+          variants: await db.select({ name: productVariants.name })
+            .from(productVariants)
+            .where(eq(productVariants.productId, p.id)),
+        }))
+      );
+
+      const items = await db
+        .select({
+          oi_id: orderItems.id,
+          orderId: orderItems.orderId,
+          rawProductName: orderItems.rawProductName,
+          currentProductId: orderItems.productId,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            sql`${orderItems.rawProductName} IS NOT NULL`,
+            sql`${orderItems.rawProductName} != ''`,
+          )
+        );
+
+      // Classify each item — skip unresolved_before (both null) and ok (same)
+      const corrections: {
+        oi_id: number; orderId: number; rawProductName: string;
+        oldProductId: number | null; newProductId: number | null;
+      }[] = [];
+
+      for (const item of items) {
+        const { productId: computedId } = resolveProductId(item.rawProductName || '', storeProdsWithVariants);
+        if (!computedId && !item.currentProductId) continue; // unresolved_before — no change
+        if (computedId === item.currentProductId) continue;  // already correct
+        corrections.push({
+          oi_id: item.oi_id,
+          orderId: item.orderId,
+          rawProductName: item.rawProductName || '',
+          oldProductId: item.currentProductId ?? null,
+          newProductId: computedId,
+        });
+      }
+
+      // ── Determine which stock_movements are safe to migrate ─────────────────
+      // A movement row is keyed by (orderId, productId) in the ledger — one row covers
+      // the entire quantity for that order+product combination, regardless of how many
+      // order_items share that pair. We can only safely repoint the movement when EVERY
+      // order_item in the order that currently has product_id = oldProductId is being
+      // corrected to the SAME non-null newProductId. If even one item stays on oldProductId
+      // (i.e. was already correct and is not in the corrections list), migration would
+      // strip that item's quantity from its correct product — so we must leave the movement
+      // and report the group for manual review.
+      // Note: all Set/Map iterations use Array.from() to avoid TS errors under ES3 target.
+
+      type MovKey = string; // `${orderId}:${oldProductId}`
+
+      // Collect unique (orderId, oldProductId) pairs from corrections (no Set iteration needed)
+      const keysToCheckArr: MovKey[] = [];
+      const seenMovKeys: Record<string, true> = {};
+      for (const c of corrections) {
+        if (c.oldProductId !== null) {
+          const k: MovKey = `${c.orderId}:${c.oldProductId}`;
+          if (!seenMovKeys[k]) { seenMovKeys[k] = true; keysToCheckArr.push(k); }
+        }
+      }
+
+      // Build a lookup: corrected oi_id → newProductId (plain object, no Map iteration)
+      const correctionByOiId: Record<number, number | null | undefined> = {};
+      for (const c of corrections) correctionByOiId[c.oi_id] = c.newProductId;
+
+      // For each key, load ALL order_items in that order with product_id = oldProductId
+      // to verify every item in the group is covered by this correction run.
+      const safeMovMigrationsArr: Array<{ key: MovKey; newProductId: number }> = [];
+      const safeMovMigrationRecord: Record<MovKey, number> = {}; // for O(1) lookup in report
+      const ambiguousMovOrders: { orderId: number; oldProductId: number; targets: (number | null)[]; reason: string }[] = [];
+
+      for (const key of keysToCheckArr) {
+        const parts = key.split(':');
+        const orderId = Number(parts[0]);
+        const oldProductId = Number(parts[1]);
+
+        // All order_items in this order currently pointing to oldProductId
+        const allItemsForKey = await db
+          .select({ oi_id: orderItems.id })
+          .from(orderItems)
+          .where(
+            and(
+              eq(orderItems.orderId, orderId),
+              eq(orderItems.productId, oldProductId),
+            )
+          );
+
+        // Check: is every item being corrected, and do all corrections share the same non-null target?
+        const targetSet: Record<string, number | null> = {};
+        let allCovered = true;
+        for (const row of allItemsForKey) {
+          if (!(row.oi_id in correctionByOiId)) {
+            // This item is NOT being corrected — stays legitimately on oldProductId → unsafe.
+            allCovered = false;
+            break;
+          }
+          const t = correctionByOiId[row.oi_id] ?? null;
+          targetSet[t === null ? 'null' : String(t)] = t;
+        }
+
+        const targetValues = Object.values(targetSet);
+        if (!allCovered) {
+          ambiguousMovOrders.push({
+            orderId, oldProductId, targets: targetValues,
+            reason: "Un ou plusieurs order_items dans cette commande restent correctement liés à l'ancien produit",
+          });
+        } else if (targetValues.length === 1 && targetValues[0] !== null) {
+          const newProductId = targetValues[0] as number;
+          safeMovMigrationsArr.push({ key, newProductId });
+          safeMovMigrationRecord[key] = newProductId;
+        } else {
+          ambiguousMovOrders.push({
+            orderId, oldProductId, targets: targetValues,
+            reason: "Les corrections pointent vers des produits différents ou vers null",
+          });
+        }
+      }
+
+      // Load all products and variants for this store — needed for full-catalog reconciliation
+      const allStoreProductIds = storeProducts.map((p: any) => p.id as number);
+      const allStoreVariants = allStoreProductIds.length > 0
+        ? await db
+            .select({ id: productVariants.id, productId: productVariants.productId })
+            .from(productVariants)
+            .where(eq(productVariants.storeId, storeId))
+        : [];
+
+      // ── Apply everything in a single transaction ─────────────────────────────
+      let correctedCount = 0;
+      let movementsMigrated = 0;
+
+      await db.transaction(async (tx) => {
+        // 1. Fix each order_item's product_id
+        for (const c of corrections) {
+          await tx
+            .update(orderItems)
+            .set({ productId: c.newProductId })   // null is valid on this column
+            .where(eq(orderItems.id, c.oi_id));
+          correctedCount++;
+        }
+
+        // 2. Migrate stock_movements for unambiguous (orderId, oldProductId) pairs only.
+        //    When newProductId is null or the group is ambiguous, we leave the movements
+        //    on the old product (they will be accounted for in its stock recalculation).
+        const migratedKeyRecord: Record<MovKey, true> = {};
+        for (const { key, newProductId } of safeMovMigrationsArr) {
+          if (migratedKeyRecord[key]) continue;
+          const keyParts = key.split(':');
+          const orderId = Number(keyParts[0]);
+          const oldProductId = Number(keyParts[1]);
+          await tx
+            .update(stockMovements)
+            .set({ productId: newProductId })
+            .where(
+              and(
+                eq(stockMovements.orderId, orderId),
+                eq(stockMovements.productId, oldProductId),
+                eq(stockMovements.storeId, storeId),
+              )
+            );
+          migratedKeyRecord[key] = true;
+          movementsMigrated++;
+        }
+
+        // 3. Full-catalog stock reconciliation for EVERY product in this store.
+        //
+        //    The ledger model keeps two distinct balances:
+        //      • products.stock      = movements where variantId IS NULL  (non-variant / parent qty)
+        //      • productVariants.stock = movements where variantId = v.id  (per-variant qty)
+        //
+        //    Summing ALL movements into products.stock would double-count variant quantities
+        //    because variant stock is displayed and managed separately. We reconcile each
+        //    side independently so the totals remain correct.
+        for (const productId of allStoreProductIds) {
+          // Parent stock: movements with no variantId
+          const [{ parentTotal }] = await tx
+            .select({ parentTotal: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)` })
+            .from(stockMovements)
+            .where(
+              and(
+                eq(stockMovements.productId, productId),
+                sql`${stockMovements.variantId} IS NULL`,
+              )
+            );
+
+          await tx
+            .update(products)
+            .set({ stock: Number(parentTotal) })
+            .where(
+              and(
+                eq(products.id, productId),
+                eq(products.storeId, storeId),
+              )
+            );
+        }
+
+        // Variant stock: movements scoped to each variantId
+        for (const v of allStoreVariants) {
+          const [{ variantTotal }] = await tx
+            .select({ variantTotal: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)` })
+            .from(stockMovements)
+            .where(
+              and(
+                eq(stockMovements.productId, v.productId),
+                eq(stockMovements.variantId, v.id),
+              )
+            );
+
+          await tx
+            .update(productVariants)
+            .set({ stock: Number(variantTotal) })
+            .where(eq(productVariants.id, v.id));
+        }
+      });
+
+      // ── Build response report ─────────────────────────────────────────────────
+      const productNameById: Record<number, string> = {};
+      for (const p of storeProducts) productNameById[p.id] = p.name;
+
+      // Re-read final stock values for all store products
+      const finalStocks = allStoreProductIds.length > 0
+        ? await db
+            .select({ id: products.id, name: products.name, stock: products.stock })
+            .from(products)
+            .where(
+              and(
+                inArray(products.id, allStoreProductIds),
+                eq(products.storeId, storeId),
+              )
+            )
+        : [];
+
+      const msgParts: string[] = [];
+      if (correctedCount > 0) msgParts.push(`${correctedCount} order_item(s) corrigé(s)`);
+      if (movementsMigrated > 0) msgParts.push(`${movementsMigrated} lot(s) de mouvements migré(s)`);
+      msgParts.push(`stock recalculé pour ${allStoreProductIds.length} produit(s) et ${allStoreVariants.length} variante(s)`);
+
+      res.json({
+        message: correctedCount === 0
+          ? `✅ Aucune correction d'order_item nécessaire. Stock reconcilié pour ${allStoreProductIds.length} produit(s).`
+          : `✅ ${msgParts.join(', ')}.`,
+        corrected: correctedCount,
+        movementsMigrated,
+        ambiguousMovOrders: ambiguousMovOrders.map((a) => ({
+          orderId: a.orderId,
+          oldProductId: a.oldProductId,
+          oldProductName: productNameById[a.oldProductId] ?? null,
+          targets: a.targets,
+          note: "Mouvements non migrés automatiquement — résolution manuelle requise",
+        })),
+        corrections: corrections.map((c) => ({
+          oi_id: c.oi_id,
+          orderId: c.orderId,
+          rawProductName: c.rawProductName,
+          oldProductId: c.oldProductId,
+          oldProductName: c.oldProductId !== null ? (productNameById[c.oldProductId] ?? null) : null,
+          newProductId: c.newProductId,
+          newProductName: c.newProductId !== null ? (productNameById[c.newProductId] ?? null) : null,
+          movementMigrated: c.oldProductId !== null && (`${c.orderId}:${c.oldProductId}` in safeMovMigrationRecord),
+        })),
+        stockRecalculated: finalStocks.map((p) => ({
+          productId: p.id,
+          productName: p.name,
+          newStock: p.stock,
+        })),
+      });
+    } catch (err: any) {
+      console.error("[ApplyProductLinkCorrections]", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/products/bulk-apply-cost-to-variants", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const allProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+
+      let updatedVariants = 0;
+      const details: { productName: string; variantsUpdated: number }[] = [];
+
+      for (const p of allProducts) {
+        if (!p.hasVariants || !p.costPrice || p.costPrice <= 0) continue;
+        const variants = allVariants.filter(v => v.productId === p.id);
+        let countForThisProduct = 0;
+        for (const v of variants) {
+          if (!v.costPrice || v.costPrice <= 0) {
+            await db.update(productVariants).set({ costPrice: p.costPrice }).where(eq(productVariants.id, v.id));
+            countForThisProduct++;
+            updatedVariants++;
+          }
+        }
+        if (countForThisProduct > 0) details.push({ productName: p.name, variantsUpdated: countForThisProduct });
+      }
+
+      res.json({ message: `${updatedVariants} variante(s) mises à jour sur ${details.length} produit(s)`, updatedVariants, productsAffected: details.length, details });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET  /api/stock/fix-historical-shipments/preview
+  // POST /api/stock/fix-historical-shipments/apply
+  //
+  // Finds shipped orders whose stock was never decremented (no stockMovement
+  // with type='shipped' for that orderId) and allows bulk-fixing them.
+  // ─────────────────────────────────────────────────────────────────────────
+  const SHIPPED_ORDER_STATUSES = [
+    'Attente De Ramassage', 'transit', 'delivered',
+    'refused', 'Retour Recu', 'En Cours De Retour',
+  ];
+
+  async function getHistoricalPendingOrders(storeId: number) {
+    // 1. All shipped orders for this store
+    const shippedOrders = await db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        inArray(orders.status, SHIPPED_ORDER_STATUSES),
+      ));
+    if (!shippedOrders.length) return [];
+
+    // 2. All 'shipped' stock movements for those orderIds
+    const orderIds = shippedOrders.map(o => o.id);
+    const existingMovements = await db.select({ orderId: stockMovements.orderId })
+      .from(stockMovements)
+      .where(and(
+        eq(stockMovements.storeId, storeId),
+        eq(stockMovements.type, 'shipped'),
+        inArray(stockMovements.orderId, orderIds),
+      ));
+    const alreadyDecremented = new Set(existingMovements.map(m => m.orderId));
+
+    // 3. Filter to orders with no 'shipped' movement
+    const pending = shippedOrders.filter(o => !alreadyDecremented.has(o.id));
+    if (!pending.length) return [];
+
+    // 4. Enrich with order items
+    const pendingIds = pending.map(o => o.id);
+    const items = await db.select().from(orderItems)
+      .where(inArray(orderItems.orderId, pendingIds));
+    const itemsByOrder = new Map<number, any[]>();
+    for (const item of items) {
+      if (!itemsByOrder.has(item.orderId)) itemsByOrder.set(item.orderId, []);
+      itemsByOrder.get(item.orderId)!.push(item);
+    }
+
+    return pending.map(o => ({
+      id:           o.id,
+      orderNumber:  (o as any).orderNumber || String(o.id),
+      customerName: (o as any).customerName || '',
+      status:       o.status,
+      items: (itemsByOrder.get(o.id) || []).map((it: any) => ({
+        productName: it.rawProductName || it.productName || 'Produit',
+        qty:         it.quantity || 1,
+        productId:   it.productId || null,
+      })),
+    }));
+  }
+
+  app.get("/api/stock/fix-historical-shipments/preview", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const pending = await getHistoricalPendingOrders(storeId);
+      res.json({ count: pending.length, orders: pending });
+    } catch (err) {
+      console.error('[FIX-HISTORICAL] Preview error:', err);
+      res.status(500).json({ message: 'Erreur lors de la prévisualisation.' });
+    }
+  });
+
+  app.post("/api/stock/fix-historical-shipments/apply", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { orderIds } = z.object({ orderIds: z.array(z.number()).optional() }).parse(req.body);
+
+      let pending = await getHistoricalPendingOrders(storeId);
+      if (orderIds && orderIds.length > 0) {
+        const set = new Set(orderIds);
+        pending = pending.filter(o => set.has(o.id));
+      }
+
+      let applied = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+
+      for (const order of pending) {
+        if (!order.items.length) { skipped++; continue; }
+        try {
+          await storage.decrementStockForOrder(order.id, storeId);
+          applied++;
+          console.log(`[FIX-HISTORICAL] ✅ Decremented stock for order #${order.orderNumber} (id=${order.id})`);
+        } catch (err: any) {
+          errors.push(`#${order.orderNumber}: ${err?.message || String(err)}`);
+          console.error(`[FIX-HISTORICAL] ❌ Failed for order #${order.id}:`, err);
+        }
+      }
+
+      res.json({ applied, skipped, errors });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      console.error('[FIX-HISTORICAL] Apply error:', err);
+      res.status(500).json({ message: 'Erreur lors de la correction.' });
     }
   });
 
@@ -6466,7 +9737,85 @@ function ensureHeaders(sheet) {
     const daysUntilExpiry = sub.planExpiryDate
       ? Math.ceil((new Date(sub.planExpiryDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
       : null;
-    res.json({ ...sub, ...limitCheck, daysUntilExpiry, isExpired: paywallCheck.isExpired, reason: paywallCheck.reason });
+    const hasAutomation  = hasFeature(sub, req.user, 'automation');
+    const hasMediaBuyers = hasFeature(sub, req.user, 'mediaBuyers');
+    const hasImportCsv   = hasFeature(sub, req.user, 'importCsv');
+    res.json({ ...sub, ...limitCheck, daysUntilExpiry, isExpired: paywallCheck.isExpired, reason: paywallCheck.reason, hasAutomation, hasMediaBuyers, hasImportCsv });
+  });
+
+  // ── CSV Profit Reports CRUD ─────────────────────────────────────────────
+  const requireImportCsv = async (req: any, res: any, next: any) => {
+    const storeId = req.user?.storeId;
+    if (!storeId) return res.status(401).json({ message: "Non authentifié" });
+    const sub = await storage.getSubscription(storeId);
+    if (!hasFeature(sub, req.user, 'importCsv')) {
+      return res.status(403).json({ message: "Fonctionnalité réservée aux plans Pro et supérieurs." });
+    }
+    next();
+  };
+
+  app.get("/api/profit-reports", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const reports = await storage.getCsvProfitReports(storeId);
+      res.json(reports.map(r => ({
+        id: r.id, month: r.month, title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt,
+        totals: (r.payload as any)?.totals ?? null,
+        fileName: (r.payload as any)?.fileName ?? null,
+      })));
+    } catch (err) { throw err; }
+  });
+
+  app.post("/api/profit-reports", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const schema = z.object({
+        month: z.string().regex(/^\d{4}-\d{2}$/),
+        title: z.string().optional(),
+        payload: z.record(z.any()),
+      });
+      const { month, title, payload } = schema.parse(req.body);
+      const report = await storage.createCsvProfitReport({ storeId, userId: req.user!.id, month, title: title ?? null, payload });
+      res.json(report);
+    } catch (err) { throw err; }
+  });
+
+  app.get("/api/profit-reports/:id", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = Number(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
+      const report = await storage.getCsvProfitReport(id, storeId);
+      if (!report) return res.status(404).json({ message: "Rapport introuvable" });
+      res.json(report);
+    } catch (err) { throw err; }
+  });
+
+  app.patch("/api/profit-reports/:id", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = Number(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
+      const schema = z.object({
+        month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+        title: z.string().optional().nullable(),
+        payload: z.record(z.any()).optional(),
+      });
+      const data = schema.parse(req.body);
+      const updated = await storage.updateCsvProfitReport(id, storeId, data as any);
+      if (!updated) return res.status(404).json({ message: "Rapport introuvable" });
+      res.json(updated);
+    } catch (err) { throw err; }
+  });
+
+  app.delete("/api/profit-reports/:id", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = Number(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
+      await storage.deleteCsvProfitReport(id, storeId);
+      res.json({ message: "Rapport supprimé" });
+    } catch (err) { throw err; }
   });
 
   app.post("/api/subscription", requireAuth, async (req, res) => {
@@ -6520,6 +9869,12 @@ function ensureHeaders(sheet) {
     res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo }));
   });
 
+  // Agent comparison by product — rows=products, columns=agents, value=confirmation rate
+  app.get("/api/agents/comparison-by-product", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    res.json(await storage.getAgentComparisonByProduct(storeId));
+  });
+
   // ============================================================
   // MEDIA BUYER ENDPOINTS
   // ============================================================
@@ -6549,6 +9904,12 @@ function ensureHeaders(sheet) {
     const user = req.user!;
     if (!['owner', 'admin'].includes(user.role) && !user.isSuperAdmin) return res.status(403).json({ message: "Accès admin requis" });
     const storeId = user.storeId!;
+    if (!user.isSuperAdmin) {
+      const sub = await storage.getSubscription(storeId);
+      if (!hasFeature(sub, user, 'mediaBuyers')) {
+        return res.status(403).json({ message: "La gestion des media buyers est réservée au plan Pro." });
+      }
+    }
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
     res.json(await storage.getMediaBuyersSummary(storeId, dateFrom, dateTo));
@@ -6938,7 +10299,7 @@ function ensureHeaders(sheet) {
 
       // ── Status distribution ───────────────────────────────────────
       // confirme is CUMULATIVE: once confirmed, always counted regardless of
-      // shipping stage. Mirrors the admin /api/stats/filtered (ADMIN_CONFIRMED set).
+      // shipping stage. Mirrors the admin /api/stats/filtered subtractive definition.
       // Sub-buckets (delivered, en_cours, refused) are disjoint SUBSETS of confirme.
       const AGENT_CONFIRMED = new Set([
         'confirme', 'confirme_reporte', 'confirmé', 'confirmed',
@@ -7149,6 +10510,7 @@ function ensureHeaders(sheet) {
         const order = ordersList.find(o => o.trackNumber === trackingNumber);
         if (order) {
           await storage.updateOrderStatus(order.id, internalStatus);
+          notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, internalStatus);
           await storage.createOrderFollowUpLog({
             orderId: order.id,
             agentId: null,
@@ -7322,6 +10684,7 @@ function ensureHeaders(sheet) {
 
             if (statusChanged) {
               await storage.updateOrderStatus(order.id, result.status);
+              notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, result.status);
               // Best-effort delivery cost lookup; never blocks the loop on its own errors.
               try {
                 const networkId = (account as any).settings?.digylogNetworkId || (account as any).digylogNetworkId || 1;
@@ -7385,6 +10748,173 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // VITIPSEXPRESS ROUTES
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /** GET /api/vitips/cities — fetch city list from Vitipsexpress API */
+  app.get("/api/vitips/cities", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "vitipsexpress");
+      const account = accounts[0];
+      if (!account) return res.status(400).json({ message: "Aucun compte Vitipsexpress configuré." });
+      const { getVitipsCities } = await import("./services/carrier-service");
+      const cities = await getVitipsCities((account as any).apiKey);
+      res.json({ cities });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erreur lors de la récupération des villes Vitips" });
+    }
+  });
+
+  /** GET /api/shipping/vitips/track/:code — track a single Vitipsexpress package */
+  app.get("/api/shipping/vitips/track/:code", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { code } = req.params;
+      const accounts = await storage.getCarrierAccounts(storeId, "vitipsexpress");
+      const account = accounts[0];
+      if (!account) return res.status(400).json({ message: "Aucun compte Vitipsexpress configuré." });
+      const { trackVitipsShipment } = await import("./services/carrier-service");
+      const result = await trackVitipsShipment(code, (account as any).apiKey);
+      if (result.error) return res.status(502).json({ message: result.error, rawResponse: result.rawResponse });
+      res.json({ trackingCode: code, rawStatus: result.rawStatus, mappedStatus: result.status, rawResponse: result.rawResponse });
+    } catch (err) { throw err; }
+  });
+
+  /** POST /api/shipping/vitips/sync — sync statuses for all active Vitipsexpress orders */
+  app.post("/api/shipping/vitips/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "vitipsexpress");
+      const account = accounts[0];
+      if (!account) return safeJson(400, { message: "Aucun compte Vitipsexpress configuré." });
+      const apiKey = (account as any).apiKey;
+      const { trackVitipsShipment } = await import("./services/carrier-service");
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const vitipsOrders = allOrders.filter((o: any) => {
+        if (!o.trackNumber) return false;
+        if (["delivered", "refused", "Retour Recu"].includes(o.status || "")) return false;
+        return (o.shippingProvider || "").toLowerCase().trim() === "vitipsexpress";
+      });
+      if (vitipsOrders.length === 0) {
+        return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Vitipsexpress à synchroniser." });
+      }
+
+      // Respond immediately to avoid 504 — run sync in background
+      safeJson(200, {
+        synced:  vitipsOrders.length,
+        updated: 0,
+        message: `Synchronisation démarrée en arrière-plan pour ${vitipsOrders.length} commande(s)…`,
+      });
+
+      (async () => {
+        let updated = 0;
+        console.log(`[VITIPS-SYNC] Starting background sync for ${vitipsOrders.length} orders`);
+        for (const order of vitipsOrders) {
+          try {
+            const result = await trackVitipsShipment(order.trackNumber!, apiKey);
+            console.log(`[VITIPS-SYNC] order=#${(order as any).orderNumber} track=${order.trackNumber} → raw="${result.rawStatus}" mapped="${result.status}" err="${result.error}"`);
+            if (result.error || !result.status || result.status === 'null') {
+              if (!result.error) {
+                console.warn(`[VITIPS-SYNC] ⚠️ No mapping found for "${result.rawStatus}" — order #${(order as any).orderNumber} skipped`);
+              }
+              continue;
+            }
+            const updateData: any = {};
+            if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
+              updateData.commentStatus = result.rawStatus;
+            }
+            if (result.status !== order.status) {
+              await storage.updateOrderStatus(order.id, result.status);
+              console.log(`[VITIPS-SYNC] ✅ #${(order as any).orderNumber}: ${order.status} → ${result.status}`);
+              await storage.createOrderFollowUpLog({
+                orderId:   order.id,
+                agentId:   null,
+                agentName: 'Vitipsexpress Sync',
+                note:      `📦 Statut synchronisé: ${result.rawStatus} → ${result.status}`,
+              });
+              updated++;
+            } else {
+              console.log(`[VITIPS-SYNC] ↔ #${(order as any).orderNumber} already "${order.status}" — no change`);
+            }
+            if (Object.keys(updateData).length > 0) {
+              await storage.updateOrder(order.id, updateData);
+            }
+          } catch (e: any) {
+            console.error(`[VITIPS-SYNC] ❌ #${(order as any).orderNumber}: ${e?.message}`);
+          }
+          await new Promise(r => setTimeout(r, 100));
+        }
+        console.log(`[VITIPS-SYNC] Done — ${updated}/${vitipsOrders.length} updated`);
+      })();
+    } catch (err: any) {
+      console.error('[VITIPS-SYNC] fatal', err?.message);
+      return safeJson(500, { message: err?.message || 'Sync Vitipsexpress failed' });
+    }
+  });
+
+  /** POST /api/vitips/fix-raw-statuses — one-time fix for orders saved with raw French text as status */
+  app.post('/api/vitips/fix-raw-statuses', requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    const RAW_TO_PLATFORM: Record<string, string> = {
+      'Reçu par livreur':           'transit',
+      'Recu par livreur':           'transit',
+      'Reçu par le livreur':        'transit',
+      'Recu par le livreur':        'transit',
+      'Expédié':                    'transit',
+      'Expedié':                    'transit',
+      'Expedie':                    'transit',
+      'Programmé':                  'unreachable',
+      'Programme':                  'unreachable',
+      'En attente ramassage':       'Attente De Ramassage',
+      'En attente de ramassage':    'Attente De Ramassage',
+      'Collecté':                   'Attente De Ramassage',
+      'Collecte':                   'Attente De Ramassage',
+      'Livré':                      'delivered',
+      'Livre':                      'delivered',
+      'Refusé':                     'refused',
+      'Refuse':                     'refused',
+    };
+    try {
+      const storeId = req.user!.storeId!;
+      const rawStatusValues = Object.keys(RAW_TO_PLATFORM);
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const toFix = allOrders.filter((o: any) =>
+        rawStatusValues.includes(o.status || '') &&
+        (o.shippingProvider || '').toLowerCase().trim() === 'vitipsexpress'
+      );
+      if (toFix.length === 0) {
+        return res.json({ fixed: 0, message: 'Aucune commande avec un statut brut incorrectement sauvegardé.' });
+      }
+      let fixed = 0;
+      const details: { orderId: number; orderNumber: string; oldStatus: string; newStatus: string }[] = [];
+      for (const order of toFix) {
+        const mapped = RAW_TO_PLATFORM[order.status!];
+        if (!mapped) continue;
+        await storage.updateOrderStatus(order.id, mapped);
+        await storage.createOrderFollowUpLog({
+          orderId:   order.id,
+          agentId:   null,
+          agentName: 'Fix Raw Statuses',
+          note:      `🔧 Statut brut corrigé: "${order.status}" → "${mapped}"`,
+        });
+        details.push({ orderId: order.id, orderNumber: (order as any).orderNumber, oldStatus: order.status!, newStatus: mapped });
+        fixed++;
+      }
+      console.log(`[FIX-RAW-STATUSES] Fixed ${fixed}/${toFix.length} orders for store ${storeId}`);
+      res.json({ fixed, details });
+    } catch (err: any) {
+      console.error('[FIX-RAW-STATUSES]', err?.message);
+      res.status(500).json({ message: err?.message || 'Erreur lors de la correction des statuts.' });
+    }
+  });
+
   // One-time fix: revert orders wrongly marked as "delivered" due to bad status mapping
   app.post('/api/admin/fix-wrong-delivered', requireAuth, async (req: any, res: any) => {
     try {
@@ -7411,13 +10941,9 @@ function ensureHeaders(sheet) {
     try {
       const storeId = req.user!.storeId!;
       const { trackDigylogShipment } = await import('./services/carrier-service');
-      const accounts = await storage.getCarrierAccounts(storeId, 'digylog');
-      const account = accounts[0];
-      if (!account) return res.status(400).json({ message: 'No Digylog account' });
-
+      const { EC_DEFAULT_CITY_PRICE_DH } = await import('./seed-data/ec-city-pricing');
       const allOrders = await storage.getOrdersByStore(storeId);
       const toFix = allOrders.filter((o: any) =>
-        o.shippingProvider === 'digylog' &&
         o.trackNumber &&
         (!o.shippingCost || o.shippingCost === 0)
       );
@@ -7426,12 +10952,41 @@ function ensureHeaders(sheet) {
       let fixed = 0;
 
       for (const order of toFix) {
-        const result = await trackDigylogShipment(order.trackNumber!, (account as any).apiKey);
-        const cost = result.deliveryCost;
-        if (cost && cost > 0) {
-          await storage.updateOrder(order.id, { shippingCost: cost });
-          console.log(`[FIX-COST] #${(order as any).orderNumber} → shippingCost=${cost}`);
+        const carrier = ((order as any).shippingProvider || '').toLowerCase();
+
+        if (carrier === 'digylog') {
+          const accounts = await storage.getCarrierAccounts(storeId, 'digylog');
+          const account = accounts[0];
+          if (!account) continue;
+          const result = await trackDigylogShipment(order.trackNumber!, (account as any).apiKey);
+          const cost = result.deliveryCost;
+          if (cost && cost > 0) {
+            await storage.updateOrder(order.id, { shippingCost: cost });
+            console.log(`[FIX-COST] #${(order as any).orderNumber} digylog → shippingCost=${cost}`);
+            fixed++;
+          }
+        } else if (carrier === 'expresscoursier') {
+          // Use per-city table; fall back to EC default (35 DH)
+          const cityFee = await storage.getCarrierCityPrice(storeId, 'expresscoursier', (order as any).customerCity || '');
+          const price = cityFee ?? (EC_DEFAULT_CITY_PRICE_DH * 100);
+          await storage.updateOrder(order.id, { shippingCost: price });
+          console.log(`[FIX-COST] #${(order as any).orderNumber} EC city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH'})`);
           fixed++;
+        } else if (carrier === 'vitipsexpress') {
+          const { VITIPS_DEFAULT_CITY_PRICE_DH } = await import('./seed-data/vitips-city-pricing');
+          const cityFee = await storage.getCarrierCityPrice(storeId, 'vitipsexpress', (order as any).customerCity || '');
+          const price = cityFee ?? (VITIPS_DEFAULT_CITY_PRICE_DH * 100);
+          await storage.updateOrder(order.id, { shippingCost: price });
+          console.log(`[FIX-COST] #${(order as any).orderNumber} Vitips city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH'})`);
+          fixed++;
+        } else if (carrier) {
+          // Any other carrier: try per-city table first
+          const cityFee = await storage.getCarrierCityPrice(storeId, carrier, (order as any).customerCity || '');
+          if (cityFee && cityFee > 0) {
+            await storage.updateOrder(order.id, { shippingCost: cityFee });
+            console.log(`[FIX-COST] #${(order as any).orderNumber} ${carrier} → shippingCost=${cityFee} (per-city table)`);
+            fixed++;
+          }
         }
       }
 
@@ -7441,54 +10996,177 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // One-time fix: revert Ozon orders wrongly flipped to "delivered" by the
+  // price-based status inference bug in backfillOzonFees (since fixed).
+  // Identifies victims by checking for a follow-up log written by "Ozon Express Sync"
+  // whose note contains "parcel-info" — the exact fingerprint of the bad run.
+  app.post('/api/admin/ozon/revert-wrong-delivered', requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      // Find order IDs that have a follow-up log from the bad sync run
+      const badLogs = await db
+        .select({ orderId: orderFollowUpLogs.orderId })
+        .from(orderFollowUpLogs)
+        .where(
+          and(
+            sql`${orderFollowUpLogs.agentName} = 'Ozon Express Sync'`,
+            sql`${orderFollowUpLogs.note} LIKE '%parcel-info%'`,
+          )
+        );
+
+      if (badLogs.length === 0) {
+        return res.json({ reverted: 0, message: 'Aucune commande affectée détectée.' });
+      }
+
+      const badOrderIds = [...new Set(badLogs.map(r => r.orderId))];
+
+      // Load those orders and keep only the ones still "delivered" that belong to this store
+      const candidates = await db
+        .select()
+        .from(orders)
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            eq(orders.status, 'delivered'),
+            inArray(orders.id, badOrderIds),
+          )
+        );
+
+      let reverted = 0;
+      for (const o of candidates) {
+        await storage.updateOrderStatus(o.id, 'transit');
+        await storage.createOrderFollowUpLog({
+          orderId: o.id,
+          agentId: null,
+          agentName: 'Admin Fix',
+          note: `Statut corrigé: "Livré" → "transit" (inférence parcel-info erronée annulée)`,
+        });
+        console.log(`[OZON-REVERT] #${(o as any).orderNumber} delivered → transit`);
+        reverted++;
+      }
+
+      res.json({
+        reverted,
+        message: reverted > 0
+          ? `${reverted} commande(s) revenues en "transit". Vérifiez et corrigez manuellement si nécessaire.`
+          : 'Aucune commande "Livré" à corriger dans ce compte.',
+      });
+    } catch (err: any) {
+      console.error('[OZON-REVERT]', err?.message);
+      res.status(500).json({ message: err?.message || 'Erreur serveur' });
+    }
+  });
+
+  // One-time fix: revert Ozon orders whose status was set by price-based inference
+  // (the "Ozon Express Sync" bug). Identification rule:
+  //   • Has a follow-up log from "Ozon Express Sync" OR note contains "parcel-info"/"déduit"
+  //   • AND has NO follow-up log from "Ozon Express Webhook" (the legitimate source of truth)
+  // These orders were at "Mise en distribution" and will flip back to "Livré" automatically
+  // when Ozon fires the real DELIVERED webhook.
+  app.post('/api/admin/ozon/revert-bad-inference', requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      // Step 1 — order IDs touched by the inference bug
+      const inferenceRows = await db
+        .select({ orderId: orderFollowUpLogs.orderId })
+        .from(orderFollowUpLogs)
+        .where(sql`
+          ${orderFollowUpLogs.agentName} = 'Ozon Express Sync'
+          OR ${orderFollowUpLogs.note} LIKE '%parcel-info%'
+          OR ${orderFollowUpLogs.note} LIKE '%déduit%'
+        `);
+      const inferenceIds = new Set(inferenceRows.map(r => r.orderId));
+
+      if (inferenceIds.size === 0) {
+        return res.json({ reverted: 0, message: 'Aucune empreinte d\'inférence détectée — rien à corriger.' });
+      }
+
+      // Step 2 — order IDs that have a REAL webhook log (legitimate final status)
+      const webhookRows = await db
+        .select({ orderId: orderFollowUpLogs.orderId })
+        .from(orderFollowUpLogs)
+        .where(sql`${orderFollowUpLogs.agentName} = 'Ozon Express Webhook'`);
+      const webhookIds = new Set(webhookRows.map(r => r.orderId));
+
+      // Step 3 — candidates = inference-only (no webhook confirmation), in this store
+      const onlyInferenceIds = [...inferenceIds].filter(id => !webhookIds.has(id));
+      if (onlyInferenceIds.length === 0) {
+        return res.json({ reverted: 0, message: 'Toutes les commandes inférées ont aussi une confirmation webhook — rien à corriger.' });
+      }
+
+      // Step 4 — load those orders from this store that are currently in a final state
+      const FINAL_STATES = ['delivered', 'Retour Recu', 'refused'];
+      const candidates = await db
+        .select()
+        .from(orders)
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            inArray(orders.status, FINAL_STATES),
+            inArray(orders.id, onlyInferenceIds),
+          )
+        );
+
+      let reverted = 0;
+      for (const o of candidates) {
+        await storage.updateOrderStatus(o.id, 'transit');
+        await storage.createOrderFollowUpLog({
+          orderId: o.id,
+          agentId: null,
+          agentName: 'Admin Fix',
+          note: `Statut corrigé: "${o.status}" → "transit" (inférence parcel-info annulée — sera mis à jour par webhook Ozon)`,
+        });
+        console.log(`[OZON-REVERT-INFERENCE] #${(o as any).orderNumber} ${o.status} → transit`);
+        reverted++;
+      }
+
+      res.json({
+        reverted,
+        checked: candidates.length,
+        message: reverted > 0
+          ? `${reverted} commande(s) repassées en "transit". Le webhook Ozon les basculera en "Livré" dès livraison réelle.`
+          : 'Aucune commande à corriger dans ce compte.',
+      });
+    } catch (err: any) {
+      console.error('[OZON-REVERT-INFERENCE]', err?.message);
+      res.status(500).json({ message: err?.message || 'Erreur serveur' });
+    }
+  });
+
   // ══════════════════════════════════════════════════════════════════
   // AMEEX — STATUS TRACKING & SYNC
   // ══════════════════════════════════════════════════════════════════
 
   /**
    * GET /api/shipping/ameex/track/:trackingNumber
-   * Fetch live status for a single Ameex shipment.
+   * Ameex has NO tracking pull endpoint — all status updates arrive via webhook.
+   * This endpoint is kept for UI compatibility but always returns a clear message.
    */
   app.get("/api/shipping/ameex/track/:trackingNumber", requireAuth, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const { trackingNumber } = req.params;
-
-      const accounts = await storage.getCarrierAccounts(storeId, "ameex");
-      const account = accounts[0];
-      if (!account) {
-        return res.status(400).json({ message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
-      }
-
-      const result = await trackAmeexShipment(
-        trackingNumber,
-        (account as any).apiKey,
-        (account as any).apiUrl || undefined,
-      );
-
-      if (result.error) {
-        return res.status(502).json({ message: result.error, rawResponse: result.rawResponse });
-      }
-
-      res.json({
-        trackingNumber,
-        rawStatus: result.rawStatus,
-        mappedStatus: result.status,
-        rawResponse: result.rawResponse,
-      });
-    } catch (err) {
-      throw err;
-    }
+    res.json({
+      trackingNumber: req.params.trackingNumber,
+      rawStatus: null,
+      mappedStatus: null,
+      message: "Ameex fonctionne via webhook uniquement — aucun endpoint de suivi disponible. Le statut sera mis à jour automatiquement dès qu'Ameex envoie une notification.",
+    });
   });
+
 
   /**
    * POST /api/shipping/ameex/sync
-   * Bulk-sync statuses for all orders currently shipped via Ameex.
-   * Iterates over all orders with shipping_provider = 'ameex' and track_number set,
-   * fetches their live status from Ameex, and updates the DB when status changed.
+   * Fetches the LIVE parcel list from the Ameex API, matches each Ameex order
+   * by trackNumber === parcel tracking code, and applies the real carrier status.
+   *
+   * If the Ameex API is unreachable (all candidate URLs fail), falls back to
+   * replaying stored webhook events (integration_logs), which works now that
+   * real tracking codes are stored on every order.
+   *
+   * Response: { checked, updated, unchanged, notFoundInAmeex, errors,
+   *             workingUrl, totalParcelsFromAmeex, distinctStatuses, details }
    */
   app.post("/api/shipping/ameex/sync", requireAuth, requireActiveSubscription, async (req, res) => {
-    // Same single-response guard as the Digylog handler.
     let responded = false;
     const safeJson = (status: number, body: any) => {
       if (responded || res.headersSent) return;
@@ -7500,148 +11178,986 @@ function ensureHeaders(sheet) {
       const storeId = req.user!.storeId!;
 
       const accounts = await storage.getCarrierAccounts(storeId, "ameex");
-      const account = accounts[0];
+      const account  = accounts[0];
       if (!account) {
         return safeJson(400, { message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
       }
 
-      const apiKey    = (account as any).apiKey;
-      const customUrl = (account as any).apiUrl || undefined;
-
-      const allOrders = await storage.getOrdersByStore(storeId);
-
-      // Lenient match for Ameex too: provider tagged as 'ameex' OR provider empty.
-      // Excludes orphans whose tracking format clearly belongs to Digylog (S + 7+ chars)
-      // so we don't waste tracking calls on cross-carrier pollution.
-      const looksLikeDigylogTracking = (t: string): boolean => /^S[A-Z0-9]{6,}$/i.test(t);
-      const ameexOrders = allOrders.filter((o: any) => {
-        if (!o.trackNumber) return false;
-        if (["delivered", "refused", "Retour Recu"].includes(o.status || "")) return false;
-        const provider = (o.shippingProvider || "").toLowerCase().trim();
-        if (provider === "ameex") return true;
-        if (provider === "" && !looksLikeDigylogTracking(o.trackNumber)) return true;
-        return false;
-      });
-
-      if (ameexOrders.length === 0) {
-        return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Ameex à synchroniser." });
+      const stripHtml = (s: string) => (s || '').replace(/<[^>]*>/g, '').trim();
+      const apiKey    = stripHtml(account.apiKey);
+      const apiId     = stripHtml((account as any).apiSecret || (account as any).storeName || '');
+      if (!apiKey) {
+        return safeJson(400, { message: "Clé API Ameex manquante sur ce compte. Ajoutez-la dans Intégrations → Sociétés de Livraison." });
       }
 
-      // Wall-clock budget. Ameex per-call timeout is 45s — much higher than Digylog —
-      // so the budget is the real safety net here. BATCH_SIZE is a soft cap.
-      const BATCH_SIZE = 10;
-      const BUDGET_MS = 20_000;
-      const startedAt = Date.now();
-      const batch = ameexOrders.slice(0, BATCH_SIZE);
+      // ── Fetch live parcel list from Ameex API ─────────────────────────────
+      // Same URL-discovery logic as /api/shipping/ameex/reconcile.
+      const SSL_AGENT_s = new (await import('https')).default.Agent({ rejectUnauthorized: false });
+      const axiosLib    = (await import('axios')).default;
+      const reqHeaders: Record<string, string> = {
+        'C-Api-Key': apiKey,
+        'C-Api-Id':  apiId,
+        'Accept':    'application/json',
+      };
+      const business = apiId || apiKey.split('-')[0] || '';
+      const CANDIDATE_URLS = [
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Get`,
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/GetAll`,
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/List`,
+        `https://api.ameex.app/customer/Delivery/Parcels`,
+        `https://api.ameex.app/customer/Delivery/Parcels/List`,
+        `https://api.ameex.app/customer/Parcels/Action/Type/Get`,
+      ];
 
-      let updated = 0;
-      let processed = 0;
-      let trackingErrors = 0;
-      const apiDownErrors: string[] = [];
-      const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
+      let parcelsRaw: any = null;
+      let workingUrl  = '';
+      let apiAttempts = 0;
 
-      // Same outage classifier as Digylog: only HTTP-5xx / network failures count as
-      // "API down". A tracking number Ameex doesn't recognise is NOT outage.
-      const isOutageError = (msg: string | undefined | null): boolean => {
-        if (!msg) return false;
-        const m = msg.toLowerCase();
-        return (
-          m.includes('indisponible') ||
-          m.includes('http 5') ||
-          m.includes('econnrefused') ||
-          m.includes('etimedout') ||
-          m.includes('econnreset') ||
-          m.includes('enotfound') ||
-          m.includes('socket hang up')
+      console.log(`[AMEEX-SYNC] storeId=${storeId} — probing Ameex API (${CANDIDATE_URLS.length} candidates)`);
+
+      outer:
+      for (const url of CANDIDATE_URLS) {
+        for (const method of ['get', 'post'] as const) {
+          apiAttempts++;
+          try {
+            const opts: any = {
+              headers: reqHeaders,
+              timeout: 20_000,
+              httpsAgent: SSL_AGENT_s,
+              validateStatus: () => true,
+            };
+            let r: any;
+            if (method === 'get') {
+              r = await axiosLib.get(url, { ...opts, params: business ? { business } : {} });
+            } else {
+              const FormDataLib = (await import('form-data')).default;
+              const fd = new FormDataLib();
+              if (business) fd.append('business', business);
+              r = await axiosLib.post(url, fd, { ...opts, headers: { ...reqHeaders, ...fd.getHeaders() } });
+            }
+            const ct = (r.headers?.['content-type'] || '').toLowerCase();
+            console.log(`[AMEEX-SYNC] ${method.toUpperCase()} ${url} → HTTP ${r.status} ct=${ct.split(';')[0]}`);
+            if (r.status === 200 && r.data) {
+              let data = r.data;
+              if (typeof data === 'string') {
+                try { data = JSON.parse(data); } catch { continue; } // HTML or non-JSON
+              }
+              if (typeof data === 'object') {
+                parcelsRaw = data;
+                workingUrl = url;
+                console.log(`[AMEEX-SYNC] ✅ Working endpoint: ${method.toUpperCase()} ${url}`);
+                break outer;
+              }
+            }
+          } catch (e: any) {
+            console.log(`[AMEEX-SYNC] ${method.toUpperCase()} ${url} error: ${e?.message}`);
+          }
+        }
+      }
+
+      // ── Parse parcel array ────────────────────────────────────────────────
+      type AmeexParcel = { trackingCode: string; rawStatus: string; statusUC: string };
+
+      function extractParcelsForSync(data: any): AmeexParcel[] {
+        let arr: any[] = [];
+        if      (Array.isArray(data))             arr = data;
+        else if (Array.isArray(data?.data))       arr = data.data;
+        else if (Array.isArray(data?.parcels))    arr = data.parcels;
+        else if (Array.isArray(data?.items))      arr = data.items;
+        else if (Array.isArray(data?.result))     arr = data.result;
+        else if (Array.isArray(data?.orders))     arr = data.orders;
+        else if (typeof data === 'object' && data !== null) {
+          const vals = Object.values(data);
+          if (vals.length > 0 && typeof vals[0] === 'object') arr = vals as any[];
+        }
+        return arr.map((item: any) => {
+          const rawStatus = String(
+            item.status  || item.statut  || item.etat   ||
+            item.STATUS  || item.STATUT  || item.state  || ''
+          ).trim();
+          const trackingCode = String(
+            item.tracking_code || item.trackingCode || item.order_id ||
+            item.code          || item.barcode      || item.tracking  ||
+            item.CODE          || item.num           || ''
+          ).trim();
+          return { trackingCode, rawStatus, statusUC: rawStatus.toUpperCase() };
+        }).filter(p => p.trackingCode);
+      }
+
+      const { AMEEX_STATUS_MAP } = await import('./services/carrier-service');
+
+      // ── If Ameex API is reachable, apply live statuses ─────────────────────
+      if (parcelsRaw !== null) {
+        const parcels = extractParcelsForSync(parcelsRaw);
+        console.log(`[AMEEX-SYNC] ${parcels.length} parcels parsed from ${workingUrl}`);
+        if (parcels.length > 0) {
+          console.log(`[AMEEX-SYNC] Sample parcel: ${JSON.stringify(parcels[0])}`);
+        }
+
+        if (parcels.length === 0) {
+          return safeJson(200, {
+            message: `Ameex a répondu (${workingUrl}) mais aucun colis n'a pu être extrait. Vérifiez les logs [AMEEX-SYNC] sur Railway pour voir la structure brute.`,
+            workingUrl,
+            rawShape: JSON.stringify(parcelsRaw).slice(0, 500),
+          });
+        }
+
+        // Index by tracking code (first occurrence wins — API may have dups)
+        const byCode = new Map<string, AmeexParcel>();
+        for (const p of parcels) {
+          if (!byCode.has(p.trackingCode)) byCode.set(p.trackingCode, p);
+        }
+
+        // Load all Ameex orders that have a real tracking code
+        const allOrders     = await storage.getOrdersByStore(storeId) as any[];
+        const ameexOrders   = allOrders.filter((o: any) =>
+          (o.shippingProvider === 'ameex' || (o.carrierName || '').toLowerCase() === 'ameex') &&
+          o.trackNumber &&
+          !String(o.trackNumber).startsWith('AMEEX-PENDING')
         );
+        console.log(`[AMEEX-SYNC] ${ameexOrders.length} Ameex orders with real tracking codes`);
+
+        const TERMINAL = new Set(['delivered', 'refused', 'retourné']);
+        let checked = 0, updated = 0, unchanged = 0, notFoundInAmeex = 0;
+        const errors: string[] = [];
+        const distinctStatuses = new Map<string, number>();
+        const details: Array<{ orderNumber: string; trackNumber: string; oldStatus: string; newStatus: string; ameexRaw: string }> = [];
+
+        for (const order of ameexOrders) {
+          checked++;
+          const parcel = byCode.get(order.trackNumber);
+          if (!parcel) { notFoundInAmeex++; continue; }
+
+          try {
+            const rawLabel = parcel.rawStatus;
+            // Accent-stripped fallback key (LIVRÉ → LIVRE)
+            const strippedKey = parcel.statusUC.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const mappedStatus: string = AMEEX_STATUS_MAP[parcel.statusUC]
+              ?? AMEEX_STATUS_MAP[strippedKey]
+              ?? 'in_progress';
+
+            // Terminal guard: never downgrade delivered/refused/retourné to in_progress
+            if (TERMINAL.has(order.status || '') && !TERMINAL.has(mappedStatus)) {
+              unchanged++;
+              continue;
+            }
+
+            const statusChanged  = mappedStatus !== (order.status || '');
+            const commentChanged = rawLabel !== (order.commentStatus || '');
+
+            if (statusChanged || commentChanged) {
+              if (statusChanged) {
+                await storage.updateOrderStatus(order.id, mappedStatus);
+                notifyStatusUpdate(
+                  { id: order.id, storeId, assignedToId: order.assignedToId ?? null, customerName: order.customerName || '' },
+                  mappedStatus,
+                );
+              }
+              await storage.updateOrder(order.id, { commentStatus: rawLabel } as any);
+              await storage.createOrderFollowUpLog({
+                orderId: order.id, agentId: null, agentName: 'Ameex Sync',
+                note: `Sync API Ameex: "${order.status || '?'}" → "${mappedStatus}" (portail: "${rawLabel}")`,
+              });
+              broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: mappedStatus, commentStatus: rawLabel });
+              distinctStatuses.set(mappedStatus, (distinctStatuses.get(mappedStatus) ?? 0) + 1);
+              details.push({ orderNumber: order.orderNumber, trackNumber: order.trackNumber, oldStatus: order.status || '', newStatus: mappedStatus, ameexRaw: rawLabel });
+              updated++;
+            } else {
+              unchanged++;
+            }
+          } catch (e: any) {
+            errors.push(`#${order.orderNumber}: ${(e as any)?.message}`);
+          }
+        }
+
+        console.log(`[AMEEX-SYNC] checked=${checked} updated=${updated} unchanged=${unchanged} notFoundInAmeex=${notFoundInAmeex} errors=${errors.length}`);
+        const distinctList = Array.from(distinctStatuses.entries()).map(([s, n]) => `${s}(${n})`).join(', ');
+
+        return safeJson(200, {
+          source:                'ameex-api',
+          workingUrl,
+          totalParcelsFromAmeex: parcels.length,
+          checked,
+          updated,
+          unchanged,
+          notFoundInAmeex,
+          errors,
+          distinctStatuses:      Object.fromEntries(distinctStatuses),
+          details:               details.slice(0, 20),
+          message: updated > 0
+            ? `\u2705 Sync Ameex: ${updated} commande(s) mise(s) \u00e0 jour \u00b7 ${unchanged} inchang\u00e9e(s) \u00b7 ${notFoundInAmeex} introuvable(s) dans Ameex${distinctList ? ' \u2014 ' + distinctList : ''}`
+            : `\u2139\ufe0f Sync Ameex: ${checked} commandes v\u00e9rifi\u00e9es \u00b7 ${unchanged} d\u00e9j\u00e0 \u00e0 jour \u00b7 ${notFoundInAmeex} introuvable(s) dans Ameex`,
+        });
+      }
+
+      // ── Fallback: Ameex API unreachable — replay from integration_logs ─────
+      // This works now that real tracking codes are stored on every order.
+      // Webhook events keyed by those same codes will match correctly.
+      console.warn(`[AMEEX-SYNC] API unreachable after ${apiAttempts} attempts — falling back to log replay`);
+
+      const ameexLogs = await db
+        .select()
+        .from(integrationLogs)
+        .where(and(
+          eq(integrationLogs.storeId, storeId),
+          inArray(integrationLogs.provider, ['ameex', 'olivraison']),
+          eq(integrationLogs.action, 'webhook_received'),
+        ))
+        .orderBy(desc(integrationLogs.createdAt))
+        .limit(1000);
+
+      type AmeexEvent = { code: string; statut: string; statutS: string; statutName: string };
+      const parseAmeexLog = (row: { payload: string | null; message: string | null }): AmeexEvent | null => {
+        if (row.payload) {
+          try {
+            const p = JSON.parse(row.payload);
+            if (p.code_colis || p.event === 'package_updated') {
+              let nested: Record<string, any> = {};
+              if (p.payload) {
+                if (typeof p.payload === 'object') nested = p.payload;
+                else try { nested = JSON.parse(String(p.payload)); } catch { /* ignore */ }
+              }
+              const code    = (nested.order_id || p.code_colis || '').toString().trim();
+              const rawStat = nested.return_status === true ? 'RETURNED' : (nested.status || '');
+              const statut  = rawStat.toString().trim();
+              const label   = nested.description || p.commentaire || statut;
+              if (code && statut) return { code, statut, statutS: '', statutName: label };
+              if (code) return { code, statut: 'IN_PROGRESS', statutS: '', statutName: p.commentaire || 'En cours' };
+            }
+            const code   = (p.CODE   || '').toString().trim();
+            const statut = (p.STATUT || '').toString().trim();
+            if (code && statut) return { code, statut, statutS: p.STATUT_S || '', statutName: p.STATUT_NAME || statut };
+          } catch { /* fall through */ }
+        }
+        const msg   = row.message || '';
+        const codeM = msg.match(/CODE=([^\s]+)/);
+        const statM = msg.match(/STATUT=([^\s/(]+)/);
+        if (codeM?.[1] && statM?.[1]) return { code: codeM[1], statut: statM[1], statutS: '', statutName: statM[1] };
+        return null;
       };
 
-      for (const order of batch) {
-        if (Date.now() - startedAt > BUDGET_MS) {
-          console.warn(`[AMEEX-SYNC] budget exhausted after ${processed}/${batch.length} orders`);
-          break;
-        }
-        processed++;
-
-        try {
-          const result = await trackAmeexShipment(order.trackNumber!, apiKey, customUrl);
-          if (result.error) {
-            if (isOutageError(result.error)) {
-              apiDownErrors.push(`${order.trackNumber}: ${result.error}`);
-              if (apiDownErrors.length >= 3) {
-                console.warn(`[AMEEX-SYNC] aborting batch — 3+ consecutive Ameex API outages`);
-                break;
-              }
-            } else {
-              trackingErrors++;
-            }
-            continue;
-          }
-          if (result.status) {
-            const statusChanged = result.status !== order.status;
-            const providerEmpty = !(order as any).shippingProvider || String((order as any).shippingProvider).trim() === "";
-            const updateData: any = {};
-
-            if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
-              updateData.commentStatus = result.rawStatus;
-            }
-            if (providerEmpty) {
-              updateData.shippingProvider = "ameex";
-              console.log(`[AMEEX-SYNC] backfilled shippingProvider for order #${(order as any).orderNumber} (tracking=${order.trackNumber})`);
-            }
-            if (statusChanged) {
-              await storage.updateOrderStatus(order.id, result.status);
-            }
-            if (Object.keys(updateData).length > 0) {
-              await storage.updateOrder(order.id, updateData);
-            }
-            if (statusChanged) {
-              await storage.createOrderFollowUpLog({
-                orderId:   order.id,
-                agentId:   null,
-                agentName: "Ameex Sync",
-                note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
-              });
-              details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
-              updated++;
-            }
-          }
-        } catch (e: any) {
-          if (isOutageError(e?.message)) {
-            apiDownErrors.push(`${order.trackNumber}: ${e?.message}`);
-            if (apiDownErrors.length >= 3) {
-              console.warn(`[AMEEX-SYNC] aborting batch — 3+ thrown outage errors`);
-              break;
-            }
-          } else {
-            trackingErrors++;
-          }
-        }
-        await new Promise(r => setTimeout(r, 200));
+      const latestByCode = new Map<string, AmeexEvent>();
+      for (const row of ameexLogs) {
+        const evt = parseAmeexLog(row);
+        if (!evt) continue;
+        if (!latestByCode.has(evt.code)) latestByCode.set(evt.code, evt);
       }
 
-      const apiDown = apiDownErrors.length >= 3;
-      const remaining = ameexOrders.length - processed;
-      console.log(`[AMEEX-SYNC] storeId=${storeId} processed=${processed}/${batch.length} updated=${updated} apiDownErrors=${apiDownErrors.length} trackingErrors=${trackingErrors} remaining=${remaining} apiDown=${apiDown}`);
+      console.log(`[AMEEX-SYNC] log-replay: ${ameexLogs.length} entries \u2192 ${latestByCode.size} unique codes`);
 
+      let updated = 0, skipped = 0, noMatch = 0;
+      const distinctStatuses2 = new Map<string, number>();
+      const details2: Array<{ code: string; orderNumber: string; oldStatus: string; newStatus: string }> = [];
+      const TERMINAL2 = new Set(['delivered', 'refused', 'retourn\u00e9']);
+
+      for (const [code, evt] of latestByCode) {
+        try {
+          const mappedStatus: string = AMEEX_STATUS_MAP[evt.statut.toUpperCase()] ?? 'in_progress';
+          const order: any = await storage.getOrderByTrackingNumber(storeId, code);
+          if (!order) { noMatch++; continue; }
+          if (TERMINAL2.has(order.status || '') && !TERMINAL2.has(mappedStatus)) { skipped++; continue; }
+          if (mappedStatus !== order.status) {
+            await storage.updateOrderStatus(order.id, mappedStatus);
+            await storage.updateOrder(order.id, { commentStatus: evt.statutName || evt.statut } as any);
+            notifyStatusUpdate(
+              { id: order.id, storeId, assignedToId: order.assignedToId ?? null, customerName: order.customerName || '' },
+              mappedStatus,
+            );
+            await storage.createOrderFollowUpLog({
+              orderId: order.id, agentId: null, agentName: 'Ameex Replay',
+              note: `Replay webhook: ${evt.statut}${evt.statutS ? '/' + evt.statutS : ''} (${evt.statutName}) \u2192 ${mappedStatus}`,
+            });
+            broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: mappedStatus, commentStatus: evt.statutName || evt.statut });
+            distinctStatuses2.set(mappedStatus, (distinctStatuses2.get(mappedStatus) ?? 0) + 1);
+            details2.push({ code, orderNumber: order.orderNumber, oldStatus: order.status || '', newStatus: mappedStatus });
+            updated++;
+          } else {
+            skipped++;
+          }
+        } catch (e: any) {
+          console.error(`[AMEEX-SYNC] replay CODE=${code} error:`, (e as any)?.message);
+        }
+      }
+
+      const distinctList2 = Array.from(distinctStatuses2.entries()).map(([s, n]) => `${s}(${n})`).join(', ');
       return safeJson(200, {
-        synced: processed,
+        source:    'log-replay-fallback',
+        apiNote:   `L'API Ameex est inaccessible (${apiAttempts} URLs testées). Replay des webhooks stock\u00e9s.`,
+        synced:    latestByCode.size,
         updated,
-        errored: apiDownErrors.length + trackingErrors,
-        apiDownErrors: apiDownErrors.length,
-        trackingErrors,
-        remaining,
-        apiDown,
-        details,
-        message: apiDown
-          ? "L'API Ameex renvoie des erreurs. Réessayez dans quelques minutes."
-          : remaining > 0
-          ? `${processed} commande(s) traitée(s), ${updated} mise(s) à jour${trackingErrors > 0 ? `, ${trackingErrors} sans statut` : ''}. Encore ${remaining} en attente — recliquez pour continuer.`
-          : `${updated} commande(s) mise(s) à jour${trackingErrors > 0 ? ` (${trackingErrors} sans statut)` : ''}. Toutes les commandes Ameex sont synchronisées.`,
+        skipped,
+        noMatch,
+        details:   details2,
+        distinctStatuses: Object.fromEntries(distinctStatuses2),
+        message: updated > 0
+          ? `\u2705 Replay Ameex: ${updated} commande(s) mise(s) \u00e0 jour \u00b7 ${skipped} d\u00e9j\u00e0 \u00e0 jour \u00b7 ${noMatch} sans correspondance${distinctList2 ? ' \u2014 ' + distinctList2 : ''}`
+          : `\u2139\ufe0f Replay Ameex: ${latestByCode.size} \u00e9v\u00e9nement(s) trouv\u00e9(s) \u2014 ${skipped} d\u00e9j\u00e0 \u00e0 jour \u00b7 ${noMatch} sans correspondance`,
       });
     } catch (err: any) {
-      console.error('[AMEEX-SYNC] fatal', err?.message);
-      return safeJson(500, { message: err?.message || 'Sync Ameex failed' });
+      console.error('[AMEEX-SYNC] fatal', (err as any)?.message);
+      return safeJson(500, { message: (err as any)?.message || 'Sync Ameex failed' });
+    }
+  });
+
+
+  /**
+   * POST /api/shipping/ameex/patch-codes
+   *
+   * Manual bulk-patch: supply a JSON body mapping orderNumber → real Ameex code.
+   * Any order whose trackNumber is still AMEEX-PENDING-TJG-{orderNumber} gets
+   * updated to the real code. Safe to call multiple times (idempotent per order).
+   *
+   * Body: { "9229": "ANCG0726B23187XY1234567", "1235": "CASABC..." }
+   *
+   * Default: dry-run. Pass ?apply=true to write.
+   */
+  app.post("/api/shipping/ameex/patch-codes", requireAuth, requireAdmin, async (req: any, res: any) => {
+    // Super-admin or store owner/admin only
+    if (!req.user!.isSuperAdmin && !['owner', 'admin'].includes(req.user!.role)) {
+      return res.status(403).json({ message: 'Accès réservé aux super-admins et admins boutique.' });
+    }
+
+    const dryRun = req.query.apply !== 'true';
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+
+    // French Ameex portal label -> { internalStatus, commentStatus }
+    const FRENCH_TO_INTERNAL: Record<string, { internalStatus: string; commentStatus: string }> = {
+      'LIVRÉ':                { internalStatus: 'delivered',   commentStatus: 'Livré' },
+      'LIVRE':                { internalStatus: 'delivered',   commentStatus: 'Livré' },
+      'REFUSÉ':               { internalStatus: 'refused',     commentStatus: 'Refusé' },
+      'REFUSE':               { internalStatus: 'refused',     commentStatus: 'Refusé' },
+      'ANNULÉ':               { internalStatus: 'refused',     commentStatus: 'Annulé' },
+      'ANNULE':               { internalStatus: 'refused',     commentStatus: 'Annulé' },
+      'REPORTÉ':              { internalStatus: 'in_progress', commentStatus: 'Reporté' },
+      'REPORTE':              { internalStatus: 'in_progress', commentStatus: 'Reporté' },
+      'EXPÉDIÉ':              { internalStatus: 'in_progress', commentStatus: 'Expédié' },
+      'EXPEDIE':              { internalStatus: 'in_progress', commentStatus: 'Expédié' },
+      'REÇU':                 { internalStatus: 'in_progress', commentStatus: 'Reçu' },
+      'RECU':                 { internalStatus: 'in_progress', commentStatus: 'Reçu' },
+      'MISE EN DISTRIBUTION': { internalStatus: 'in_progress', commentStatus: 'Mise en distribution' },
+      'PAS DE RÉPONSE':       { internalStatus: 'in_progress', commentStatus: 'Pas de réponse' },
+      'PAS DE REPONSE':       { internalStatus: 'in_progress', commentStatus: 'Pas de réponse' },
+      'ATTENTE DE RAMASSAGE': { internalStatus: 'in_progress', commentStatus: 'Attente De Ramassage' },
+    };
+
+    function resolveFrenchStatus(raw: string | undefined): { internalStatus: string; commentStatus: string } | null {
+      if (!raw) return null;
+      const key     = raw.trim().toUpperCase();
+      const keyNorm = key.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return FRENCH_TO_INTERNAL[key] ?? FRENCH_TO_INTERNAL[keyNorm] ?? null;
+    }
+
+    try {
+      const storeId = req.user!.storeId!;
+      const rawBody = req.body as Record<string, string | { code: string; ameexStatus?: string }>;
+
+      if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+        return safeJson(400, { message: 'Body must be a JSON object. Values: plain string code OR { code, ameexStatus }.' });
+      }
+
+      // Normalise: value is either plain string or { code, ameexStatus }
+      const entries = Object.entries(rawBody).map(([k, v]) => {
+        const orderNum    = String(k).trim();
+        const realCode    = (typeof v === 'string' ? v : (v as any)?.code ?? '').trim();
+        const ameexStatus = (typeof v === 'object' && v !== null) ? (v as any).ameexStatus : undefined;
+        return { orderNum, realCode, ameexStatus: ameexStatus ? String(ameexStatus).trim() : undefined };
+      }).filter(e => e.orderNum && e.realCode && !e.realCode.startsWith('AMEEX-PENDING-'));
+
+      if (entries.length === 0) {
+        return safeJson(400, { message: 'No valid entries. Values must be real Ameex codes (not AMEEX-PENDING- strings).' });
+      }
+
+      const allOrders = await storage.getOrdersByStore(storeId) as any[];
+
+      type PatchResult = {
+        orderNum:        string;
+        orderId?:        number;
+        outcome:         'will_apply' | 'skipped_not_pending' | 'not_found';
+        oldCode?:        string;
+        realCode:        string;
+        internalStatus?: string;
+        commentStatus?:  string;
+        ameexStatusRaw?: string;
+      };
+
+      const results: PatchResult[] = [];
+      let applied = 0;
+
+      for (const { orderNum, realCode, ameexStatus } of entries) {
+        const order = allOrders.find((o: any) => String(o.orderNumber) === orderNum);
+        if (!order) {
+          results.push({ orderNum, outcome: 'not_found', realCode });
+          continue;
+        }
+        const current = String(order.trackNumber || '');
+        if (!current.startsWith('AMEEX-PENDING-')) {
+          results.push({ orderNum, orderId: order.id, outcome: 'skipped_not_pending', oldCode: current, realCode });
+          continue;
+        }
+
+        const statusRes = resolveFrenchStatus(ameexStatus);
+
+        results.push({
+          orderNum,
+          orderId:        order.id,
+          outcome:        'will_apply',
+          oldCode:        current,
+          realCode,
+          ameexStatusRaw: ameexStatus,
+          internalStatus: statusRes?.internalStatus,
+          commentStatus:  statusRes?.commentStatus,
+        });
+
+        if (!dryRun) {
+          const update: Record<string, any> = { trackNumber: realCode };
+          if (statusRes) {
+            update.status        = statusRes.internalStatus;
+            update.commentStatus = statusRes.commentStatus;
+          }
+          await storage.updateOrder(order.id, update as any);
+          await storage.createOrderFollowUpLog({
+            orderId:   order.id,
+            agentId:   null,
+            agentName: 'Ameex Patch CSV',
+            note:      `Patch CSV: ${current} => ${realCode}` +
+                       (statusRes ? ` | statut: ${ameexStatus} => ${statusRes.internalStatus} (commentStatus="${statusRes.commentStatus}")` : ''),
+          });
+          broadcastToStore(storeId, 'order_updated', {
+            orderId:     order.id,
+            trackNumber: realCode,
+            ...(statusRes ? { status: statusRes.internalStatus, commentStatus: statusRes.commentStatus } : {}),
+          });
+          applied++;
+        }
+      }
+
+      const wouldApply = results.filter(r => r.outcome === 'will_apply').length;
+      const notPending = results.filter(r => r.outcome === 'skipped_not_pending').length;
+      const notFound   = results.filter(r => r.outcome === 'not_found').length;
+
+      return safeJson(200, {
+        dryRun,
+        total:             entries.length,
+        matched:           wouldApply,
+        applied:           dryRun ? 0 : applied,
+        skippedNotPending: notPending,
+        notFound,
+        updated_preview:   results.filter(r => r.outcome === 'will_apply'),
+        skipped:           results.filter(r => r.outcome !== 'will_apply'),
+        message: dryRun
+          ? `DRY-RUN: ${wouldApply}/${entries.length} seraient mis a jour. Relancez avec ?apply=true pour appliquer.`
+          : `Applique: ${applied}/${entries.length} commande(s) mise(s) a jour.`,
+      });
+    } catch (err: any) {
+      console.error('[AMEEX-PATCH-CODES] fatal:', err?.message);
+      return safeJson(500, { message: err?.message || 'Patch echoue' });
+    }
+  });
+
+  /**
+   * POST /api/shipping/ameex/backfill[?apply=true]
+   *
+   * Recovers real Ameex tracking codes from already-stored integration_logs without
+   * calling any external API. Every successful Ameex shipment emits a
+   * [AMEEX-FULL-RESPONSE] log line that contains the real code (api.data.code).
+   * This route parses those logs and patches any AMEEX-PENDING-TJG-{orderNumber}
+   * placeholder that matches by order number.
+   *
+   * Matching: always by orderNumber embedded in the placeholder — never by phone or name.
+   * Default: dry-run. Pass ?apply=true to commit.
+   */
+  app.post("/api/shipping/ameex/backfill", requireAuth, requireActiveSubscription, async (req, res) => {
+    const dryRun = req.query.apply !== 'true';
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+
+    try {
+      const storeId = req.user!.storeId!;
+
+      // ── 1. Load integration_logs that have [AMEEX-FULL-RESPONSE] ─────────
+      // These are written by the Ameex ship path with action='ship' or message
+      // containing the full response. We also check action='webhook_received'
+      // just in case. The message field contains the raw JSON body.
+      const shipLogs = await db
+        .select()
+        .from(integrationLogs)
+        .where(and(
+          eq(integrationLogs.storeId, storeId),
+          eq(integrationLogs.provider, 'ameex'),
+        ))
+        .orderBy(desc(integrationLogs.createdAt))
+        .limit(2000);
+
+      console.log(`[AMEEX-BACKFILL] storeId=${storeId} total ameex logs=${shipLogs.length}`);
+
+      // ── 2. Extract (orderNumber → realCode) from every log that has both ──
+      // Sources:
+      //   a. message field contains "[AMEEX-FULL-RESPONSE] order=XXXX ... body=..."
+      //   b. payload JSON has api.data.code
+      type BackfillCandidate = { orderNumber: string; realCode: string; source: string };
+      const candidateMap = new Map<string, BackfillCandidate>(); // keyed by orderNumber (latest wins)
+
+      for (const row of shipLogs) {
+        let orderNumber = '';
+        let realCode    = '';
+        let source      = '';
+
+        // --- Source A: message line with [AMEEX-FULL-RESPONSE] ---
+        const msg = row.message || '';
+        if (msg.includes('AMEEX-FULL-RESPONSE') || msg.includes('AMEEX-SHIP')) {
+          const orderM = msg.match(/order[=:](\S+)/i);
+          // Try to find json object embedded in message after "body="
+          const bodyM  = msg.match(/body=(\{.+)/);
+          if (orderM) orderNumber = orderM[1].trim().replace(/[^a-zA-Z0-9\-_]/g, '');
+          if (bodyM) {
+            try {
+              const rb = JSON.parse(bodyM[1]);
+              const code = rb?.api?.data?.code || rb?.api?.data?.tracking ||
+                           rb?.api?.data?.barcode || rb?.data?.code || rb?.code;
+              if (code) { realCode = String(code).trim(); source = 'message.body'; }
+            } catch { /* not valid json */ }
+          }
+        }
+
+        // --- Source B: payload JSON ---
+        if (row.payload) {
+          try {
+            const p = JSON.parse(row.payload);
+
+            // Sub-shape: { orderNumber, rawResponse: { api: { data: { code } } } }
+            if (!orderNumber && p.orderNumber) orderNumber = String(p.orderNumber);
+            if (!orderNumber && p.order_number) orderNumber = String(p.order_number);
+
+            const rb = p.rawResponse || p.response || p.body || p;
+            const code = rb?.api?.data?.code || rb?.api?.data?.tracking ||
+                         rb?.api?.data?.barcode || rb?.data?.code || rb?.code;
+            if (code && !realCode) { realCode = String(code).trim(); source = 'payload.api.data.code'; }
+
+            // Some logs store orderNumber at top level alongside rawResponse
+            if (!orderNumber && p.trackNumber) {
+              // "AMEEX-PENDING-TJG-9230" → "9230"
+              const pendingM = String(p.trackNumber).match(/AMEEX-PENDING-TJG-(\S+)/);
+              if (pendingM) orderNumber = pendingM[1];
+            }
+          } catch { /* not valid json */ }
+        }
+
+        // --- Source C: parse orderNumber from the placeholder stored in trackNumber field --------
+        // integration_logs sometimes store the placeholder in their message or payload
+        if (!orderNumber) {
+          const pendingM = (row.message || '').match(/AMEEX-PENDING-TJG-([^\s,"']+)/);
+          if (pendingM) orderNumber = pendingM[1];
+        }
+
+        if (orderNumber && realCode && !candidateMap.has(orderNumber)) {
+          candidateMap.set(orderNumber, { orderNumber, realCode, source });
+          console.log(`[AMEEX-BACKFILL] Found: order=${orderNumber} → ${realCode} (via ${source})`);
+        }
+      }
+
+      console.log(`[AMEEX-BACKFILL] ${candidateMap.size} (orderNumber → realCode) pairs extracted from logs`);
+
+      // ── 3. Load AMEEX-PENDING orders for this store ───────────────────────
+      const allOrders     = await storage.getOrdersByStore(storeId) as any[];
+      const pendingOrders = allOrders.filter((o: any) => String(o.trackNumber || '').startsWith('AMEEX-PENDING-'));
+      console.log(`[AMEEX-BACKFILL] ${pendingOrders.length} AMEEX-PENDING orders in store`);
+
+      // ── 4. Match strictly by order number embedded in placeholder ─────────
+      type BackfillMatch = { orderNumber: string; orderId: number; oldCode: string; realCode: string; source: string };
+      const resolved:   BackfillMatch[] = [];
+      const unresolved: string[]        = [];
+
+      for (const order of pendingOrders) {
+        // Extract order number from placeholder: AMEEX-PENDING-TJG-9230 → "9230"
+        const placeholder = String(order.trackNumber || '');
+        const numM = placeholder.match(/AMEEX-PENDING-TJG-(.+)/);
+        const orderNum = numM ? numM[1] : String(order.orderNumber || '');
+
+        const candidate = candidateMap.get(orderNum) || candidateMap.get(String(order.orderNumber));
+        if (candidate) {
+          resolved.push({
+            orderNumber: String(order.orderNumber),
+            orderId:     order.id,
+            oldCode:     placeholder,
+            realCode:    candidate.realCode,
+            source:      candidate.source,
+          });
+        } else {
+          unresolved.push(String(order.orderNumber));
+        }
+      }
+
+      console.log(`[AMEEX-BACKFILL] resolved=${resolved.length} unresolved=${unresolved.length}`);
+
+      // ── 5. Apply if not dry-run ───────────────────────────────────────────
+      const applied: string[] = [];
+      if (!dryRun) {
+        for (const match of resolved) {
+          try {
+            await storage.updateOrder(match.orderId, { trackNumber: match.realCode } as any);
+            await storage.createOrderFollowUpLog({
+              orderId:   match.orderId,
+              agentId:   null,
+              agentName: 'Ameex Backfill',
+              note:      `Backfill depuis logs ship: ${match.oldCode} → ${match.realCode} (source: ${match.source})`,
+            });
+            await storage.createIntegrationLog({
+              storeId, integrationId: null, provider: 'ameex',
+              action: 'backfill_apply', status: 'success',
+              message: `✅ #${match.orderNumber}: ${match.oldCode} → ${match.realCode}`,
+              payload: JSON.stringify(match).slice(0, 500),
+            });
+            broadcastToStore(storeId, 'order_updated', { orderId: match.orderId, trackNumber: match.realCode });
+            applied.push(match.orderNumber);
+          } catch (e: any) {
+            console.error(`[AMEEX-BACKFILL] apply error #${match.orderNumber}:`, e?.message);
+          }
+        }
+        console.log(`[AMEEX-BACKFILL] Applied ${applied.length}/${resolved.length}`);
+      }
+
+      const message = dryRun
+        ? `DRY-RUN: ${resolved.length} placeholder(s) résolubles depuis les logs de ship · ${unresolved.length} sans correspondance dans les logs. Relancez avec ?apply=true pour appliquer.`
+        : `Appliqué: ${applied.length}/${resolved.length} commande(s) mise(s) à jour · ${unresolved.length} sans correspondance dans les logs (utilisez /reconcile pour celles-là).`;
+
+      return safeJson(200, {
+        dryRun,
+        logsScanned:   shipLogs.length,
+        pairsFound:    candidateMap.size,
+        pendingOrders: pendingOrders.length,
+        resolved:      resolved.length,
+        unresolved:    unresolved.length,
+        applied:       dryRun ? 0 : applied.length,
+        examples:      resolved.slice(0, 10),
+        unresolvedExamples: unresolved.slice(0, 10),
+        message,
+      });
+    } catch (err: any) {
+      console.error('[AMEEX-BACKFILL] fatal:', err?.message);
+      return safeJson(500, { message: err?.message || 'Ameex backfill échoué' });
+    }
+  });
+
+  /**
+   * POST /api/shipping/ameex/reconcile[?apply=true]
+   *
+   * Fetches the store's full parcel list from the Ameex API and reconciles every
+   * order whose trackNumber is still an "AMEEX-PENDING-TJG-…" placeholder.
+   *
+   * Matching strategy (strict — never guess):
+   *   1. Normalized recipient PHONE (primary) — unique match only
+   *   2. Phone + first name-token OR city (fallback) — resolves ambiguous-phone cases
+   *   3. Ambiguous (multiple parcels same phone, narrowing failed) → skipped, reported
+   *   4. Unmatched → skipped, reported
+   *
+   * Default: dry-run (no DB writes). Pass ?apply=true to commit.
+   *
+   * Response: { dryRun, workingUrl, totalParcels, pendingOrders, resolved, ambiguous,
+   *             unmatched, applied, examples[10], ambiguousExamples[5], unmatchedExamples[10] }
+   */
+  app.post("/api/shipping/ameex/reconcile", requireAuth, requireActiveSubscription, async (req, res) => {
+    const dryRun = req.query.apply !== 'true';
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "ameex");
+      const account  = accounts[0];
+      if (!account) {
+        return safeJson(400, { message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
+      }
+
+      const stripHtml = (s: string) => (s || '').replace(/<[^>]*>/g, '').trim();
+      const apiKey    = stripHtml(account.apiKey);
+      const apiId     = stripHtml((account as any).apiSecret || (account as any).storeName || '');
+      if (!apiKey) return safeJson(400, { message: "Clé API Ameex manquante sur ce compte." });
+
+      const SSL_AGENT_r  = new (await import('https')).default.Agent({ rejectUnauthorized: false });
+      const axiosLib     = (await import('axios')).default;
+
+      const reqHeaders: Record<string, string> = {
+        'C-Api-Key': apiKey,
+        'C-Api-Id':  apiId,
+        'Accept':    'application/json',
+      };
+
+      // ── Discover the parcel-list endpoint (try GET, then POST) ────────────
+      // Ameex follows /customer/Delivery/Parcels/Action/Type/<Verb> pattern.
+      // We try every plausible variant and log each result for diagnosis.
+      // business = apiId (the numeric merchant account identifier).
+      const business = apiId || apiKey.split('-')[0] || '';
+      const CANDIDATE_URLS = [
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Get`,
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/GetAll`,
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/List`,
+        `https://api.ameex.app/customer/Delivery/Parcels`,
+        `https://api.ameex.app/customer/Delivery/Parcels/List`,
+        `https://api.ameex.app/customer/Parcels/Action/Type/Get`,
+      ];
+
+      let parcelsRaw: any = null;
+      let workingUrl  = '';
+      let lastStatus  = 0;
+
+      for (const url of CANDIDATE_URLS) {
+        for (const method of ['get', 'post'] as const) {
+          try {
+            const opts: any = {
+              headers: reqHeaders,
+              timeout: 20_000,
+              httpsAgent: SSL_AGENT_r,
+              validateStatus: () => true,
+            };
+            let r: any;
+            if (method === 'get') {
+              r = await axiosLib.get(url, { ...opts, params: business ? { business } : {} });
+            } else {
+              const FormDataLib = (await import('form-data')).default;
+              const fd = new FormDataLib();
+              if (business) fd.append('business', business);
+              r = await axiosLib.post(url, fd, { ...opts, headers: { ...reqHeaders, ...fd.getHeaders() } });
+            }
+            lastStatus = r.status;
+            console.log(`[AMEEX-RECONCILE] ${method.toUpperCase()} ${url} → HTTP ${r.status}: ${JSON.stringify(r.data).slice(0, 400)}`);
+            if (r.status === 200 && r.data && !(typeof r.data === 'object' && Object.keys(r.data).length === 0)) {
+              parcelsRaw = r.data;
+              workingUrl = `${method.toUpperCase()} ${url}`;
+              break;
+            }
+          } catch (e: any) {
+            console.log(`[AMEEX-RECONCILE] ${method.toUpperCase()} ${url} → Error: ${e.message}`);
+          }
+        }
+        if (parcelsRaw) break;
+      }
+
+      if (!parcelsRaw) {
+        return safeJson(502, {
+          message: `Ameex: aucun endpoint de liste de colis ne répond correctement (dernier HTTP=${lastStatus}). Paste les logs [AMEEX-RECONCILE] pour diagnostiquer — ils montrent la réponse brute de chaque URL tentée.`,
+          candidatesTriedCount: CANDIDATE_URLS.length * 2,
+        });
+      }
+
+      // ── Parse parcels — handle every known response shape ─────────────────
+      type AmeexParcel = { trackingCode: string; phone: string; name: string; city: string; status: string };
+
+      function extractParcels(data: any): AmeexParcel[] {
+        let arr: any[] = [];
+        if      (Array.isArray(data))              arr = data;
+        else if (Array.isArray(data?.data))        arr = data.data;
+        else if (Array.isArray(data?.parcels))     arr = data.parcels;
+        else if (Array.isArray(data?.items))       arr = data.items;
+        else if (Array.isArray(data?.result))      arr = data.result;
+        else if (Array.isArray(data?.orders))      arr = data.orders;
+        else if (typeof data === 'object' && data !== null) {
+          // Object keyed by tracking code / numeric id
+          const vals = Object.values(data);
+          if (vals.length > 0 && typeof vals[0] === 'object') arr = vals as any[];
+        }
+
+        return arr.map((item: any) => ({
+          trackingCode: String(
+            item.tracking_code || item.trackingCode || item.order_id ||
+            item.code          || item.barcode      || item.tracking  ||
+            item.CODE          || item.num           || ''
+          ).trim(),
+          phone: String(
+            item.phone         || item.telephone     || item.recipient_phone ||
+            item.Phone         || item.PHONE         || item.tel             || ''
+          ).trim(),
+          name: String(
+            item.receiver      || item.recipient     || item.recipient_name  ||
+            item.name          || item.destinataire  || item.nom             ||
+            item.customer_name || ''
+          ).trim(),
+          city: String(
+            item.city          || item.ville         || item.city_name       ||
+            item.City          || item.CITY          || ''
+          ).trim(),
+          status: String(
+            item.status        || item.statut        || item.etat            ||
+            item.STATUS        || item.STATUT        || item.state           || ''
+          ).trim().toUpperCase(),
+        })).filter(p => p.trackingCode);
+      }
+
+      const parcels = extractParcels(parcelsRaw);
+      console.log(`[AMEEX-RECONCILE] Parsed ${parcels.length} parcels from ${workingUrl}`);
+      // Log a sample so user can see which fields were extracted
+      if (parcels.length > 0) {
+        console.log(`[AMEEX-RECONCILE] Sample parcel[0]: ${JSON.stringify(parcels[0])}`);
+      }
+
+      if (parcels.length === 0) {
+        return safeJson(200, {
+          message: `Ameex a répondu (${workingUrl}) mais aucun colis n'a pu être extrait. Paste le log [AMEEX-RECONCILE] — il montre la forme brute de la réponse.`,
+          workingUrl,
+          rawShape: JSON.stringify(parcelsRaw).slice(0, 600),
+        });
+      }
+
+      // ── Load our AMEEX-PENDING orders ────────────────────────────────────
+      const { AMEEX_STATUS_MAP } = await import('./services/carrier-service');
+      const allOrders     = await storage.getOrdersByStore(storeId) as any[];
+      const pendingOrders = allOrders.filter((o: any) => String(o.trackNumber || '').startsWith('AMEEX-PENDING-'));
+      console.log(`[AMEEX-RECONCILE] ${pendingOrders.length} AMEEX-PENDING orders to resolve`);
+
+      // ── Phone & name normalization ────────────────────────────────────────
+      const normPhone = (p: string) => {
+        let s = String(p || '').replace(/[\s\-().+]/g, '');
+        if (s.startsWith('00212')) s = '0' + s.slice(5);
+        else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
+        return s;
+      };
+      const normName = (s: string) =>
+        (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+
+      // Index parcels by normalized phone
+      const byPhone = new Map<string, AmeexParcel[]>();
+      for (const parcel of parcels) {
+        const norm = normPhone(parcel.phone);
+        if (!norm) continue;
+        if (!byPhone.has(norm)) byPhone.set(norm, []);
+        byPhone.get(norm)!.push(parcel);
+      }
+
+      // ── Match ─────────────────────────────────────────────────────────────
+      type MatchResult = {
+        orderNumber:  string;
+        orderId:      number;
+        orderPhone:   string;
+        realCode:     string;
+        ameexStatus:  string;
+        mappedStatus: string;
+        matchedBy:    string;
+      };
+
+      const resolved:   MatchResult[]                                                         = [];
+      const ambiguous:  Array<{ orderNumber: string; phone: string; candidates: string[] }>   = [];
+      const unmatched:  string[]                                                              = [];
+
+      for (const order of pendingOrders) {
+        const orderPhone = normPhone(order.customerPhone || '');
+        const candidates = orderPhone ? (byPhone.get(orderPhone) || []) : [];
+
+        if (candidates.length === 1) {
+          // Unique phone match — safe to assign
+          const parcel      = candidates[0];
+          const mappedStatus = AMEEX_STATUS_MAP[parcel.status] ?? 'in_progress';
+          resolved.push({
+            orderNumber: String(order.orderNumber), orderId: order.id,
+            orderPhone: order.customerPhone || '', realCode: parcel.trackingCode,
+            ameexStatus: parcel.status, mappedStatus, matchedBy: 'phone',
+          });
+        } else if (candidates.length > 1) {
+          // Multiple parcels with same phone — try to narrow by name or city
+          const orderNameNorm = normName(order.customerName || '');
+          const orderCityNorm = normName(order.city || '');
+          const firstNameToken = orderNameNorm.split(' ')[0] || '';
+
+          const narrowed = candidates.filter(c => {
+            const cn = normName(c.name);
+            const cc = normName(c.city);
+            return (firstNameToken && cn.includes(firstNameToken)) ||
+                   (orderCityNorm  && cc === orderCityNorm);
+          });
+
+          if (narrowed.length === 1) {
+            const parcel      = narrowed[0];
+            const mappedStatus = AMEEX_STATUS_MAP[parcel.status] ?? 'in_progress';
+            resolved.push({
+              orderNumber: String(order.orderNumber), orderId: order.id,
+              orderPhone: order.customerPhone || '', realCode: parcel.trackingCode,
+              ameexStatus: parcel.status, mappedStatus, matchedBy: 'phone+name/city',
+            });
+          } else {
+            ambiguous.push({
+              orderNumber: String(order.orderNumber),
+              phone:       order.customerPhone || '',
+              candidates:  candidates.map(c => c.trackingCode),
+            });
+          }
+        } else {
+          unmatched.push(String(order.orderNumber));
+        }
+      }
+
+      console.log(`[AMEEX-RECONCILE] resolved=${resolved.length} ambiguous=${ambiguous.length} unmatched=${unmatched.length}`);
+
+      // ── Apply if not dry-run ──────────────────────────────────────────────
+      const applied: string[] = [];
+      if (!dryRun) {
+        const TERMINAL = new Set(['delivered', 'refused', 'retourné']);
+        for (const match of resolved) {
+          try {
+            // 1. Write the real Ameex code to trackNumber
+            await storage.updateOrder(match.orderId, { trackNumber: match.realCode } as any);
+
+            // 2. Apply status (respect terminal guard)
+            const currentOrder = allOrders.find((o: any) => o.id === match.orderId);
+            if (currentOrder && !(TERMINAL.has(currentOrder.status || '') && !TERMINAL.has(match.mappedStatus))) {
+              await storage.updateOrderStatus(match.orderId, match.mappedStatus);
+              await storage.updateOrder(match.orderId, { commentStatus: match.ameexStatus } as any);
+              await storage.createOrderFollowUpLog({
+                orderId: match.orderId, agentId: null, agentName: 'Ameex Réconciliation',
+                note: `Réconciliation: placeholder → ${match.realCode} · statut Ameex ${match.ameexStatus} → ${match.mappedStatus} (via ${match.matchedBy})`,
+              });
+              notifyStatusUpdate(
+                { id: match.orderId, storeId, assignedToId: currentOrder.assignedToId ?? null, customerName: currentOrder.customerName || '' },
+                match.mappedStatus,
+              );
+              broadcastToStore(storeId, 'order_updated', { orderId: match.orderId, status: match.mappedStatus, trackNumber: match.realCode });
+            }
+
+            await storage.createIntegrationLog({
+              storeId, integrationId: null, provider: 'ameex',
+              action: 'reconcile_apply', status: 'success',
+              message: `✅ #${match.orderNumber}: placeholder → ${match.realCode} (${match.ameexStatus} → ${match.mappedStatus})`,
+              payload: JSON.stringify(match).slice(0, 500),
+            });
+            applied.push(match.orderNumber);
+          } catch (e: any) {
+            console.error(`[AMEEX-RECONCILE] apply error #${match.orderNumber}:`, e?.message);
+          }
+        }
+        console.log(`[AMEEX-RECONCILE] Applied ${applied.length} of ${resolved.length}`);
+      }
+
+      const message = dryRun
+        ? `DRY-RUN: ${resolved.length} placeholder(s) résolubles, ${ambiguous.length} ambiguë(s) ignorée(s), ${unmatched.length} sans correspondance. Relancez avec ?apply=true pour appliquer.`
+        : `Appliqué: ${applied.length}/${resolved.length} commande(s) mise(s) à jour · ${ambiguous.length} ambiguë(s) ignorée(s) · ${unmatched.length} sans correspondance.`;
+
+      return safeJson(200, {
+        dryRun,
+        workingUrl,
+        totalParcels:      parcels.length,
+        pendingOrders:     pendingOrders.length,
+        resolved:          resolved.length,
+        ambiguous:         ambiguous.length,
+        unmatched:         unmatched.length,
+        applied:           dryRun ? 0 : applied.length,
+        examples:          resolved.slice(0, 10),
+        ambiguousExamples: ambiguous.slice(0, 5),
+        unmatchedExamples: unmatched.slice(0, 10),
+        message,
+      });
+    } catch (err: any) {
+      console.error('[AMEEX-RECONCILE] fatal:', err?.message);
+      return safeJson(500, { message: err?.message || 'Réconciliation Ameex échouée' });
     }
   });
 
@@ -7725,6 +12241,7 @@ function ensureHeaders(sheet) {
     skipped?: boolean;
   }> {
     const p = (provider || '').toLowerCase();
+
     const lockKey = `${storeId}:${p}`;
     if (inFlightSyncs.has(lockKey)) {
       return { synced: 0, updated: 0, details: [], errors: [], skipped: true, message: `Une synchro ${p} est déjà en cours.` };
@@ -7738,10 +12255,88 @@ function ensureHeaders(sheet) {
 
     inFlightSyncs.add(lockKey);
     try {
+      // Ozon Express: pull API is dead — the sync button backfills delivery fees instead
+      if (p === 'ozonexpress') {
+        return await backfillOzonFees(storeId, account);
+      }
       return await runSyncLoop(p, storeId, account, options);
     } finally {
       inFlightSyncs.delete(lockKey);
     }
+  }
+
+  async function backfillOzonFees(storeId: number, account: any): Promise<{
+    synced: number; updated: number; statusUpdated: number; feeUpdated: number;
+    details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }>;
+    errors: Array<{ orderId: number; message: string }>;
+    message: string;
+  }> {
+    const cid = account?.settings?.ozonExpressCustomerId;
+    const key = account?.apiKey;
+    if (!cid || !key) {
+      return { synced: 0, updated: 0, statusUpdated: 0, feeUpdated: 0, details: [], errors: [],
+        message: 'Customer ID ou clé API Ozon Express manquant — vérifiez les paramètres.' };
+    }
+
+    const ordersToReconcile = await storage.getOzonOrdersToReconcile(storeId);
+    let statusUpdated = 0, feeUpdated = 0;
+    const errors: Array<{ orderId: number; message: string }> = [];
+
+    for (const o of ordersToReconcile) {
+      try {
+        const axiosBf    = (await import('axios')).default;
+        const FormDataBf = (await import('form-data')).default;
+        const fd = new FormDataBf();
+        fd.append('tracking-number', o.trackNumber!);
+        const r = await axiosBf.post(
+          `https://api.ozonexpress.ma/customers/${cid}/${key}/parcel-info`,
+          fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true }
+        );
+        // Full raw response — logged for ALL orders (including in-transit) to locate driver field
+        console.log(`[OZON-PARCELINFO-FULL] ${o.trackNumber}: ${JSON.stringify(r.data)}`);
+
+        // Gracefully handle API errors / invalid tracking numbers — skip without crashing
+        const result = r.data?.["RESULT"];
+        if (result === "ERROR" || !r.data?.["PARCEL-INFO"]) {
+          console.log(`[OZON-PARCELINFO] ${o.trackNumber}: skipped (RESULT=${result ?? 'no PARCEL-INFO'})`);
+          await new Promise(res => setTimeout(res, 120));
+          continue;
+        }
+
+        const infos = r.data["PARCEL-INFO"]?.["INFOS"];
+        if (!infos) { await new Promise(res => setTimeout(res, 120)); continue; }
+
+        // Fee fill ONLY — status is managed exclusively by the webhook push.
+        // *-PRICE fields are TARIFFS (non-zero even for in-transit parcels); never use them for status inference.
+        const FINAL = ["delivered", "Retour Recu", "refused"];
+        if (FINAL.includes(o.status) && (!o.shippingCost || o.shippingCost === 0)) {
+          const feeRaw = o.status === "delivered"   ? infos["DELIVERED-PRICE"]
+                       : o.status === "Retour Recu" ? infos["RETURNED-PRICE"]
+                       :                              infos["REFUSED-PRICE"];
+          const fee = Number(feeRaw || 0);
+          if (Number.isFinite(fee) && fee > 0) {
+            await storage.updateOrder(o.id, { shippingCost: Math.round(fee * 100) });
+            feeUpdated++;
+            console.log(`[OZON-RECONCILE] #${(o as any).orderNumber} fee=${fee} DH stored`);
+          }
+        }
+
+        await new Promise(res => setTimeout(res, 120));
+      } catch (e: any) {
+        errors.push({ orderId: o.id, message: e?.message || 'Unknown error' });
+        console.log(`[OZON-RECONCILE] ${o.trackNumber} failed: ${e?.message}`);
+      }
+    }
+
+    return {
+      synced: ordersToReconcile.length,
+      updated: feeUpdated,
+      statusUpdated: 0,
+      feeUpdated,
+      details: [],
+      errors,
+      message: `${feeUpdated} frais mis à jour`,
+    };
   }
 
   async function runSyncLoop(
@@ -7777,31 +12372,218 @@ function ensureHeaders(sheet) {
       return { synced: 0, updated: 0, details: [], errors: [], message: `Aucune commande ${p} à synchroniser.` };
     }
 
+    // ── Ozon Express: skip sync if API key was previously marked invalid ────────
+    if (p === 'ozonexpress') {
+      const lastFail = await db.select().from(integrationLogs)
+        .where(and(
+          eq(integrationLogs.storeId, storeId),
+          eq(integrationLogs.provider, 'ozonexpress'),
+          eq(integrationLogs.action, 'carrier_sync'),
+          eq(integrationLogs.status, 'fail'),
+        ))
+        .orderBy(desc(integrationLogs.createdAt))
+        .limit(1);
+
+      if (lastFail[0]?.message?.includes('invalide')) {
+        const failTime = new Date((lastFail[0] as any).createdAt).getTime();
+        if (Date.now() - failTime < 60 * 60 * 1000) {
+          console.warn(`[OZON-SYNC] Skipping store ${storeId} — API key marked invalid. Fix key in carrier settings.`);
+          return { synced: 0, updated: 0, details: [], errors: [],
+            message: '❌ Clé API OzonExpress invalide — vérifiez vos paramètres carrier.' };
+        }
+      }
+    }
+
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     let updated = 0;
     const errors: Array<{ orderId: number; message: string }> = [];
     const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
+    // EC has no tracking pull API — status arrives via webhook, replayed from integration_logs.
+    // Refresh the EC status name table before each sync so commentStatus uses current labels.
+    if (p === 'expresscoursier') {
+      fetchEcStatusTable().catch(e => console.warn('[EC-STATUS-TABLE] Pre-sync fetch failed:', e?.message));
+    }
+
+    let ecNoTrackApiCount = 0;  // EC: tracking number with zero matching webhook events in logs
+    let ecEventNoChange   = 0;  // EC: event found but mapped to in_progress (non-terminal)
+
+    // Helper: extract { packageId, code } from either JSON payload (new logs)
+    // or plain-text message (old logs: "EC webhook: package_id=X status=30 type=…").
+    // Returns null if no usable event is found.
+    function parseEcLogEntry(log: { payload: string | null; message: string | null }): { packageId: string; code: string } | null {
+      // New format: payload is the raw JSON body
+      if (log.payload) {
+        try {
+          const p = JSON.parse(log.payload);
+          const pkgId = (p.package_id || '').toString().trim();
+          const ds    = p.delivery_status != null ? String(p.delivery_status).trim() : null;
+          if (pkgId && ds) return { packageId: pkgId, code: ds };
+        } catch { /* fall through to message parse */ }
+      }
+      // Old format (pre-fix): payload = null, message = "EC webhook: package_id=X status=30 type=…"
+      const msg = log.message || '';
+      const pkgMatch = msg.match(/package_id=([^\s,]+)/);
+      const dsMatch  = msg.match(/\bstatus=(\d+)/);
+      if (pkgMatch?.[1] && dsMatch?.[1]) {
+        return { packageId: pkgMatch[1].trim(), code: dsMatch[1] };
+      }
+      return null;
+    }
 
     for (const order of candidates) {
       try {
-        const result = await trackByCarrier(p, order.trackNumber!, account);
+        let result: { status: string | null; rawStatus: string | null; error?: string };
+
+        if (p === 'ozonexpress') {
+          // ── Ozon tracking: API key in Authorization header, NOT in URL ──────────
+          const ozonApiKey     = (account.apiKey || '').toString().trim();
+          const ozonCustomerId =
+            account?.settings?.ozonExpressCustomerId ??
+            account?.ozonSettings?.ozonExpressCustomerId ??
+            (account as any)?.customerId ?? '';
+          const ozonTrackNum   = order.trackNumber!;
+          const axios2         = (await import('axios')).default;
+
+          const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/parcels/tracking`;
+
+          let ozonRawResponse: any = null;
+          let ozonRawStatus: string | null = null;
+          let ozonApiKeyInvalid = false;
+
+          try {
+            const resp = await axios2.post(ozonUrl, { parcels: [ozonTrackNum] }, {
+              headers: {
+                'Authorization': ozonApiKey,
+                'Content-Type': 'application/json',
+              },
+              timeout: 15000,
+              validateStatus: () => true,
+            });
+            console.log(`[OZON-TRACK] ${ozonTrackNum} HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 500)}`);
+
+            if (resp.status < 400 && resp.data) {
+              const d = resp.data;
+              if (d?.CHECK_API?.RESULT === 'ERROR') {
+                ozonApiKeyInvalid = true;
+              } else {
+                const t = d['TRACKING'] || d['PARCEL-TRACKING'] || d['PARCEL-INFO'] || d;
+                ozonRawStatus =
+                  t?.['LAST-TRANSITION']?.['STATUT'] ?? t?.['LAST-TRANSITION']?.['STATUS'] ??
+                  (Array.isArray(t?.['TRANSITIONS']) && t['TRANSITIONS'].length ? t['TRANSITIONS'][t['TRANSITIONS'].length-1]?.['STATUT'] : null) ??
+                  (Array.isArray(t?.['TRACKING']) && t['TRACKING'].length ? t['TRACKING'][t['TRACKING'].length-1]?.['STATUT'] : null) ??
+                  t?.['STATUT'] ?? t?.['STATUS'] ?? t?.['INFOS']?.['STATUT'] ?? null;
+                ozonRawResponse = d;
+              }
+            }
+          } catch (ozonErr: any) {
+            console.log(`[OZON-TRACK] ${ozonTrackNum} error: ${ozonErr?.message}`);
+          }
+
+          if (ozonApiKeyInvalid) {
+            const logMsg = `❌ Clé API OzonExpress invalide — vérifiez vos paramètres. (Please verify your API Key)`;
+            console.error(`[OZON-SYNC] ❌ Invalid API Key for store ${storeId} — stopping sync.`);
+            await storage.createIntegrationLog({
+              storeId, integrationId: null, provider: 'ozonexpress',
+              action: 'carrier_sync', status: 'fail', message: logMsg,
+            });
+            break;
+          }
+
+          const ozonMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
+          result = { status: ozonMapped, rawStatus: ozonRawStatus, error: ozonRawResponse ? undefined : 'Ozon: no tracking response' };
+        } else if (p === 'expresscoursier') {
+          // ── Replay most recent stored EC webhook event ─────────────────────────
+          // Searches BOTH payload (new format) and message (old orphan format where
+          // payload=null and package_id is embedded in the message string).
+          const tn = order.trackNumber!.trim();
+          const ecReplayLogs = await db
+            .select()
+            .from(integrationLogs)
+            .where(and(
+              eq(integrationLogs.storeId, storeId),
+              inArray(integrationLogs.provider, ['expresscoursier', 'olivraison']),
+              or(
+                sql`${integrationLogs.payload} LIKE ${'%' + tn + '%'}`,
+                sql`${integrationLogs.message} LIKE ${'%' + tn + '%'}`,
+              ),
+            ))
+            .orderBy(desc(integrationLogs.createdAt))
+            .limit(50);
+
+          result = { status: null, rawStatus: null };
+          let ecFoundEvent = false;
+
+          for (const ecLog of ecReplayLogs) {
+            const evt = parseEcLogEntry(ecLog);
+            if (!evt) continue;
+            // Case-sensitive trim match — EC package_ids are deterministic
+            if (evt.packageId !== tn) continue;
+            ecFoundEvent = true;
+            const rawMappedSync = mapEcNumericStatus(evt.code);
+            // Guard: only accept statuses that exist in ORDER_STATUSES
+            const VALID_EC_SYNC = new Set([
+              'in_progress', 'Attente De Ramassage', 'Ramassé', 'En transit',
+              'En cours de livraison', 'expédié', 'delivered', 'refused',
+              'En Cours De Retour', 'Retour Recu', 'retourné', 'Injoignable',
+            ]);
+            const mapped = VALID_EC_SYNC.has(rawMappedSync) ? rawMappedSync : 'in_progress';
+            result = { status: mapped !== 'in_progress' ? mapped : null, rawStatus: evt.code };
+            console.log(`[EC-SYNC-REPLAY] order=${order.id} tracking=${tn} delivery_status=${evt.code} → ${mapped}`);
+            break;
+          }
+
+          if (!ecFoundEvent)      ecNoTrackApiCount++;  // truly no logs for this tracking
+          else if (!result.status) ecEventNoChange++;    // log found but code is unconfirmed/in_progress
+        } else {
+          result = await trackByCarrier(p, order.trackNumber!, account);
+        }
+
         if (result.error) {
-          errors.push({ orderId: order.id, message: result.error });
-        } else if (result.status && result.status !== order.status) {
-          await storage.updateOrderStatus(order.id, result.status);
-          await storage.createOrderFollowUpLog({
-            orderId:   order.id,
-            agentId:   null,
-            agentName: `${p} Sync`,
-            note:      `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
-          });
-          details.push({
-            orderId: order.id,
-            trackingNumber: order.trackNumber!,
-            oldStatus: order.status || '',
-            newStatus: result.status,
-          });
-          updated++;
+          // EC has no tracking pull API — stub returns 'EC_NO_TRACKING_API', count silently
+          const isEcNoTrackApi = p === 'expresscoursier' &&
+            (result.error === 'EC_NO_TRACKING_API' || /HTTP 404/.test(result.error));
+          if (isEcNoTrackApi) {
+            ecNoTrackApiCount++;
+          } else {
+            errors.push({ orderId: order.id, message: `tracking=${order.trackNumber}: ${result.error}` });
+            if (p === 'expresscoursier') {
+              console.error(`[EC-SYNC-ERROR] order=${order.id} tracking=${order.trackNumber}: ${result.error}`);
+            }
+          }
+        } else {
+          // Terminal status protection: never downgrade delivered/refused/retourné
+          const SYNC_TERMINAL = new Set(['delivered', 'refused', 'retourné']);
+          const syncWouldDowngrade = SYNC_TERMINAL.has(order.status || '') && !SYNC_TERMINAL.has(result.status || '');
+          if (result.status && result.status !== order.status && !syncWouldDowngrade) {
+            await storage.updateOrderStatus(order.id, result.status);
+            notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, result.status);
+            // EC replay: store the French status name in commentStatus (not raw code)
+            if (p === 'expresscoursier' && result.rawStatus) {
+              const ecName = getEcStatusName(result.rawStatus);
+              await storage.updateOrder(order.id, { commentStatus: ecName });
+            }
+            await storage.createOrderFollowUpLog({
+              orderId:   order.id,
+              agentId:   null,
+              agentName: `${p} Sync`,
+              note:      p === 'expresscoursier'
+                ? `EC ${result.rawStatus} (${getEcStatusName(result.rawStatus ?? '')}) → ${result.status}`
+                : `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
+            });
+            details.push({
+              orderId: order.id,
+              trackingNumber: order.trackNumber!,
+              oldStatus: order.status || '',
+              newStatus: result.status,
+            });
+            updated++;
+          }
+          // Fee fill: carrier returned a fee and this order is missing one
+          if ((result as any).fee && (!order.shippingCost || order.shippingCost === 0)) {
+            const fee = (result as any).fee as number;
+            await storage.updateOrder(order.id, { shippingCost: Math.round(fee * 100) });
+            console.log(`[EC-FEE] #${(order as any).orderNumber} fee=${fee} → ${Math.round(fee * 100)} centimes`);
+          }
         }
       } catch (e: any) {
         errors.push({ orderId: order.id, message: e?.message || 'Unknown error' });
@@ -7809,9 +12591,49 @@ function ensureHeaders(sheet) {
       await sleep(200);
     }
 
-    console.log(`[CARRIER-SYNC] provider=${p} storeId=${storeId} checked=${candidates.length} updated=${updated} errors=${errors.length}`);
+    console.log(`[CARRIER-SYNC] provider=${p} storeId=${storeId} checked=${candidates.length} updated=${updated} errors=${errors.length} ecNoTrackApi=${ecNoTrackApiCount}`);
+
+    // Express Coursier: if every single candidate hit the "no track API" 404
+    // (and there were no other real errors), don't report this as a failed
+    // sync — EC statuses already flow in automatically via webhook. Surface
+    // one calm informational message instead of N per-order error toasts.
+    if (p === 'expresscoursier') {
+      const parts: string[] = [`${updated} mis à jour`];
+      if (ecEventNoChange   > 0) parts.push(`${ecEventNoChange} événement trouvé sans changement`);
+      if (ecNoTrackApiCount > 0) parts.push(`${ecNoTrackApiCount} sans événement webhook`);
+      return {
+        synced: candidates.length,
+        updated,
+        details,
+        errors,
+        message: `✅ EC replay: ${parts.join(' · ')}`,
+      };
+    }
+
     return { synced: candidates.length, updated, details, errors };
   }
+
+  /**
+   * GET /api/expresscoursier/track-probe?tracking=...
+   * ── TEMPORARY diagnostic route ──────────────────────────────────────────
+   * We don't have Express Coursier's tracking API docs and the assumed
+   * endpoint (v1.0/track/{key}/{tracking}) 404s on real package_ids. This
+   * tries a curated list of plausible endpoint shapes for ONE tracking
+   * number using this store's EC api key, and returns exactly what each
+   * attempt returned (masked URL, HTTP status, content-type, body preview)
+   * so the real endpoint can be identified from the response. No orders are
+   * looped over and nothing is written to the DB — read-only diagnostics.
+   * TODO: remove this route once the real EC tracking endpoint is confirmed
+   * and wired into ecTrackUrlTemplate.
+   */
+  // EC track-probe endpoint DISABLED — EC confirmed they have no tracking pull API.
+  // All status updates come via the ChangeStatus webhook. This probe served its purpose.
+  app.get("/api/expresscoursier/track-probe", requireAuth, requireAdmin, (_req, res) => {
+    res.status(410).json({
+      message: "EC tracking pull API does not exist — confirmed from official EC API docs. " +
+               "Status updates arrive exclusively via webhook (POST /api/webhooks/shipping/expresscoursier/:storeId).",
+    });
+  });
 
   /**
    * POST /api/shipping/:provider/sync
@@ -7906,6 +12728,7 @@ function ensureHeaders(sheet) {
       const PRICE = colIdx('price','prix','total','amount','cod');
       const STAT  = colIdx('status','statut','etat','état');
       const FRAIS = colIdx('deliverycost','delivery_cost','frais_livraison','frais','port','shipping_cost');
+      const PROD  = colIdx('product','produit','article','designation','product_name','nom_produit','produit_name');
 
       if (TRACK < 0) {
         return res.status(400).json({
@@ -7953,6 +12776,7 @@ function ensureHeaders(sheet) {
             shippingCost:    FRAIS >= 0 ? parseMoney(cells[FRAIS]) : 0,
             status:          mapDigylogStatus(rawStatus),
             rawStatus,
+            productName:     PROD >= 0 ? ((cells[PROD] || '').trim() || undefined) : undefined,
           });
           created++;
         } catch (e: any) {
@@ -8039,6 +12863,7 @@ function ensureHeaders(sheet) {
               shippingCost:    co.shippingCost,
               status:          co.status,
               rawStatus:       co.rawStatus,
+              productName:     co.productName,
             });
             created++;
           } catch (e: any) {
@@ -8059,189 +12884,574 @@ function ensureHeaders(sheet) {
 
   /**
    * POST /api/webhooks/shipping/ameex/:token
-   * Receive push notifications from Ameex when a shipment status changes.
-   * :token is the webhookToken from the carrier_accounts row.
+   * Receives status-change push notifications from Ameex.
+   *
+   * KEY FACTS (from official Ameex API docs):
+   *  - Ameex delivers status via WEBHOOK ONLY — there is NO tracking pull endpoint.
+   *  - Content-Type: application/x-www-form-urlencoded (NOT JSON). express.urlencoded
+   *    is registered globally in index.ts so req.body is already parsed.
+   *  - Fields: CODE (tracking #), STATUT (status enum), STATUT_S (sub-status enum,
+   *    optional), STATUT_NAME (French label), STATUT_COLOR, DATE (optional).
+   *  - STATUT values: DELIVERED | DISTRIBUTION | IN_PROGRESS | RETURNED | RETOUR |
+   *    RTS | REFUSED | REJECTED | CANCELED | ANNULE  (uppercase English enum codes).
+   *  - :token is the webhookToken from carrier_accounts (same auth pattern as EC).
    */
+  // Also accept the tokenless legacy path (Ameex posts to a plain URL)
+  app.post("/api/webhooks/shipping/ameex", (req, res, next) => {
+    // Reuse the same handler by faking an empty token param so the route below fires
+    (req.params as any).token = '';
+    next('route');
+  });
+
   app.post("/api/webhooks/shipping/ameex/:token", async (req, res) => {
+    // Respond 200 immediately — Ameex may retry on timeout
+    res.json({ success: true });
+
     try {
-      const { token } = req.params;
-      // ── Webhook authentication ──────────────────────────────────────────
-      // Reject obviously-short/missing tokens, then validate against the
-      // carrier_accounts.webhookToken column. Without this, anyone who
-      // can guess a tracking number can flip an order's status.
-      if (!token || token.length < 18) {
-        console.warn("[AMEEX-WEBHOOK] short/missing token — rejected");
-        return res.status(401).json({ message: "Invalid webhook token" });
+      const token = (req.params.token || '').trim();
+
+      // ── Token lookup: optional — used only to identify the store ─────────
+      // If no token (or token is blank/short), we CANNOT identify the store from
+      // this URL — use the permanent /api/webhooks/carrier/:storeId/ameex instead.
+      // If a valid token is supplied, use it to find the store (backward compat).
+      let carrierAccount: any = null;
+      if (token.length >= 18) {
+        const rows = await db
+          .select()
+          .from(carrierAccounts)
+          .where(and(eq(carrierAccounts.webhookToken, token), eq(carrierAccounts.carrierName, "ameex")));
+        carrierAccount = rows[0] ?? null;
+        if (!carrierAccount) {
+          console.warn(`[AMEEX-WEBHOOK] unknown token: ${token.slice(0, 12)}… — ignored`);
+          return;
+        }
+        if (carrierAccount.isActive === 0) {
+          console.warn(`[AMEEX-WEBHOOK] inactive account #${carrierAccount.id} — ignored`);
+          return;
+        }
       }
-      const [carrierAccount] = await db
-        .select()
-        .from(carrierAccounts)
-        .where(and(eq(carrierAccounts.webhookToken, token), eq(carrierAccounts.carrierName, "ameex")));
       if (!carrierAccount) {
-        console.warn(`[AMEEX-WEBHOOK] unknown token: ${token.slice(0, 12)}…`);
-        return res.status(401).json({ message: "Invalid webhook token" });
-      }
-      if (carrierAccount.isActive === 0) {
-        console.warn(`[AMEEX-WEBHOOK] token belongs to inactive account #${carrierAccount.id}`);
-        return res.status(401).json({ message: "Carrier account inactive" });
+        // No token — cannot identify the store on this legacy URL.
+        // The permanent URL /api/webhooks/carrier/:storeId/ameex should be used instead.
+        console.warn("[AMEEX-WEBHOOK] no token on legacy URL — use /api/webhooks/carrier/:storeId/ameex");
+        return;
       }
 
-      const body = req.body || {};
+      const storeId = carrierAccount.storeId;
+      let body      = req.body || {};
 
-      const trackingNumber: string | undefined =
-        body.tracking_number || body.tracking || body.barcode || body.code_suivi || body.colis;
-      const rawStatus: string | undefined =
-        body.statut || body.status || body.etat;
-      // TJG-{orderNumber} reference we sent to Ameex on creation — allows
-      // correlation before the real tracking number arrives.
-      const externalRef: string | undefined =
-        body.ref || body.reference || body.external_id || body.client_ref;
+      // ── Diagnostic dump — logged on EVERY hit so we can see the raw payload ─
+      const rawBodyBuf = (req as any).webhookRawBody as Buffer | undefined;
+      const rawBodyStr = rawBodyBuf ? rawBodyBuf.toString('utf-8').slice(0, 800) : '(not captured)';
+      console.log(`[AMEEX-WEBHOOK-RAW] store=${storeId} Content-Type: "${req.headers['content-type'] || '(none)'}"`);
+      console.log(`[AMEEX-WEBHOOK-RAW] req.body keys: ${JSON.stringify(Object.keys(body))} values: ${JSON.stringify(body)}`);
+      console.log(`[AMEEX-WEBHOOK-RAW] rawBody (${rawBodyBuf?.length ?? 0} bytes): ${rawBodyStr}`);
 
-      if (!trackingNumber && !externalRef) {
-        return res.status(400).json({ message: "tracking_number or ref required" });
-      }
-
-      // 1. Match by tracking number (scoped to this carrier account's store)
-      let order = trackingNumber
-        ? await storage.getOrderByTrackingNumber(carrierAccount.storeId, trackingNumber)
-        : null;
-
-      // 2. Fallback: match by AMEEX-PENDING-TJG-{orderNumber} placeholder stored
-      //    when Ameex returned a success shape but no real tracking yet.
-      if (!order && trackingNumber) {
-        const m = trackingNumber.match(/^AMEEX-PENDING-TJG-(.+)$/);
-        if (m) {
-          order = await storage.getOrderByOrderNumberAnyStore(m[1]);
-          if (order) console.log(`[AMEEX-WEBHOOK] Matched by placeholder tracking=${trackingNumber} → order #${order.orderNumber}`);
+      // ── Belt-and-suspenders: if req.body arrived empty but rawBody has content,
+      //    re-parse from the raw buffer (guards against body-parser race conditions).
+      if (Object.keys(body).length === 0 && rawBodyBuf && rawBodyBuf.length > 0) {
+        const rawStr2 = rawBodyBuf.toString('utf-8').trim();
+        try {
+          const params: Record<string, string> = {};
+          new URLSearchParams(rawStr2).forEach((v: string, k: string) => { params[k] = v; });
+          if (Object.keys(params).length > 0) {
+            body = params;
+            console.log(`[AMEEX-WEBHOOK-RAW] ⚠️ req.body was empty — re-parsed from rawBody: ${JSON.stringify(params)}`);
+          }
+        } catch { /* ignore */ }
+        if (Object.keys(body).length === 0) {
+          try { body = JSON.parse(rawStr2); console.log(`[AMEEX-WEBHOOK-RAW] ⚠️ re-parsed as JSON: ${rawStr2.slice(0, 200)}`); } catch { /* ignore */ }
         }
       }
 
-      // 3. Fallback: match by TJG-{orderNumber} external ref Ameex echoes back
-      if (!order && externalRef) {
-        const m = externalRef.match(/TJG-(.+)/);
-        if (m) {
-          order = await storage.getOrderByOrderNumberAnyStore(m[1]);
-          if (order) console.log(`[AMEEX-WEBHOOK] Matched by ref=${externalRef} → order #${order.orderNumber}`);
+      // ── Parse Ameex urlencoded fields (official names are UPPERCASE) ──────
+      // Accept both UPPER and lower variants defensively.
+      // ── Normalize new olivraison/Ameex webhook format (event:package_updated) ─
+      // The new format sends body.code_colis + body.payload.{order_id,status,...}
+      // Normalize it into body.CODE / body.STATUT / body.STATUT_NAME so the rest
+      // of this handler works unchanged for both old and new formats.
+      if (body.event === 'package_updated' || body.code_colis) {
+        let nestedNew: any = {};
+        if (body.payload) {
+          try {
+            nestedNew = typeof body.payload === 'object'
+              ? body.payload
+              : JSON.parse(String(body.payload));
+          } catch { /* ignore */ }
+        }
+        const newCode   = (nestedNew.order_id || body.code_colis || '').toString().trim();
+        const rawNewSt  = nestedNew.return_status === true
+          ? 'RETURNED'
+          : (nestedNew.status || '').toString().trim();
+        const newLabel  = nestedNew.description || body.commentaire || rawNewSt;
+        if (newCode)   body.CODE        = newCode;
+        if (rawNewSt)  body.STATUT      = rawNewSt;
+        if (newLabel)  body.STATUT_NAME  = newLabel;
+        console.log(`[AMEEX-WEBHOOK] New olivraison format: CODE=${newCode} STATUT=${rawNewSt} (${newLabel})`);
+      }
+
+      const code: string      = String(body.CODE      || body.code      || '').trim();
+      const statut: string    = String(body.STATUT     || body.statut     || '').trim();
+      const statutS: string   = String(body.STATUT_S   || body.statut_s   || '').trim();
+      const statutName: string = String(body.STATUT_NAME || body.statut_name || statut).trim();
+      // Additional fields Ameex may echo back (sent by us at ship time as partner_id etc.)
+      const orderNumRaw: string = String(
+        body.ORDER_NUM || body.order_num ||
+        body.partner_id || body.partnerTrackingID ||
+        body.ref || body.reference || ''
+      ).trim();
+
+      console.log(`[AMEEX-WEBHOOK] store=${storeId} CODE=${code} STATUT=${statut} STATUT_S=${statutS} STATUT_NAME=${statutName}`);
+
+      if (!code && !orderNumRaw) {
+        console.warn(`[AMEEX-WEBHOOK] store=${storeId} missing CODE and ORDER_NUM — ignored`);
+        return;
+      }
+
+      // ── Idempotency: skip duplicate (CODE, STATUT, STATUT_S) within 24h ──
+      if (code && statut) {
+        const dupeRows = await db
+          .select({ id: integrationLogs.id })
+          .from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId, storeId),
+            eq(integrationLogs.provider, 'ameex'),
+            eq(integrationLogs.action, 'webhook_received'),
+            sql`${integrationLogs.payload} LIKE ${'%"CODE":"' + code + '"%'}`,
+            sql`${integrationLogs.payload} LIKE ${'%"STATUT":"' + statut + '"%'}`,
+            sql`${integrationLogs.payload} LIKE ${'%"STATUT_S":"' + statutS + '"%'}`,
+            sql`${integrationLogs.createdAt} > NOW() - INTERVAL '24 hours'`,
+          ))
+          .limit(1);
+        if (dupeRows.length > 0) {
+          console.log(`[AMEEX-WEBHOOK] Duplicate ignored: CODE=${code} STATUT=${statut} STATUT_S=${statutS}`);
+          return;
+        }
+      }
+
+      // Persist event for audit trail
+      const ameexPayload = JSON.stringify({ CODE: code, STATUT: statut, STATUT_S: statutS, STATUT_NAME: statutName, orderNumRaw }).slice(0, 1000);
+      await storage.createIntegrationLog({
+        storeId,
+        integrationId: null,
+        provider: 'ameex',
+        action: 'webhook_received',
+        status: 'success',
+        message: `Ameex webhook: CODE=${code} STATUT=${statut}${statutS ? '/' + statutS : ''} (${statutName})`,
+        payload: ameexPayload,
+      });
+
+      // ── Order matching ────────────────────────────────────────────────────
+      let order: any = null;
+      let matchMethod = '';
+
+      // 1. Direct match: CODE against trackNumber (scoped to this store)
+      if (code) {
+        order = await storage.getOrderByTrackingNumber(storeId, code);
+        if (order) matchMethod = 'CODE=trackNumber';
+      }
+
+      // 2. Fallback: our stored placeholder "AMEEX-PENDING-TJG-{orderNumber}" —
+      //    find orders in this store where trackNumber starts with AMEEX-PENDING-
+      //    and match by phone (if Ameex echoes it) OR by orderNumRaw.
+      if (!order && code) {
+        // 2a. Match by ORDER_NUM field Ameex may echo back
+        if (orderNumRaw) {
+          // Strip leading "TJG-" if present
+          const num = orderNumRaw.replace(/^TJG-/i, '');
+          order = await storage.getOrderByOrderNumberAnyStore(num);
+          if (order && order.storeId !== storeId) order = null; // cross-tenant guard
+          if (order) matchMethod = `ORDER_NUM=${orderNumRaw}`;
+        }
+
+        // 2b. Scan AMEEX-PENDING orders in this store — match by customer phone ONLY.
+        // SAFETY: NEVER match on current_driver.phone (the driver's shared phone).
+        //         NEVER use loose code.includes() — too many false matches.
+        //         Only use the customer's PHONE field if Ameex explicitly echoes it
+        //         at the TOP LEVEL (not inside current_driver).
+        if (!order) {
+          const storeOrders = await storage.getOrdersByStore(storeId);
+          const pendingPhone = String(body.PHONE || body.phone || '').trim();
+          const normPhone = (p: string) => {
+            let s = (p || '').replace(/[\s\-().+]/g, '');
+            if (s.startsWith('00212')) s = '0' + s.slice(5);
+            else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
+            return s;
+          };
+          const normPending = pendingPhone ? normPhone(pendingPhone) : '';
+          for (const o of storeOrders as any[]) {
+            if (!o.trackNumber?.startsWith('AMEEX-PENDING-')) continue;
+            // Only match on CUSTOMER phone — top-level PHONE field, not current_driver.phone
+            if (normPending && o.customerPhone && normPhone(o.customerPhone) === normPending) {
+              order = o; matchMethod = `AMEEX-PENDING+customerPhone=${pendingPhone}`; break;
+            }
+          }
         }
       }
 
       if (!order) {
-        console.warn(`[AMEEX-WEBHOOK] Order not found — tracking=${trackingNumber} ref=${externalRef} store=${carrierAccount.storeId}`);
-        return res.json({ success: true, matched: false });
+        console.warn(`[AMEEX-WEBHOOK] No order matched — CODE=${code} store=${storeId}`);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'ameex',
+          action: 'webhook_no_match', status: 'success',
+          message: `⚠️ Ameex webhook CODE=${code} — aucune commande trouvée (store ${storeId})`,
+          payload: ameexPayload,
+        });
+        return;
       }
 
-      // If we stored a placeholder, patch it with the real tracking number now
-      if (trackingNumber && order.trackNumber?.startsWith('AMEEX-PENDING-')) {
-        await storage.updateOrder(order.id, { trackNumber: trackingNumber } as any);
-        console.log(`[AMEEX-WEBHOOK] Resolved placeholder → real tracking ${trackingNumber} for order #${order.orderNumber}`);
+      console.log(`[AMEEX-WEBHOOK] Matched order #${order.orderNumber} via ${matchMethod}`);
+
+      // ── Backfill real tracking number if we stored a placeholder ─────────
+      if (code && order.trackNumber?.startsWith('AMEEX-PENDING-')) {
+        await storage.updateOrder(order.id, { trackNumber: code } as any);
+        console.log(`[AMEEX-WEBHOOK] Backfilled real CODE=${code} for order #${order.orderNumber} (was ${order.trackNumber})`);
       }
 
-      if (rawStatus) {
-        const mappedStatus = mapAmeexStatus(rawStatus);
-        if (mappedStatus && mappedStatus !== order.status) {
-          await storage.updateOrderStatus(order.id, mappedStatus);
-          await storage.createOrderFollowUpLog({
-            orderId:   order.id,
-            agentId:   null,
-            agentName: "Ameex Webhook",
-            note:      `Statut mis à jour via webhook: ${rawStatus} → ${mappedStatus}`,
-          });
-          console.log(`[AMEEX-WEBHOOK] Order #${order.id} status: ${order.status} → ${mappedStatus}`);
-        }
+      // ── Map status and update ─────────────────────────────────────────────
+      if (!statut) {
+        console.log(`[AMEEX-WEBHOOK] No STATUT in payload — tracking backfill only for #${order.orderNumber}`);
+        return;
       }
 
-      res.json({ success: true, matched: true });
-    } catch (err) {
-      res.status(500).json({ message: "Webhook processing failed" });
+      const mappedStatus = mapAmeexStatus(statut, statutS);
+
+      // Terminal-status protection: never downgrade a terminal status
+      const TERMINAL_SET = new Set(['delivered', 'refused', 'retourné']);
+      if (TERMINAL_SET.has(order.status || '') && !TERMINAL_SET.has(mappedStatus)) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'ameex',
+          action: 'webhook_no_change', status: 'success',
+          message: `ℹ️ #${order.orderNumber} déjà terminée en "${order.status}" — STATUT=${statut} ignoré`,
+          payload: ameexPayload,
+        });
+        return;
+      }
+
+      // Always update commentStatus with the French label Ameex provides
+      const commentUpdate: any = { commentStatus: statutName || statut };
+      await storage.updateOrder(order.id, commentUpdate);
+
+      if (mappedStatus !== order.status) {
+        await storage.updateOrderStatus(order.id, mappedStatus);
+        await storage.createOrderFollowUpLog({
+          orderId:   order.id,
+          agentId:   null,
+          agentName: "Ameex Webhook",
+          note:      `Statut mis à jour via webhook: ${statut}${statutS ? '/' + statutS : ''} (${statutName}) → ${mappedStatus}`,
+        });
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'ameex',
+          action: 'status_update', status: 'success',
+          message: `✅ #${order.orderNumber}: ${order.status} → ${mappedStatus} (STATUT=${statut}${statutS ? '/' + statutS : ''}: ${statutName})`,
+          payload: ameexPayload,
+        });
+        console.log(`[AMEEX-WEBHOOK] #${order.orderNumber}: ${order.status} → ${mappedStatus} (${statutName})`);
+
+        // Push notification + real-time broadcast
+        notifyStatusUpdate(
+          { id: order.id, storeId, assignedToId: order.assignedToId ?? null, customerName: order.customerName || "" },
+          mappedStatus,
+        );
+        broadcastToStore(storeId, "order_updated", { orderId: order.id, status: mappedStatus, commentStatus: statutName || statut });
+      } else {
+        // Status unchanged — commentStatus already updated above
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'ameex',
+          action: 'webhook_no_change', status: 'success',
+          message: `ℹ️ #${order.orderNumber} déjà en ${order.status} (STATUT=${statut}: ${statutName})`,
+          payload: ameexPayload,
+        });
+      }
+    } catch (err: any) {
+      console.error("[AMEEX-WEBHOOK] Error:", err?.message, err?.stack);
+      try {
+        await storage.createIntegrationLog({
+          storeId: 0, integrationId: null, provider: 'ameex',
+          action: 'webhook_error', status: 'fail',
+          message: `❌ Exception Ameex webhook: ${err?.message || "Erreur inconnue"}`,
+          payload: JSON.stringify({ stack: (err?.stack || '').slice(0, 500), body: req.body }).slice(0, 1000),
+        });
+      } catch { /* ignore secondary log failure */ }
     }
   });
 
   // ── Express Coursier webhook receiver ──────────────────────────────────────
-  // URL format: POST /api/webhooks/shipping/expresscoursier/:storeId
-  // Payload: { package_id, delivery_status (int), event_time, notif_type }
-  // notif_type: "ChangeStatus" | "package_paid" | "package_unpaid"
-  //
-  // delivery_status codes:
-  //   1=En attente  2=En cours ramassage  3=Ramassé  4=En transit
-  //   5=En livraison  6=Livré  7=Échoué  8=Retour en cours  9=Retourné
-  const EC_STATUS_MAP: Record<number, string> = {
-    1: "confirme",
-    2: "confirme",
-    3: "expedition",
-    4: "expedition",
-    5: "expedition",
-    6: "delivered",
-    7: "refused",
-    8: "En Cours De Retour",
-    9: "Retour Recu",
-  };
-
+  // URL: POST /api/webhooks/shipping/expresscoursier/:storeId
+  // Official payload: { package_id: string, delivery_status: int, event_time: string, notif_type: string }
+  // notif_type values (case-sensitive): "ChangeStatus" | "package_paid" | "package_unpaid"
+  // EC does NOT sign webhooks. EC has NO tracking pull API — all status info via webhook.
+  // Idempotency: skip duplicate (package_id, notif_type, delivery_status) tuples within 24h.
   app.post("/api/webhooks/shipping/expresscoursier/:storeId", async (req, res) => {
+    // Respond HTTP 200 immediately — EC may retry on timeout
+    res.json({ success: true });
+
+    const storeId = Number(req.params.storeId);
+    if (!storeId) return;
+
+    const body = req.body || {};
+    const packageId: string = String(body.package_id || body.tracking_number || body.id || body.code || '').trim();
+    const deliveryStatus: number | undefined = body.delivery_status != null ? Number(body.delivery_status) : undefined;
+    const notifType: string = String(body.notif_type || '').trim();
+    const ecWebhookPayload = JSON.stringify(body).slice(0, 1000);
+
+    console.log(`[EC-WEBHOOK] store=${storeId} package_id=${packageId} delivery_status=${deliveryStatus} notif_type=${notifType}`);
+
+    // Process asynchronously after response has been sent
     try {
-      const storeId = Number(req.params.storeId);
-      if (!storeId) return res.status(400).json({ message: "Invalid storeId" });
-
-      const body = req.body || {};
-      console.log(`[EC-WEBHOOK] store=${storeId} payload=${JSON.stringify(body)}`);
-
-      // Extract tracking (package_id) and status (delivery_status)
-      const packageId: string | undefined =
-        body.package_id || body.tracking_number || body.id || body.code;
-      const deliveryStatus: number | undefined =
-        body.delivery_status != null ? Number(body.delivery_status) : undefined;
-      const notifType: string = body.notif_type || "";
-
-      if (!packageId) {
-        console.warn(`[EC-WEBHOOK] Missing package_id — ignoring`);
-        return res.json({ success: true, matched: false });
+      // Guard: ignore if no active Express Coursier account for this store
+      const ecAccounts = await storage.getCarrierAccounts(storeId, "expresscoursier");
+      if (!ecAccounts || ecAccounts.length === 0) {
+        console.log(`[EC-WEBHOOK] store=${storeId} ignored — no active EC account`);
+        return;
       }
 
-      // Log the event
+      if (!packageId) {
+        console.warn(`[EC-WEBHOOK] store=${storeId} missing package_id — ignoring`);
+        return;
+      }
+
+      // Idempotency: check if we already processed this exact tuple within 24h
+      if (deliveryStatus != null && notifType) {
+        const dupeRows = await db
+          .select({ id: integrationLogs.id })
+          .from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId, storeId),
+            eq(integrationLogs.provider, 'expresscoursier'),
+            eq(integrationLogs.action, 'webhook_received'),
+            sql`${integrationLogs.payload} LIKE ${'%"package_id":"' + packageId + '"%'}`,
+            sql`${integrationLogs.payload} LIKE ${'%"delivery_status":' + deliveryStatus + '%'}`,
+            sql`${integrationLogs.payload} LIKE ${'%"notif_type":"' + notifType + '"%'}`,
+            sql`${integrationLogs.createdAt} > NOW() - INTERVAL '24 hours'`,
+          ))
+          .limit(1);
+        if (dupeRows.length > 0) {
+          console.log(`[EC-WEBHOOK] Duplicate ignored: package_id=${packageId} delivery_status=${deliveryStatus} notif_type=${notifType}`);
+          return;
+        }
+      }
+
+      // Persist the event so retro-apply (attach-tracking) and Synchroniser can replay it
       await storage.createIntegrationLog({
         storeId,
         integrationId: null,
         provider: "expresscoursier",
         action: "webhook_received",
-        status: "ok",
+        status: "success",
         message: `EC webhook: package_id=${packageId} status=${deliveryStatus} type=${notifType}`,
+        payload: ecWebhookPayload,
       });
 
-      // Find order by tracking number
-      const order = await storage.getOrderByTrackingNumber(storeId, String(packageId));
+      // Find the order by tracking number
+      const order = await storage.getOrderByTrackingNumber(storeId, packageId);
       if (!order) {
-        console.warn(`[EC-WEBHOOK] No order found for package_id=${packageId} store=${storeId}`);
+        console.warn(`[EC-WEBHOOK] No order for package_id=${packageId} store=${storeId}`);
         await storage.createIntegrationLog({
           storeId, integrationId: null, provider: "expresscoursier",
-          action: "webhook_no_match", status: "ok",
-          message: `EC webhook: package_id=${packageId} not matched to any order`,
+          action: "webhook_no_match", status: "success",
+          message: `⚠️ EC webhook: package_id=${packageId} — aucune commande trouvée (EC ${deliveryStatus})`,
+          payload: ecWebhookPayload,
         });
-        return res.json({ success: true, matched: false });
+        return;
       }
 
-      // Map status and update
-      if (deliveryStatus != null) {
-        const mappedStatus = EC_STATUS_MAP[deliveryStatus];
-        if (mappedStatus && mappedStatus !== order.status) {
+      // Only process delivery_status (skip package_paid / package_unpaid without a status)
+      if (deliveryStatus == null) {
+        console.log(`[EC-WEBHOOK] notif_type=${notifType} — no delivery_status, skipped for #${order.orderNumber}`);
+        return;
+      }
+
+      const mappedStatus = mapEcNumericStatus(String(deliveryStatus));
+      const statusName   = getEcStatusName(deliveryStatus); // French label (e.g. "Livré au client")
+
+      // Terminal status protection: never downgrade delivered/refused/retourné to non-terminal
+      const TERMINAL_SET = new Set(['delivered', 'refused', 'retourné']);
+      const wouldDowngrade = TERMINAL_SET.has(order.status || '') && !TERMINAL_SET.has(mappedStatus);
+      if (wouldDowngrade) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "expresscoursier",
+          action: "webhook_no_change", status: "success",
+          message: `ℹ️ EC ${deliveryStatus} (${statusName}) — #${order.orderNumber} déjà terminée en "${order.status}", non rétrogradée`,
+          payload: ecWebhookPayload,
+        });
+        return;
+      }
+
+      if (mappedStatus !== order.status) {
+        try {
           await storage.updateOrderStatus(order.id, mappedStatus);
+          await storage.updateOrder(order.id, { commentStatus: statusName });
           await storage.createOrderFollowUpLog({
             orderId:   order.id,
             agentId:   null,
             agentName: "Express Coursier Webhook",
-            note:      `Statut mis à jour via webhook: EC status ${deliveryStatus} → ${mappedStatus}`,
+            note:      `EC ${deliveryStatus} (${statusName}) → ${mappedStatus}`,
           });
           await storage.createIntegrationLog({
             storeId, integrationId: null, provider: "expresscoursier",
-            action: "status_update", status: "ok",
-            message: `Commande #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC status ${deliveryStatus})`,
+            action: "status_update", status: "success",
+            message: `✅ #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC ${deliveryStatus}: ${statusName})`,
+            payload: ecWebhookPayload,
           });
-          console.log(`[EC-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mappedStatus}`);
+          console.log(`[EC-WEBHOOK] #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC ${deliveryStatus}: "${statusName}")`);
+          broadcastToStore(storeId, "order_updated", { orderId: order.id, status: mappedStatus, commentStatus: statusName });
+        } catch (updateErr: any) {
+          console.error(`[EC-WEBHOOK] updateOrderStatus failed #${order.id}:`, updateErr?.message, updateErr?.stack);
+          await storage.createIntegrationLog({
+            storeId, integrationId: null, provider: "expresscoursier",
+            action: "status_update", status: "fail",
+            message: `❌ Échec mise à jour #${order.orderNumber}: ${updateErr?.message}`,
+            payload: ecWebhookPayload,
+          });
+        }
+      } else {
+        // Status unchanged — still update commentStatus to the latest French label
+        await storage.updateOrder(order.id, { commentStatus: statusName });
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "expresscoursier",
+          action: "webhook_no_change", status: "success",
+          message: `ℹ️ #${order.orderNumber} déjà en ${order.status} (EC ${deliveryStatus}: ${statusName})`,
+          payload: ecWebhookPayload,
+        });
+      }
+    } catch (err: any) {
+      console.error("[EC-WEBHOOK] Error:", err?.message, err?.stack);
+      try {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "expresscoursier",
+          action: "webhook_error", status: "fail",
+          message: `❌ Exception EC webhook: ${err?.message || "Erreur inconnue"}`,
+          payload: JSON.stringify({ stack: (err?.stack || '').slice(0, 500), body: req.body }).slice(0, 1000),
+        });
+      } catch { /* ignore secondary log failure */ }
+    }
+  });
+
+  // ── Ozon Express webhook receiver ────────────────────────────────────────────
+  // Register this URL in the Ozon dashboard → Notifications (Webhooks):
+  //   https://<domain>/api/webhooks/shipping/ozonexpress/<YOUR_STORE_ID>
+  app.post("/api/webhooks/shipping/ozonexpress/:storeId", async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      if (!storeId) return res.status(400).json({ message: "Invalid storeId" });
+
+      // Active-account guard: ignore if Ozon not connected for this store
+      const accts = await storage.getCarrierAccounts(storeId, "ozonexpress");
+      if (!accts || accts.length === 0) {
+        console.log(`[OZON-WEBHOOK] store=${storeId} ignored — no active Ozon Express account`);
+        return res.json({ success: true, ignored: true, reason: "no_active_account" });
+      }
+
+      const body = req.body || {};
+      console.log(`[OZON-WEBHOOK] store=${storeId} payload=${JSON.stringify(body)}`);
+
+      // Separate the order identifier (orderId = TG-XXXXX order number) from
+      // the tracking barcode and the status
+      const trackingCode = (body.tracking_number || body.code || "").toString().trim();
+      const orderRef     = (body.orderId || body.orderNumber || "").toString().trim();
+      const rawStatus    = (body.orderStatus || body.status || body.statut || "").toString().trim();
+      const note         = (body.note || "").toString();
+
+      console.log(`[OZON-WEBHOOK] tracking="${trackingCode}" order="${orderRef}" status="${rawStatus}"`);
+
+      if (!trackingCode && !orderRef) return res.json({ success: true, matched: false });
+
+      await storage.createIntegrationLog({
+        storeId, integrationId: null, provider: "ozonexpress",
+        action: "webhook_received", status: "ok",
+        message: `Ozon webhook: tracking=${trackingCode || "-"} order=${orderRef || "-"} status=${rawStatus}`,
+      });
+
+      // Ozon webhook uses uppercase English codes — map them first, then fall
+      // back to the carrier-service mapper (handles French names / poll codes)
+      const OZON_WEBHOOK_STATUS: Record<string, string> = {
+        "PICKED_UP":          "transit",
+        "OUT_FOR_DELIVERY":   "transit",
+        "DELIVERED":          "delivered",
+        "FAILED_DELIVERY":    "unreachable",
+        "RETURNED":           "Retour Recu",
+        "IN_WAREHOUSE":       "transit",
+        "IN_TRANSIT":         "transit",
+        "CANCELLED":          "refused",
+      };
+      const statusCode = OZON_WEBHOOK_STATUS[rawStatus.toUpperCase()] ?? mapOzonStatus(rawStatus) ?? rawStatus;
+
+      // Look up order: try tracking barcode first, then order number (TG-XXXXX)
+      let order = trackingCode ? await storage.getOrderByTrackingNumber(storeId, trackingCode) : null;
+      if (!order && orderRef) {
+        order = await storage.getOrderByTrackingNumber(storeId, orderRef)
+               ?? (await storage.getOrdersByStore(storeId)).find(
+                    (o: any) => o.orderNumber === orderRef
+                  ) ?? null;
+      }
+
+      if (!order) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "ozonexpress",
+          action: "webhook_no_match", status: "ok",
+          message: `Ozon webhook: tracking=${trackingCode || "-"} order=${orderRef || "-"} not matched`,
+        });
+        return res.json({ success: true, matched: false });
+      }
+
+      const mapped = statusCode || null;
+      if (mapped && mapped !== order.status) {
+        await storage.updateOrderStatus(order.id, mapped);
+        await storage.createOrderFollowUpLog({
+          orderId:   order.id,
+          agentId:   null,
+          agentName: "Ozon Express Webhook",
+          note: `Statut via webhook: ${statusCode} → ${mapped}${note ? " · " + note : ""}`,
+        });
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "ozonexpress",
+          action: "status_update", status: "ok",
+          message: `Ozon: #${order.orderNumber} ${order.status} → ${mapped}`,
+        });
+        console.log(`[OZON-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mapped}`);
+
+        // Fee backfill: runs for final states when fee is missing
+        const DF_FINALS = ["delivered", "Retour Recu", "refused"] as const;
+        const dfFinalState = DF_FINALS.includes(mapped as any) ? mapped
+          : DF_FINALS.includes(order.status as any) ? order.status
+          : null;
+        const dfNeedsFee = dfFinalState && (!order.shippingCost || order.shippingCost === 0);
+        if (dfNeedsFee) {
+          try {
+            const feeAcct = accts[0];
+            const feeCid  = feeAcct?.settings?.ozonExpressCustomerId;
+            const feeKey  = feeAcct?.apiKey;
+            const feeTracking = trackingCode || orderRef;
+            if (feeCid && feeKey && feeTracking) {
+              const axiosFee2  = (await import("axios")).default;
+              const FormDataFee2 = (await import("form-data")).default;
+              const fdFee2 = new FormDataFee2();
+              fdFee2.append("tracking-number", feeTracking);
+              const feeResp = await axiosFee2.post(
+                `https://api.ozonexpress.ma/customers/${feeCid}/${feeKey}/parcel-info`,
+                fdFee2, { headers: fdFee2.getHeaders(), timeout: 15000, validateStatus: () => true }
+              );
+              const infos  = feeResp.data?.["PARCEL-INFO"]?.["INFOS"];
+              const feeRaw = dfFinalState === "delivered"   ? infos?.["DELIVERED-PRICE"]
+                           : dfFinalState === "Retour Recu" ? infos?.["RETURNED-PRICE"]
+                           :                                  infos?.["REFUSED-PRICE"];
+              const fee = Number(feeRaw);
+              if (Number.isFinite(fee) && fee > 0) {
+                await storage.updateOrder(order.id, { shippingCost: Math.round(fee * 100) });
+                console.log(`[OZON-FEE] #${order.orderNumber} fee=${fee} DH stored`);
+              }
+            }
+          } catch (feeErr: any) {
+            console.log(`[OZON-FEE] fee fetch failed: ${feeErr?.message}`);
+          }
         }
       }
 
-      res.json({ success: true, matched: true, orderId: order.id });
+      res.json({ success: true, matched: true, newStatus: mapped });
     } catch (err: any) {
-      console.error("[EC-WEBHOOK] Error:", err?.message);
-      res.status(500).json({ message: "Webhook processing failed" });
+      console.error("[OZON-WEBHOOK] Error:", err?.message);
+      res.status(500).json({ message: "Ozon webhook processing failed" });
     }
   });
 
@@ -8459,11 +13669,21 @@ function ensureHeaders(sheet) {
   };
 
   app.get("/api/admin/stores", requireSuperAdmin, async (_req, res) => {
-    res.json(await storage.getAllStores());
+    try {
+      res.json(await storage.getAllStores());
+    } catch (err: any) {
+      console.error("[admin/stores] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
   });
 
   app.get("/api/admin/stats", requireSuperAdmin, async (_req, res) => {
-    res.json(await storage.getGlobalStats());
+    try {
+      res.json(await storage.getGlobalStats());
+    } catch (err: any) {
+      console.error("[admin/stats] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
   });
 
   app.patch("/api/admin/stores/:id/toggle", requireSuperAdmin, async (req, res) => {
@@ -8521,6 +13741,512 @@ function ensureHeaders(sheet) {
     }
   });
 
+  /* ── Feature flag overrides (per-store) ─────────────────────────── */
+  app.get("/api/admin/stores/:storeId/features", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      const sub = await storage.getSubscription(storeId);
+      if (!sub) return res.status(404).json({ message: "Boutique introuvable" });
+      res.json({
+        automationEnabled:  sub.automationEnabled  ?? null,
+        mediaBuyersEnabled: sub.mediaBuyersEnabled ?? null,
+        importCsvEnabled:   sub.importCsvEnabled   ?? null,
+        plan: sub.plan,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.put("/api/admin/stores/:storeId/features", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      const flagVal = z.union([z.literal(0), z.literal(1), z.null()]);
+      const body = z.object({
+        automationEnabled:  flagVal.optional(),
+        mediaBuyersEnabled: flagVal.optional(),
+        importCsvEnabled:   flagVal.optional(),
+      }).parse(req.body);
+
+      const sub = await storage.getSubscription(storeId);
+      if (!sub) return res.status(404).json({ message: "Boutique introuvable" });
+
+      await storage.updateSubscription(sub.id, body as any);
+      res.json({ message: "Fonctionnalités mises à jour" });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  /* ── Per-store settings toggle (e.g. allowAttachTracking) ───────── */
+  app.patch("/api/admin/stores/:id/settings", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.id);
+      const body = z.object({ allowAttachTracking: z.boolean() }).parse(req.body);
+      const store = await storage.getStore(storeId);
+      if (!store) return res.status(404).json({ message: "Boutique introuvable" });
+      const existing = (store.settings as Record<string, any>) || {};
+      const updated = await storage.updateStore(storeId, {
+        settings: { ...existing, allowAttachTracking: body.allowAttachTracking },
+      });
+      const saved = (updated?.settings as any)?.allowAttachTracking ?? false;
+      console.log(`[ADMIN-SETTINGS] Store ${storeId} allowAttachTracking → ${saved}`);
+      res.json({ allowAttachTracking: saved });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: "Données invalides" });
+      res.status(500).json({ message: err.message || "Erreur serveur" });
+    }
+  });
+
+  /* ── Manually attach carrier tracking to a confirmé order ────────── */
+  app.patch("/api/orders/:id/attach-tracking", requireAuth, async (req, res) => {
+    try {
+      const orderId = Number(req.params.id);
+      const { trackingNumber, carrier: bodyCarrier } = z.object({
+        trackingNumber: z.string().min(1).max(120).trim(),
+        carrier:        z.string().trim().optional(),  // explicit override from frontend dropdown
+      }).parse(req.body);
+
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "Commande introuvable" });
+
+      const user = req.user!;
+      const storeId = order.storeId;
+
+      // Tenant isolation — superAdmin bypasses
+      if (!user.isSuperAdmin && storeId !== user.storeId) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+
+      // Feature gate: superAdmin OR store has allowAttachTracking enabled
+      if (!user.isSuperAdmin) {
+        const store = await storage.getStore(storeId);
+        if (!(store?.settings as any)?.allowAttachTracking) {
+          return res.status(403).json({ message: "Fonctionnalité non activée pour cette boutique" });
+        }
+      }
+
+      // Only confirmé orders accept a manual tracking attachment
+      if (order.status !== 'confirme') {
+        return res.status(400).json({
+          message: `La commande doit être en statut Confirmée (statut actuel: ${order.status})`,
+        });
+      }
+
+      // Duplicate tracking check within this store (case-insensitive)
+      const dup = await db.select({ id: orders.id })
+        .from(orders)
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`lower(${orders.trackNumber}) = lower(${trackingNumber})`,
+          sql`${orders.id} != ${orderId}`,
+        ))
+        .limit(1);
+      if (dup.length > 0) {
+        return res.status(409).json({ message: "Ce numéro de suivi est déjà utilisé par une autre commande dans cette boutique." });
+      }
+
+      // ── Carrier resolution (priority order) ────────────────────────────────
+      // 1. Order already has a carrier → preserve it (never overwrite a set carrier)
+      // 2. Client sent an explicit carrier in body → use that
+      // 3. Store has exactly one active carrier account → use that
+      // 4. Multiple accounts without explicit selection → use first (frontend should have sent one)
+      // No hardcoded 'expresscoursier' fallback.
+      let resolvedCarrier = ((order as any).shippingProvider || (order as any).carrierName || '').trim();
+      if (!resolvedCarrier) {
+        if (bodyCarrier) {
+          resolvedCarrier = bodyCarrier.trim();
+        } else {
+          const allAccounts = await storage.getCarrierAccounts(storeId);
+          const activeAccounts = allAccounts.filter((a: any) => a.isActive === 1 || a.isActive === true);
+          if (activeAccounts.length === 1) {
+            resolvedCarrier = activeAccounts[0].carrierName;
+          } else if (activeAccounts.length > 1) {
+            resolvedCarrier = activeAccounts[0].carrierName;
+            console.warn(`[ATTACH-TRACKING] Order #${(order as any).orderNumber} — multiple carrier accounts for store ${storeId}, no carrier sent; defaulting to "${resolvedCarrier}"`);
+          }
+        }
+      }
+      resolvedCarrier = resolvedCarrier.toLowerCase().trim();
+
+      // ── Retro-apply most recent stored webhook status ──────────────────────
+      // Search integration_logs for a prior webhook event matching this tracking
+      // number so we can set the real current status instead of always defaulting
+      // to 'Attente De Ramassage'. Works for EC and Ameex.
+      let attachStatus = 'Attente De Ramassage';
+      let attachCommentStatus: string | null = null;
+
+      const isEcCarrier    = ['expresscoursier', 'olivraison', 'express coursier'].includes(resolvedCarrier);
+      const isAmeexCarrier = resolvedCarrier === 'ameex';
+
+      if (isEcCarrier) {
+        const ecPriorLogs = await db
+          .select()
+          .from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId, storeId),
+            inArray(integrationLogs.provider, ['expresscoursier', 'olivraison']),
+            or(
+              sql`${integrationLogs.payload} LIKE ${'%' + trackingNumber + '%'}`,
+              sql`${integrationLogs.message} LIKE ${'%' + trackingNumber + '%'}`,
+            ),
+          ))
+          .orderBy(desc(integrationLogs.createdAt))
+          .limit(50);
+
+        for (const priorLog of ecPriorLogs) {
+          let pId = '';
+          let code = '';
+          if (priorLog.payload) {
+            try {
+              const parsed = JSON.parse(priorLog.payload);
+              pId  = (parsed.package_id    || '').toString().trim();
+              code = parsed.delivery_status != null ? String(parsed.delivery_status).trim() : '';
+            } catch { /* fall through */ }
+          }
+          if (!pId && priorLog.message) {
+            const pkgM = priorLog.message.match(/package_id=([^\s,]+)/);
+            const dsM  = priorLog.message.match(/\bstatus=(\d+)/);
+            if (pkgM?.[1]) pId  = pkgM[1].trim();
+            if (dsM?.[1])  code = dsM[1];
+          }
+          if (!pId || !code) continue;
+          if (pId.toLowerCase() !== trackingNumber.trim().toLowerCase()) continue;
+          const mapped  = mapEcNumericStatus(code);
+          const ecLabel = getEcStatusName(code);
+          console.log(`[ATTACH-TRACKING] Prior EC event: package_id=${pId} delivery_status=${code} (${ecLabel}) → ${mapped}`);
+          attachCommentStatus = ecLabel;
+          attachStatus = mapped;
+          break;
+        }
+      } else if (isAmeexCarrier) {
+        const ameexPriorLogs = await db
+          .select()
+          .from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId, storeId),
+            inArray(integrationLogs.provider, ['ameex', 'olivraison']),
+            or(
+              sql`${integrationLogs.payload} LIKE ${'%' + trackingNumber + '%'}`,
+              sql`${integrationLogs.message} LIKE ${'%' + trackingNumber + '%'}`,
+            ),
+          ))
+          .orderBy(desc(integrationLogs.createdAt))
+          .limit(50);
+
+        const { mapAmeexStatus: _mapAmeex } = await import('./services/carrier-service');
+
+        for (const priorLog of ameexPriorLogs) {
+          let statut = '';
+          let label  = '';
+          if (priorLog.payload) {
+            try {
+              const p = JSON.parse(priorLog.payload);
+              if (p.code_colis || p.event === 'package_updated') {
+                let nested: any = {};
+                if (p.payload) { try { nested = typeof p.payload === 'object' ? p.payload : JSON.parse(String(p.payload)); } catch { /**/ } }
+                const evtCode = (nested.order_id || p.code_colis || '').toString().trim();
+                if (evtCode.toLowerCase() !== trackingNumber.trim().toLowerCase()) continue;
+                statut = nested.return_status === true ? 'RETURNED' : (nested.status || '').toString().trim();
+                label  = nested.description || p.commentaire || statut;
+              } else {
+                const evtCode = (p.CODE || '').toString().trim();
+                if (evtCode.toLowerCase() !== trackingNumber.trim().toLowerCase()) continue;
+                statut = (p.STATUT || '').toString().trim();
+                label  = p.STATUT_NAME || statut;
+              }
+            } catch { /* fall through */ }
+          }
+          if (!statut) {
+            const msg   = priorLog.message || '';
+            const codeM = msg.match(/CODE=([^\s]+)/);
+            const statM = msg.match(/STATUT=([^\s/(]+)/);
+            if (!codeM?.[1] || codeM[1].toLowerCase() !== trackingNumber.trim().toLowerCase()) continue;
+            statut = statM?.[1] || '';
+            label  = statut;
+          }
+          if (!statut) continue;
+          const mapped = _mapAmeex(statut);
+          console.log(`[ATTACH-TRACKING] Prior Ameex event: code=${trackingNumber} statut="${statut}" (${label}) → ${mapped}`);
+          attachCommentStatus = label || statut;
+          attachStatus = mapped;
+          break;
+        }
+      }
+
+      // ── ONE atomic update ──────────────────────────────────────────────────
+      const carrierUpdate = resolvedCarrier
+        ? { shippingProvider: resolvedCarrier, carrierName: resolvedCarrier }
+        : {};
+
+      const [updated] = await db.update(orders)
+        .set({
+          trackNumber:      trackingNumber,
+          ...carrierUpdate,
+          status:           attachStatus,
+          ...(attachCommentStatus ? { commentStatus: attachCommentStatus } : {}),
+        })
+        .where(eq(orders.id, orderId))
+        .returning();
+
+      console.log(`[ATTACH-TRACKING] Order #${(order as any).orderNumber || orderId} → carrier="${resolvedCarrier}" trackNumber="${updated?.trackNumber}" status="${updated?.status}" user=${user.id}${user.isSuperAdmin ? ' (superAdmin)' : ''}`);
+
+      await storage.createIntegrationLog({
+        storeId,
+        integrationId: null,
+        provider: resolvedCarrier || 'manual',
+        action: 'tracking_attached',
+        status: 'success',
+        message: `✅ Tracking attaché: ${trackingNumber} → Commande #${(order as any).orderNumber || orderId} (carrier=${resolvedCarrier}) → ${attachStatus}${attachCommentStatus ? ' (' + attachCommentStatus + ')' : ''}`,
+      });
+
+      res.json({
+        success:     true,
+        trackNumber: updated?.trackNumber,
+        status:      updated?.status,
+        carrier:     resolvedCarrier || null,
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: "Données invalides", errors: err.errors });
+      console.error("[ATTACH-TRACKING] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message || "Erreur serveur" });
+    }
+  });
+
+
+  // ── Diagnostic: distinct EC delivery_status codes in integration_logs ────────
+  // Call this from the deployed app to get the full code list to send to EC support.
+  // GET /api/admin/ec-status-codes
+  // Returns: EC code frequency from integration logs + a full dry-run of corrupted orders.
+  // Corruption patterns covered:
+  //   (A) status ILIKE 'EC %'              — raw code written into status (was "EC 3")
+  //   (B) status LIKE '%delivery_status%'  — old raw format in status
+  //   (C) status = 'expedition'            — invalid value from old map
+  //   (D) comment_status LIKE '%delivery_status%' — old "EC delivery_status=35" format
+  app.get("/api/admin/ec-status-codes", requireSuperAdmin, async (_req, res) => {
+    try {
+      // Shared CTE: extract package_id + delivery_status from BOTH log formats
+      //   new format: payload = '{"package_id":"...","delivery_status":"35",...}'
+      //   old format: payload = null, message = 'EC webhook: package_id=X status=35 type=...'
+      const baseCte = sql`
+        WITH extracted AS (
+          SELECT
+            COALESCE(
+              (regexp_match(payload, '"package_id"\\s*:\\s*"([^"]+)"'))[1],
+              (regexp_match(message, 'package_id=([^\\s,]+)'))[1]
+            ) AS pkg_id,
+            COALESCE(
+              (regexp_match(payload, '"delivery_status"\\s*:\\s*"?([0-9]+)"?'))[1],
+              (regexp_match(message, 'status=([0-9]+)'))[1]
+            ) AS ds_code
+          FROM integration_logs
+          WHERE provider IN ('expresscoursier', 'olivraison', 'express coursier')
+        )
+      `;
+
+      // Stat 1: totals — events, distinct package_ids, how many match an order
+      const totals = await db.execute(sql`
+        ${baseCte}
+        SELECT
+          COUNT(*)::int                                             AS total_events,
+          COUNT(DISTINCT pkg_id) FILTER (WHERE pkg_id IS NOT NULL) AS distinct_package_ids,
+          COUNT(DISTINCT pkg_id) FILTER (
+            WHERE pkg_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM orders o WHERE o.track_number = pkg_id)
+          )                                                         AS matched_to_order
+        FROM extracted
+      `);
+
+      // Stat 2: per-code counts, example package_id, and that order's current status
+      const codes = await db.execute(sql`
+        ${baseCte}
+        SELECT
+          e.ds_code                                         AS delivery_status,
+          COUNT(*)::int                                     AS count,
+          MAX(e.pkg_id)                                     AS example_package_id,
+          (SELECT o.status FROM orders o WHERE o.track_number = MAX(e.pkg_id) LIMIT 1)
+                                                            AS current_order_status
+        FROM extracted e
+        WHERE e.ds_code IS NOT NULL
+        GROUP BY 1
+        ORDER BY count DESC
+      `);
+
+      // Stat 3: FULL dry-run — count ALL corrupted orders across all patterns
+      const dryrun = await db.execute(sql`
+        SELECT
+          COUNT(*) FILTER (WHERE status ILIKE 'EC %')                  AS ec_in_status,
+          COUNT(*) FILTER (WHERE status LIKE '%delivery_status%')       AS delivery_status_in_status,
+          COUNT(*) FILTER (WHERE status = 'expedition')                 AS expedition_in_status,
+          COUNT(*) FILTER (WHERE comment_status LIKE '%delivery_status%') AS old_format_in_comment,
+          COUNT(*) FILTER (
+            WHERE status ILIKE 'EC %'
+               OR status LIKE '%delivery_status%'
+               OR status = 'expedition'
+               OR comment_status LIKE '%delivery_status%'
+          )::int AS total_corrupted
+        FROM orders
+      `);
+
+      // Stat 4: 10 example corrupted rows
+      const examples = await db.execute(sql`
+        SELECT id, order_number, status, comment_status, track_number, store_id
+        FROM orders
+        WHERE status ILIKE 'EC %'
+           OR status LIKE '%delivery_status%'
+           OR status = 'expedition'
+           OR comment_status LIKE '%delivery_status%'
+        ORDER BY id DESC
+        LIMIT 10
+      `);
+
+      const t  = (totals.rows?.[0]  || {}) as any;
+      const dr = (dryrun.rows?.[0]  || {}) as any;
+      res.json({
+        summary: {
+          total_events:         Number(t.total_events         ?? 0),
+          distinct_package_ids: Number(t.distinct_package_ids ?? 0),
+          matched_to_order:     Number(t.matched_to_order     ?? 0),
+        },
+        cleanup_dry_run: {
+          ec_in_status:              Number(dr.ec_in_status              ?? 0),
+          delivery_status_in_status: Number(dr.delivery_status_in_status ?? 0),
+          expedition_in_status:      Number(dr.expedition_in_status      ?? 0),
+          old_format_in_comment:     Number(dr.old_format_in_comment     ?? 0),
+          total_corrupted:           Number(dr.total_corrupted           ?? 0),
+          note: 'Call POST /api/admin/ec-status-cleanup to fix all of these.',
+          examples: examples.rows,
+        },
+        codes: codes.rows,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // ── EC status cleanup (POST) ────────────────────────────────────────────────
+  // Fixes ALL known corruption patterns in orders.status and orders.comment_status.
+  //
+  // Pattern A: status ILIKE 'EC %' (e.g. "EC 3") — raw code was written to status
+  //   Fix: extract code, map through EC_NUMERIC_STATUS_MAP.
+  //        If mappedStatus is a valid non-'in_progress' value → set status = mappedStatus
+  //        Otherwise → set status = 'Attente De Ramassage' (has trackNumber) or 'in_progress'
+  //        Always set comment_status = 'EC <code>'
+  //
+  // Pattern B: status LIKE '%delivery_status%' — old ugly format in status
+  //   Fix: same as A after extracting the numeric code
+  //
+  // Pattern C: status = 'expedition' — invalid status from old map
+  //   Fix: set status = 'Attente De Ramassage' if has track_number, else 'in_progress'
+  //        Preserve existing comment_status unless it's also corrupted
+  //
+  // Pattern D: comment_status LIKE '%delivery_status%' — old "EC delivery_status=35" format
+  //   Fix: rewrite to 'EC <code>' — never touches order.status for unconfirmed codes
+  //
+  // SAFE GUARDS:
+  //   • Never writes 'delivered' or 'refused' from a numeric code unless it's in EC_NUMERIC_STATUS_MAP
+  //   • If dryRun=true (query param), returns counts + examples without writing anything
+  app.post("/api/admin/ec-status-cleanup", requireSuperAdmin, async (req: any, res: any) => {
+    const dryRun = req.query.dryRun === 'true' || req.query.dry_run === 'true';
+    try {
+      const badRows = await db.execute(sql`
+        SELECT id, order_number, status, comment_status, track_number
+        FROM orders
+        WHERE status ILIKE 'EC %'
+           OR status LIKE '%delivery_status%'
+           OR status = 'expedition'
+           OR comment_status LIKE '%delivery_status%'
+        ORDER BY id DESC
+        LIMIT 500
+      `);
+
+      const preview: any[] = [];
+      let fixed = 0;
+
+      for (const row of badRows.rows as any[]) {
+        const oldStatus:  string = row.status          || '';
+        const oldComment: string = row.comment_status  || '';
+        const hasTrack: boolean  = !!row.track_number;
+
+        let newStatus:  string | null = null;
+        let newComment: string | null = null;
+
+        // ── Pattern A / B: raw EC code in status ──────────────────────────────
+        if (oldStatus.toUpperCase().startsWith('EC ') || oldStatus.includes('delivery_status')) {
+          // Extract numeric code: "EC 3" → "3" or "EC delivery_status=35" → "35"
+          const codeMatch = oldStatus.match(/(?:EC\s+)?(?:delivery_status=)?(\d+)/i);
+          const code = codeMatch?.[1] ?? null;
+          if (code) {
+            const mapped = mapEcDeliveryStatus(code);
+            newStatus  = (mapped !== 'in_progress') ? mapped
+                       : hasTrack ? 'Attente De Ramassage' : 'in_progress';
+            newComment = getEcStatusName(code); // French label e.g. "Livré au client"
+          } else {
+            // Can't parse code — safest fallback
+            newStatus  = hasTrack ? 'Attente De Ramassage' : 'in_progress';
+            newComment = oldStatus;
+          }
+        }
+
+        // ── Pattern C: 'expedition' in status ─────────────────────────────────
+        else if (oldStatus === 'expedition') {
+          newStatus  = hasTrack ? 'Attente De Ramassage' : 'in_progress';
+          // Don't touch comment_status unless it's also corrupted
+        }
+
+        // ── Pattern D: old format in comment_status only ───────────────────────
+        if (oldComment.includes('delivery_status')) {
+          const codeMatch = oldComment.match(/delivery_status=(\d+)/);
+          const code = codeMatch?.[1] ?? null;
+          if (code) {
+            newComment = getEcStatusName(code); // French label instead of "EC delivery_status=35"
+          }
+        }
+
+        if (newStatus === null && newComment === null) continue; // nothing to fix
+
+        preview.push({
+          id:          row.id,
+          order_number: row.order_number,
+          old_status:  oldStatus,
+          new_status:  newStatus ?? oldStatus,
+          old_comment: oldComment,
+          new_comment: newComment ?? oldComment,
+          track_number: row.track_number,
+        });
+
+        if (!dryRun) {
+          // Build minimal SQL — only set columns that actually changed
+          const setParts: string[] = [];
+          if (newStatus  !== null && newStatus  !== oldStatus)  setParts.push(`status = '${newStatus.replace(/'/g, "''")}'`);
+          if (newComment !== null && newComment !== oldComment) setParts.push(`comment_status = '${newComment.replace(/'/g, "''")}'`);
+          if (setParts.length > 0) {
+            await pool.query(`UPDATE orders SET ${setParts.join(', ')}, updated_at = NOW() WHERE id = $1`, [row.id]);
+            fixed++;
+          }
+        }
+      }
+
+      if (dryRun) {
+        res.json({
+          dry_run: true,
+          total_would_fix: preview.length,
+          preview: preview.slice(0, 10),
+          note: 'Add ?dryRun=true to preview. POST without it to apply.',
+        });
+      } else {
+        res.json({
+          fixed,
+          total_found: preview.length,
+          message: `✅ ${fixed} commande(s) corrigée(s).`,
+          preview: preview.slice(0, 10),
+        });
+      }
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
   app.post("/api/admin/stores/:id/reset-orders", requireSuperAdmin, async (req, res) => {
     try {
       const storeId = Number(req.params.id);
@@ -8568,6 +14294,15 @@ function ensureHeaders(sheet) {
   app.get("/api/admin/users", requireSuperAdmin, async (_req, res) => {
     try {
       const allStores = await storage.getAllStores();
+      const ownerIds = allStores.map((s: any) => s.ownerId).filter(Boolean) as number[];
+
+      // Fetch dashboardPermissions for all owners in one query
+      const ownerUsers = ownerIds.length > 0
+        ? await db.select({ id: users.id, dashboardPermissions: users.dashboardPermissions })
+            .from(users).where(inArray(users.id, ownerIds))
+        : [];
+      const permMap = new Map(ownerUsers.map(u => [u.id, u.dashboardPermissions]));
+
       const ownerRows = allStores.map((s: any) => ({
         id: s.ownerId,
         username: s.ownerName,
@@ -8577,8 +14312,113 @@ function ensureHeaders(sheet) {
         isEmailVerified: s.isEmailVerified ?? 0,
         isActive: s.ownerIsActive ?? 1,
         createdAt: s.ownerCreatedAt,
+        dashboardPermissions: permMap.get(s.ownerId) || {},
       })).filter((r: any) => r.id);
       res.json(ownerRows);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* ── Super Admin: Toggle can_edit_shipping_fee permission per user ── */
+  app.patch("/api/admin/users/:id/can-edit-shipping-fee", requireSuperAdmin, async (req, res) => {
+    try {
+      const userId = Number(req.params.id);
+      const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+
+      const [user] = await db.select({ id: users.id, dashboardPermissions: users.dashboardPermissions })
+        .from(users).where(eq(users.id, userId));
+      if (!user) return res.status(404).json({ message: "Utilisateur introuvable" });
+
+      const existing = (user.dashboardPermissions as Record<string, boolean>) || {};
+      await db.update(users)
+        .set({ dashboardPermissions: { ...existing, can_edit_shipping_fee: enabled } })
+        .where(eq(users.id, userId));
+
+      res.json({ success: true, can_edit_shipping_fee: enabled });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  /* ── Super Admin: Full delivered-count consistency diagnostic ──── */
+  // GET /api/admin/diagnostic/delivered-mismatch
+  //   ?storeId=N&dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD
+  // Returns canonicalTotal, canonicalDelivered, perPlatformSum, perProductSum
+  // and the order IDs/statuses that canonical counts as delivered but Par Produit misses.
+  app.get("/api/admin/diagnostic/delivered-mismatch", requireSuperAdmin, async (req: any, res: any) => {
+    try {
+      const { storeId, dateFrom, dateTo } = req.query as Record<string, string>;
+      if (!storeId || !dateFrom || !dateTo) {
+        return res.status(400).json({ message: "storeId, dateFrom, dateTo required" });
+      }
+      const sid = Number(storeId);
+      const [fy, fm, fd] = dateFrom.split('-').map(Number);
+      const [ty, tm, td] = dateTo.split('-').map(Number);
+      const cutoff  = new Date(fy, fm - 1, fd,  0,  0,  0,   0);
+      const endDate = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+
+      // ── 1. Canonical order set (single source of truth) ────────────────────
+      const allOrders = await storage.getOrdersByStore(sid);
+      const inRange   = allOrders.filter((o: any) => {
+        const d = o.createdAt ? new Date(o.createdAt) : null;
+        return d && d >= cutoff && d <= endDate;
+      });
+      const canonicalTotal     = inRange.length;
+      const canonicalDelivered = inRange.filter((o: any) => isDeliveredStatus(o.status));
+      const canonicalDeliveredIds = new Set(canonicalDelivered.map((o: any) => o.id));
+
+      // ── 2. Per-platform sum (must equal canonical) ──────────────────────────
+      const platMap: Record<string, { orders: number; delivered: number }> = {};
+      for (const o of inRange as any[]) {
+        const raw   = o.trafficPlatform || o.utmSource || '';
+        const low   = raw.toLowerCase();
+        const label = low.includes('facebook') || low.includes('fb') || low.includes('meta') ? 'Facebook / Meta'
+                    : low.includes('tiktok')   || low.includes('tik') ? 'TikTok'
+                    : low.includes('google')    ? 'Google'
+                    : low.includes('organic')   || low.includes('organique') ? 'Organique'
+                    : raw || 'Non défini';
+        if (!platMap[label]) platMap[label] = { orders: 0, delivered: 0 };
+        platMap[label].orders++;
+        if (isDeliveredStatus(o.status)) platMap[label].delivered++;
+      }
+      const perPlatformTotal     = Object.values(platMap).reduce((s, p) => s + p.orders,    0);
+      const perPlatformDelivered = Object.values(platMap).reduce((s, p) => s + p.delivered, 0);
+
+      // ── 3. Per-product sum via computeProfitability ─────────────────────────
+      const profitResult = await computeProfitability(sid, { dateFrom, dateTo });
+      const perProductTotal     = profitResult.products.reduce((s: number, p: any) => s + p.totalOrders,    0);
+      const perProductDelivered = profitResult.products.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
+
+      // ── 4. Orders delivered in canonical but missing from Per Produit ───────
+      // Build a set of orderIds that appear in ANY product row's deliveredOrders
+      // (computed by running computeProfitability with debug flag)
+      // Simpler: orders missing from Per Produit = those with no orderItems rows
+      const orderIds = inRange.map((o: any) => o.id);
+      const itemRowsForDiag = orderIds.length > 0
+        ? await db.select({ orderId: orderItems.orderId })
+            .from(orderItems).where(inArray(orderItems.orderId, orderIds))
+        : [];
+      const coveredByItems  = new Set(itemRowsForDiag.map((i: any) => i.orderId));
+      const deliveredNoItem = canonicalDelivered
+        .filter((o: any) => !coveredByItems.has(o.id))
+        .map((o: any) => ({ id: o.id, status: o.status, createdAt: o.createdAt }));
+
+      res.json({
+        period: `${dateFrom} → ${dateTo}`,
+        // ── The 5 numbers that must all be equal ──
+        canonicalTotal,
+        canonicalDelivered:  canonicalDelivered.length,
+        perPlatformTotal,
+        perPlatformDelivered,
+        perProductTotal,
+        perProductDelivered,
+        // ── Mismatch details ──
+        deliveredNoItemCount: deliveredNoItem.length,
+        deliveredNoItem,   // orders counted in canonical but had no item rows → were missing from Par Produit before fix
+        note: "After fix all 6 numbers above should satisfy: canonicalDelivered == perPlatformDelivered == perProductDelivered",
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -8683,7 +14523,7 @@ function ensureHeaders(sheet) {
         const resolved = await storage.resolveExpressCoursierCityId(storeId, matchedCity);
         if (!resolved) {
           return res.status(422).json({
-            message: `Express Coursier: Ville "${matchedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
+            message: `Ville « ${matchedCity} » non synchronisée pour Express Coursier. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
           });
         }
         singleEcCityId = resolved;
@@ -8700,7 +14540,7 @@ function ensureHeaders(sheet) {
         const resolved = await storage.resolveOzonExpressCityId(storeId, matchedCity);
         if (!resolved) {
           return res.status(422).json({
-            message: `Ozon Express: Ville "${matchedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
+            message: `Ville « ${matchedCity} » non synchronisée pour Ozon Express. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
           });
         }
         singleOzonCityId = resolved;
@@ -8710,6 +14550,18 @@ function ensureHeaders(sheet) {
       const singleOzonSettings = provider.toLowerCase() === 'ozonexpress'
         ? ((creds as any).settings || {})
         : {};
+
+      // For Vitipsexpress: resolve city name → abbr (e.g. "CASABLANCA" → "Casablanca")
+      let singleVitipsCityAbbr: string | undefined;
+      if (provider.toLowerCase() === 'vitipsexpress') {
+        const resolved = await storage.getVitipsCityAbbr(storeId, matchedCity);
+        if (resolved) {
+          singleVitipsCityAbbr = resolved;
+          console.log(`[VITIPS-CITY] order=${orderId} city="${matchedCity}" → abbr="${singleVitipsCityAbbr}"`);
+        } else {
+          console.warn(`[VITIPS-CITY] order=${orderId} city="${matchedCity}" → no abbr found, sending name directly`);
+        }
+      }
 
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
@@ -8729,7 +14581,7 @@ function ensureHeaders(sheet) {
         digylogNetworkId: (creds as any).digylogNetworkId || 1,
         apiId:            (creds as any).apiSecret || (creds as any).settings?.apiId || '',
         apiSecret:        (creds as any).apiSecret || '',
-        cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId,
+        cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr,
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
       });
@@ -8842,6 +14694,39 @@ function ensureHeaders(sheet) {
       res.json({ success: true, order: updated });
     } catch (err) {
       throw err;
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // REPAIR GHOST SHIPMENTS — revert Ozon orders marked Expédié/Attente
+  // De Ramassage without a tracking number back to Confirmé
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/orders/repair-ghost-shipments", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const ghosts = await db
+        .select()
+        .from(orders)
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            sql`${orders.status} IN ('Expédié', 'Attente De Ramassage', 'expédié', 'attente de ramassage')`,
+            sql`(${orders.trackNumber} IS NULL OR TRIM(${orders.trackNumber}) = '')`,
+          )
+        );
+
+      let reverted = 0;
+      for (const o of ghosts) {
+        await storage.updateOrderStatus(o.id, 'Confirmé');
+        reverted += 1;
+        console.log(`[REPAIR-GHOST] Reverted order #${(o as any).orderNumber || o.id} (id=${o.id}) → Confirmé`);
+      }
+
+      console.log(`[REPAIR-GHOST] storeId=${storeId} → reverted ${reverted}/${ghosts.length} ghost shipments`);
+      res.json({ ok: true, reverted, total: ghosts.length });
+    } catch (err: any) {
+      console.error('[REPAIR-GHOST] Error:', err.message);
+      res.status(500).json({ message: err.message });
     }
   });
 
@@ -9388,6 +15273,19 @@ function ensureHeaders(sheet) {
   // ══════════════════════════════════════════════════════════════════
   // AUTOMATION & AI MODULE
   // ══════════════════════════════════════════════════════════════════
+
+  // Feature-gate: block non-super-admin users without automation access
+  app.use("/api/automation", async (req: any, res: any, next: any) => {
+    if (!req.isAuthenticated()) return next();
+    if (req.user?.isSuperAdmin) return next();
+    const storeId = req.user?.storeId;
+    if (!storeId) return next();
+    const sub = await storage.getSubscription(storeId);
+    if (!hasFeature(sub, req.user, 'automation')) {
+      return res.status(403).json({ message: "L'Automation & AI est réservée au plan Pro." });
+    }
+    next();
+  });
 
   /* ── Clients for retargeting (with last product name) ─────────── */
   app.get("/api/automation/clients", requireAuth, async (req: any, res: any) => {
@@ -10938,6 +16836,7 @@ function submitOrder(e){
       // Broadcast the new order in real-time
       try { broadcastToStore(page.storeId, { type: "new_order", order }); } catch (_) {}
       try { emitNewOrder(page.storeId, order); } catch (_) {}
+      try { notifyNewOrder({ id: order.id, storeId: page.storeId, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "", customerCity: (order as any).customerCity ?? null, totalPrice: order.totalPrice || 0 }); } catch (_) {}
       pushOrderToSheet(page.storeId, {
         action: "order.created",
         orderNumber: orderNumber || "",
@@ -11384,7 +17283,7 @@ function submitOrder(e){
 
           // Always attach orderItems if we resolved a product
           const orderItems = matched
-            ? [{ productId: matched.id, quantity: parsed.quantity, price: lineUnitPrice, orderId: 0 }]
+            ? [{ productId: matched.id, rawProductName: parsed.productName || matched.name, quantity: parsed.quantity, price: lineUnitPrice, orderId: 0 }]
             : [];
 
           console.log(`[SheetsScript] 📦 orderItems prepared: ${orderItems.length} line(s)`, orderItems.length > 0 ? JSON.stringify(orderItems[0]) : "(empty — no product)");
@@ -11398,6 +17297,7 @@ function submitOrder(e){
             customerPhone: parsed.customerPhone,
             customerAddress: parsed.customerAddress,
             customerCity: parsed.customerCity,
+            rawProductName: parsed.productName || null,
             status: "nouveau",
             totalPrice: parsed.totalPrice,
             productCost: matched ? (matched.costPrice || 0) * parsed.quantity : 0,
@@ -11410,6 +17310,7 @@ function submitOrder(e){
           if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
           await storage.incrementMonthlyOrders(storeId);
           emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: "nouveau", source: "gsheets_script" });
+          notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
           pushOrderToSheet(storeId, {
             action: "order.created",
             orderNumber: parsed.orderNumber,
@@ -11769,6 +17670,28 @@ function sendToAPI(data) {
       res.status(500).json({ connected: false, message: "Erreur serveur" });
     }
   });
+
+  // Ozon Express auto-reconcile: every 10 minutes, infer statuses and backfill fees
+  // for all stores with an ozonexpress carrier account. Uses the same in-flight lock
+  // as the manual sync button so concurrent runs are safely skipped.
+  setInterval(async () => {
+    try {
+      const accts = await storage.getAllCarrierAccountsByProvider('ozonexpress');
+      const storeIds = [...new Set(accts.map((a: any) => a.storeId as number))];
+      for (const sid of storeIds) {
+        try {
+          const r = await syncCarrierOrdersInternal(sid, 'ozonexpress');
+          if ((r as any).statusUpdated || (r as any).feeUpdated) {
+            console.log(`[OZON-AUTO-POLL] storeId=${sid} — ${r.synced} checked, ${(r as any).statusUpdated} statuts, ${(r as any).feeUpdated} frais`);
+          }
+        } catch (e: any) {
+          console.log(`[OZON-AUTO-POLL] storeId=${sid} failed: ${e?.message}`);
+        }
+      }
+    } catch (e: any) {
+      console.log(`[OZON-AUTO-POLL] failed: ${e?.message}`);
+    }
+  }, 10 * 60 * 1000);
 
   return httpServer;
 }

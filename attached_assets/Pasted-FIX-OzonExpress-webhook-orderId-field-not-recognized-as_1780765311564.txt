@@ -1,0 +1,78 @@
+FIX: OzonExpress webhook — orderId field not recognized as order identifier
+File to change: server/routes.ts only
+Problem: OzonExpress sends this payload:
+json{
+  "orderId": "TG-16991",
+  "orderStatus": "PICKED_UP",
+  "situation": "NOT_PAID",
+  "note": ""
+}
+The webhook handler logs show:
+[WEBHOOK-MATCH]: Looking for tracking="" or order="" — status="TG-16991"
+This means the code is reading body.orderId as the status field instead of the order identifier. The orderStatus field ("PICKED_UP") is also not being mapped to a platform status.
+
+Fix 1 — Find the OzonExpress payload parser
+In server/routes.ts, find the carrier webhook handler for ozonexpress. It processes the incoming body to extract:
+
+The order reference/tracking number
+The new status
+
+It likely has a section like:
+tsconst trackingNumber = body.tracking || body.trackingNumber || body.track_number || body.ref || "";
+const rawStatus = body.status || body.orderStatus || body.statut || "";
+const orderRef = body.order || body.orderNumber || body.ref || "";
+Add body.orderId as an order identifier (not as status):
+tsconst trackingNumber = body.tracking || body.trackingNumber || body.track_number || body.ref || "";
+const orderRef = body.order || body.orderNumber || body.orderId || body.ref || "";  // ← add body.orderId
+const rawStatus = body.orderStatus || body.status || body.statut || "";              // ← orderStatus first
+
+Fix 2 — Add OzonExpress status mapping
+Find the carrier status mapping object (used for all carriers). It maps raw carrier statuses to platform statuses. Add OzonExpress statuses:
+ts// OzonExpress status mapping
+"PICKED_UP":          "Ramassé",
+"OUT_FOR_DELIVERY":   "En cours de livraison",
+"DELIVERED":          "delivered",
+"FAILED_DELIVERY":    "Tentative échouée",
+"RETURNED":           "retourné",
+"IN_WAREHOUSE":       "En stock",
+"IN_TRANSIT":         "En transit",
+"CANCELLED":          "refused",
+Or if the mapping is per-carrier, find where ozonexpress carrier handling happens and add:
+tsif (carrierName === "ozonexpress") {
+  const OZON_STATUS_MAP: Record<string, string> = {
+    "PICKED_UP":        "Ramassé",
+    "OUT_FOR_DELIVERY": "En cours de livraison",
+    "DELIVERED":        "delivered",
+    "FAILED_DELIVERY":  "Tentative échouée",
+    "RETURNED":         "retourné",
+    "IN_WAREHOUSE":     "En stock",
+    "IN_TRANSIT":       "En transit",
+    "CANCELLED":        "refused",
+  };
+  rawStatus = OZON_STATUS_MAP[body.orderStatus] || body.orderStatus || "";
+  orderRef  = body.orderId || body.orderNumber || "";
+}
+
+Fix 3 — Match order by orderNumber (TG-XXXXX format)
+The orderId value "TG-16991" looks like an orderNumber (not a tracking number). Make sure the order lookup searches by orderNumber as well as tracking number:
+Find the order lookup logic. It should already have something like:
+tsconst order = await db.select().from(orders)
+  .where(or(
+    eq(orders.trackNumber, trackingNumber),
+    eq(orders.orderNumber, orderRef),
+  )).limit(1);
+If orderNumber is not included in the lookup, add it:
+tsconst order = await db.select().from(orders)
+  .where(and(
+    eq(orders.storeId, storeId),
+    or(
+      trackingNumber ? eq(orders.trackNumber, trackingNumber) : sql`false`,
+      orderRef       ? eq(orders.orderNumber, orderRef)       : sql`false`,
+      orderRef       ? eq(orders.trackNumber, orderRef)       : sql`false`,
+    )
+  )).limit(1);
+
+Expected result after fix:
+[WEBHOOK-MATCH]: Looking for tracking="" or order="TG-16991" — status="PICKED_UP"
+[WEBHOOK-RESULT]: Found order #TG-16991 → updating status to "Ramassé"
+Do not change anything else.

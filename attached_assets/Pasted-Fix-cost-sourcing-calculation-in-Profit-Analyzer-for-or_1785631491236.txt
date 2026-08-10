@@ -1,0 +1,51 @@
+Fix cost/sourcing calculation in Profit Analyzer for orders with multiple products and variants.
+
+PROBLEM:
+Orders like "Sandale En Cuir Rf 207 Tabac 41 + Sandale En Cuir Rf210 X2 Noir 43 + Sandale En Cuir Rf 207 Tabac 43 (non lié)" show wrong sourcing cost because:
+1. Multi-product orders (bundles) need to sum cost of EACH product separately
+2. Variant-specific cost must be used — "Sandale Tabac 41" has different costPrice than "Sandale Tabac 43"
+3. "(non lié)" means the order item is not linked to a product in stock — still need to show 0 or warn
+
+SOLUTION:
+
+In server/routes.ts or server/storage.ts, find the Profit Analyzer calculation (GET /api/profit-analyzer or similar).
+
+Fix the sourcing cost calculation:
+
+For each order, loop through ALL order_items (not just the first product):
+
+SELECT 
+  oi.order_id,
+  oi.product_name,
+  oi.quantity,
+  oi.price as selling_price,
+  COALESCE(pv.cost_price, p.cost_price, 0) as unit_cost
+FROM order_items oi
+LEFT JOIN products p ON oi.product_id = p.id
+LEFT JOIN product_variants pv ON (
+  pv.product_id = p.id 
+  AND (
+    pv.name ILIKE '%' || SPLIT_PART(oi.variant_info, ' ', 1) || '%'
+    OR oi.sku = pv.sku
+  )
+)
+
+Then total sourcing per order = SUM(unit_cost * quantity) across ALL order_items.
+
+VARIANT MATCHING LOGIC:
+When an order item has variant info like "41" or "Tabac 41" or "Noir 43":
+1. First try to match by SKU: oi.sku = pv.sku
+2. Then try to match by variant name containing the size/color number
+3. If no variant match found, fall back to parent product cost_price
+4. If no product linked (non lié), sourcing = 0 and mark as "non lié"
+
+FRONTEND FIX (client/src/pages/profit-analyzer.tsx):
+In the sourcing cost column, show the breakdown on hover/tooltip:
+- "Sandale Tabac 41: 150 DH × 1"
+- "Sandale Rf210 Noir 43: 150 DH × 1" 
+- "Sandale Tabac 43 (non lié): — DH"
+- "Total sourcing: 300 DH"
+
+This way each variant's cost is calculated separately and summed correctly.
+
+Also in the product name column of Profit Analyzer, when a product is "(non lié)", add a warning icon and tooltip: "Ce produit n'est pas lié au stock — coût sourcing non calculé"

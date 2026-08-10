@@ -1,0 +1,223 @@
+CRITICAL BUG in Profit Analyzer Pro → Import CSV. The Excel file from carriers like Cathedis/Onessta has a composite "Ref" column where quantity is EMBEDDED IN THE TEXT, not a separate column. The current code shows wrong negative values (-1407, -1055, -84, etc.) because it doesn't parse this format.
+
+═══════════════════════════════════════════════════════════════════════
+THE REAL DATA FORMAT
+═══════════════════════════════════════════════════════════════════════
+Excel columns (24 total):
+  A: Traking | B: Type | C: BL | D: Order | E: Store | F: Ref | G: Price
+  H: Customer | I: Phone | J: Address | K: City | L: Shipping cost
+  M: Status | N: Motif | ... etc
+
+The "Ref" column (F) contains MULTI-LINE TEXT like:
+  "Ref : -\nDesignation : قطرات العسل والزيت زجاجية\nQuantity : 2"
+
+So each ROW = 1 commande, and:
+  - The PRODUCT NAME is after "Designation : "
+  - The UNITS PER COMMANDE is after "Quantity : "
+
+═══════════════════════════════════════════════════════════════════════
+EXAMPLES FROM REAL DATA (verified)
+═══════════════════════════════════════════════════════════════════════
+Product "قطرات العسل والزيت زجاجية":
+  - 17 rows with Quantity:1  →  17 commandes × 1 unit each = 17 unités
+  - 42 rows with Quantity:2  →  42 commandes × 2 units each = 84 unités  ← THE EXAMPLE
+  - 14 rows with Quantity:3  →  14 commandes × 3 units each = 42 unités
+  - 2 rows with Quantity:5   →  2 × 5 = 10 unités
+  - 1 row with Quantity:10   →  1 × 10 = 10 unités
+  - 1 row with Quantity:15   →  1 × 15 = 15 unités
+  TOTAL: 77 commandes = 178 unités delivered
+
+Product "رافعة يدوية 2 طن":
+  - 67 rows with Quantity:1  →  67 commandes × 1 = 67 unités  ← currently showing -1407 (broken)
+  - 2 rows with Quantity:2   →  2 × 2 = 4 unités
+  TOTAL: 69 commandes = 71 unités
+
+═══════════════════════════════════════════════════════════════════════
+THE CORRECT PROFIT FORMULA
+═══════════════════════════════════════════════════════════════════════
+For each product (grouped by Designation):
+  livraisons = number of rows for that product (delivered status only)
+  total_units = sum of (quantity_per_row × 1) across all rows  ← THIS IS WHAT QTÉ SHOULD SHOW
+  total_revenue = sum of Price across all rows
+  total_shipping = sum of Shipping cost across all rows
+
+  cost_goods       = total_units × prix_achat_unitaire
+  cost_packaging   = total_units × emballage_unitaire
+  cost_confirmation = total_units × confirmation_unitaire  (or livraisons depending on logic)
+  cost_shipping    = total_shipping  (already a sum, don't multiply)
+  cost_ads         = (existing logic)
+
+  profit = total_revenue - cost_goods - cost_packaging - cost_confirmation - cost_shipping - cost_ads
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT
+═══════════════════════════════════════════════════════════════════════
+Open client/src/pages/profit-analyzer.tsx (or wherever the analyzer lives).
+
+Find and REPORT:
+1. The CSV/XLSX parsing function (probably uses xlsx/SheetJS library)
+2. The function that produces the Sélection list AND the Aperçu produits table
+3. The function that computes Step 3 profit
+4. Whether there's any existing regex for "Designation :" or "Quantity :"
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — ADD A CENTRAL PARSER (single source of truth)
+═══════════════════════════════════════════════════════════════════════
+Create one helper that ALL parts use (Sélection, Aperçu, Step 2 cost editor, Step 3 report):
+
+  // Parse the composite "Ref" cell into { designation, qtyPerRow }
+  function parseRefCell(refValue: any): { designation: string; qtyPerRow: number } {
+    const text = String(refValue || "").trim();
+    const designationMatch = text.match(/Designation\s*:\s*([^\n\r]+)/i);
+    const quantityMatch = text.match(/Quantity\s*:\s*(\d+)/i);
+    const designation = designationMatch ? designationMatch[1].trim() : text;  // fallback to raw value
+    const qtyPerRow = quantityMatch ? Math.max(1, parseInt(quantityMatch[1], 10)) : 1;
+    return { designation, qtyPerRow };
+  }
+
+  // Normalize designation for grouping (some have typos: "زجاجية" vs "الزجاجية")
+  function normalizeDesignation(s: string): string {
+    return s
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")  // strip diacritics
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Build aggregated product stats for ALL UI sections
+  function buildProductStats(rows: any[], mapping: ColumnMapping): ProductStat[] {
+    const map = new Map<string, ProductStat>();
+
+    for (const row of rows) {
+      // Status filter — delivered only
+      const status = String(row[mapping.status] || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (!/livr|deliver/i.test(status)) continue;
+
+      // Parse the composite Ref cell
+      const productCellValue = row[mapping.product];
+      const { designation, qtyPerRow } = parseRefCell(productCellValue);
+      const key = normalizeDesignation(designation);
+
+      const price = parseFloat(String(row[mapping.price] ?? 0).replace(",", ".")) || 0;
+      const shipping = mapping.shipping ? (parseFloat(String(row[mapping.shipping] ?? 0).replace(",", ".")) || 0) : 0;
+
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          designation,
+          livraisons: 0,   // number of commandes (rows)
+          totalQty: 0,     // sum of units (commandes × qty/row)
+          totalRevenue: 0,
+          totalShipping: 0,
+          variants: [],    // breakdown by qtyPerRow for inspection
+        });
+      }
+      const s = map.get(key)!;
+      s.livraisons += 1;
+      s.totalQty += qtyPerRow;
+      s.totalRevenue += price;
+      s.totalShipping += shipping;
+
+      // Track variant breakdown (optional but useful for debugging tooltip)
+      let v = s.variants.find(x => x.qtyPerRow === qtyPerRow);
+      if (!v) { v = { qtyPerRow, count: 0, revenue: 0 }; s.variants.push(v); }
+      v.count += 1;
+      v.revenue += price;
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.totalQty - a.totalQty);
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — USE THE NEW STATS IN ALL UI SECTIONS
+═══════════════════════════════════════════════════════════════════════
+Find every place that currently computes per-product data and REPLACE with the central buildProductStats() output.
+
+A) Sélection des produits à analyser:
+   - Each card shows: designation, livraisons, totalRevenue
+   - Show a small "× Q variants" hint when product has multiple qty values (optional):
+       "77 livraisons · 178 unités · 25.370 DH"  for قطرات العسل (because it has Qty:1,2,3,5,10,15)
+
+B) Aperçu produits table:
+   - QTÉ column ← show totalQty (NOT livraisons, NOT a negative number)
+   - CA BRUT ← totalRevenue
+   - FRAIS LIVR ← totalShipping
+
+   For قطرات العسل والزيت زجاجية, QTÉ must show 178 (not -84, not 42).
+   For رافعة يدوية 2 طن, QTÉ must show 71 (not -1407, not 67).
+
+C) Step 2 (Saisie des coûts):
+   - PRODUIT column ← designation
+   - QTÉ column ← totalQty (same as Aperçu)
+   - CA BRUT ← totalRevenue
+   - PRIX ACHAT/U, EMBALLAGE/U, CONFIRM./U are user inputs
+
+D) Step 3 (Rapport final): the profit formula uses totalQty for cost multiplication.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — REMOVE THE BROKEN CODE
+═══════════════════════════════════════════════════════════════════════
+Search the file for any inline quantity computation that produces those wrong values (-1407, -1055, etc.). It's likely:
+- A subtraction like `totalSomething - somethingElse`
+- A miscount when QUANTITÉ column mapping is set to "Ref" (which contains long text → parseFloat returns NaN → broken math)
+- A loop that uses the wrong field
+
+DELETE that code and rely entirely on buildProductStats().
+
+The "QUANTITÉ" dropdown in the column mapping UI becomes mostly redundant for files in this format. KEEP IT but:
+- Add a hint: "Astuce: si la quantité est dans le texte du produit (ex: 'Quantity: 2'), laissez 'aucune'."
+- If user maps QUANTITÉ to the SAME column as PRODUIT, ignore it (warn).
+- If a real numeric quantity column exists, use it as override (parseRefCell falls back, but a real column wins):
+
+    const qtyFromColumn = mapping.quantity && mapping.quantity !== "(aucune)"
+      ? parseFloat(String(row[mapping.quantity] ?? "")) : NaN;
+    const finalQty = (!isNaN(qtyFromColumn) && qtyFromColumn > 0 && qtyFromColumn <= 10000)
+      ? qtyFromColumn : qtyPerRow;  // qtyPerRow comes from parseRefCell
+    s.totalQty += finalQty;
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION (use the user's real file)
+═══════════════════════════════════════════════════════════════════════
+After fix, for the user's file (Historic_*.xlsx, 392 rows, 391 livrées):
+
+| Designation                              | Livraisons | Total Units | Revenue   |
+|------------------------------------------|------------|-------------|-----------|
+| قطرات العسل والزيت زجاجية                  | 77         | 178         | 25,370 DH |
+| ماكينة صودور محمولة                        | 75         | 75          | 57,492 DH |
+| رافعة يدوية 2 طن                          | 69         | 71          | 16,089 DH |
+| تيشورت شد الجسم الرجالي                     | 31         | 46          | 7,182 DH  |
+| قطاعة الخضار                              | 30         | 30          | 5,970 DH  |
+| المنشار الكهربائي الاحترافي                  | 25         | 25          | 13,078 DH |
+
+Any product showing a NEGATIVE quantity = bug not fully fixed.
+QTÉ in Aperçu must equal "Total Units" above for each product.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ parseRefCell extracts designation and qtyPerRow from the composite text
+2. ✅ buildProductStats is the single source of truth (no duplicate code)
+3. ✅ Sélection section shows correct livraisons count
+4. ✅ Aperçu table shows POSITIVE QTÉ values
+5. ✅ For قطرات العسل والزيت زجاجية: QTÉ = 178, Livraisons = 77, Revenue = 25.370 DH
+6. ✅ For رافعة يدوية 2 طن: QTÉ = 71, Livraisons = 69, Revenue = 16.089 DH
+7. ✅ For ماكينة صودور محمولة: QTÉ = 75 (no change, all rows had Qty:1)
+8. ✅ Step 2 rows show same QTÉ as Aperçu
+9. ✅ Step 3 profit uses totalQty (not livraisons) for cost_goods multiplication
+10. ✅ No negative numbers anywhere
+11. ✅ Build passes
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(profit-analyzer): parse composite Ref cell for quantity, unify stats source"
+git push origin main
+
+WORKFLOW:
+1. INSPECT (Step 1) and report what you find.
+2. Add parseRefCell + buildProductStats helpers (Step 2).
+3. Replace all places that compute per-product data (Step 3).
+4. Delete broken code paths (Step 4).
+5. `npm run build`.
+6. Push. User will reload with the same Excel and verify the numbers above.

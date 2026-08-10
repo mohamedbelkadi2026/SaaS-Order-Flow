@@ -1,0 +1,78 @@
+FIX — La page "Retours" (menu latéral dédié, /Commandes/RETOURS) n'affiche
+que 2 commandes, alors qu'il existe beaucoup plus de commandes en statut
+"Retournée" / "Au hub de retour" / "En cours d'expédition au hub de retour"
+visibles ailleurs dans la plateforme (ex: page "Refusées"), y compris pour
+des commandes Digylog.
+
+CAUSE PROBABLE
+Le fix précédent (`LOWER(status) LIKE '%retour%'`) a été appliqué au filtre
+`retour_group` (server/storage.ts), mais la page dédiée "Retours" du menu
+latéral (distincte de "Refusées") utilise très probablement un ENDPOINT OU
+UNE REQUÊTE DIFFÉRENTE — soit un endpoint dédié côté serveur, soit un filtre
+client-side avec sa propre liste de statuts codée en dur, qui n'a pas reçu
+la même correction.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Localiser précisément la source de données de cette page
+
+1) Trouver le composant frontend de la page "Retours" du menu latéral
+   (chercher dans client/src le texte "RETOURS" ou "Commandes / RETOURS" ou
+   le lien de menu correspondant — probablement un fichier dédié comme
+   `returns.tsx` / `retours.tsx`, OU `orders.tsx` avec un mode/route
+   spécifique déclenché par ce lien de menu).
+2) Identifier l'appel réseau qu'elle fait (queryKey / URL de l'endpoint
+   appelé au chargement de cette page — regarder le `useQuery` ou
+   `useEffect` + `fetch` dans ce composant).
+3) Suivre cet endpoint côté server/routes.ts jusqu'à la clause SQL qui
+   filtre les commandes.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Appliquer la même règle de filtrage partout où cette page filtre
+
+Que ce soit côté serveur (clause SQL/Drizzle) ou côté client (filtre sur le
+tableau déjà chargé), remplacer toute liste de statuts codée en dur du type
+`['retourné', 'Retour Recu', 'En Cours De Retour']` par la même règle
+substring que le fix précédent :
+
+Côté serveur (Drizzle/SQL) :
+```ts
+sql`LOWER(${orders.status}) LIKE '%retour%'`
+```
+
+Côté client (si le filtrage se fait après coup sur les données déjà
+récupérées) :
+```ts
+orders.filter(o => (o.status || '').toLowerCase().includes('retour'))
+```
+
+Vérifier aussi qu'il n'y a AUCUNE restriction implicite par transporteur —
+par exemple un `WHERE carrierName IN (...)` ou `shippingProvider = 'x'` qui
+exclurait les commandes Digylog ou d'autres transporteurs de cette page. La
+page doit inclure TOUTES les commandes en statut retour, peu importe le
+transporteur (Express Coursier, Digylog, Ozon Express, manuel...).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Si le composant recharge une liste déjà paginée/limitée
+
+Vérifier qu'il n'y a pas de `LIMIT` bas (ex: `.limit(25)` sans pagination
+correcte) qui masquerait des résultats au-delà des 2 premiers trouvés — les
+2 commandes actuellement visibles pourraient être les seules qui matchent
+EXACTEMENT l'ancienne liste figée, alors que toutes les autres (statuts
+"Retournée", "Au hub de retour", etc.) sont juste filtrées hors de la
+requête, pas simplement en page 2.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix Retours page data source to include all return-status orders across all carriers" && git push
+
+VÉRIFICATION
+- La page Retours doit maintenant afficher TOUTES les commandes dont le
+  statut contient "retour" (Retournée, Au hub de retour, En cours
+  d'expédition au hub de retour, Demande retour, Prêt pour retour...) —
+  y compris les commandes Digylog visibles dans le screenshot fourni
+  (Marouane/Agadir, Mohammed/Bouznika, hafida/Ain El Ouada, etc.).
+- Le nombre total de commandes affiché (bas de page, "Page 1/X (N
+  commandes)") doit correspondre au nombre réel de commandes en statut
+  retour dans le store, pas rester bloqué à 2.
+- Chaque ligne garde son bouton "Confirmer réception" / scanner fonctionnel
+  comme avant.

@@ -1,0 +1,37 @@
+The dashboard has internal contradictions: CONFIRMÉES card shows 13 but elsewhere ~46; LIVRÉES card
+shows 10 but the commissions header shows 5 livrées. Each place counts differently, and duplicate
+Shopify orders make it worse. Do TWO things: (A) expose the truth, (B) make ALL cards use ONE shared
+count.
+
+PART A — Diagnostic (read-only). Add GET /api/admin/diag/stats-truth (requireAuth, requireAdmin).
+For the CURRENTLY SELECTED range (read dateFrom/dateTo from query, Africa/Casablanca +01:00) using
+storage.getOrdersByStore(storeId):
+  - total, and duplicates: group by orderNumber, list groups count>1 { orderNumber, count, ids } and
+    duplicateExtra = sum(count-1)
+  - confirmedCount using the SET ['confirme','confirme_reporte','expédié','delivered','refused',
+    'Attente De Ramassage','in_progress','retourné']
+  - deliveredCount using ['delivered','livré','livre','livrée','Livré','Livrée']
+  - shippedCount using ['expédié','Attente De Ramassage','Ramassé','En cours de livraison',
+    'En transit','delivered','livré','livrée','Livré','Livrée','retourné','refused','in_progress'] OR trackNumber present
+  - commissionLivrees = count of delivered orders that have an assigned agent with a commission
+Return all counts + duplicates. No data modified.
+
+PART B — Single source of truth. In GET /api/stats/filtered (server/routes.ts), define these sets
+ONCE at the top and reuse them for EVERY metric (cards, Statistiques, products table, commissions),
+so no metric uses a different definition:
+    const CONFIRMED = new Set([...same as above...]);
+    const DELIVERED = new Set([...same as above...]);
+  - CONFIRMÉES card, "Taux de confirmation", RÉPARTITION, and the products table's Confirmés column
+    must ALL count with CONFIRMED.
+  - LIVRÉES card, "Livrés" stat, and the commissions "X livrées" must ALL count with DELIVERED
+    (currently the commissions header uses a different/smaller delivered definition → that's the 5 vs 10).
+  - EXPÉDIÉS must use the shipped definition consistently.
+  Ensure the commission block counts commissions over the SAME delivered set (so "5 livrées" becomes
+  consistent with the LIVRÉES card = 10, or explain in the label if commissions only apply to agents
+  with a commission configured).
+
+Do NOT invent numbers; just unify the definitions so every card agrees. Keep the +01:00 date
+boundary and the deleted/junk exclusion already in place.
+
+VERIFY: On the same range, CONFIRMÉES card = confirmed count in Statistiques = products table
+confirmés sum (for linked products); LIVRÉES card = Livrés stat = commissions "livrées". App compiles.

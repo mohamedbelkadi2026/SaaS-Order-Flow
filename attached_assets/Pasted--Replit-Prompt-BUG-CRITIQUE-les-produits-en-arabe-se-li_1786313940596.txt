@@ -1,0 +1,77 @@
+# Replit Prompt — 🔴 BUG CRITIQUE : les produits en arabe se lient au mauvais produit (matching aléatoire)
+
+## Root cause trouvé — confirmé, pas une hypothèse
+
+Fichier **`server/services/variants.ts`**, fonction `normStr()` (ligne 9-18) :
+
+```ts
+export function normStr(s: string): string {
+  return (s || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u00A0\u2000-\u200B\t\n\r]/g, ' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')   // ⚠️ BUG ICI
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+```
+
+La ligne `.replace(/[^a-z0-9]+/g, ' ')` supprime TOUT ce qui n'est pas une lettre latine ou un chiffre — **y compris les caractères arabes**. Résultat : `normStr("الشريط اللاصق مطاطي القوي")` et `normStr("ميزان رقمي محمول")` donnent tous les deux une chaîne **vide (ou juste des espaces)**, alors que ce sont deux produits complètement différents.
+
+Cette fonction est utilisée dans `resolveProductId()` (même fichier, ligne 44) pour faire le matching "nom brut de la commande" → "produit du catalogue" :
+```ts
+const exact = storeProducts.find(p => n(p.name) === rawNorm);
+```
+Si TOUS les produits en arabe se normalisent vers la même chaîne vide, `.find()` retourne **le premier produit arabe de la liste `storeProducts`** — pas forcément le bon — dès qu'un nom de produit arabe ne peut pas être matché autrement. C'est exactement ce qu'on observe : la commande YC-39748 a `rawProductName` = "الشريط اللاصق..." (le vrai nom envoyé par YouCan), mais `order_items.productId` pointe vers "ميزان رقمي محمول" (un tout autre produit du catalogue qui, lui aussi, se normalise en chaîne vide).
+
+## Pourquoi c'est critique
+
+`resolveProductId` est appelé à **11 endroits** dans `server/routes.ts` (webhook YouCan ~5744, webhook Shopify ~5487, import Excel ~7793, réparation commandes non-liées ~4261/8357/8400/8495, etc. — voir `grep -n "resolveProductId" server/routes.ts`). Ça veut dire que **toute commande dont le produit a un nom en arabe, importée depuis n'importe quelle intégration**, a pu être liée au mauvais produit depuis que ce code existe. Impact en cascade :
+- Filtre Produit sur Suivi des Colis / Dashboard / Rentabilité Avancée → mauvaises commandes comptées pour le mauvais produit.
+- Coût d'achat produit (COGS) dans le Profit Net → mauvais coût utilisé (celui du produit mal lié).
+- Stock décrémenté sur le mauvais produit.
+
+## Fix
+
+Dans **`server/services/variants.ts`**, corriger `normStr()` pour conserver les caractères arabes au lieu de les supprimer :
+
+```ts
+export function normStr(s: string): string {
+  return (s || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')              // strip Latin combining diacritics
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')  // strip Arabic tashkeel/tatweel (ex: القوي vs الُقويّ doivent matcher)
+    .replace(/[\u00A0\u2000-\u200B\t\n\r]/g, ' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+```
+(Les plages `\u0600-\u06FF`, `\u0750-\u077F`, `\u08A0-\u08FF`, `\uFB50-\uFDFF`, `\uFE70-\uFEFF` couvrent l'arabe standard + supplément + extensions + formes de présentation. `\u064B-\u065F\u0670` couvre les harakat/tashkeel, `\u0640` le tatweel — à supprimer pour que deux orthographes avec/sans voyellation matchent toujours, comme c'est déjà fait pour les accents latins juste au-dessus.)
+
+## Audit des données existantes (IMPORTANT — à faire après le fix, pas avant)
+
+Ce bug a pu mal lier des commandes existantes en base depuis longtemps. Une fois le code corrigé (pour les NOUVELLES commandes), écrire un script d'audit (pas d'auto-correction automatique, à valider manuellement) :
+
+```sql
+-- Repère les order_items dont le produit lié (product.name) ne ressemble pas
+-- du tout au nom brut importé (rawProductName) — signe probable de mismatch.
+SELECT oi.id, oi.order_id, o.order_number, oi.raw_product_name, p.name AS linked_product_name
+FROM order_items oi
+JOIN orders o ON o.id = oi.order_id
+JOIN products p ON p.id = oi.product_id
+WHERE oi.raw_product_name IS NOT NULL
+  AND oi.raw_product_name != ''
+  AND p.name != oi.raw_product_name
+ORDER BY o.created_at DESC;
+```
+Passer ce résultat en revue (surtout pour les produits à noms arabes) pour estimer l'ampleur du problème, avant de décider s'il faut une migration de ré-association en masse (ré-exécuter `resolveProductId` corrigé sur `raw_product_name` de chaque ligne suspecte et mettre à jour `order_items.product_id` si un meilleur match est trouvé).
+
+## Testing checklist
+1. Deux produits catalogue avec noms 100% arabes différents (ex: "الشريط اللاصق مطاطي القوي" et "ميزان رقمي محمول") → `resolveProductId("الشريط اللاصق مطاطي القوي", storeProducts)` doit retourner l'ID du bon produit, pas un match aléatoire.
+2. Rejouer le webhook YouCan (ou simuler) pour une commande avec un nom de produit arabe exact du catalogue → `order_items.product_id` doit correspondre exactement.
+3. Tester aussi un nom arabe AVEC variante (ex: "المنتج - أحمر") pour vérifier que `splitVariant` + le matching du nom de base fonctionnent toujours correctement avec de l'arabe.
+4. Reproduire le cas original : filtrer Suivi des Colis par "الشريط اللاصق مطاطي القوي" pour une NOUVELLE commande test → la commande retournée doit vraiment contenir ce produit, dans la liste ET dans le modal d'édition.
+5. Vérifier qu'aucune régression n'apparaît sur les produits à noms latins/mixtes (le fix ne doit qu'AJOUTER la plage arabe, pas changer le comportement existant pour le latin).

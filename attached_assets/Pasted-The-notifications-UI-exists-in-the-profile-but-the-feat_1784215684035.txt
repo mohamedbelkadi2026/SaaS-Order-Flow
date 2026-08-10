@@ -1,0 +1,55 @@
+The notifications UI exists in the profile but the feature does NOT work end to end. Fix it 
+100% — users are waiting. Problems observed:
+1) "Activer" button stays "Activé" and never toggles back to "Désactiver" (no working on/off).
+2) Device shows "Cet appareil n'est pas inscrit" even though "Permission accordée" — the push 
+   SUBSCRIPTION is not actually being created/saved.
+3) A test order produces NO notification and no sound.
+4) Status-change notifications (Livré/Refusé/Retourné) never fire.
+
+ROOT CAUSE is almost certainly (2): the pushManager subscription is failing or not persisting, 
+so nothing can be delivered. Debug and fix the WHOLE chain:
+
+A) VAPID / CONFIG:
+   - Confirm VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT exist as Railway env vars and 
+     are actually loaded by the server. If missing, tell me the exact values to paste into 
+     Railway Variables. Log a clear server error if they're absent instead of failing silently.
+   - Confirm the client fetches the SAME public key the server signs with.
+
+B) SUBSCRIBE FLOW (fix the "not inscrit" + stuck toggle):
+   - On "Activer": request permission → registration.pushManager.subscribe({ userVisibleOnly:true, 
+     applicationServerKey: <VAPID public> }) → POST the subscription to /api/push/subscribe. 
+     Only mark the device "inscrit" and flip the button to "Désactiver" AFTER the POST returns 
+     200 and the row is saved. Surface any subscribe/POST error to the UI (don't swallow it).
+   - Make it a real TOGGLE: "Désactiver" calls pushManager.getSubscription().unsubscribe() and 
+     DELETE /api/push/unsubscribe, then flips back to "Activer".
+   - Show the true device state by checking the existing pushManager subscription on load AND 
+     whether it exists in push_subscriptions, not just Notification.permission.
+   - iOS: push only works when the app is installed to the Home Screen (Safari → Add to Home 
+     Screen) and opened as standalone. If running in a browser tab on iOS, disable "Activer" 
+     with the message "Ajoutez l'app à l'écran d'accueil pour activer les notifications."
+
+C) DELIVERY (fix test order + status notifications):
+   - Add a "Envoyer une notification de test" button in the profile that calls a server 
+     endpoint which sends a push to THIS user's subscriptions using web-push. This isolates 
+     delivery from the order logic. It must show the notification (with the app icon) and play 
+     sound per OS settings.
+   - NEW ORDER trigger: verify the code path that creates a 'nouveau' order actually calls the 
+     push-send with recipientsForOrder(order,'new_order'). Add server logging: how many 
+     recipients, how many subscriptions, web-push response per subscription (log 201 vs errors; 
+     delete 404/410 endpoints).
+   - STATUS UPDATE trigger: verify status changes to Confirmé/Livré/Refusé/Retourné/Annulé call 
+     the push-send with 'status_update', respecting the "statuts importants uniquement" toggle. 
+     Log the same diagnostics.
+   - Respect the saved preferences (notif_settings) server-side before sending.
+
+D) SOUND: for foreground notifications play a short sound; for background, rely on the OS (the 
+   notification options can't force sound on all platforms). Make sure the service worker's 
+   'push' handler calls self.registration.showNotification with the title/body/icon/badge.
+
+DELIVER: 
+ - First make the "Envoyer une notification de test" button work and paste me the server logs 
+   (subscription count + web-push response). That proves the pipe works.
+ - Then confirm new-order and status triggers fire, with logs.
+ - Report exactly why the subscription was failing before.
+
+Do NOT change unrelated features. Deploy to main; confirm VAPID env vars are set on Railway.

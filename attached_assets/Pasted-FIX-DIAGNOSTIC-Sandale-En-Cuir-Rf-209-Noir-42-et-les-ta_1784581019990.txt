@@ -1,0 +1,110 @@
+FIX / DIAGNOSTIC — "Sandale En Cuir Rf 209 Noir 42" (et les tailles 43, 44
+équivalentes) restent "(non lié)" alors que le fix précédent aurait dû les
+rattacher au produit parent "Sandale En Cuir Rf 209 Noir" (Prix coûtant
+150 DH). Peu importe que la variante elle-même ait un coût renseigné ou non
+(ici les variantes 40-44 ont toutes un Coûtant vide/0) : tant que le produit
+est matché au parent, le coût du PARENT (150 DH) doit s'appliquer.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 0 — Vérifier que le endpoint de réparation a bien été rappelé
+
+Le fix précédent (matching + coût additif) ne s'applique qu'aux NOUVELLES
+commandes créées après le déploiement, PLUS aux commandes déjà en base
+UNIQUEMENT si `POST /api/orders/repair-unlinked` a été rappelé après ce
+déploiement. Rappeler cet endpoint maintenant (si pas fait depuis le dernier
+déploiement) et lire la réponse JSON (`repaired`, `stillUnmatched`,
+`details`). Si "Sandale En Cuir Rf 209 Noir 42" apparaît dans
+`stillUnmatched.details`, continuer ci-dessous pour comprendre pourquoi le
+matching échoue encore.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Renforcer normStr() : le nom catalogue contient un ESPACE DOUBLE
+
+Dans "Modifier le produit", le champ Nom du produit affiche littéralement
+"Sandale En Cuir  Rf 209 Noir" (DEUX espaces entre "Cuir" et "Rf" — visible
+dans le screenshot, le curseur/sélection le confirme). Si `normStr()` ne
+collapse pas TOUS les types d'espaces (espace insécable copié-collé depuis
+Excel/Sheets, tabulation, espace double) vers un espace unique avant
+comparaison, "Sandale En Cuir  Rf 209 Noir" (catalogue) et
+"Sandale En Cuir Rf 209 Noir 42" (commande, espace simple) ne matcheront
+JAMAIS, même avec la logique de variante correcte.
+
+Dans server/services/variants.ts, retrouver `normStr` et s'assurer qu'elle
+fait bien ceci (renforcer si besoin) :
+
+```ts
+export function normStr(s: string): string {
+  return (s || '')
+    .normalize('NFKD')                    // décompose les accents
+    .replace(/[\u0300-\u036f]/g, '')      // retire les diacritiques
+    .replace(/[\u00A0\u2000-\u200B\t\n\r]/g, ' ') // espaces insécables/unicode/tabs → espace normal
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')          // toute ponctuation/espace multiple → un seul espace
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+```
+
+Le point clé si ce n'était pas déjà le cas : `\u00A0` (espace insécable) et
+la plage `\u2000-\u200B` (espaces unicode divers) doivent être neutralisés
+AVANT le `replace(/[^a-z0-9]+/g, ' ')`, sinon un espace "spécial" invisible
+peut ne pas être traité comme un séparateur par certains moteurs regex.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Endpoint de diagnostic temporaire (à garder ou supprimer après
+usage, au choix)
+
+Ajouter dans server/routes.ts, pour que je puisse voir EXACTEMENT pourquoi
+un nom donné ne matche pas :
+
+```ts
+app.get("/api/debug/resolve-product-name", requireAuth, requireAdmin, async (req: any, res: any) => {
+  const storeId = req.user.storeId;
+  const rawName = String(req.query.name || '');
+  const storeProducts = await storage.getProductsByStore(storeId);
+  const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+  const variantsByProduct = new Map<number, { name: string }[]>();
+  for (const v of allVariants) {
+    if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+    variantsByProduct.get(v.productId)!.push({ name: v.name });
+  }
+  const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+  const result = resolveProductId(rawName, storeProductsWithVariants);
+  res.json({
+    rawName,
+    normalizedRawName: normStr(rawName),
+    result,
+    candidateProductNames: storeProducts.map(p => ({ id: p.id, name: p.name, normalized: normStr(p.name) })),
+  });
+});
+```
+
+Appeler :
+`GET /api/debug/resolve-product-name?name=Sandale En Cuir Rf 209 Noir 42`
+
+et me coller la réponse JSON — ça montrera précisément si
+`normalizedRawName` correspond ou pas à un `normalized` de
+`candidateProductNames`, ce qui confirmera (ou infirmera) le diagnostic de
+l'Étape 1.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Une fois le matching confirmé (via l'Étape 2), relancer le backfill
+
+```
+POST /api/orders/repair-unlinked
+```
+
+────────────────────────────────────────────────────────────────────────────
+VÉRIFICATION
+- `GET /api/debug/resolve-product-name?name=Sandale En Cuir Rf 209 Noir 42`
+  doit renvoyer `result.productId` = l'id du produit "Sandale En Cuir Rf 209
+  Noir" (pas null).
+- Après le repair, "Sandale En Cuir Rf 209 Noir 42 (non lié)",
+  "...43 (non lié)", "...44 (non lié)" disparaissent de Rentabilité Par
+  Produit et leurs commandes (CMD) rejoignent la ligne "Sandale En Cuir Rf
+  209 Noir", avec un Sourcing = 150,00 DH × quantité (coût du produit
+  PARENT, puisque les variantes elles-mêmes n'ont pas de coût individuel
+  renseigné — c'est le comportement voulu).
+- Aucun changement sur les produits déjà corrects (Rf210 X2 Noir, etc.) —
+  ce fix ne touche que `normStr` (renforcement) et ajoute un endpoint de
+  diagnostic, rien d'autre.

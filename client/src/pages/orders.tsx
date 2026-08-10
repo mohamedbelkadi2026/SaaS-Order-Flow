@@ -6,6 +6,7 @@ import { OrderDetailsModal } from "@/components/order-details-modal";
 import { CustomerHistoryModal } from "@/components/customer-history-modal";
 import { formatCurrency, cn } from "@/lib/utils";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { SourceBadge } from '@/components/source-badge';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2, CalendarClock, Package } from "lucide-react";
+import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2, CalendarClock, Package, PackageCheck } from "lucide-react";
 import { SiWhatsapp, SiShopify } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
@@ -24,6 +25,7 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { apiRequest } from "@/lib/queryClient";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
+import { BrowserMultiFormatReader } from "@zxing/library";
 
 function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
@@ -54,6 +56,9 @@ const CARRIER_LOGOS: Record<string, string> = {
   quicklivraison: '/carriers/ql.svg',
   'quick livraison': '/carriers/ql.svg',
   ql: '/carriers/ql.svg',
+  vitipsexpress: '/carriers/vitips.png',
+  'vitips express': '/carriers/vitips.png',
+  vitips: '/carriers/vitips.png',
 };
 
 function getCarrierLogo(provider: string | null | undefined): string | null {
@@ -98,6 +103,7 @@ const STATUS_MAP: Record<string, string> = {
   suivi: "suivi_group",
   livrees: "delivered",
   refuses: "refused",
+  retours: "retour_group",
 };
 
 const TITLE_MAP: Record<string, string> = {
@@ -113,6 +119,7 @@ const TITLE_MAP: Record<string, string> = {
   suivi: "SUIVI DES COLIS",
   livrees: "LIVRÉES",
   refuses: "REFUSÉES",
+  retours: "RETOURS",
 };
 
 // ── Status dropdown options (grouped: agent-set first, carrier-set below) ──
@@ -383,6 +390,335 @@ function FollowUpLogsPanel({ orderId }: { orderId: number }) {
 // filtered set in one page, so cross-page selection acts on real, loaded IDs.
 const SELECT_ALL_LIMIT = 100000;
 
+// Shared AudioContext — created once, unlocked synchronously on first user click,
+// then reused for every beep. Creating a new context after an `await` keeps it
+// "suspended" on mobile browsers (they require the resume to happen in a sync
+// user-gesture handler), which is why a single shared context is necessary.
+let sharedAudioContext: AudioContext | null = null;
+
+function unlockAudio() {
+  try {
+    if (!sharedAudioContext) {
+      sharedAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    if (sharedAudioContext.state === "suspended") {
+      sharedAudioContext.resume().catch(() => {});
+    }
+  } catch { /* audio not available — no-op */ }
+}
+
+function playSuccessBeep() {
+  try {
+    if (!sharedAudioContext || sharedAudioContext.state === "suspended") unlockAudio();
+    const ctx = sharedAudioContext!;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.15);
+  } catch { /* audio not available — no-op */ }
+}
+
+function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
+  const scannerRef = useRef<any>(null);
+  const startedRef = useRef(false); // tracks whether start() fully succeeded — gates safe .stop()
+  const elementId = "qr-reader-region";
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(true);
+  const [capturing, setCapturing] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let nativeStopped = false;
+
+    (async () => {
+      try {
+        const { Html5Qrcode } = await import("html5-qrcode");
+        if (cancelled) return;
+
+        // getCameras() can fail on iOS before permission is granted — don't block on empty list,
+        // let start() request permission itself.
+        let cameras: any[] = [];
+        try { cameras = await Html5Qrcode.getCameras(); } catch (camErr: any) {
+          console.warn("[CameraScanner] getCameras failed, will try start() anyway:", camErr?.message);
+        }
+        if (cancelled) return;
+        // If cameras.length === 0 we still try start() — iOS fills the list only after first grant.
+
+        const scanner = new Html5Qrcode(elementId);
+        scannerRef.current = scanner;
+
+        // BUG 1 FIX — pass EXACTLY ONE key to cameraIdOrConfig; html5-qrcode validates strictly.
+        // "advanced" must NOT be in this object — apply focus separately via MediaStreamTrack below.
+        await scanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 15,
+            qrbox: (w: number, h: number) => {
+              const s = Math.floor(Math.min(w, h) * 0.7);
+              return { width: s, height: s };
+            },
+            aspectRatio: 1.0,
+            disableFlip: false,
+          },
+          (decodedText: string) => {
+            if (nativeStopped || cancelled) return;
+            nativeStopped = true;
+            playSuccessBeep();
+            onScan(decodedText);
+            if (startedRef.current) { scanner.stop().catch(() => {}); startedRef.current = false; }
+          },
+          () => { /* per-frame decode errors ignored — normal in continuous scan */ }
+        );
+
+        if (cancelled) {
+          // Unmounted while starting — stop cleanly without letting error propagate.
+          scanner.stop().catch(() => {});
+          return;
+        }
+
+        startedRef.current = true;
+        setStarting(false);
+
+        // Apply continuous autofocus as a BONUS via MediaStreamTrack — never fatal if unsupported.
+        try {
+          const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+          const track = (videoEl?.srcObject as MediaStream | null)?.getVideoTracks?.()?.[0];
+          if (track && typeof track.getCapabilities === "function") {
+            const caps: any = track.getCapabilities();
+            if (caps.focusMode?.includes?.("continuous")) {
+              await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as any] });
+            }
+          }
+        } catch { /* focus not supported — no-op */ }
+
+        // BarcodeDetector native API in parallel (Chrome Android — hardware-accelerated, blur-tolerant).
+        // The guard is inside useEffect (not a conditional hook call) — safe for React's rules.
+        // On Safari/iOS where BarcodeDetector is absent this block is a complete no-op.
+        if (!cancelled && typeof window !== "undefined" && "BarcodeDetector" in window) {
+          const detector = new (window as any).BarcodeDetector({
+            formats: ["qr_code", "code_128", "code_39", "ean_13"],
+          });
+          const tick = async () => {
+            if (nativeStopped || cancelled) return;
+            const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+            if (!videoEl || videoEl.readyState < 2) {
+              if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
+              return;
+            }
+            try {
+              const codes: any[] = await detector.detect(videoEl);
+              if (codes.length > 0 && !nativeStopped && !cancelled) {
+                nativeStopped = true;
+                playSuccessBeep();
+                onScan(codes[0].rawValue);
+                if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
+                return;
+              }
+            } catch { /* invalid frame — continue */ }
+            if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }
+      } catch (err: any) {
+        // BUG 2 FIX — ALL errors are caught here and shown inside the modal.
+        // Nothing escapes to the global Error Boundary.
+        if (cancelled) return;
+        console.error("[CameraScanner] fatal start error (contained, app not affected):", err);
+        setError(
+          err?.name === "NotAllowedError"
+            ? "Permission caméra refusée. Autorise l'accès à la caméra dans les réglages du navigateur."
+            : err?.name === "NotFoundError"
+            ? "Aucune caméra trouvée."
+            : `Erreur caméra : ${err?.message || String(err)}`
+        );
+        setStarting(false);
+        startedRef.current = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      nativeStopped = true;
+      // BUG 2 FIX — only call .stop() if start() fully succeeded; otherwise just clear.
+      if (startedRef.current && scannerRef.current) {
+        scannerRef.current.stop().catch(() => {}).finally(() => {
+          try { scannerRef.current?.clear(); } catch { /* ignore */ }
+        });
+      } else {
+        try { scannerRef.current?.clear(); } catch { /* ignore */ }
+      }
+      startedRef.current = false;
+    };
+  }, []);
+
+  // Manual photo capture — freezes one frame and decodes it.
+  // Uses jsQR (pure JS, works on ALL browsers incl. Safari/iOS) with BarcodeDetector
+  // as a first-pass bonus when available (also handles 1D barcodes on Android/Chrome).
+  const capturePhoto = async () => {
+    unlockAudio(); // MUST be first — before any await — to stay within the sync user gesture
+    setCapturing(true);
+    setError(null);
+    try {
+      const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+      if (!videoEl || videoEl.readyState < 2) {
+        setError("Caméra pas encore prête, réessaie dans une seconde.");
+        setCapturing(false);
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = videoEl.videoWidth;
+      canvas.height = videoEl.videoHeight;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(videoEl, 0, 0);
+
+      const doScan = (value: string) => {
+        playSuccessBeep();
+        onScan(value);
+        if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
+        setCapturing(false);
+      };
+
+      // 1) BarcodeDetector native (Chrome/Android) — handles QR + 1D barcodes (Code128, EAN…)
+      if (typeof window !== "undefined" && "BarcodeDetector" in window) {
+        try {
+          const detector = new (window as any).BarcodeDetector({
+            formats: ["qr_code", "code_128", "code_39", "ean_13"],
+          });
+          const codes: any[] = await detector.detect(canvas);
+          if (codes.length > 0) { doScan(codes[0].rawValue); return; }
+        } catch { /* fall through to ZXing */ }
+      }
+
+      // 2) ZXing — pure JS, QR + 1D barcodes (Code128, Code39, EAN…), all browsers incl. Safari/iOS
+      try {
+        const reader = new BrowserMultiFormatReader();
+        const result = await reader.decodeFromCanvas(canvas as any);
+        if (result?.getText()) { doScan(result.getText()); return; }
+      } catch { /* NotFoundException is normal when no code found — not a fatal error */ }
+
+      setError("Aucun code détecté sur la photo — recadre le code bien au centre, à environ 15 cm, et réessaie.");
+    } catch (e: any) {
+      console.error("[CameraScanner] capturePhoto failed:", e);
+      setError(`Erreur capture : ${e?.message || String(e)}`);
+    }
+    setCapturing(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4">
+      <div className="flex flex-col items-center gap-3 w-full max-w-[360px]">
+        <p className="text-white text-sm font-medium text-center leading-snug">
+          {starting && !error
+            ? "Ouverture de la caméra…"
+            : !error
+            ? "Pointez la caméra vers le code-barres ou QR code, à environ 15 cm de distance"
+            : ""}
+        </p>
+        {error && (
+          <p className="text-red-400 text-sm text-center max-w-xs bg-black/40 rounded-lg px-3 py-2">{error}</p>
+        )}
+        <div id={elementId} className="w-full max-w-[320px] aspect-square bg-white rounded-xl overflow-hidden" />
+        {!starting && !error && (
+          <button
+            onClick={capturePhoto}
+            disabled={capturing}
+            className="w-full max-w-[320px] rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-60 px-4 py-3 text-sm font-semibold text-white"
+          >
+            {capturing ? "Analyse en cours…" : "📸 Prendre une photo"}
+          </button>
+        )}
+        <button
+          onClick={onClose}
+          className="w-full max-w-[320px] rounded-lg bg-white px-4 py-3 text-sm font-semibold hover:bg-gray-100 active:scale-95"
+        >
+          Fermer
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
+  const [code, setCode] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+  const [todayCount, setTodayCount] = useState(0);
+  const [showCamera, setShowCamera] = useState(false);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const submitCode = async (raw: string) => {
+    if (!raw.trim()) return;
+    try {
+      const res = await apiRequest("POST", "/api/orders/confirm-return-by-code", { code: raw.trim() });
+      const data = await res.json();
+      if (data.success) {
+        playSuccessBeep();
+        toast({ title: "✅ Retour confirmé", description: `${data.orderNumber} — ${data.customerName}` });
+        setTodayCount((c) => c + 1);
+        onConfirmed();
+      } else {
+        toast({ title: "Non confirmé", description: data.message, variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
+    } finally {
+      setCode("");
+      inputRef.current?.focus();
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    submitCode(code);
+  };
+
+  return (
+    <>
+      {showCamera && (
+        <CameraScanner
+          onScan={(decoded) => { setShowCamera(false); submitCode(decoded); }}
+          onClose={() => setShowCamera(false)}
+        />
+      )}
+      <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3">
+        <span className="text-sm font-medium shrink-0 hidden sm:block">Scanner un retour :</span>
+        <input
+          ref={inputRef}
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="Douchette ou code de suivi…"
+          className="flex-1 rounded border px-3 py-2 text-sm bg-background"
+          autoComplete="off"
+          onFocus={unlockAudio}
+        />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => { unlockAudio(); setShowCamera(true); }}
+            className="flex-1 sm:flex-none rounded bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-3 py-2 text-sm text-white whitespace-nowrap font-medium"
+          >
+            📷 Scanner caméra
+          </button>
+          <button
+            type="submit"
+            className="flex-1 sm:flex-none rounded bg-green-600 hover:bg-green-700 active:bg-green-800 px-3 py-2 text-sm text-white whitespace-nowrap font-medium sm:hidden"
+          >
+            Confirmer
+          </button>
+        </div>
+        <span className="text-xs text-muted-foreground shrink-0 text-right sm:text-left">{todayCount} confirmé{todayCount !== 1 ? "s" : ""} aujourd'hui</span>
+      </form>
+    </>
+  );
+}
+
 export default function Orders() {
   const [, params] = useRoute("/orders/:filter");
   const filterKey = params?.filter || "";
@@ -432,7 +768,7 @@ export default function Orders() {
     // Do NOT override utmSource here — it breaks deep tracking (CODE*PLATFORM) matching
   }), [filters, urlStatus, dateRange, selectedMagasin]);
 
-  const { data, isLoading } = useFilteredOrders(actualFilters);
+  const { data, isLoading, isError, error, refetch } = useFilteredOrders(actualFilters);
   const { data: agents } = useAgents();
   const { data: filterOptions } = useFilterOptions();
   const { data: shippingIntegrations } = useIntegrations("shipping");
@@ -490,7 +826,7 @@ export default function Orders() {
   const [shipProgress, setShipProgress] = useState<{
     active: boolean; done: number; total: number; shipped: number; failed: number; provider: string;
     retries?: number;
-    results?: { orderId: number; orderNumber?: string; status: 'shipped' | 'failed'; error?: string }[];
+    results?: { orderId: number; orderNumber?: string; status: 'shipped' | 'failed'; error?: string; warning?: string }[];
   } | null>(null);
 
   const [ameexShipOrderId, setAmeexShipOrderId] = useState<number | null>(null);
@@ -570,6 +906,21 @@ export default function Orders() {
       toast({ title: `${count} commande${count > 1 ? 's' : ''} supprimée${count > 1 ? 's' : ''} avec succès` });
     },
     onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
+  });
+
+  const bulkMarkEcShippedMutation = useMutation({
+    mutationFn: (ids: number[]) => apiRequest("POST", "/api/orders/bulk-mark-ec-shipped", { orderIds: ids }),
+    onSuccess: (data: any, ids) => {
+      const count = data?.updated ?? ids.length;
+      setSelectedIds(new Set<number>());
+      qc.invalidateQueries({ queryKey: ['/api/orders'] });
+      qc.invalidateQueries({ queryKey: ['/api/orders/filtered'] });
+      toast({
+        title: `✅ ${count} commande${count > 1 ? 's' : ''} marquée${count > 1 ? 's' : ''} comme expédiée${count > 1 ? 's' : ''} (EC)`,
+        description: "Statut → Attente De Ramassage. Le suivi sera mis à jour automatiquement par le prochain webhook Express Coursier.",
+      });
+    },
+    onError: (err: any) => toast({ title: "Erreur", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
   });
 
   function handleDeleteSingle(id: number) {
@@ -1098,6 +1449,24 @@ export default function Orders() {
     );
   }
 
+  if (isError && !data) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20 text-center" data-testid="orders-error-panel">
+        <AlertCircle className="h-10 w-10 text-destructive" />
+        <div>
+          <p className="font-semibold text-destructive">Impossible de charger les commandes</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {(error as any)?.message || "Une erreur est survenue. Veuillez réessayer."}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="button-retry-orders">
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Réessayer
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3 animate-in fade-in duration-500">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
@@ -1178,7 +1547,33 @@ export default function Orders() {
               <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
                 <Truck className="w-4 h-4" />
               </Button>
-              <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="button-export">
+              <Button
+                variant="outline"
+                size="icon"
+                className={`h-9 w-9 border-orange-200 text-orange-500 hover:bg-orange-50 active:scale-95 transition-all ${selectedIds.size === 0 ? 'opacity-40' : 'opacity-100 hover:border-orange-400'}`}
+                title={selectedIds.size > 0 ? `Marquer ${selectedIds.size} commande(s) comme expédiée(s) via Express Coursier (sans passer par la plateforme)` : "Sélectionnez des commandes"}
+                onClick={() => {
+                  if (selectedIds.size === 0) { toast({ title: "Sélectionnez des commandes" }); return; }
+                  bulkMarkEcShippedMutation.mutate(Array.from(selectedIds));
+                }}
+                disabled={selectedIds.size === 0 || bulkMarkEcShippedMutation.isPending}
+                data-testid="button-bulk-mark-ec-shipped"
+              >
+                {bulkMarkEcShippedMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PackageCheck className="w-4 h-4" />}
+              </Button>
+              <Button
+                variant="outline" size="icon"
+                className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50"
+                title="Exporter en Excel"
+                data-testid="button-export"
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  Object.entries(actualFilters || {}).forEach(([k, v]) => {
+                    if (v !== undefined && v !== '' && v !== 'all') params.set(k, String(v));
+                  });
+                  window.open(`/api/orders/export?${params.toString()}`, '_blank');
+                }}
+              >
                 <FileSpreadsheet className="w-4 h-4" />
               </Button>
             </>
@@ -1446,6 +1841,40 @@ export default function Orders() {
         </div>
       </Card>
 
+      {filterKey === 'retours' && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap" data-testid="segmented-retours-filter">
+            {[
+              { key: '', label: 'Tous' },
+              { key: 'retour_en_route', label: '🚚 En route' },
+              { key: 'retour_recu', label: '✅ Reçus' },
+              { key: 'retour_non_confirme', label: '⏳ Non confirmés' },
+              { key: 'retour_confirme', label: '✅ Confirmés' },
+            ].map(opt => {
+              const active = filters.statusFilter === opt.key;
+              return (
+                <button
+                  key={opt.key || 'all'}
+                  onClick={() => setFilters(f => ({ ...f, statusFilter: opt.key, page: 1 }))}
+                  data-testid={`button-retours-${opt.key || 'all'}`}
+                  className={`h-9 px-4 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                    active
+                      ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                      : "bg-background border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/40"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+          <ReturnScanner onConfirmed={() => {
+            queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+          }} />
+        </div>
+      )}
+
       {selectAllPages && (
         <div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg px-4 py-2.5 mb-3" data-testid="banner-select-all-pages">
           <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">
@@ -1486,6 +1915,7 @@ export default function Orders() {
                 {isColVisible('livraison') && <TableHead>Frais de livraison</TableHead>}
                 {isColVisible('derniereAction') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Dernière action</TableHead>}
                 {isColVisible('status') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Status</TableHead>}
+                {filterKey === 'retours' && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Confirmé</TableHead>}
                 {isColVisible('prix') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Prix</TableHead>}
                 {isColVisible('adresse') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Adresse</TableHead>}
                 {isColVisible('reference') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Référence</TableHead>}
@@ -1656,6 +2086,13 @@ export default function Orders() {
                                 <SiShopify className="w-3 h-3 text-[#95BF47]" />
                               </div>
                               <span className="font-medium">{(order as any).magasin.name}</span>
+                            </div>
+                          ) : (order as any).youcanStoreName ? (
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-5 h-5 rounded-md bg-orange-50 flex items-center justify-center shrink-0 text-[9px] font-bold text-orange-500">
+                                YC
+                              </div>
+                              <span className="font-medium">{(order as any).youcanStoreName}</span>
                             </div>
                           ) : (
                             <span className="text-muted-foreground">—</span>
@@ -1832,18 +2269,51 @@ export default function Orders() {
                           )}
                         </TableCell>
                       )}
+                      {filterKey === 'retours' && (
+                        <TableCell onClick={e => e.stopPropagation()}>
+                          {(order as any).returnConfirmedAt ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-[10px] font-semibold whitespace-nowrap">
+                              ✅ {new Date((order as any).returnConfirmedAt).toLocaleDateString('fr-FR')}
+                            </span>
+                          ) : (
+                            <div className="flex items-center gap-1.5">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 text-[10px] font-semibold whitespace-nowrap">⏳ Non confirmé</span>
+                              <button
+                                className="h-6 px-2 text-[10px] font-medium rounded border border-green-300 text-green-700 hover:bg-green-50 dark:hover:bg-green-900/20 whitespace-nowrap"
+                                onClick={async () => {
+                                  try {
+                                    const res = await apiRequest("POST", `/api/orders/${order.id}/confirm-return`, {});
+                                    const data = await res.json();
+                                    if (data.success) {
+                                      toast({ title: "✅ Retour confirmé", description: data.message });
+                                      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+                                      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+                                    } else {
+                                      toast({ title: "Erreur", description: data.message, variant: "destructive" });
+                                    }
+                                  } catch {
+                                    toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
+                                  }
+                                }}
+                              >
+                                Confirmer réception
+                              </button>
+                            </div>
+                          )}
+                        </TableCell>
+                      )}
                       {isColVisible('prix') && <TableCell className="font-semibold whitespace-nowrap">{formatCurrency(order.totalPrice)}</TableCell>}
                       {isColVisible('adresse') && <TableCell className="max-w-[140px] truncate text-muted-foreground text-[11px]">{order.customerAddress || "-"}</TableCell>}
                       {isColVisible('reference') && <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>}
                       {isColVisible('source') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          <span className="capitalize text-muted-foreground">{order.source || 'manual'}</span>
+                          <SourceBadge source={order.source} />
                         </TableCell>
                       )}
                       {isColVisible('utmSource') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
                           {order.utmSource ? (
-                            <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[10px] font-medium">{order.utmSource}</Badge>
+                            <SourceBadge source={order.utmSource} />
                           ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
@@ -2122,6 +2592,44 @@ export default function Orders() {
                     </div>
                   </div>
 
+                  {/* ── RETOUR CONFIRMATION ROW (mobile, retours page only) ── */}
+                  {filterKey === 'retours' && (
+                    <div className="px-3 pb-2">
+                      {(order as any).returnConfirmedAt ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-xs font-semibold">
+                          ✅ Retour confirmé le {new Date((order as any).returnConfirmedAt).toLocaleDateString('fr-FR')}
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 text-[11px] font-semibold">
+                            ⏳ Non confirmé
+                          </span>
+                          <button
+                            className="flex-1 h-8 px-3 text-xs font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 active:scale-95"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                const res = await apiRequest("POST", `/api/orders/${order.id}/confirm-return`, {});
+                                const data = await res.json();
+                                if (data.success) {
+                                  toast({ title: "✅ Retour confirmé", description: data.message });
+                                  queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+                                  queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+                                } else {
+                                  toast({ title: "Erreur", description: data.message, variant: "destructive" });
+                                }
+                              } catch {
+                                toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
+                              }
+                            }}
+                          >
+                            Confirmer réception
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* ── BOTTOM ACTIONS ── */}
                   <div className="px-3 pb-3 flex items-center gap-2">
                     <button
@@ -2151,9 +2659,9 @@ export default function Orders() {
                       </button>
                     )}
                     {order.utmSource && (
-                      <Badge className="text-[9px] font-mono bg-violet-50 text-violet-700 border-violet-200 ml-1">{order.utmSource}</Badge>
+                      <span className="ml-1 inline-flex"><SourceBadge source={order.utmSource} /></span>
                     )}
-                    <span className="ml-auto text-[10px] text-muted-foreground/70 font-medium capitalize">{order.source || 'manual'}</span>
+                    <span className="ml-auto"><SourceBadge source={order.source} /></span>
                   </div>
                 </div>
               );
@@ -2524,12 +3032,35 @@ export default function Orders() {
             </div>
           )}
 
+          {/* Shipped without tracking — EC accepted but returned no package_id */}
+          {shipProgress && !shipProgress.active && shipProgress.results && (() => {
+            const noTrack = shipProgress.results.filter(r => r.status === 'shipped' && r.warning);
+            if (!noTrack.length) return null;
+            return (
+              <div className="mx-6 mt-4 mb-1 rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-3">
+                <p className="text-xs font-bold text-blue-800 dark:text-blue-200 mb-1">
+                  📦 {noTrack.length} commande{noTrack.length > 1 ? 's' : ''} expédiée{noTrack.length > 1 ? 's' : ''} sans numéro de suivi
+                </p>
+                <p className="text-[10px] text-blue-700/80 dark:text-blue-300/80 mb-2">
+                  Le transporteur a accepté la commande mais n'a pas retourné de tracking. Elle est passée en <strong>Attente De Ramassage</strong> — le numéro de suivi sera attaché automatiquement par webhook.
+                </p>
+                <ul className="space-y-0.5 max-h-24 overflow-y-auto">
+                  {noTrack.map(r => (
+                    <li key={r.orderId} className="text-[10px] text-blue-700 dark:text-blue-300">
+                      <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.warning}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
+
           {/* Per-order error details — categorized by type */}
           {shipProgress && !shipProgress.active && shipProgress.failed > 0 && shipProgress.results && (() => {
             const failures = shipProgress.results.filter(r => r.status === 'failed');
             const blacklisted        = failures.filter(r => r.error?.includes('blacklist') || r.error?.includes('liste noire') || r.error?.includes('🚫'));
             const duplicates         = failures.filter(r => r.error?.includes('double') || r.error?.includes('existe déjà') || r.error?.includes('⚠️ Commande'));
-            const addressBad         = failures.filter(r => r.error?.includes('Adresse') || r.error?.includes('Ville') || r.error?.includes('📍'));
+            const addressBad         = failures.filter(r => /adresse|ville/i.test(r.error || '') || r.error?.includes('📍'));
             const validationFailures = failures.filter(r => /Données manquantes|Destinataire.*obligatoire/i.test(r.error || ''));
             const transient          = failures.filter(r =>
               !blacklisted.includes(r) && !duplicates.includes(r) && !addressBad.includes(r) && !validationFailures.includes(r)
@@ -2546,7 +3077,7 @@ export default function Orders() {
                     </p>
                     <ul className="space-y-0.5 max-h-32 overflow-y-auto">
                       {blacklisted.map(r => (
-                        <li key={r.orderId} className="text-[10px] text-red-700 dark:text-red-300">
+                        <li key={r.orderId} className="text-[10px] text-red-700 dark:text-red-300" title={r.error}>
                           <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
                         </li>
                       ))}
@@ -2561,7 +3092,7 @@ export default function Orders() {
                     </p>
                     <ul className="space-y-0.5 max-h-28 overflow-y-auto">
                       {duplicates.map(r => (
-                        <li key={r.orderId} className="text-[10px] text-orange-700 dark:text-orange-300">
+                        <li key={r.orderId} className="text-[10px] text-orange-700 dark:text-orange-300" title={r.error}>
                           <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
                         </li>
                       ))}
@@ -2576,7 +3107,7 @@ export default function Orders() {
                     </p>
                     <ul className="space-y-0.5 max-h-28 overflow-y-auto">
                       {addressBad.map(r => (
-                        <li key={r.orderId} className="text-[10px] text-yellow-700 dark:text-yellow-300">
+                        <li key={r.orderId} className="text-[10px] text-yellow-700 dark:text-yellow-300" title={r.error}>
                           <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
                         </li>
                       ))}
@@ -2980,6 +3511,7 @@ export default function Orders() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
     </div>
   );
 }

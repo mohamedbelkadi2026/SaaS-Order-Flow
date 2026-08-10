@@ -1,0 +1,56 @@
+for (const order of allOrders) {
+  if (covered.has(order.id)) continue;
+  const raw = (order as any).rawProductName || '';
+  if (!raw) {
+    stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: null });
+    continue;
+  }
+
+  // Split "Produit A 43 + Produit B 44" en parties individuelles.
+  const parts = raw.split(/\s*\+\s*/).map((p: string) => p.trim()).filter(Boolean);
+
+  const matchedParts: { productId: number; variantName: string | null; part: string }[] = [];
+  const unmatchedParts: string[] = [];
+  for (const part of parts) {
+    const resolved = resolveProductId(part, storeProductsWithVariants);
+    if (resolved.productId) {
+      matchedParts.push({ productId: resolved.productId, variantName: resolved.variantName, part });
+    } else {
+      unmatchedParts.push(part);
+    }
+  }
+
+  if (matchedParts.length === 0) {
+    // Rien n'a matché, même en splittant — inchangé par rapport à avant.
+    stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: raw });
+    continue;
+  }
+
+  // Répartir le prix total de la commande également entre les parties matchées
+  // (approximation raisonnable en l'absence de détail par ligne dans la source).
+  const totalPrice = (order as any).totalPrice || 0;
+  const pricePerPart = matchedParts.length > 0 ? Math.round(totalPrice / matchedParts.length) : 0;
+  const qtyPerPart = Math.max(1, Math.floor(((order as any).rawQuantity || matchedParts.length) / matchedParts.length));
+
+  let orderProductCost = 0;
+  for (const mp of matchedParts) {
+    const product = storeProducts.find(p => p.id === mp.productId)!;
+    await db.insert(orderItems).values({
+      orderId: order.id,
+      productId: product.id,
+      quantity: qtyPerPart,
+      price: pricePerPart,
+      rawProductName: mp.part,
+      variantInfo: mp.variantName || null,
+    } as any);
+    orderProductCost += (product.costPrice || 0) * qtyPerPart;
+  }
+  await storage.updateOrder(order.id, { productCost: orderProductCost } as any);
+  repaired++;
+
+  // Si certaines parties n'ont pas matché (commande mixte partiellement liée),
+  // les signaler quand même pour review manuelle, sans bloquer les parties réussies.
+  if (unmatchedParts.length > 0) {
+    stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: `PARTIEL — non matché: ${unmatchedParts.join(' | ')}` });
+  }
+}

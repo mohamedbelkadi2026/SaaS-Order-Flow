@@ -1,0 +1,40 @@
+Two separate problems with Express Coursier. Fix (1) first — it's blocking everything.
+
+PROBLEM 1 — EVERY EC WEBHOOK IS LOGGED AS "Échec" (FAILURE):
+In the Journal des Intégrations, every "Webhook Received" row for provider 
+Expresscoursier has status = Échec. Even the one "Status Update" row failed:
+  "Commande #MAN-1783439600494: Attente De Ramassage → expedition (EC status 5)" → Échec
+So the webhook arrives, sometimes even matches an order, but the processing/update THROWS 
+or is written as a failed integration_log. That's why order statuses never change.
+
+DO THIS:
+ a) Find the actual exception/failure. Log the full error (message + stack) inside the EC 
+    webhook handler and inside the status-update path. Paste it to me.
+ b) Likely suspects — verify each:
+    - The mapped status string is INVALID for the orders.status column / status enum 
+      (e.g. it tries to write "expedition" or "EC delivery_status=5", which isn't a valid 
+      internal status) → the DB update rejects it and the log is marked Échec.
+    - updateOrderStatus / updateOrder throws on an unknown status value.
+    - The integration_log is written with status 'fail' unconditionally regardless of the 
+      actual outcome (a logging bug, not a real failure).
+ c) Ensure order.status is only ever set to a VALID internal status. Normalize before 
+    writing. If the mapped status isn't in the allowed set, fall back to 'in_progress' and 
+    log a warning — never write a raw/invalid value.
+ d) Mark the integration_log as 'success' when the update actually succeeds, and 'fail' 
+    only on a real error, with the real error message.
+
+PROBLEM 2 — NUMERIC STATUS CODES STILL UNMAPPED:
+Observed EC delivery_status codes so far: 1, 3, 5, 17, 18, 30, 34, 35, 36, 49.
+ - Keep the single exported EC_NUMERIC_STATUS_MAP + mapEcDeliveryStatus(code) in 
+   carrier-service.ts, used by BOTH the live webhook and the "Synchroniser" replay.
+ - Unknown codes MUST default to 'in_progress'. DO NOT GUESS which code means Livré or 
+   Refusé — a wrong guess would corrupt revenue, commissions and stats.
+ - Never put the raw code in order.status. Store a readable label in commentStatus only 
+   (e.g. "EC 35").
+
+DIAGNOSTIC — run and paste to me:
+ 1) The real error/stack from a failing EC webhook (Problem 1).
+ 2) Every distinct delivery_status code in integration_logs with its count, one example 
+    package_id, and that order's current platform status.
+
+Deploy to main.

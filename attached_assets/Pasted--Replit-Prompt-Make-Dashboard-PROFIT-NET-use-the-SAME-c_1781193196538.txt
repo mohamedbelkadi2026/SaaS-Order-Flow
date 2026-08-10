@@ -1,0 +1,41 @@
+# Replit Prompt — Make Dashboard "PROFIT NET" use the SAME calculation as Profit Analyzer Pro
+
+For the same date range ("Mois dernier"), the two profit figures still differ:
+- Dashboard `/api/stats/filtered` → PROFIT NET = 20 827,53 DH
+- Profit Analyzer `/api/products/profitability` → PROFIT NET TOTAL = 17 329,53 DH
+Gap ≈ 3 498,00 DH, caused by the two endpoints using slightly different cost components (e.g. the per-product confirmation cost that the Analyzer subtracts but the Dashboard doesn't).
+
+Goal: the Profit Analyzer is the source of truth. Make the Dashboard PROFIT NET equal the Profit Analyzer total for the same filters, permanently — by computing both from ONE shared function.
+
+## 1. Extract the profit calculation into one shared helper
+Take the per-product net-profit logic currently inside `GET /api/products/profitability` and move it into a reusable function in `server/storage.ts` (or a `server/services/profit.ts`):
+```ts
+// Returns per-product rows AND grand totals, for a store and date range.
+export async function computeProfitability(storeId: number, opts: { dateFrom?: string; dateTo?: string; /* same filters as the analyzer */ }):
+  Promise<{
+    products: ProductProfitRow[];
+    totals: { totalOrders: number; deliveredOrders: number; revenue: number; netProfit: number; adSpend: number; /* … */ };
+  }>
+```
+- `GET /api/products/profitability` must now just call `computeProfitability(...)` and return its result. Its output must be byte-for-byte the same as today (no behavior change for the Analyzer page).
+- `netProfit` per product stays exactly as the Analyzer computes it today:
+  `revenue − productCost − shippingCost − packagingCost − confirmationCost − agentCommissions − adSpend` (delivered orders), with the same name-based grouping/dedup and name-based cost fallback already in place.
+- `totals.netProfit` = sum of all products’ `netProfit`.
+
+## 2. Dashboard uses the shared total
+In `GET /api/stats/filtered`, replace the inline PROFIT NET computation with a call to the shared helper for the SAME date range and filters, and return its grand total:
+```ts
+const prof = await computeProfitability(storeId, { dateFrom, dateTo, /* pass the same product/magasin/source filters */ });
+stats.profit = prof.totals.netProfit;
+```
+Remove the old inline `netProfit` formula in `/api/stats/filtered` so there is only one calculation path. Keep all other dashboard numbers (commandes, livrées, taux, commissions à payer, ROI/ROAS) as they are.
+
+## 3. Keep date bounds identical
+Ensure the Dashboard preset "Mois dernier" and the Analyzer preset "Mois dernier" produce the exact same `dateFrom`/`dateTo` (1st → last day of previous month). Pass those same bounds into `computeProfitability` from both callers.
+
+## Testing checklist
+1. Dashboard "Mois dernier" PROFIT NET == Profit Analyzer "Mois dernier" PROFIT NET TOTAL (to the cent) — both 17 329,53 DH (or whatever the unified value is).
+2. Switching both to "Tout" / "Ce mois" / a custom range keeps them equal.
+3. The Analyzer page output is unchanged (same per-product rows and totals as before the refactor).
+4. Other dashboard cards (commandes, livrées, commissions, ROI/ROAS) are unchanged.
+5. There is now a single profit formula in the codebase (no duplicated/divergent calculation).

@@ -1,0 +1,95 @@
+FIX — La colonne "FRAIS DE LIVRAISON" reste vide pour les commandes Express
+Coursier existantes (screenshot fourni : colonne affiche "—" pour presque
+toutes les lignes, même celles marquées "Livré" / "Livré au client").
+
+CAUSE PROBABLE
+La feature de tarifs par ville (carrier_city_pricing) ne s'applique qu'aux
+NOUVELLES commandes (au ship-time / au webhook "delivered"). Toutes les
+commandes Express Coursier déjà en base (livrées avant le déploiement, ou
+mises à jour par un ancien webhook avant que la table de prix existe) ont
+gardé shippingCost = 0 / null, donc la colonne "FRAIS DE LIVRAISON" du tableau
+des commandes (celle qui affiche le petit logo transporteur + le montant)
+n'a rien à afficher.
+
+Deux choses à vérifier et corriger :
+
+────────────────────────────────────────────────────────────────────────────
+1) CONFIRMER QUE L'IMPORT A ÉTÉ FAIT
+Appeler une fois (si ce n'est pas déjà fait) :
+POST /api/carriers/expresscoursier/import-city-pricing
+→ doit répondre avec un count proche de 283. Si count = 0 ou l'endpoint
+n'existe pas, c'est qu'il n'a pas été implémenté dans le déploiement actuel —
+vérifier server/routes.ts et refaire cette étape avant de continuer.
+
+────────────────────────────────────────────────────────────────────────────
+2) BACKFILL — remplir shippingCost pour TOUTES les commandes Express Coursier
+existantes, quel que soit leur statut (pas seulement "delivered"/final).
+
+Ajouter un endpoint one-shot dans server/routes.ts, près des autres routes
+`/api/carriers/expresscoursier/...` :
+
+```ts
+app.post("/api/carriers/expresscoursier/backfill-shipping-cost", requireAuth, requireAdmin, async (req: any, res: any) => {
+  const storeId = req.user.storeId;
+  // Toutes les commandes de ce store expédiées via Express Coursier
+  // (carrierName OU shippingProvider — les deux champs sont utilisés selon l'endroit
+  // du code, voir orders.carrierName / orders.shippingProvider dans shared/schema.ts),
+  // peu importe le statut, où shippingCost est 0/null.
+  const orders = await storage.getOrdersByStoreAndCarrier(storeId, 'expresscoursier');
+  // Si getOrdersByStoreAndCarrier n'existe pas encore, l'ajouter dans storage.ts :
+  //   select * from orders where store_id = $1
+  //   and (lower(carrier_name) in ('expresscoursier','express coursier','olivraison')
+  //        or lower(shipping_provider) in ('expresscoursier','express coursier','olivraison'))
+
+  let updated = 0, skippedNoCity = 0, usedDefault = 0;
+  for (const order of orders) {
+    if (order.shippingCost && order.shippingCost > 0) continue; // déjà rempli, ne pas écraser
+    if (!order.customerCity) { skippedNoCity++; continue; }
+
+    const cityFee = await storage.getCarrierCityPrice(storeId, 'expresscoursier', order.customerCity);
+    const fee = cityFee ?? (EC_DEFAULT_CITY_PRICE_DH * 100); // fallback 35 DH si ville pas dans la table
+    if (!cityFee) usedDefault++;
+
+    await storage.updateOrder(order.id, { shippingCost: fee });
+    updated++;
+  }
+
+  res.json({ message: `${updated} commandes mises à jour`, updated, usedDefault, skippedNoCity, total: orders.length });
+});
+```
+
+Importer `EC_DEFAULT_CITY_PRICE_DH` depuis `./seed-data/ec-city-pricing` en
+haut du fichier.
+
+────────────────────────────────────────────────────────────────────────────
+3) VÉRIFIER LE FRONTEND — colonne "FRAIS DE LIVRAISON" du tableau des commandes
+
+Trouver le composant qui affiche cette colonne (client/src/pages/... — la
+liste des commandes / orders-table). Vérifier qu'il lit bien
+`order.shippingCost` (converti ÷100 pour l'affichage en DH) et pas un autre
+champ (ex. `order.deliveryCost` ou une donnée qui vient uniquement du webhook
+carrier). Si la colonne lit un champ différent de `shippingCost`, soit :
+  - la faire lire `shippingCost` directement, OU
+  - garder son champ actuel mais s'assurer que le backfill ci-dessus écrit
+    aussi dans CE champ.
+Coller ici le nom exact du composant si Replit ne le trouve pas du premier
+coup pour que je puisse vérifier.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT + EXÉCUTION
+1. git add -A && git commit -m "Backfill shippingCost for existing Express Coursier orders" && git push
+2. Une fois déployé sur Railway, appeler UNE FOIS :
+   POST /api/carriers/expresscoursier/backfill-shipping-cost
+3. Rafraîchir le tableau des commandes → la colonne "FRAIS DE LIVRAISON" doit
+   maintenant afficher un montant pour CHAQUE commande Express Coursier
+   (ex. Casablanca → 20.00 DH, Marrakech/Tanger/Rabat/... → 30.00 DH, les
+   autres villes → leur tarif de la table, ou 35.00 DH par défaut).
+
+VÉRIFICATION
+- Dans la réponse JSON du backfill : `updated` doit être proche du nombre
+  total de commandes Express Coursier du store, `skippedNoCity` doit être
+  petit (commandes sans ville renseignée), `usedDefault` = nombre de
+  commandes dont la ville n'était pas dans la table des 283 (elles ont reçu
+  35 DH par défaut — les repérer et me les signaler si le nombre est élevé,
+  ça veut dire qu'il y a des noms de ville pas encore couverts).
+- Recharger la page commandes → la colonne FRAIS DE LIVRAISON n'est plus vide.

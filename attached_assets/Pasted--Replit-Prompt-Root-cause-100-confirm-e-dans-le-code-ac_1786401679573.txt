@@ -1,0 +1,51 @@
+# Replit Prompt — Root cause 100% confirmée dans le code actuel : migration de données jamais faite
+
+J'ai inspecté le code actuel du projet moi-même (pas une hypothèse) :
+
+## Ce qui est déjà bon ✅
+- `server/services/variants.ts` → `normStr()` préserve bien l'arabe maintenant, et `resolveProductId()` a bien les garde-fous (retourne `null` au lieu de deviner en cas d'ambiguïté ou de non-match). **Ce code est correct, ne pas y retoucher.**
+
+## Ce qui reste cassé 🔴
+- **Suivi des Colis** (`server/storage.ts`, `getFilteredOrders`, le filtre `productId`) fait une requête SQL stricte sur `order_items.product_id = filters.productId`. Cette requête est correcte EN ELLE-MÊME, mais elle fait confiance à la colonne `order_items.product_id` — **qui contient encore les liens erronés créés avant le fix de `normStr()`**.
+- Aucun script de réparation des données existantes n'a jamais été exécuté : j'ai vérifié le dossier `scripts/`, il n'y a que `backfill-digylog-product-names.ts` et `reconcile-ec-shipped-confirmed.ts` — rien qui recalcule `order_items.product_id` pour les commandes historiques.
+- `server/routes.ts` (`/api/stats/filtered`, utilisé par le Dashboard) a aussi une condition `i.productId === pid` qui souffre du même problème (ligne ~640-648).
+
+**Conclusion : le code de matching est réparé, mais les DONNÉES existantes ne l'ont jamais été. C'est la seule chose qui manque.**
+
+## Action demandée
+
+J'ai déjà écrit le script de réparation — merci de l'ajouter tel quel dans `scripts/repair-order-item-product-links.ts` et de le faire tourner :
+
+```
+node_modules/.bin/tsx scripts/repair-order-item-product-links.ts
+```
+(dry-run d'abord — il n'écrit rien, il affiche juste ce qu'il changerait). Coller ici le résumé affiché (nombre d'`order_items` vérifiés, nombre de liens incorrects trouvés, aperçu des 30 premiers changements).
+
+Une fois qu'on a confirmé que le nombre de corrections trouvées est cohérent avec ce qu'on observe dans l'app, relancer avec `--apply` pour appliquer réellement les corrections :
+```
+node_modules/.bin/tsx scripts/repair-order-item-product-links.ts --apply
+```
+
+**Contenu du script (à créer dans `scripts/repair-order-item-product-links.ts`) :**
+
+```ts
+[voir le fichier repair-order-item-product-links.ts fourni séparément — copier-coller son contenu tel quel]
+```
+
+Le script :
+- Ne touche que les `order_items` qui ont un `rawProductName` renseigné.
+- Recalcule le bon `product_id` avec `resolveProductId()` (le même code que celui utilisé pour les nouvelles commandes aujourd'hui) — donc le résultat est garanti cohérent avec ce qu'une commande fraîche obtiendrait.
+- Si `resolveProductId()` ne trouve aucun match fiable → met `product_id` à `NULL` plutôt que de laisser un mauvais lien, et le compte séparément pour qu'on puisse les revoir manuellement plus tard.
+- Ne touche PAS les lignes déjà correctes.
+- Mode dry-run par défaut, `--apply` pour appliquer réellement.
+
+## Après la migration : recalculer le stock
+
+Une fois `order_items.product_id` corrigé, les compteurs Inventaire (Reçu/Sortie/En cours/Disponible) de TOUS les produits vont changer. Relancer ensuite l'outil **"Réparer l'historique des stocks"** déjà existant dans `/inventory` pour chaque produit affecté, pour que `products.stock` et l'Historique reflètent les nouvelles quantités correctes.
+
+## Testing checklist
+1. Résultat du dry-run collé et vérifié avant d'appliquer.
+2. Après `--apply` : Suivi des Colis filtré par "الشريط اللاصق مطاطي القوي" → ne montre plus que des commandes de ce produit.
+3. Dashboard filtré par ce produit vs la table "Produits Commandés" → mêmes totaux maintenant (comme demandé dans le prompt précédent).
+4. `/inventory` : Disponible cohérent avec Reçu − Sortie − En cours pour ce produit et 3-4 autres au hasard.
+5. Vérifier qu'aucune commande n'a disparu (compter le total de commandes avant/après le script — doit être identique, seul `product_id` change).

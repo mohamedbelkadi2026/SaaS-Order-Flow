@@ -1,0 +1,101 @@
+Fix two things:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 1: Vitipsexpress sync 504 timeout
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+In server/routes.ts, POST /api/shipping/vitips/sync (around line 9671):
+
+Change:
+  const BATCH_SIZE = 50;
+  const BUDGET_MS  = 55_000;
+  await new Promise(r => setTimeout(r, 80));
+
+To:
+  const BATCH_SIZE = 20;
+  const BUDGET_MS  = 22_000;
+  await new Promise(r => setTimeout(r, 50));
+
+Also: run sync in background and respond immediately:
+Replace the current sync logic with:
+
+  // Respond immediately to avoid 504
+  safeJson(200, { message: "Synchronisation démarrée en arrière-plan...", synced: vitipsOrders.length });
+  
+  // Run sync in background (don't await)
+  (async () => {
+    let updated = 0;
+    for (const order of vitipsOrders) {
+      try {
+        const result = await trackVitipsShipment(order.trackNumber!, apiKey);
+        if (!result.error && result.status && result.status !== order.status) {
+          await storage.updateOrderStatus(order.id, result.status);
+          await storage.createOrderFollowUpLog({
+            orderId: order.id, agentId: null, agentName: 'Vitipsexpress Sync',
+            note: `📦 Statut: ${result.rawStatus} → ${result.status}`,
+          });
+          updated++;
+          console.log(`[VITIPS-SYNC] ✅ #${(order as any).orderNumber}: ${order.status} → ${result.status}`);
+        } else {
+          console.log(`[VITIPS-SYNC] ↔ #${(order as any).orderNumber} already "${order.status}" — no change`);
+        }
+      } catch (e: any) {
+        console.error(`[VITIPS-SYNC] ❌ #${(order as any).orderNumber}: ${e?.message}`);
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    console.log(`[VITIPS-SYNC] Done — ${updated}/${vitipsOrders.length} updated`);
+  })();
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 2: Status colors — pro design
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Find the status badge/pill component used across orders pages.
+Search for: getStatusColor, statusColor, StatusBadge, status-badge, or wherever status colors are defined.
+
+Update the colors to be professional and distinct:
+
+const STATUS_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  // New / uncontacted
+  'nouveau':              { bg: '#EFF6FF', text: '#1D4ED8', border: '#BFDBFE' },
+  'Nouveau':              { bg: '#EFF6FF', text: '#1D4ED8', border: '#BFDBFE' },
+
+  // Confirmed
+  'confirme':             { bg: '#F0FDF4', text: '#15803D', border: '#BBF7D0' },
+  'Confirme':             { bg: '#F0FDF4', text: '#15803D', border: '#BBF7D0' },
+
+  // Attente ramassage (waiting pickup)
+  'Attente De Ramassage': { bg: '#FFF7ED', text: '#C2410C', border: '#FED7AA' },
+
+  // Transit / shipping
+  'transit':              { bg: '#F0F9FF', text: '#0369A1', border: '#BAE6FD' },
+  'in_progress':          { bg: '#F0F9FF', text: '#0369A1', border: '#BAE6FD' },
+  'expédié':              { bg: '#F0F9FF', text: '#0369A1', border: '#BAE6FD' },
+
+  // Delivered
+  'delivered':            { bg: '#F0FDF4', text: '#166534', border: '#86EFAC' },
+
+  // Refused
+  'refused':              { bg: '#FEF2F2', text: '#DC2626', border: '#FECACA' },
+
+  // Unreachable
+  'unreachable':          { bg: '#FDF4FF', text: '#7E22CE', border: '#E9D5FF' },
+  'injoignable':          { bg: '#FDF4FF', text: '#7E22CE', border: '#E9D5FF' },
+
+  // Cancelled
+  'annule':               { bg: '#F9FAFB', text: '#6B7280', border: '#E5E7EB' },
+  'annulé':               { bg: '#F9FAFB', text: '#6B7280', border: '#E5E7EB' },
+
+  // Return
+  'Retour Recu':          { bg: '#FFFBEB', text: '#B45309', border: '#FDE68A' },
+  'En Cours De Retour':   { bg: '#FFF7ED', text: '#92400E', border: '#FED7AA' },
+
+  // No response
+  'pas de réponse':       { bg: '#F9FAFB', text: '#9CA3AF', border: '#E5E7EB' },
+  'boite vocale':         { bg: '#F9FAFB', text: '#9CA3AF', border: '#E5E7EB' },
+
+  // Confirmed reported
+  'confirme reporte':     { bg: '#ECFDF5', text: '#059669', border: '#6EE7B7' },
+};
+
+Apply these colors to the status badge everywhere it's used.
+Make the badge: rounded-full, px-3 py-1, text-xs font-semibold, with border.

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,10 +15,11 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Link2, CheckCircle, Loader2, Eye, EyeOff,
   MapPin, Video, Home, ChevronRight,
-  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw, ShieldCheck,
+  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw, ShieldCheck, Upload, FileJson, X,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -46,6 +48,7 @@ const PROVIDERS = [
   { id: "oscario",        name: "Oscario",           cities: 390, logo: null                     },
   { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                             },
   { id: "expresscoursier", name: "Express Coursier", cities: 450, logo: "/carriers/expresscoursier.png" },
+  { id: "vitipsexpress",  name: "Vitips Express",        cities: 200, logo: "https://vitipsexpress.com/template/images/logo.png", initials: "VE", color: "#FF6B00" },
   { id: "custom",         name: "➕ Autre transporteur", cities: 0, logo: null                         },
 ];
 
@@ -61,7 +64,7 @@ function getWebhookDomain(): string {
 }
 
 /* ─── Logo ───────────────────────────────────────────────────── */
-function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
+function ProviderLogo({ logo, name, initials, color }: { logo: string | null; name: string; initials?: string; color?: string }) {
   const [err, setErr] = useState(false);
   if (logo && !err) {
     return (
@@ -72,10 +75,14 @@ function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
       />
     );
   }
+  const label = initials || name.slice(0, 2).toUpperCase();
   return (
-    <div className="w-full h-full flex items-center justify-center">
-      <span className="text-xs font-bold text-gray-500 dark:text-gray-300">
-        {name.slice(0, 2).toUpperCase()}
+    <div
+      className="w-full h-full flex items-center justify-center rounded-xl"
+      style={color ? { background: color } : undefined}
+    >
+      <span className={`text-xs font-bold ${color ? "text-white" : "text-gray-500 dark:text-gray-300"}`}>
+        {label}
       </span>
     </div>
   );
@@ -129,7 +136,11 @@ function getProviderLabel(provider?: string) {
   return PROVIDERS.find((p) => normalizeCarrierName(p.id) === normalized || normalizeCarrierName(p.name) === normalized)?.name || provider || "Transporteur";
 }
 
-function getWebhookIndicator(providerId: string, logs: WebhookLog[]) {
+function getWebhookIndicator(providerId: string, logs: WebhookLog[], connectedProviderIds: Set<string>) {
+  // No active account → always show "En attente", regardless of leftover logs
+  if (!connectedProviderIds.has(normalizeCarrierName(providerId))) {
+    return { label: "🟡 En attente", className: "bg-amber-50 text-amber-700 border-amber-200" };
+  }
   const providerLogs = logs.filter((log) => normalizeCarrierName(log.provider) === normalizeCarrierName(providerId));
   const lastLog = providerLogs[0];
   if (lastLog?.status === "fail") {
@@ -206,6 +217,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const isOzonExpress = providerId === "ozonexpress";
   const [ozonCustomerId, setOzonCustomerId] = useState<string>(
     String(existingAccount?.settings?.ozonExpressCustomerId ?? "")
+  );
+  const [ozonParcelStock, setOzonParcelStock] = useState<string>(
+    (existingAccount?.settings as any)?.ozonParcelStock === "1" ? "1" : "0"
   );
 
   // ── Custom carrier fields ─────────────────────────────────────────────────
@@ -333,6 +347,8 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   // Permanent webhook URL — based on storeId + carrierName, never changes
   // even if the token or API key is updated.
   const resolvedStoreId = existingAccount?.storeId || selectedStoreId;
+  // Permanent webhook URL — no token needed for Ameex (Ameex posts to a plain URL;
+  // safety comes from CODE-based order matching on the backend).
   const webhookUrl = resolvedStoreId
     ? (providerId === "expresscoursier"
         ? `${domain}/api/webhooks/shipping/expresscoursier/${resolvedStoreId}`
@@ -367,7 +383,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             throw new Error("Le Customer ID Ozon Express est obligatoire (numérique).");
           }
           if (apiKey.trim()) body.apiKey = apiKey;
-          body.settings = { ...((existingAccount?.settings as object) || {}), ozonExpressCustomerId: cid };
+          body.settings = { ...((existingAccount?.settings as object) || {}), ozonExpressCustomerId: cid, ozonParcelStock: ozonParcelStock === "1" ? "1" : "0" };
         } else {
           if (apiKey.trim()) body.apiKey = apiKey;
           if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
@@ -403,7 +419,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             throw new Error("Le Customer ID Ozon Express est obligatoire (numérique).");
           }
           payload.storeName = resolvedStoreName;
-          payload.settings  = { ozonExpressCustomerId: cid };
+          payload.settings  = { ozonExpressCustomerId: cid, ozonParcelStock: ozonParcelStock === "1" ? "1" : "0" };
         } else if (isCustom) {
           payload.apiUrl    = apiUrl.trim() || undefined;
           payload.storeName = resolvedStoreName;
@@ -639,6 +655,40 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     required
                   />
                   <p className="text-[10px] text-muted-foreground">Trouvez votre Customer ID et API Key dans votre tableau de bord Ozon Express.</p>
+                </div>
+                {/* ── Ozon parcel-stock mode toggle ── */}
+                <div className="space-y-2">
+                  <label className="font-semibold text-sm" style={{ color: "#1e293b" }}>
+                    Mode d'expédition
+                  </label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ozonParcelStock !== "1" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                    <input
+                      type="radio"
+                      name="ozonParcelStockEdit"
+                      value="0"
+                      checked={ozonParcelStock !== "1"}
+                      onChange={() => setOzonParcelStock("0")}
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-semibold text-sm text-gray-800">📦 Pickup (Ramassage) — Recommandé</div>
+                      <div className="text-xs text-gray-500 mt-0.5">Ozon vient récupérer les colis chez vous. Idéal pour COD / Dropshipping.</div>
+                    </div>
+                  </label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ozonParcelStock === "1" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                    <input
+                      type="radio"
+                      name="ozonParcelStockEdit"
+                      value="1"
+                      checked={ozonParcelStock === "1"}
+                      onChange={() => setOzonParcelStock("1")}
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Ozon</div>
+                      <div className="text-xs text-gray-500 mt-0.5">Produits stockés dans les entrepôts Ozon. Chaque SKU doit être pré-enregistré dans votre portail Ozon.</div>
+                    </div>
+                  </label>
                 </div>
               </>
             ) : (
@@ -1160,6 +1210,40 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   required
                 />
                 <p className="text-[10px] text-muted-foreground">Trouvez votre Customer ID et API Key dans votre tableau de bord Ozon Express.</p>
+              </div>
+              {/* ── Ozon parcel-stock mode toggle ── */}
+              <div className="space-y-2">
+                <label className="font-semibold text-sm" style={{ color: "#1e293b" }}>
+                  Mode d'expédition
+                </label>
+                <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ozonParcelStock !== "1" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                  <input
+                    type="radio"
+                    name="ozonParcelStockCreate"
+                    value="0"
+                    checked={ozonParcelStock !== "1"}
+                    onChange={() => setOzonParcelStock("0")}
+                    className="mt-1"
+                  />
+                  <div>
+                    <div className="font-semibold text-sm text-gray-800">📦 Pickup (Ramassage) — Recommandé</div>
+                    <div className="text-xs text-gray-500 mt-0.5">Ozon vient récupérer les colis chez vous. Idéal pour COD / Dropshipping.</div>
+                  </div>
+                </label>
+                <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ozonParcelStock === "1" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                  <input
+                    type="radio"
+                    name="ozonParcelStockCreate"
+                    value="1"
+                    checked={ozonParcelStock === "1"}
+                    onChange={() => setOzonParcelStock("1")}
+                    className="mt-1"
+                  />
+                  <div>
+                    <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Ozon</div>
+                    <div className="text-xs text-gray-500 mt-0.5">Produits stockés dans les entrepôts Ozon. Chaque SKU doit être pré-enregistré dans votre portail Ozon.</div>
+                  </div>
+                </label>
               </div>
             </>
           ) : isAmeex ? (
@@ -1774,10 +1858,43 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     }),
   });
 
+  // ── Seed-cities (manual JSON import) ─────────────────────────────────────
+  const [seedModalOpen,  setSeedModalOpen]  = useState(false);
+  const [seedAccountId,  setSeedAccountId]  = useState<number | null>(null);
+  const [seedJson,       setSeedJson]       = useState("");
+  const [seedLoading,    setSeedLoading]    = useState(false);
+  const isSeedCarrier = providerId === "ozonexpress" || providerId === "expresscoursier";
+
+  const handleSeedCities = async () => {
+    if (!seedAccountId) return;
+    setSeedLoading(true);
+    try {
+      let parsed: any;
+      try { parsed = JSON.parse(seedJson.trim()); } catch {
+        toast({ title: "JSON invalide", description: "Vérifiez la syntaxe du JSON.", variant: "destructive" });
+        setSeedLoading(false);
+        return;
+      }
+      const body = Array.isArray(parsed) ? parsed : (parsed?.cities ?? parsed);
+      const result = await apiRequest("POST", `/api/carriers/${providerId}/seed-cities/${seedAccountId}`, body);
+      toast({
+        title: "✅ Villes importées",
+        description: result?.message || `${result?.inserted ?? 0} villes importées.`,
+      });
+      qc.invalidateQueries({ queryKey: ["/api/carriers/cities"] });
+      setSeedModalOpen(false);
+      setSeedJson("");
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+    } finally {
+      setSeedLoading(false);
+    }
+  };
+
   // Generic single-button sync — works for any carrier the dispatcher supports.
   // Refreshes order lists & dashboard stats so KPIs reflect the new statuses without a manual reload.
   const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
-  const syncCarrier = async (provider: string, opts?: { endpoint?: string; successTitle?: string; errorTitle?: string }) => {
+  const syncCarrier = async (provider: string, opts?: { endpoint?: string; successTitle?: string; errorTitle?: string; suppressErrorSpamIfMessage?: boolean }) => {
     const endpoint = opts?.endpoint || `/api/shipping/${provider}/sync`;
     setSyncingProvider(provider);
     try {
@@ -1798,7 +1915,12 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
         title: opts?.successTitle || `✅ ${provider} synchronisé`,
         description: data.message || `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
       });
-      if (Array.isArray(data.errors) && data.errors.length > 0) {
+      // Some carriers (e.g. Express Coursier, which has no public tracking API —
+      // statuses arrive via webhook only) return a calm informational `message`
+      // instead of a per-order errors[] array. Don't also spam N error toasts
+      // on top of that single calm message.
+      const suppressErrorSpam = !!opts?.suppressErrorSpamIfMessage && !!data.message;
+      if (!suppressErrorSpam && Array.isArray(data.errors) && data.errors.length > 0) {
         toast({
           title: `⚠️ ${data.errors.length} erreur(s) lors de la synchro`,
           description: data.errors.slice(0, 3).map((e: any) => `#${e.orderId}: ${e.message}`).join('\n'),
@@ -1831,6 +1953,30 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     endpoint: "/api/shipping/digylog/sync",
     successTitle: "✅ Statuts Digylog synchronisés",
     errorTitle: "Erreur de synchronisation Digylog",
+  });
+
+
+  const ozonSyncPending = syncingProvider === "ozonexpress";
+  const handleOzonSync = () => syncCarrier("ozonexpress", {
+    successTitle: "✅ Statuts Ozon Express synchronisés",
+    errorTitle: "Erreur de synchronisation Ozon Express",
+  });
+
+  const vitipsSyncPending = syncingProvider === "vitipsexpress";
+  const handleVitipsSync = () => syncCarrier("vitipsexpress", {
+    endpoint: "/api/shipping/vitips/sync",
+    successTitle: "✅ Statuts Vitipsexpress synchronisés",
+    errorTitle: "Erreur de synchronisation Vitipsexpress",
+  });
+
+  const ecSyncPending = syncingProvider === "expresscoursier";
+  const handleEcSync = () => syncCarrier("expresscoursier", {
+    successTitle: "✅ Statuts Express Coursier synchronisés",
+    errorTitle: "Erreur de synchronisation Express Coursier",
+    // EC has no public tracking-by-API endpoint — statuses arrive via webhook
+    // only. The backend already returns one calm message instead of per-order
+    // errors in that case; don't pile a second "N erreurs" toast on top of it.
+    suppressErrorSpamIfMessage: true,
   });
 
   const safeTab = Math.min(activeTab, Math.max(0, accounts.length - 1));
@@ -1980,6 +2126,51 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         Synchroniser Digylog
                       </Button>
                     )}
+                    {providerId === "ozonexpress" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={handleOzonSync}
+                        disabled={ozonSyncPending}
+                        data-testid={`button-ozon-sync-statuses-${acct.id}`}
+                      >
+                        {ozonSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser Ozon Express
+                      </Button>
+                    )}
+                    {providerId === "expresscoursier" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={handleEcSync}
+                        disabled={ecSyncPending}
+                        data-testid={`button-ec-sync-statuses-${acct.id}`}
+                      >
+                        {ecSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser Express Coursier
+                      </Button>
+                    )}
+                    {providerId === "vitipsexpress" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={handleVitipsSync}
+                        disabled={vitipsSyncPending}
+                        data-testid={`button-vitips-sync-statuses-${acct.id}`}
+                      >
+                        {vitipsSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser Vitips Express
+                      </Button>
+                    )}
                     {providerId === "digylog" && (
                       <>
                         <input
@@ -2049,6 +2240,18 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
                       Synchroniser les villes
                     </Button>
+                    {isSeedCarrier && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-blue-200 text-blue-700 hover:bg-blue-50 font-semibold"
+                        onClick={() => { setSeedAccountId(acct.id); setSeedJson(""); setSeedModalOpen(true); }}
+                        data-testid={`button-seed-cities-${acct.id}`}
+                      >
+                        <FileJson className="w-3.5 h-3.5 mr-1" />
+                        Importer villes (JSON)
+                      </Button>
+                    )}
                     <div className="flex items-center gap-2 ml-auto">
                       <Switch
                         checked={acct.isActive === 1}
@@ -2062,6 +2265,15 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     </div>
                   </div>
 
+                  {/* Per-city delivery pricing (transporteurs sans coût API par ville) */}
+                  {["expresscoursier", "vitipsexpress"].includes((acct.carrierName || "").toLowerCase()) && (
+                    <CarrierCityPricingSection
+                      accountId={acct.id}
+                      carrierName={(acct.carrierName || "").toLowerCase()}
+                      carrierLabel={(acct.carrierName || "").toLowerCase() === "expresscoursier" ? "Express Coursier" : "Vitips Express"}
+                    />
+                  )}
+
                   {/* Credential table */}
                   <div className="rounded-xl border border-border/50 overflow-hidden">
                     <table className="w-full text-sm">
@@ -2073,6 +2285,82 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         </tr>
                       </thead>
                       <tbody>
+                        {/* Ozon Express: show Customer ID with warning if missing */}
+                        {(acct.carrierName || "").toLowerCase() === "ozonexpress" && (() => {
+                          const cid = (acct.settings as any)?.ozonExpressCustomerId || (acct.settings as any)?.ozonCustomerId || "";
+                          return (
+                            <tr className="border-b border-border/20">
+                              <td className="px-4 py-3 font-medium">Customer ID</td>
+                              <td className="px-4 py-3">
+                                {cid ? (
+                                  <span className="font-mono text-xs text-muted-foreground">{cid}</span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                    Manquant — cliquez Modifier
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                {cid && (
+                                  <button
+                                    onClick={() => copyText(cid, `cid-${acct.id}`)}
+                                    className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
+                                    data-testid={`button-copy-cid-${acct.id}`}
+                                  >
+                                    {copiedKey === `cid-${acct.id}`
+                                      ? <Check className="w-3.5 h-3.5 text-green-500" />
+                                      : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })()}
+                        {/* Ozon Express: show Mode d'expédition */}
+                        {(acct.carrierName || "").toLowerCase() === "ozonexpress" && (
+                          <tr className="border-b border-border/20">
+                            <td className="px-4 py-3 font-medium">Mode d'expédition</td>
+                            <td className="px-4 py-3 col-span-2">
+                              <span className="text-xs text-muted-foreground">
+                                {(acct.settings as any)?.ozonParcelStock === "1" ? "🏬 Stock chez Ozon" : "📦 Pickup (Ramassage)"}
+                              </span>
+                            </td>
+                            <td />
+                          </tr>
+                        )}
+                        {/* Express Coursier: show Store ID */}
+                        {(acct.carrierName || "").toLowerCase() === "expresscoursier" && (() => {
+                          const sid = String((acct.settings as any)?.expressCoursierStoreId || "");
+                          return (
+                            <tr className="border-b border-border/20">
+                              <td className="px-4 py-3 font-medium">Store ID</td>
+                              <td className="px-4 py-3">
+                                {sid ? (
+                                  <span className="font-mono text-xs text-muted-foreground">{sid}</span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                    Manquant — cliquez Modifier
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                {sid && (
+                                  <button
+                                    onClick={() => copyText(sid, `sid-${acct.id}`)}
+                                    className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
+                                    data-testid={`button-copy-sid-${acct.id}`}
+                                  >
+                                    {copiedKey === `sid-${acct.id}`
+                                      ? <Check className="w-3.5 h-3.5 text-green-500" />
+                                      : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })()}
                         <tr className="border-b border-border/20">
                           <td className="px-4 py-3 font-medium">Authorization</td>
                           <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-[180px] truncate">
@@ -2093,11 +2381,11 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         <tr>
                           <td className="px-4 py-3 font-medium">WebHook URL</td>
                           <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-[180px] truncate">
-                            {`${domain}/api/webhook/carrier/${acct.webhookToken}`}
+                            {`${domain}/api/webhooks/carrier/${acct.storeId}/${(acct.carrierName || providerId).toLowerCase()}`}
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button
-                              onClick={() => copyText(`${domain}/api/webhook/carrier/${acct.webhookToken}`, `wh-${acct.id}`)}
+                              onClick={() => copyText(`${domain}/api/webhooks/carrier/${acct.storeId}/${(acct.carrierName || providerId).toLowerCase()}`, `wh-${acct.id}`)}
                               className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
                             >
                               {copiedKey === `wh-${acct.id}`
@@ -2171,11 +2459,256 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
         initialStoreName={digylogPrefsAcct?.settings?.digylogStoreName || digylogPrefsAcct?.carrierStoreName}
         initialNetworkId={digylogPrefsAcct?.settings?.digylogNetworkId}
       />
+
+      {/* ── Seed-cities (manual JSON) modal ─────────────────────────────── */}
+      <Dialog open={seedModalOpen} onOpenChange={(v) => { if (!v && !seedLoading) { setSeedModalOpen(false); setSeedJson(""); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileJson className="w-5 h-5 text-blue-500" />
+              Importer villes (JSON) — {providerName}
+            </DialogTitle>
+            <DialogDescription>
+              Collez un tableau JSON de villes avec leurs identifiants numériques.
+              Format accepté : <code className="bg-muted px-1 rounded text-xs">[{"{"}"cityId": "1", "cityName": "Casablanca"{"}"}]</code>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Textarea
+              placeholder={`[\n  {"cityId": "1", "cityName": "Casablanca"},\n  {"cityId": "2", "cityName": "Rabat"}\n]`}
+              className="font-mono text-xs min-h-[200px] resize-y"
+              value={seedJson}
+              onChange={e => setSeedJson(e.target.value)}
+              data-testid="textarea-seed-cities-json"
+            />
+            <p className="text-xs text-muted-foreground">
+              Clés acceptées : <code className="bg-muted px-0.5 rounded">cityId</code> / <code className="bg-muted px-0.5 rounded">id</code> et <code className="bg-muted px-0.5 rounded">cityName</code> / <code className="bg-muted px-0.5 rounded">name</code>. L'identifiant doit être numérique.
+            </p>
+          </div>
+          <div className="flex gap-2 justify-end pt-1">
+            <Button variant="outline" size="sm" onClick={() => { setSeedModalOpen(false); setSeedJson(""); }}>
+              Annuler
+            </Button>
+            <Button
+              size="sm"
+              className="bg-blue-600 hover:bg-blue-700 text-white gap-1.5"
+              disabled={!seedJson.trim() || seedLoading}
+              onClick={handleSeedCities}
+              data-testid="button-confirm-seed-cities"
+            >
+              {seedLoading
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <Upload className="w-3.5 h-3.5" />}
+              Importer
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
 
 /* ─── Main page ──────────────────────────────────────────────── */
+// ── EC per-city delivery pricing section ────────────────────────────────────
+function CarrierCityPricingSection({ accountId, carrierName, carrierLabel }: { accountId: number; carrierName: string; carrierLabel: string }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState<Record<string, string>>({}); // cityNorm → draft DH value
+
+  const { data: rows = [], isLoading } = useQuery<any[]>({
+    queryKey: [`/api/carriers/${carrierName}/city-pricing`],
+    queryFn: () => apiRequest("GET", `/api/carriers/${carrierName}/city-pricing`).then(r => r.json ? r.json() : r),
+    staleTime: 30_000,
+  });
+
+  const importMutation = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/carriers/${carrierName}/import-city-pricing`, {}),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: [`/api/carriers/${carrierName}/city-pricing`] });
+      toast({ title: "✅ Tarifs importés", description: `${data?.count ?? "?"} ville(s) importée(s) pour ${carrierLabel}.` });
+    },
+    onError: (e: any) => toast({ title: "Erreur import", description: e.message, variant: "destructive" }),
+  });
+
+  const backfillMutation = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/carriers/${carrierName}/backfill-shipping-cost`, {}),
+    onSuccess: (data: any) => {
+      toast({
+        title: "✅ Frais de livraison corrigés",
+        description: `${data?.updated ?? 0} commandes mises à jour${data?.usedDefault ? ` (${data.usedDefault} au tarif par défaut)` : ""}${data?.skippedNoCity ? ` · ${data.skippedNoCity} sans ville ignorées` : ""}.`,
+      });
+    },
+    onError: (e: any) => toast({ title: "Erreur backfill", description: e.message, variant: "destructive" }),
+  });
+
+  const savePriceMutation = useMutation({
+    mutationFn: ({ cityName, priceDh }: { cityName: string; priceDh: number }) =>
+      apiRequest("POST", `/api/carriers/${carrierName}/city-pricing`, { cityName, priceDh }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [`/api/carriers/${carrierName}/city-pricing`] });
+    },
+    onError: (e: any) => toast({ title: "Erreur sauvegarde", description: e.message, variant: "destructive" }),
+  });
+
+  const handleBlur = (cityName: string, cityNorm: string) => {
+    const draft = editing[cityNorm];
+    if (draft === undefined) return;
+    const val = parseFloat(draft.replace(",", "."));
+    if (isNaN(val) || val < 0) {
+      toast({ title: "Valeur invalide", description: "Entrez un prix en DH (ex : 35)", variant: "destructive" });
+      return;
+    }
+    setEditing(e => { const c = { ...e }; delete c[cityNorm]; return c; });
+    savePriceMutation.mutate({ cityName, priceDh: val });
+  };
+
+  const filtered = search.trim()
+    ? rows.filter((r: any) => r.cityName.toLowerCase().includes(search.toLowerCase()))
+    : rows;
+
+  return (
+    <div className="mt-4 rounded-xl border border-amber-200/60 dark:border-amber-800/40 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-amber-50/60 dark:bg-amber-900/10 border-b border-amber-200/60 dark:border-amber-800/40">
+        <div>
+          <span className="text-sm font-bold text-amber-800 dark:text-amber-300">Tarifs de livraison par ville</span>
+          <span className="ml-2 text-xs text-muted-foreground">({rows.length} villes)</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-400 font-semibold text-xs h-7 px-2.5"
+            onClick={() => importMutation.mutate()}
+            disabled={importMutation.isPending || backfillMutation.isPending}
+            data-testid={`button-import-city-pricing-${carrierName}`}
+          >
+            {importMutation.isPending
+              ? <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+              : <RefreshCw className="w-3 h-3 mr-1" />}
+            Importer tarifs historiques
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-blue-300 text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:text-blue-400 font-semibold text-xs h-7 px-2.5"
+            onClick={() => backfillMutation.mutate()}
+            disabled={importMutation.isPending || backfillMutation.isPending}
+            data-testid={`button-backfill-shipping-cost-${carrierName}`}
+          >
+            {backfillMutation.isPending
+              ? <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+              : <RefreshCw className="w-3 h-3 mr-1" />}
+            Corriger frais existants
+          </Button>
+        </div>
+      </div>
+
+      {/* Default price row */}
+      <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50/60 dark:bg-slate-800/20 border-b border-border/30 text-sm">
+        <span className="text-muted-foreground flex-1">Tarif par défaut (villes absentes de la liste)</span>
+        <div className="flex items-center gap-1.5">
+          {(() => {
+            const def = rows.find((r: any) => r.cityName === "__default__");
+            const norm = "__default__";
+            const draft = editing[norm];
+            const currentDh = def ? (def.priceDh / 100).toFixed(0) : "35";
+            return (
+              <>
+                <input
+                  type="number"
+                  min="0"
+                  step="5"
+                  className="w-16 text-right border border-border/60 rounded px-2 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  value={draft !== undefined ? draft : currentDh}
+                  onChange={e => setEditing(ed => ({ ...ed, [norm]: e.target.value }))}
+                  onBlur={() => handleBlur("__default__", norm)}
+                  onKeyDown={e => e.key === "Enter" && handleBlur("__default__", norm)}
+                />
+                <span className="text-xs text-muted-foreground">DH</span>
+              </>
+            );
+          })()}
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="px-4 py-2 border-b border-border/20 bg-background">
+        <input
+          type="text"
+          placeholder="Rechercher une ville…"
+          className="w-full text-sm border border-border/50 rounded-lg px-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-amber-400"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      </div>
+
+      {/* City rows */}
+      <div className="max-h-72 overflow-y-auto">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="py-8 text-center text-sm text-muted-foreground">
+            {rows.length === 0
+              ? "Aucun tarif importé — cliquez « Importer tarifs historiques »"
+              : "Aucune ville correspondante"}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-muted/40 border-b border-border/30 z-10">
+              <tr>
+                <th className="text-left px-4 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Ville</th>
+                <th className="text-right px-4 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Prix (DH)</th>
+                <th className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground text-right">Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered
+                .filter((r: any) => r.cityName !== "__default__")
+                .map((row: any) => {
+                  const draft = editing[row.cityNorm];
+                  const displayDh = (row.priceDh / 100).toFixed(0);
+                  return (
+                    <tr key={row.cityNorm} className="border-b border-border/10 hover:bg-muted/20 transition-colors">
+                      <td className="px-4 py-2 font-medium">{row.cityName}</td>
+                      <td className="px-4 py-2 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            step="5"
+                            className="w-16 text-right border border-border/50 rounded px-2 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-amber-400"
+                            value={draft !== undefined ? draft : displayDh}
+                            onChange={e => setEditing(ed => ({ ...ed, [row.cityNorm]: e.target.value }))}
+                            onBlur={() => handleBlur(row.cityName, row.cityNorm)}
+                            onKeyDown={e => e.key === "Enter" && handleBlur(row.cityName, row.cityNorm)}
+                          />
+                          <span className="text-xs text-muted-foreground">DH</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          row.source === "import_historique"
+                            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                            : "bg-slate-100 text-slate-600 dark:bg-slate-800/50 dark:text-slate-400"
+                        }`}>
+                          {row.source === "import_historique" ? "historique" : "manuel"}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ShippingIntegrations() {
   const { data: allAccounts = [] } = useCarrierAccounts();
   const { data: logs = [], isLoading: logsLoading } = useQuery<WebhookLog[]>({
@@ -2248,7 +2781,12 @@ export default function ShippingIntegrations() {
           {PROVIDERS.map(provider => {
             const connected = isConnected(provider.id);
             const count     = accountCount(provider.id);
-            const webhookIndicator = getWebhookIndicator(provider.id, carrierLogs);
+            const connectedProviderIds = new Set(
+              Array.from(accountsByProvider.keys())
+                .filter(k => (accountsByProvider.get(k) || []).some((a: any) => a.isActive === 1))
+                .map(k => normalizeCarrierName(k))
+            );
+            const webhookIndicator = getWebhookIndicator(provider.id, carrierLogs, connectedProviderIds);
 
             return (
               <Card
@@ -2276,7 +2814,7 @@ export default function ShippingIntegrations() {
                   {/* Logo + info */}
                   <div className="flex items-center gap-3">
                     <div className="w-14 h-14 rounded-xl border border-border/40 bg-gray-50 dark:bg-zinc-800 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
-                      <ProviderLogo logo={provider.logo} name={provider.name} />
+                      <ProviderLogo logo={provider.logo} name={provider.name} initials={(provider as any).initials} color={(provider as any).color} />
                     </div>
                     <div className="min-w-0">
                       <h3 className="font-bold text-[15px] leading-tight text-foreground">
@@ -2430,15 +2968,25 @@ export default function ShippingIntegrations() {
       )}
 
       {viewingProvider && viewingMeta && (
-        <CredentialsModal
-          providerId={viewingProvider}
-          providerName={viewingMeta.name}
-          onClose={() => setViewingProvider(null)}
-          onAddNew={() => {
-            setViewingProvider(null);
-            setAddingProvider(viewingProvider);
-          }}
-        />
+        <ErrorBoundary fallback={
+          <Dialog open onOpenChange={() => setViewingProvider(null)}>
+            <DialogContent className="sm:max-w-lg rounded-2xl">
+              <p className="text-sm text-red-600">
+                Impossible d'afficher les informations de connexion pour <strong>{viewingMeta.name}</strong> — un problème technique empêche l'affichage. Veuillez réessayer ou contacter le support.
+              </p>
+            </DialogContent>
+          </Dialog>
+        }>
+          <CredentialsModal
+            providerId={viewingProvider}
+            providerName={viewingMeta.name}
+            onClose={() => setViewingProvider(null)}
+            onAddNew={() => {
+              setViewingProvider(null);
+              setAddingProvider(viewingProvider);
+            }}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );

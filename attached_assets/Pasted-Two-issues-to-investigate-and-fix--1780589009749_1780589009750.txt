@@ -1,0 +1,195 @@
+Two issues to investigate and fix:
+
+═══════════════════════════════════════════════════════════════════════
+ISSUE 1: Ozon Express "Synchroniser les villes" returns 422
+═══════════════════════════════════════════════════════════════════════
+Error: "422: Aucune ville reçue de ozonexpress. Vérifiez votre token et réessayez."
+
+ROOT CAUSE most likely: the sync endpoint is hitting the wrong URL. The earlier integration assumed `GET https://api.ozonexpress.ma/cities` is a public endpoint, but Ozon Express uses authenticated endpoints scoped per customer:
+
+  Correct pattern:
+    GET  https://api.ozonexpress.ma/customers/{CUSTOMER_ID}/{API_KEY}/cities
+  Possible alternates (try in order if 404/401):
+    POST https://api.ozonexpress.ma/customers/{CUSTOMER_ID}/{API_KEY}/cities
+    GET  https://api.ozonexpress.ma/cities/{CUSTOMER_ID}/{API_KEY}
+    GET  https://api.ozonexpress.ma/cities (public, may exist)
+
+STEP A — Inspect server/routes.ts → /api/carriers/ozonexpress/sync-cities/:accountId.
+Report the exact fetch URL the code uses today.
+
+STEP B — Fix the endpoint to try the authenticated URL FIRST, then fall back:
+
+  app.post("/api/carriers/ozonexpress/sync-cities/:accountId", requireAuth, async (req: any, res: any) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const account = await storage.getCarrierAccount(accountId);
+      if (!account || account.carrierName !== "ozonexpress") {
+        return res.status(404).json({ message: "Compte Ozon Express introuvable" });
+      }
+
+      const settings = (account.settings as any) || {};
+      const customerId = String(settings.ozonCustomerId || "").trim();
+      const apiKey = String(account.apiKey || "").trim();
+
+      if (!customerId || !apiKey) {
+        return res.status(400).json({
+          message: "Customer ID ou API Key manquant. Modifiez le compte pour les renseigner."
+        });
+      }
+
+      // Try authenticated endpoints in order
+      const candidateUrls = [
+        `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}/cities`,
+        `https://api.ozonexpress.ma/cities/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}`,
+        `https://api.ozonexpress.ma/cities`,
+      ];
+
+      let lastError: any = null;
+      let cities: any[] = [];
+      let usedUrl = "";
+
+      for (const url of candidateUrls) {
+        try {
+          console.log(`[Ozon SyncCities] Trying ${url}`);
+          const resp = await fetch(url, {
+            method: "GET",
+            headers: { "Accept": "application/json" },
+          });
+          const ctype = resp.headers.get("content-type") || "";
+          const text = await resp.text();
+          console.log(`[Ozon SyncCities] ${url} → ${resp.status} (${ctype}) — first 200 chars: ${text.slice(0, 200)}`);
+
+          if (!resp.ok) {
+            lastError = `HTTP ${resp.status} on ${url}: ${text.slice(0, 200)}`;
+            continue;
+          }
+          let data: any = null;
+          try { data = JSON.parse(text); } catch { lastError = `Non-JSON response from ${url}`; continue; }
+
+          // Adapt to various known shapes
+          const candidates =
+            (Array.isArray(data) && data) ||
+            (Array.isArray(data?.cities) && data.cities) ||
+            (Array.isArray(data?.data) && data.data) ||
+            (Array.isArray(data?.data?.cities) && data.data.cities) ||
+            (data?.cities && typeof data.cities === "object" ? Object.entries(data.cities).map(([id, name]) => ({ id, name })) : null) ||
+            [];
+
+          if (candidates.length > 0) {
+            cities = candidates;
+            usedUrl = url;
+            break;
+          }
+          lastError = `Empty cities array from ${url}`;
+        } catch (e: any) {
+          lastError = `Fetch error on ${url}: ${e.message}`;
+        }
+      }
+
+      if (cities.length === 0) {
+        return res.status(422).json({
+          message: `Aucune ville reçue de ozonexpress. Dernière erreur: ${lastError || "inconnu"}. Vérifiez votre Customer ID et API Key dans Modifier le compte.`,
+        });
+      }
+
+      let inserted = 0, updated = 0, skipped = 0;
+      for (const c of cities) {
+        const cityId = String(c.id ?? c.city_id ?? c.ID ?? c.value ?? "").trim();
+        const cityName = String(c.name ?? c.city_name ?? c.ville ?? c.label ?? "").trim();
+        if (!/^\d+$/.test(cityId) || !cityName) { skipped += 1; continue; }
+
+        const existing = await db.select().from(carrierCities)
+          .where(and(eq(carrierCities.accountId, accountId), eq(carrierCities.cityName, cityName)));
+
+        if (existing.length === 0) {
+          await db.insert(carrierCities).values({
+            accountId, cityName, settings: { cityId },
+          } as any);
+          inserted += 1;
+        } else {
+          await db.update(carrierCities)
+            .set({ settings: { ...(existing[0] as any).settings, cityId } } as any)
+            .where(eq(carrierCities.id, existing[0].id));
+          updated += 1;
+        }
+      }
+
+      res.json({
+        ok: true,
+        usedUrl,
+        inserted,
+        updated,
+        skipped,
+        total: cities.length,
+        message: `${inserted} villes ajoutées, ${updated} mises à jour, ${skipped} ignorées`,
+      });
+    } catch (err: any) {
+      console.error("[Ozon SyncCities] error:", err);
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+STEP C — Diagnostic logging. The console.log lines above will reveal which URL works and what response shape Ozon Express returns. After the next sync attempt, the Railway logs will show the truth. Push, retry, and report the logs.
+
+STEP D — Manual fallback (already in place for Express Coursier). If the auto-sync still fails after all URL attempts, the user can use the "Importer villes (JSON)" manual seed endpoint that already exists for Express Coursier. Add the SAME endpoint for Ozon Express if it isn't there:
+
+  app.post("/api/carriers/ozonexpress/seed-cities/:accountId", requireAuth, async (req: any, res: any) => {
+    // mirror /api/carriers/expresscoursier/seed-cities/:accountId exactly
+  });
+
+And add the "Importer villes (JSON)" button on the Ozon Express card UI (mirror the Express Coursier button).
+
+═══════════════════════════════════════════════════════════════════════
+ISSUE 2: Identify the source of the second screenshot ("Notifications (Webhooks)")
+═══════════════════════════════════════════════════════════════════════
+The second screenshot is NOT Ozon Express. It shows a webhook page with statuses like PAID, INVOICED, NEW_PARCEL, WAITING_PICKUP, SENT, RECEIVED, DISTRIBUTION, OUT_OF_AREA, BAM_SEIZED ("Seized by Barid Al-Maghrib"), etc. The tracking format mentioned is OZE-prefixed but the page is clearly the CONFIG page of ANOTHER carrier (likely Cathedis or one of: ForceLog, Codinafrica, Klaim shoes-based carrier).
+
+The "BAM_SEIZED" (Barid Al-Maghrib seizure) and the rich status list strongly suggest Cathedis or a similar full-Morocco carrier. The tab name "Notifications (Webhooks)" with "New Webhook" red button is their portal.
+
+ACTION:
+1. Do NOT confuse this with Ozon Express integration. The Ozon Express integration is separate.
+2. If we want to ALSO integrate this carrier (likely Cathedis), the webhook payload format is:
+     POST {our webhook URL}
+     {
+       "orderId": "<tracking code>",
+       "orderStatus": "<status code, e.g. DELIVERED>",
+       "situation": "<situation code>",
+       "note": "<comment>"
+     }
+   And the status enum is the JSON table the user shared (PAID, INVOICED, NEW_PARCEL, ..., DELIVERED, RETURNED, etc.).
+
+3. For NOW, just confirm whether Cathedis or another carrier integration is already planned. If yes, add a new carrier "cathedis" with a webhook receiver at:
+     POST /api/webhooks/cathedis/:storeWebhookKey
+   that handles the orderId + orderStatus shape above and maps status codes to internal statuses (use the JSON the user provided as the mapping table — store it server-side so we can show human-readable status names).
+
+If the user only wants Ozon Express fixed for now, defer the Cathedis integration to a separate prompt. Just note in the report which carrier the webhook page belongs to.
+
+═══════════════════════════════════════════════════════════════════════
+STEP E — IMMEDIATE USER WORKAROUND (while we diagnose)
+═══════════════════════════════════════════════════════════════════════
+While we figure out the right cities endpoint for Ozon Express, the user can:
+
+1. Open the Ozon Express portal manually.
+2. Find the cities list in their portal (Test Zone usually shows the cities dropdown).
+3. Paste a JSON of {cityId, cityName} pairs in the "Importer villes (JSON)" textarea.
+4. The platform will use those city IDs.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Ozon sync tries multiple URL patterns and logs each attempt
+2. ✅ Logs show which URL works (or none, with the exact error)
+3. ✅ When a URL works, cities are inserted with numeric IDs into carrier_cities
+4. ✅ Manual seed endpoint exists for Ozon Express (like for Express Coursier)
+5. ✅ "Importer villes (JSON)" button visible on the Ozon Express card
+6. ✅ Issue 2 (second screenshot) is identified as a different carrier (likely Cathedis), NOT Ozon Express
+7. ✅ Build passes
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(ozon): multi-URL cities sync with diagnostic logs + manual seed fallback"
+git push origin main
+
+WORKFLO

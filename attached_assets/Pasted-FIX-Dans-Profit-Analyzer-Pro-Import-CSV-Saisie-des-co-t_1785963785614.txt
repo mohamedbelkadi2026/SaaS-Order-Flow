@@ -1,0 +1,153 @@
+FIX — Dans "Profit Analyzer Pro → Import CSV → Saisie des coûts", les
+produits du type "Sandale En Cuir Rf210 X2 Noir - 43" (et toutes les
+variantes "Rf210 X2 ...") affichent "non trouvé dans le stock" pour le Prix
+d'achat, ET n'ont pas non plus Emballage/CDE ni Confirm./CDE pré-remplis —
+alors que "Sandale En Cuir Rf 1012 Noir 42" (sans "X2" dans le nom)
+fonctionne très bien.
+
+────────────────────────────────────────────────────────────────────────────
+CAUSE 1 (bug critique confirmé) — "X2" dans le nom du produit est
+interprété à tort comme une quantité "×2"
+
+client/src/pages/profit-analyzer.tsx, fonction `matchStockCost` (~ligne
+950-955) :
+```ts
+const xMatch = cleanPart.match(/^(.+?)\s+[Xx](\d+)\s*(.*)$/);
+if (xMatch) {
+  qty = Math.max(1, parseInt(xMatch[2], 10));
+  nameForMatch = (xMatch[1] + (xMatch[3] ? " " + xMatch[3] : "")).trim();
+}
+```
+Cette regex, censée détecter une quantité groupée du type "T-shirt X2"
+(2 unités), matche AUSSI "Sandale En Cuir Rf210 X2 Noir - 43" — "X2" ici
+fait partie du NOM DU MODÈLE, pas d'une quantité. Le nom de recherche
+devient alors "Sandale En Cuir Rf210 Noir - 43" (le "X2" a disparu), qui ne
+correspondra JAMAIS au vrai produit catalogue "Sandale En Cuir Rf210 X2
+Noir" — d'où "non trouvé dans le stock" systématique pour TOUS les
+produits "Rf210 X2 ...".
+
+FIX — Essayer d'abord un match SANS toucher au nom ; n'appliquer
+l'extraction de quantité "X2" que si cette tentative directe échoue
+complètement (comportement en repli, jamais prioritaire) :
+
+```ts
+// Extract embedded quantity "X2" / "x 2" — MAIS seulement en dernier
+// recours : essayer d'abord de matcher le nom TEL QUEL (le "X2" peut faire
+// partie du nom du modèle, ex: "Rf210 X2", pas d'une quantité groupée).
+let qty = 1;
+let nameForMatch = cleanPart;
+
+const directMatch = matchSingleItemCost(cleanPart, active);
+if (directMatch === null) {
+  const xMatch = cleanPart.match(/^(.+?)\s+[Xx](\d+)\s*(.*)$/);
+  if (xMatch) {
+    const candidateName = (xMatch[1] + (xMatch[3] ? " " + xMatch[3] : "")).trim();
+    // Ne retenir l'interprétation "quantité" QUE si ça matche effectivement
+    // quelque chose — sinon on garde le nom d'origine (le X2 ne voulait pas
+    // dire "quantité" ici, sinon ça matcherait déjà).
+    if (matchSingleItemCost(candidateName, active) !== null) {
+      qty = Math.max(1, parseInt(xMatch[2], 10));
+      nameForMatch = candidateName;
+    }
+  }
+}
+
+let unitCost: number | null = matchSingleItemCost(nameForMatch, active);
+```
+
+────────────────────────────────────────────────────────────────────────────
+CAUSE 2 — Emballage/CDE et Confirm./CDE utilisent une correspondance EXACTE
+par nom normalisé, alors que le coût d'achat utilise déjà une cascade
+tolérante (suffixes de variante, fuzzy...)
+
+~ligne 1020-1030 :
+```ts
+const defaultsMap = new Map<string, any>();
+for (const p of apiProds || []) { const key = norm(p.name || ""); const d = (p.settings as any)?.profitDefaults; if (key && d) defaultsMap.set(key, d); }
+if (defaultsMap.size && !cancelled) {
+  setProducts(prev => prev.map(p => {
+    const d = defaultsMap.get(norm(p.name)); if (!d) return p;
+    ...
+```
+`defaultsMap.get(norm(p.name))` exige une correspondance EXACTE — donc
+échoue pour "Sandale En Cuir Rf210 X2 Noir - 43" même une fois CAUSE 1
+corrigée (le coût d'achat matchera, mais pas l'emballage/confirmation, qui
+utilisent ce chemin séparé).
+
+FIX — Faire en sorte que `matchSingleItemCost` retourne aussi le PRODUIT
+CATALOGUE réellement matché (pas juste son coût), pour pouvoir résoudre le
+nom du parent une seule fois et l'utiliser pour LES TROIS auto-remplissages
+(coût, emballage, confirmation) de façon cohérente.
+
+1) Modifier la signature pour retourner un objet au lieu d'un simple
+   nombre :
+```ts
+function matchSingleItemProduct(name: string, active: any[]): { product: any; unitCost: number } | null {
+  // ... exactement la même cascade de correspondance qu'actuellement dans
+  // matchSingleItemCost (1. exact, 2. normalisé, 3. SKU, 4. strip variante,
+  // 5. fuzzy contains, 6. dernier recours par taille) — MAIS à chaque
+  // `return xxx.costPrice / 100`, remplacer par `return { product: xxx, unitCost: xxx.costPrice / 100 }`,
+  // et pour les cas avec variante matchée (matchedVariant / v), retourner
+  // `{ product: fp, unitCost: matchedVariant.costPrice / 100 }` (le PRODUIT
+  // PARENT, pas la variante, pour pouvoir lire settings.profitDefaults dessus).
+}
+
+// Garder matchSingleItemCost comme wrapper fin pour compatibilité :
+function matchSingleItemCost(name: string, active: any[]): number | null {
+  return matchSingleItemProduct(name, active)?.unitCost ?? null;
+}
+```
+
+2) Dans `matchStockCost`, récupérer aussi le produit matché par item du
+   breakdown (pas seulement le coût) — ajouter un champ `matchedProductId`
+   au breakdown item, à utiliser ensuite pour la résolution
+   emballage/confirmation :
+```ts
+const matched = matchSingleItemProduct(nameForMatch, active);
+let unitCost: number | null = matched?.unitCost ?? null;
+breakdown.push({
+  name: cleanPart || rawPart,
+  unitCost: unitCost ?? 0,
+  qty,
+  linked: unitCost !== null,
+  matchedProductId: matched?.product?.id ?? null, // ← AJOUTÉ
+});
+```
+
+3) À l'ÉTAPE du `useEffect` (~ligne 1004-1031), remplacer la résolution par
+   nom exact par une résolution via le MÊME matching que le coût d'achat :
+```ts
+if (!cancelled) {
+  setProducts(prev => prev.map(p => {
+    const { totalCost, breakdown } = matchStockCost(p.name, apiProds || []);
+    const matchedProductId = breakdown.find(b => b.matchedProductId)?.matchedProductId;
+    const matchedProduct = matchedProductId ? (apiProds || []).find((ap: any) => ap.id === matchedProductId) : null;
+    const d = (matchedProduct?.settings as any)?.profitDefaults;
+    if (!d) return p;
+    return { ...p,
+      buyingCost:      (!p.buyingCost      || p.buyingCost      === "0") ? String(d.coutAchat      || "") : p.buyingCost,
+      packagingCost:   (!p.packagingCost   || p.packagingCost   === "0") ? String(d.coutEmballage  || "") : p.packagingCost,
+      confirmationFee: (!p.confirmationFee || p.confirmationFee === "0") ? String(d.coutConfirmation || "") : p.confirmationFee,
+    };
+  }));
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix X2 mis-parsed as quantity, unify variant-aware matching for cost/packaging/confirmation auto-fill in CSV import" && git push
+
+VÉRIFICATION
+1. Import CSV → Saisie des coûts → "Sandale En Cuir Rf210 X2 Noir - 43" (et
+   toutes les variantes "Rf210 X2 ...") doivent maintenant afficher "auto
+   (stock)" avec le bon Prix d'achat, comme "Sandale En Cuir Rf 1012 Noir
+   42".
+2. Emballage/CDE et Confirm./CDE doivent aussi se pré-remplir pour ces
+   lignes si le produit parent a des valeurs `coutEmballage`/
+   `coutConfirmation` définies dans ses réglages.
+3. Compteur "X/188 produits pré-remplis depuis le stock" doit augmenter
+   nettement (toutes les lignes "Rf210 X2" comptaient auparavant comme
+   non-remplies).
+4. Vérifier qu'un vrai cas de quantité groupée (ex: un produit réellement
+   nommé "Pack Chaussettes X3" sans que "Pack Chaussettes" seul existe en
+   catalogue) matche toujours correctement via le fallback — non régressé.

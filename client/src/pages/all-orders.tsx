@@ -16,6 +16,7 @@ import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, ListOrdered, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { SiWhatsapp, SiShopify } from "react-icons/si";
+import { SourceBadge } from '@/components/source-badge';
 import { useToast } from "@/hooks/use-toast";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
@@ -84,6 +85,7 @@ function getCarrierLogo(provider: string | null | undefined): string | null {
   const key = provider.toLowerCase().replace(/\s+/g, '');
   return CARRIER_LOGOS[key] || CARRIER_LOGOS[provider.toLowerCase()] || null;
 }
+
 
 const ALL_COLUMNS = [
   { key: 'code', label: 'Code', locked: false },
@@ -589,7 +591,19 @@ export default function AllOrders() {
           <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="all-button-bulk-ship">
             <Truck className="w-4 h-4" />
           </Button>
-          <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="all-button-export">
+          <Button
+            variant="outline" size="icon"
+            className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50"
+            title="Exporter en Excel"
+            data-testid="all-button-export"
+            onClick={() => {
+              const params = new URLSearchParams();
+              Object.entries(filters || {}).forEach(([k, v]) => {
+                if (v !== undefined && v !== '' && v !== 'all') params.set(k, String(v));
+              });
+              window.open(`/api/orders/export?${params.toString()}`, '_blank');
+            }}
+          >
             <FileSpreadsheet className="w-4 h-4" />
           </Button>
           <Popover open={showColMenu} onOpenChange={setShowColMenu}>
@@ -936,6 +950,17 @@ export default function AllOrders() {
                       {isColVisible('produit') && (
                         <TableCell className="text-[11px] align-top" title={productName} data-testid={`all-text-product-${order.id}`}>
                           <div className="max-w-[200px] line-clamp-2 break-words">{productName}</div>
+                          {/* Badge "Produit non reconnu" : visible quand aucun item n'a de productId résolu */}
+                          {items.length > 0 && items.every((it: any) => !it.productId) && (
+                            <Badge
+                              variant="outline"
+                              className="mt-0.5 px-1 py-0 h-4 text-[9px] border-amber-400 text-amber-600 dark:text-amber-400 cursor-default"
+                              title="Le nom du produit n'a pas pu être associé à un article du catalogue. Vérifiez et liez manuellement via l'édition de commande."
+                              data-testid={`badge-unresolved-product-${order.id}`}
+                            >
+                              ⚠️ Produit non reconnu
+                            </Badge>
+                          )}
                         </TableCell>
                       )}
                       {isColVisible('boutique') && (
@@ -1000,14 +1025,12 @@ export default function AllOrders() {
                       {isColVisible('reference') && <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>}
                       {isColVisible('source') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          <span className="capitalize text-muted-foreground">{order.source || 'manual'}</span>
+                          <SourceBadge source={order.source} />
                         </TableCell>
                       )}
                       {isColVisible('utmSource') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          {order.utmSource ? (
-                            <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[10px] font-medium">{order.utmSource}</Badge>
-                          ) : <span className="text-muted-foreground">-</span>}
+                          {order.utmSource ? <SourceBadge source={order.utmSource} /> : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
                       {isColVisible('utmCampaign') && (
@@ -1110,7 +1133,7 @@ export default function AllOrders() {
                       : <Badge className="mt-1 ml-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{carrier}</Badge>;
                   })()}
                   {order.utmSource && (
-                    <Badge className="mt-1 ml-1 bg-violet-100 text-violet-700 border-violet-200 text-[10px]">{order.utmSource}</Badge>
+                    <span className="mt-1 ml-1 inline-flex"><SourceBadge source={order.utmSource} /></span>
                   )}
                 </div>
               </div>
@@ -1121,7 +1144,7 @@ export default function AllOrders() {
                 <Button variant="outline" size="sm" className="h-7 w-7 p-0" onClick={() => openOrder(order)} data-testid={`all-edit-mobile-${order.id}`}>
                   <Pencil className="w-3 h-3" />
                 </Button>
-                <span className="ml-auto text-[10px] text-muted-foreground capitalize">{order.source || 'manual'}</span>
+                <span className="ml-auto"><SourceBadge source={order.source} /></span>
               </div>
             </Card>
           ))

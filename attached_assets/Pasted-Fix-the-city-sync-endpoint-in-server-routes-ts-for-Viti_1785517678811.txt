@@ -1,0 +1,57 @@
+Fix the city sync endpoint in server/routes.ts for Vitipsexpress carrier.
+
+Find the endpoint POST /api/carrier-accounts/:id/sync-cities (around line 2197).
+
+Currently it only works for Digylog (hardcoded Digylog URL and headers).
+When carrierName is "vitipsexpress" it falls through and fails with 422.
+
+Add a carrier-specific branch BEFORE the existing Digylog fetch logic:
+
+Replace the section starting with:
+// Build cities URL — base is api.digylog.com/api/v2/seller, endpoint is /cities
+
+With this:
+
+// ── Vitipsexpress ────────────────────────────────────────────
+if (acct.carrierName === "vitipsexpress") {
+  const axiosLib2 = (await import("axios")).default;
+  const vitipsResp = await axiosLib2.get("https://app.vitipsexpress.com/api/client/villes", {
+    headers: {
+      "API Token": apiKey,
+      "Accept": "application/json",
+    },
+    timeout: 20_000,
+    httpsAgent: new (await import("https")).default.Agent({ rejectUnauthorized: false }),
+    validateStatus: () => true,
+  });
+
+  console.log(`[CitiesSync-Vitips] HTTP ${vitipsResp.status}:`, JSON.stringify(vitipsResp.data).slice(0, 200));
+
+  if (vitipsResp.status !== 200) {
+    return res.status(vitipsResp.status).json({
+      message: `Vitipsexpress API a répondu avec HTTP ${vitipsResp.status}`,
+      raw: vitipsResp.data,
+    });
+  }
+
+  // Response: { "data": [ { "name": "CASABLANCA", "abbr": "Casablanca" }, ... ] }
+  const rawVitips = vitipsResp.data;
+  const vitipsCityList: any[] = Array.isArray(rawVitips?.data) ? rawVitips.data : [];
+
+  const vitipsCities: string[] = vitipsCityList
+    .map((c: any) => (c?.abbr || c?.name || "").trim())
+    .filter(Boolean)
+    .sort();
+
+  if (!vitipsCities.length) {
+    return res.status(422).json({ message: "Aucune ville reçue de Vitipsexpress. Vérifiez votre token." });
+  }
+
+  await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, vitipsCities);
+  console.log(`[CITY-SYNC]: Received ${vitipsCities.length} cities from vitipsexpress (storeId=${storeId})`);
+  return res.json({ count: vitipsCities.length, cities: vitipsCities, syncedAt: new Date().toISOString() });
+}
+
+// ── Digylog (existing code continues below) ──────────────────
+// Build cities URL — base is api.digylog.com/api/v2/seller...
+// (keep all the existing Digylog code unchanged)

@@ -1,0 +1,372 @@
+Three connected fixes for the TajerGrow platform:
+
+1. FIX: Product images don't persist after creation in the Stock page (currently showing broken image icons).
+2. FEATURE: Add 4 cost fields (Prix Achat, Prix Vente, Frais Livraison, Frais Confirmation, Frais Emballage) when creating/editing a product in Stock. These per-product defaults are then auto-loaded into the Profit Analyzer.
+3. VERIFY: The Profit Analyzer formula correctly uses these multipliers — Prix Achat × units, all other costs × commandes (livraisons).
+
+═══════════════════════════════════════════════════════════════════════
+PART A — IMAGE BUG (CRITICAL FIRST)
+═══════════════════════════════════════════════════════════════════════
+
+STEP A1 — INSPECT
+Open client/src/pages/stock.tsx (or wherever the product creation form lives) and find the image upload handler. Also open the matching POST/PUT endpoint in server/routes.ts for products.
+
+Report:
+- How the image is currently submitted (FormData with file? base64 string? URL string?)
+- Where it should be stored (probably an `imageUrl` field on products table, or `settings.imageUrl`)
+- Whether there is a file storage solution configured (multer + local disk? S3? Cloudinary? Or just a URL field expecting an external link?)
+
+STEP A2 — FIX THE IMAGE PERSISTENCE
+
+The most likely root cause: the form sends a File object but the backend expects a string URL, OR the upload succeeds but the saved value never reaches the row that's displayed.
+
+Fix path (choose based on inspection):
+
+OPTION 1 — If there's no file upload infra yet (most likely):
+Switch the image input to an "Image URL" text field instead of a file picker. Many merchants will paste a CDN/Drive link anyway. Add a preview below the input:
+
+  <div className="mb-4">
+    <label className="block text-sm font-semibold text-gray-700 mb-2">
+      🖼️ Image du produit (URL)
+    </label>
+    <input
+      type="url"
+      value={form.imageUrl || ""}
+      onChange={(e) => setForm({ ...form, imageUrl: e.target.value })}
+      placeholder="https://exemple.com/image.jpg"
+      className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 outline-none"
+    />
+    {form.imageUrl && (
+      <div className="mt-2">
+        <img
+          src={form.imageUrl}
+          alt="Aperçu"
+          className="w-24 h-24 object-cover rounded-lg border border-gray-200"
+          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+        />
+      </div>
+    )}
+  </div>
+
+OPTION 2 — If a file picker is desired (slower but better UX):
+Use base64 encoding for now (simplest, no infra needed):
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      alert("Image trop grande (max 2 MB).");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setForm({ ...form, imageUrl: reader.result as string });  // base64 data URL
+    };
+    reader.readAsDataURL(file);
+  };
+
+Then in the backend (server/routes.ts product create/update handler), accept `imageUrl` as a string and persist it:
+
+  const { name, sku, imageUrl, ...rest } = req.body;
+  const product = await storage.createProduct({
+    storeId,
+    name: String(name || "").trim(),
+    sku: String(sku || "").trim() || null,
+    imageUrl: imageUrl ? String(imageUrl) : null,
+    ...rest,
+  });
+
+If the `products` table has no `imageUrl` column, store it under `settings.imageUrl` JSONB instead:
+
+  const settings = { ...(existingProduct?.settings || {}), imageUrl: imageUrl || null, ...otherSettings };
+
+STEP A3 — DISPLAY THE IMAGE IN THE INVENTORY TABLE
+
+In the Inventaire table (stock.tsx), the product row currently shows a broken-image icon placeholder. Update it:
+
+  <img
+    src={product.imageUrl || product.settings?.imageUrl || "/placeholder-product.png"}
+    alt={product.name}
+    className="w-12 h-12 object-cover rounded-lg border border-gray-200 bg-white"
+    onError={(e) => {
+      (e.target as HTMLImageElement).src = "/placeholder-product.png";
+    }}
+  />
+
+If `/placeholder-product.png` doesn't exist, use a data URI inline placeholder (light gray 1x1 svg) so it never breaks.
+
+═══════════════════════════════════════════════════════════════════════
+PART B — ADD COST FIELDS TO PRODUCT FORM
+═══════════════════════════════════════════════════════════════════════
+
+STEP B1 — INSPECT
+In stock.tsx, find the product creation/edit form. Note the existing fields (likely: name, SKU, price, stock).
+
+In shared/schema.ts, check the `products` table. If there's a `settings` JSONB column already, we use it. If not, add the cost fields directly (better) or use settings.profitDefaults.
+
+STEP B2 — ADD COST FIELDS
+
+In the product form, add a new section "💰 Coûts (pour Analyseur de profit)" below the existing fields:
+
+  <div className="border-t border-gray-200 pt-4 mt-4">
+    <h3 className="text-sm font-semibold text-gray-700 mb-3">💰 Coûts (pour Analyseur de profit)</h3>
+    <p className="text-xs text-gray-500 mb-3">
+      Ces valeurs seront pré-remplies automatiquement dans l'Analyseur de profit.
+    </p>
+
+    <div className="grid grid-cols-2 gap-3">
+      <div>
+        <label className="block text-xs font-semibold text-gray-700 mb-1">
+          Prix d'achat (DH / unité)
+        </label>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={form.coutAchat || ""}
+          onChange={(e) => setForm({ ...form, coutAchat: parseFloat(e.target.value) || 0 })}
+          placeholder="ex: 45"
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 outline-none text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-xs font-semibold text-gray-700 mb-1">
+          Prix de vente (DH / commande)
+        </label>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={form.prixVente || ""}
+          onChange={(e) => setForm({ ...form, prixVente: parseFloat(e.target.value) || 0 })}
+          placeholder="ex: 149"
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 outline-none text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-xs font-semibold text-gray-700 mb-1">
+          📦 Frais d'emballage (DH / commande)
+        </label>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={form.coutEmballage || ""}
+          onChange={(e) => setForm({ ...form, coutEmballage: parseFloat(e.target.value) || 0 })}
+          placeholder="ex: 3"
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 outline-none text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-xs font-semibold text-gray-700 mb-1">
+          🚚 Frais de livraison (DH / commande)
+        </label>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={form.coutLivraison || ""}
+          onChange={(e) => setForm({ ...form, coutLivraison: parseFloat(e.target.value) || 0 })}
+          placeholder="ex: 25"
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 outline-none text-sm"
+        />
+      </div>
+
+      <div className="col-span-2">
+        <label className="block text-xs font-semibold text-gray-700 mb-1">
+          📞 Frais de confirmation (DH / commande)
+        </label>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={form.coutConfirmation || ""}
+          onChange={(e) => setForm({ ...form, coutConfirmation: parseFloat(e.target.value) || 0 })}
+          placeholder="ex: 8"
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 outline-none text-sm"
+        />
+      </div>
+    </div>
+  </div>
+
+STEP B3 — PERSIST IN BACKEND
+
+In the product create/update endpoint, accept these new fields and store them in `products.settings.profitDefaults`:
+
+  const profitDefaults = {
+    coutAchat: parseFloat(req.body.coutAchat) || 0,
+    prixVente: parseFloat(req.body.prixVente) || 0,
+    coutEmballage: parseFloat(req.body.coutEmballage) || 0,
+    coutLivraison: parseFloat(req.body.coutLivraison) || 0,
+    coutConfirmation: parseFloat(req.body.coutConfirmation) || 0,
+  };
+
+  const mergedSettings = {
+    ...(existing?.settings || {}),
+    ...(req.body.settings || {}),
+    imageUrl: req.body.imageUrl || (existing?.settings?.imageUrl) || null,
+    profitDefaults,
+  };
+
+  // Then storage.updateProduct(productId, { ..., settings: mergedSettings })
+
+STEP B4 — PRE-FILL ON EDIT
+
+When opening the edit modal:
+
+  useEffect(() => {
+    if (editingProduct) {
+      const defaults = (editingProduct.settings as any)?.profitDefaults || {};
+      setForm({
+        ...form,
+        name: editingProduct.name,
+        sku: editingProduct.sku || "",
+        imageUrl: (editingProduct.settings as any)?.imageUrl || editingProduct.imageUrl || "",
+        coutAchat: defaults.coutAchat || 0,
+        prixVente: defaults.prixVente || editingProduct.price || 0,
+        coutEmballage: defaults.coutEmballage || 0,
+        coutLivraison: defaults.coutLivraison || 0,
+        coutConfirmation: defaults.coutConfirmation || 0,
+      });
+    }
+  }, [editingProduct]);
+
+═══════════════════════════════════════════════════════════════════════
+PART C — AUTO-LOAD DEFAULTS IN PROFIT ANALYZER
+═══════════════════════════════════════════════════════════════════════
+
+STEP C1 — INSPECT
+Open client/src/pages/profit-analyzer.tsx. Find Step 2 ("Saisie des coûts") where the user enters per-product costs.
+
+STEP C2 — FETCH PRODUCT DEFAULTS
+
+When the user reaches Step 2 (after product selection), call /api/products to get the store's products and match by name to pre-fill the cost rows:
+
+  useEffect(() => {
+    async function loadDefaults() {
+      try {
+        const resp = await fetch("/api/products", { credentials: "include" });
+        const products = await resp.json();
+
+        // Build a name → defaults map
+        const defaultsByName = new Map<string, any>();
+        for (const p of products || []) {
+          const name = (p.name || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+          const d = (p.settings as any)?.profitDefaults;
+          if (name && d) defaultsByName.set(name, d);
+        }
+
+        // Pre-fill cost rows
+        setCostRows((rows) => rows.map((r) => {
+          const key = (r.productName || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+          const d = defaultsByName.get(key);
+          if (!d) return r;
+          return {
+            ...r,
+            prixAchatU: r.prixAchatU || d.coutAchat || 0,
+            emballageU: r.emballageU || d.coutEmballage || 0,
+            confirmU:   r.confirmU   || d.coutConfirmation || 0,
+            // shipping comes from CSV column, not defaults
+          };
+        }));
+      } catch (err) {
+        console.warn("[ProfitAnalyzer] Could not load product defaults:", err);
+      }
+    }
+    if (activeStep === 2 && costRows.length > 0) loadDefaults();
+  }, [activeStep, costRows.length]);
+
+═══════════════════════════════════════════════════════════════════════
+PART D — VERIFY PROFIT FORMULA (ACCURACY CHECK)
+═══════════════════════════════════════════════════════════════════════
+
+STEP D1 — INSPECT THE FORMULA
+
+In profit-analyzer.tsx, find the report computation (Step 3). Confirm it uses these EXACT multipliers:
+
+  // Per product:
+  const livraisons   = product.livraisons;       // count of delivered rows (= confirmed & delivered orders)
+  const totalUnits   = product.totalQty;          // sum of qtyPerRow across delivered rows
+
+  const costGoods         = totalUnits * row.prixAchatU;   // ✅ × UNITS
+  const costPackaging     = livraisons * row.emballageU;   // ✅ × COMMANDES
+  const costConfirmation  = livraisons * row.confirmU;     // ✅ × COMMANDES
+  const costShipping      = product.totalShipping;          // sum from CSV (already per-row)
+  const costAds           = ... (existing per-product or prorata logic, unchanged)
+
+  const totalCost = costGoods + costPackaging + costConfirmation + costShipping + costAds;
+  const profit    = product.totalRevenue - totalCost;
+  const roi       = totalCost > 0 ? (profit / totalCost) * 100 : 0;
+
+If the formula does NOT match this exactly (e.g., emballage is being multiplied by totalUnits, or confirmation × totalUnits), FIX it.
+
+STEP D2 — ADD A "MATH" BREAKDOWN ROW IN THE REPORT
+
+To make it transparent and verifiable, show the math inline in the final report for each product:
+
+  <div className="bg-white rounded-xl border border-gray-200 p-4">
+    <div className="flex items-center justify-between mb-3">
+      <div>
+        <h3 className="font-bold text-gray-800">{product.productName}</h3>
+        <p className="text-xs text-gray-500">
+          {product.livraisons} commandes · {product.totalQty} unités · {formatDH(product.totalRevenue)}
+        </p>
+      </div>
+      <div className={`text-2xl font-black ${product.profit >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+        {formatDH(product.profit)}
+      </div>
+    </div>
+
+    <div className="text-xs text-gray-600 space-y-1 font-mono">
+      <div>Achat       : {product.totalQty} × {row.prixAchatU} = -{formatDH(product.costGoods)}</div>
+      <div>Emballage   : {product.livraisons} × {row.emballageU} = -{formatDH(product.costPackaging)}</div>
+      <div>Confirmation: {product.livraisons} × {row.confirmU}   = -{formatDH(product.costConfirmation)}</div>
+      <div>Livraison   : (somme CSV)                                = -{formatDH(product.costShipping)}</div>
+      <div>Publicité   :                                            = -{formatDH(product.costAds)}</div>
+      <div className="border-t border-gray-300 pt-1 font-bold">
+        PROFIT NET  :                                            = {formatDH(product.profit)}
+      </div>
+    </div>
+  </div>
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+PART A — Image:
+1. ✅ Add a new product with image URL → image displays in form preview
+2. ✅ Save product → image persists in inventory table (no more broken icon)
+3. ✅ Edit product → image URL pre-fills, can be changed
+4. ✅ Broken URLs gracefully show placeholder, not red X
+
+PART B — Cost fields:
+5. ✅ Product form shows 5 cost fields (Achat, Vente, Emballage, Livraison, Confirmation)
+6. ✅ Values save to products.settings.profitDefaults
+7. ✅ Edit modal pre-fills saved values
+
+PART C — Auto-load in Analyzer:
+8. ✅ Import CSV → reach Step 2 → cost columns pre-filled from saved defaults
+9. ✅ User can still override the pre-filled values
+
+PART D — Formula accuracy:
+10. ✅ For a product with Qty=2 × 42 livraisons:
+        Achat × 84 (units), Emballage × 42 (commandes), Confirmation × 42 (commandes)
+11. ✅ Math breakdown visible in Step 3 report
+12. ✅ Build passes
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(stock+profit): fix image persistence, add cost defaults to products, verify analyzer formula"
+git push origin main
+
+WORKFLOW:
+1. Apply PART A first (image fix) — test in browser.
+2. Apply PART B (cost fields).
+3. Apply PART C (auto-load).
+4. Apply PART D (formula verify).
+5. `npm run build` before push.
+6. After deploy: test with a real product (add image + costs), then run Profit Analyzer and verify auto-fill works.

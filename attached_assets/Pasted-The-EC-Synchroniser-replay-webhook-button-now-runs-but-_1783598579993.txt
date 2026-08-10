@@ -1,0 +1,38 @@
+The EC "Synchroniser" (replay webhook) button now runs, but reports: "0 commande(s) mise 
+à jour · 28 commande(s) sans événement webhook enregistré" — even though EC webhooks for 
+those exact package_ids ARE in the logs (they were received BEFORE the tracking numbers 
+were attached, and logged as "No order found" / webhook_no_match / matched:false).
+
+ROOT CAUSE: the replay only looks at webhook events that were already linked to an order. 
+The historical events for these parcels are stored as ORPHAN events (no order_id), so the 
+replay finds nothing. It must instead search ALL stored EC webhook events by package_id 
+and match them to the order's track_number.
+
+FIX THE REPLAY:
+1) For each EC order in the store that has a non-empty track_number, search integration_logs 
+   for ALL events from provider expresscoursier/olivraison (ANY action: webhook_received, 
+   webhook_no_match, matched or not) whose stored payload contains 
+   package_id === order.track_number. Do NOT filter by order_id — these events have none.
+   - The payload shape is: {"package_id":"CL-EXP-...","delivery_status":"30",
+     "event_time":"...","notif_type":"ChangeStatus"}. Parse it as JSON; if the payload is 
+     stored as a string, JSON.parse it. Match package_id case-sensitively and trimmed.
+2) Take the event with the LATEST event_time (fall back to the log's created_at), map its 
+   delivery_status through EC_NUMERIC_STATUS_MAP, and apply it to the order (status + 
+   commentStatus = raw label). Only update if the mapped status differs from the current one.
+3) Report accurately: how many orders updated, how many had events but no status change, 
+   and how many truly have zero events for their tracking.
+4) DIAGNOSTIC (run and paste to me): 
+   - total EC webhook events stored, 
+   - how many distinct package_ids they cover, 
+   - how many of those package_ids match an existing order.track_number, 
+   - the distinct delivery_status codes with counts and one example package_id each.
+
+CRITICAL — DO NOT GUESS STATUS MEANINGS: EC sends numeric codes (30, 34, 35, 36 seen so 
+far). Keep EC_NUMERIC_STATUS_MAP with a clear TODO; unknown codes must default to 
+'in_progress' (never delivered/refused). Do not mark anything Livré or Refusé until I 
+supply EC's official code table.
+
+Also make the live EC webhook handler, on receiving an event whose package_id now matches 
+an order's track_number, apply the status immediately (so this stops accumulating orphans).
+
+Deploy to main and paste me the diagnostic output.

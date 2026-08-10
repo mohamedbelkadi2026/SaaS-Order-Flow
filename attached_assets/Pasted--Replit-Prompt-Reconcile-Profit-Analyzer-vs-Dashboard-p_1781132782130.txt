@@ -1,0 +1,40 @@
+# Replit Prompt — Reconcile Profit Analyzer vs Dashboard profit
+
+The "Profit Net" on the Dashboard (`/api/stats/filtered`) and on Profit Analyzer Pro (`/api/products/profitability`) don't match (e.g. 22 965,88 DH vs 5 751,39 DH). Root causes, verified in code:
+1. The two screens are usually on different date ranges (Dashboard "Mois dernier" vs Analyzer "Tout").
+2. Imported ad spend is stamped on a **single date** (the import date), so a month filter either counts all of it or none — it isn't spread over the campaign's real period.
+3. The Analyzer subtracts a per-product **confirmation cost** (`coutConfirmation`) that the Dashboard does not. The Analyzer also only subtracts **product-tagged** ad spend, while the Dashboard subtracts **all** ad spend (incl. untagged/global). So the formulas diverge.
+
+Fix all three so the two reconcile for the same date range.
+
+## Part A — Date imported ad spend by the campaign's real period (not one day)
+In the ad-spend importer, when the file has a reporting period (Facebook export columns `Reporting starts` / `Reporting ends`), date each created ad-spend entry by **`Reporting starts`** (already parsed to `YYYY-MM-DD`) instead of the single manual date. Keep the manual "Date" field only as the fallback when the file has no date column.
+- Optional but recommended: offer a checkbox `Répartir la dépense sur la période` — when on and both reporting dates exist, split each campaign's spend evenly across the days in `[Reporting starts, Reporting ends]` (one entry per day = spend / nbDays), so month/7-day filters are accurate. When off, use `Reporting starts` as the single date.
+- This only affects new imports. For the rows already imported on one date, let the user re-import, or bulk-edit the date (the edit pencil already exists).
+
+## Part B — Unify the net-profit formula across both endpoints
+Make both `/api/stats/filtered` (Dashboard) and `/api/products/profitability` (Analyzer) use the SAME cost components so they reconcile for an identical date range. Canonical formula (all in centimes, delivered orders only):
+```
+netProfit = revenue
+          − productCost (COGS)
+          − shippingCost
+          − packagingCost (coutEmballage/order)
+          − confirmationCost (coutConfirmation/order)
+          − agentCommissions (agent rate/delivered order)
+          − adSpend
+```
+Apply consistently:
+- **Dashboard** currently omits `confirmationCost` (coutConfirmation). Add it, mirroring how the Analyzer reads `settings.profitDefaults.coutConfirmation` per delivered order's product.
+- **Analyzer** currently subtracts only product-tagged ad spend and shows untagged/global spend separately. For the **summary "PROFIT NET TOTAL"**, also subtract the global/untagged ad spend (so the total matches the Dashboard, which subtracts all ad spend). Keep the per-product rows using only their tagged spend (that's correct for per-product margin), but the grand total must include global spend.
+- Both must filter ad spend by the same date field (`ad_spend.date` within the selected range), which both already do.
+
+## Part C — Keep the date ranges aligned / visible
+- Ensure the Analyzer's `dateRange` presets (`today`, `7days`, `month`, `lastmonth`, `all`, custom) compute the exact same calendar bounds as the Dashboard presets (e.g. "Mois dernier" = 1st→last day of previous month in both). 
+- On the Analyzer summary, show the active range label (e.g. "Mois dernier — 01/05 → 31/05") so the user knows what period the profit reflects.
+
+## Testing checklist
+1. Set BOTH Dashboard and Profit Analyzer to the **same** range (e.g. "Mois dernier"): the "Profit Net" totals match within rounding.
+2. Re-import a Facebook CSV: each ad-spend entry is dated by `Reporting starts` (or spread across the period if the option is on), not a single import day; filtering by that month now counts the spend correctly.
+3. Dashboard profit now also subtracts the per-order confirmation cost (it drops by exactly Σ coutConfirmation over delivered orders).
+4. Analyzer "PROFIT NET TOTAL" subtracts untagged/global ad spend too, so it equals the Dashboard for the same range.
+5. Per-product rows still show each product's own tagged ad spend and margin.

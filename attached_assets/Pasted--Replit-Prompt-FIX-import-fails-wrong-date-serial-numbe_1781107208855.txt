@@ -1,0 +1,59 @@
+# Replit Prompt — FIX: import fails + wrong date (serial number) + all rows imported identical
+
+The ad-spend import (Publicités → Importer les dépenses) now selects products correctly, but importing has three bugs:
+
+1. **"Erreur import — Une erreur s'est produite"** — the import fails.
+2. **The DATE is wrong.** Imported rows show `46143.0414` in the DATE column. That value is the Excel/Sheets **date serial number** of "Reporting starts" (46143 ≈ 2026-05-01). The importer is storing the raw serial instead of a real date. This stray `46143.0414` is also what appeared earlier under campaign names.
+3. **All imported rows are identical** — every row imported as the SAME campaign/product/amount (e.g. `ZOMAX-43` · `1026.26 DH` repeated 4×), even though different campaigns were mapped to different products. The per-row payload is built from one shared value instead of each row's own data.
+
+Fix all three. Do not change parsing of the amount column (that is correct now) or the currency conversion.
+
+## 1. Date — use the user-selected date by default, parse the column only if valid
+The user wants to control the date. Make the manual **"Date (si absente du fichier)"** field the source of truth for every imported row, and make the date column optional:
+- Add `— Aucune (utiliser la date choisie) —` as the default option in **Colonne Date (optionnel)**.
+- Build each row's date as: `const rowDate = parsedDateFromColumn || selectedDate;` where `selectedDate` is the manual field (format `YYYY-MM-DD`).
+- **Never store an Excel serial number.** When a date column IS used, convert it to `YYYY-MM-DD`:
+  - Parse the workbook with date handling: `XLSX.read(arrayBuffer, { type: "array", cellDates: true })` and read rows with `XLSX.utils.sheet_to_json(sheet, { raw: false, dateNF: "yyyy-mm-dd" })`.
+  - Add a guard converter: if a date value is a number (serial), convert it:
+    ```ts
+    function toISODate(v: any, fallback: string): string {
+      if (v == null || v === "") return fallback;
+      if (typeof v === "number") { // Excel/Sheets serial
+        const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+        return isNaN(d.getTime()) ? fallback : d.toISOString().slice(0, 10);
+      }
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? fallback : d.toISOString().slice(0, 10);
+    }
+    ```
+  - Always send `date` to the backend as a clean `YYYY-MM-DD` string.
+
+## 2. Build the payload PER ROW (fix the duplicate bug)
+The duplicate-rows bug means the payload is built from a single shared variable. Rebuild it by iterating the mapping rows so each entry carries ITS OWN campaign, amount, productId and date:
+```ts
+const rows = mappingRows
+  .filter(r => mapping[r.key] != null)            // only rows with a product chosen
+  .map(r => ({
+    campaignName: r.campaignName,
+    amount: r.amountDh,                            // this row's own DH amount
+    productId: mapping[r.key],                     // this row's own product
+    date: toISODate(r.dateRaw, selectedDate),      // this row's own/selected date
+  }));
+```
+Do NOT reuse one object reference for all rows. Verify the array has distinct campaigns/amounts before sending. The "Importer (N)" button count must equal `rows.length` (rows actually being imported).
+
+## 3. Make the import succeed + surface real errors
+On the backend `POST /api/publicites/import`:
+- Validate each row: `amount` is a finite number, `date` matches `YYYY-MM-DD`, `productId` is a number or null, `magasinId` owned by the user. Reject the request with a clear message naming the first bad row instead of a generic 500.
+- Insert ALL valid rows (loop), and wrap the handler in try/catch that `console.error`s the real error so it shows in the Replit logs. Return `{ inserted, mapped }`.
+- On the client, if the request fails, show the server's message (not just "Une erreur s'est produite").
+
+## 4. Clean up already-imported bad rows (optional)
+The 4 identical `ZOMAX-43 / 46143.0414` rows from the failed attempt are junk — delete them (they're deletable via the trash icon in the Par Produit table) so they don't pollute totals.
+
+## Testing checklist
+1. Import the CSV with several campaigns mapped to different products → each imported row shows its OWN product and its OWN amount (sbat zomaz=1026.26, mini 9tara=2597.96, etc.), not all identical.
+2. The DATE column shows a real date (the chosen `10/06/2026` or the parsed `2026-05-01`), never `46143.0414`.
+3. Importing all mapped rows succeeds with a success toast; no "Erreur import".
+4. If something is invalid, the toast shows the real reason.
+5. "Importer (N)" equals the number of rows that have a product selected.

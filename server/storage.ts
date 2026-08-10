@@ -1,8 +1,9 @@
 import { db } from "./db";
 import { 
-  users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
+  users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities,
+  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, carrierCityPricing,
+  pushSubscriptions,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -14,9 +15,13 @@ import {
   type OrderFollowUpLog, type InsertOrderFollowUpLog,
   type StockLog,
   type Payment, type InsertPayment,
+  csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
+  type PushSubscription, type InsertPushSubscription,
 } from "@shared/schema";
-import { eq, desc, and, sql, count, ne, like, gte, lte, lt, inArray, or, isNull } from "drizzle-orm";
+import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
+import { eq, desc, and, sql, count, ne, like, ilike, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
+import { matchCityId, normalizeCityKey } from "./services/city-aliases";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -42,11 +47,13 @@ export interface IStorage {
   createProduct(product: InsertProduct): Promise<Product>;
   getOrCreateProductByName(storeId: number, opts: { name: string; sku?: string | null; sellingPrice?: number }): Promise<Product>;
   updateProductStock(id: number, stockDelta: number): Promise<Product | undefined>;
+  decrementStockForOrder(orderId: number, storeId: number): Promise<void>;
   
-  getOrdersByStore(storeId: number, status?: string): Promise<OrderWithDetails[]>;
+  getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]>;
   getOrdersSince(storeId: number, since: Date): Promise<Order[]>;
   getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]>;
   getOrdersByPhone(storeId: number, phone: string): Promise<OrderWithDetails[]>;
+  getActiveOrdersByPhone(storeId: number, phone: string): Promise<Order[]>;
   getOrder(id: number): Promise<OrderWithDetails | undefined>;
   getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
@@ -83,6 +90,8 @@ export interface IStorage {
   resolveExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null>;
   upsertOzonExpressCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
   resolveOzonExpressCityId(storeId: number, cityName: string): Promise<string | null>;
+  upsertVitipsCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
+  getVitipsCityAbbr(storeId: number, cityName: string): Promise<string | null>;
   getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{
     id?: number;
     settings?: Record<string, any>;
@@ -113,10 +122,24 @@ export interface IStorage {
   getOrderByTrackingNumber(storeId: number, trackingNumber: string): Promise<Order | undefined>;
   getOrderByTrackingNumberAnyStore(trackingNumber: string): Promise<Order | undefined>;
   getOrderByOrderNumberAnyStore(orderNumber: string): Promise<Order | undefined>;
+  getOrdersForFeeBackfill(storeId: number, provider: string): Promise<Order[]>;
+  getOzonOrdersToReconcile(storeId: number): Promise<Order[]>;
+  getAllCarrierAccountsByProvider(provider: string): Promise<CarrierAccount[]>;
   updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
   updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
   deleteProduct(id: number): Promise<void>;
+  archiveProduct(id: number): Promise<void>;
+  getProductUsage(storeId: number, productId: number): Promise<{ ordersCount: number; deliveredCount: number; inStockOrders: number; totalRevenue: number }>;
+  bulkDeleteProducts(storeId: number, productIds: number[], force: boolean): Promise<{ deleted: number; archived: number; skipped: number; errors: any[] }>;
+  getProductsWithoutOrders(storeId: number): Promise<any[]>;
+  getDuplicateProducts(storeId: number): Promise<any[]>;
+  getArchivedProducts(storeId: number): Promise<any[]>;
   getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]>;
+  getCsvProfitReports(storeId: number): Promise<CsvProfitReport[]>;
+  getCsvProfitReport(id: number, storeId: number): Promise<CsvProfitReport | undefined>;
+  createCsvProfitReport(data: InsertCsvProfitReport): Promise<CsvProfitReport>;
+  updateCsvProfitReport(id: number, storeId: number, data: Partial<InsertCsvProfitReport>): Promise<CsvProfitReport | undefined>;
+  deleteCsvProfitReport(id: number, storeId: number): Promise<void>;
   createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
   getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
   getInventoryStats(storeId: number): Promise<any>;
@@ -140,7 +163,8 @@ export interface IStorage {
   checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }>;
   checkPaywall(storeId: number): Promise<{ isExpired: boolean; isLimitReached: boolean; isBlocked: boolean; reason: 'expired' | 'limit' | null; current: number; limit: number; plan: string }>;
 
-  getAgentPerformance(storeId: number, options?: { magasinId?: number | null; date?: string }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
+  getAgentPerformance(storeId: number, options?: { magasinId?: number | null; date?: string }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number; avgResponseMinutes: number | null }[]>;
+  getAgentComparisonByProduct(storeId: number): Promise<{ productId: number; productName: string; agentId: number; total: number; confirmed: number }[]>;
   // Like getAgentPerformance but groups by `assigned_to_id` over a date range
   // of `created_at`. Powers the Dashboard's "Performance de l'Équipe" panel
   // where the question is "out of all orders ASSIGNED to this agent in the
@@ -177,13 +201,16 @@ export interface IStorage {
   createAdSpendEntry(data: InsertAdSpendNew & { userId?: number | null }): Promise<AdSpendNewEntry>;
   getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean; magasinId?: number | null }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string; magasinName?: string | null })[]>;
   deleteAdSpendNew(id: number, storeId: number, userId?: number): Promise<void>;
+  updateAdSpendEntry(id: number, storeId: number, userId: number | undefined, fields: { date?: string; source?: string; amount?: number; productId?: number | null }): Promise<AdSpendNewEntry | undefined>;
+  getCampaignMap(storeId: number): Promise<Record<string, number>>;
+  upsertCampaignMap(storeId: number, campaignName: string, productId: number): Promise<void>;
   getAdSpendNewTotal(storeId: number, dateFrom?: string, dateTo?: string): Promise<number>;
 
   getMediaBuyerAdSpend(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<AdSpendEntry[]>;
   upsertMediaBuyerAdSpend(entry: InsertAdSpend & { mediaBuyerId: number }): Promise<AdSpendEntry>;
   deleteAdSpendEntry(id: number, storeId: number): Promise<void>;
   getAdminAdSpendList(storeId: number, dateFrom?: string, dateTo?: string): Promise<any[]>;
-  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number): Promise<{
+  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number, source?: string): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
     byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
@@ -194,7 +221,7 @@ export interface IStorage {
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
   }>;
-  getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+  getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number, source?: string): Promise<{
     rows: { userId: number; userName: string; role: string; totalLeads: number; deliveredCount: number; revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; totalCosts: number; netProfit: number; }[];
   }>;
 
@@ -234,7 +261,7 @@ export interface IStorage {
   phoneHasOrdersInStore(storeId: number, phone: string): Promise<boolean>;
   updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; leadQuantity?: number; createdOrderId?: number }): Promise<void>;
   createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number; quantity?: number }): Promise<import("@shared/schema").Order>;
-  createOrderFromCarrier(params: { storeId: number; magasinId?: number | null; provider: string; trackingNumber: string; customerName: string; customerPhone: string; customerAddress?: string; customerCity?: string; totalPrice?: number; shippingCost?: number; status?: string; rawStatus?: string; }): Promise<import("@shared/schema").Order>;
+  createOrderFromCarrier(params: { storeId: number; magasinId?: number | null; provider: string; trackingNumber: string; customerName: string; customerPhone: string; customerAddress?: string; customerCity?: string; totalPrice?: number; shippingCost?: number; status?: string; rawStatus?: string; productName?: string; }): Promise<import("@shared/schema").Order>;
   getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
   upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
@@ -266,6 +293,13 @@ export interface IStorage {
   }>): Promise<import("@shared/schema").LandingPage | undefined>;
   deleteLandingPage(id: number, storeId: number): Promise<void>;
   incrementLandingPageOrderCount(id: number): Promise<void>;
+
+  // ── Push Notifications ──────────────────────────────────────────────────
+  getPushSubscriptionsByUser(userId: number): Promise<PushSubscription[]>;
+  upsertPushSubscription(data: InsertPushSubscription): Promise<PushSubscription>;
+  deletePushSubscription(endpoint: string): Promise<void>;
+  deletePushSubscriptionsByEndpoints(endpoints: string[]): Promise<void>;
+  updateUserNotifSettings(userId: number, settings: { sound?: boolean; newOrder?: boolean; statusUpdate?: boolean; importantOnly?: boolean }): Promise<void>;
 }
 
 // Moroccan region to city keyword mapping for order assignment
@@ -283,6 +317,12 @@ const REGION_CITY_MAP: Record<string, string[]> = {
   laayoune: ['laâyoune', 'laayoune', 'boujdour', 'smara', 'tarfaya'],
   dakhla: ['dakhla', 'aousserd', 'oued dahab'],
 };
+
+/** True for any status that represents a physical parcel coming back
+ *  (contains the word "retour", case-insensitive). Excludes refused/Annulé. */
+export function isReturnStatus(status: string | null | undefined): boolean {
+  return !!status && status.toLowerCase().includes('retour');
+}
 
 export class DatabaseStorage implements IStorage {
   async getStore(id: number): Promise<Store | undefined> {
@@ -328,6 +368,39 @@ export class DatabaseStorage implements IStorage {
 
   async getUsersByStore(storeId: number): Promise<User[]> {
     return await db.select().from(users).where(eq(users.storeId, storeId));
+  }
+
+  // ── Push Notifications ────────────────────────────────────────────────────
+  async getPushSubscriptionsByUser(userId: number): Promise<PushSubscription[]> {
+    return await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, userId));
+  }
+
+  async upsertPushSubscription(data: InsertPushSubscription): Promise<PushSubscription> {
+    const [sub] = await db
+      .insert(pushSubscriptions)
+      .values(data)
+      .onConflictDoUpdate({
+        target: pushSubscriptions.endpoint,
+        set: { p256dh: data.p256dh, auth: data.auth, userAgent: data.userAgent },
+      })
+      .returning();
+    return sub;
+  }
+
+  async deletePushSubscription(endpoint: string): Promise<void> {
+    await db.delete(pushSubscriptions).where(eq(pushSubscriptions.endpoint, endpoint));
+  }
+
+  async deletePushSubscriptionsByEndpoints(endpoints: string[]): Promise<void> {
+    if (!endpoints.length) return;
+    await db.delete(pushSubscriptions).where(inArray(pushSubscriptions.endpoint, endpoints));
+  }
+
+  async updateUserNotifSettings(
+    userId: number,
+    settings: { sound?: boolean; newOrder?: boolean; statusUpdate?: boolean; importantOnly?: boolean },
+  ): Promise<void> {
+    await db.update(users).set({ notifSettings: settings }).where(eq(users.id, userId));
   }
 
   async createUser(user: InsertUser): Promise<User> {
@@ -415,6 +488,66 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+  async decrementStockForOrder(orderId: number, storeId: number): Promise<void> {
+    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+    if (!items.length) return;
+
+    for (const item of items) {
+      if (!item.productId) continue;
+      const qty = item.quantity || 1;
+
+      // Try to match a variant first (by variantInfo name or SKU)
+      const variants = await db.select().from(productVariants)
+        .where(eq(productVariants.productId, item.productId));
+
+      let variantMatched = false;
+      if (variants.length > 0 && item.variantInfo) {
+        const variantName = (item.variantInfo || '').trim();
+        const matched = variants.find(v =>
+          v.name === variantName ||
+          v.sku === item.sku ||
+          v.name?.includes(variantName) ||
+          variantName.includes(v.name || '')
+        );
+        if (matched) {
+          const newStock = Math.max(0, (matched.stock || 0) - qty);
+          console.log(`[STOCK-DECREMENT] Order #${orderId} → variant "${matched.name}" (id=${matched.id}): stock ${matched.stock} → ${newStock}`);
+          await db.update(productVariants)
+            .set({ stock: newStock })
+            .where(eq(productVariants.id, matched.id));
+          await db.insert(stockMovements).values({
+            storeId,
+            productId: item.productId,
+            variantId: matched.id,
+            type: 'shipped',
+            quantity: -qty,
+            reason: `Expédition commande #${orderId} (variant: ${matched.name})`,
+            orderId,
+          });
+          variantMatched = true;
+        }
+      }
+
+      if (!variantMatched) {
+        const [product] = await db.select().from(products).where(eq(products.id, item.productId));
+        if (!product) continue;
+        const newStock = Math.max(0, (product.stock || 0) - qty);
+        console.log(`[STOCK-DECREMENT] Order #${orderId} → product "${product.name}" (id=${product.id}): stock ${product.stock} → ${newStock}`);
+        await db.update(products)
+          .set({ stock: newStock })
+          .where(eq(products.id, item.productId));
+        await db.insert(stockMovements).values({
+          storeId,
+          productId: item.productId,
+          type: 'shipped',
+          quantity: -qty,
+          reason: `Expédition commande #${orderId}`,
+          orderId,
+        });
+      }
+    }
+  }
+
   // Lightweight fetch of recent orders for duplicate detection during import.
   async getOrdersSince(storeId: number, since: Date): Promise<Order[]> {
     return await db.select().from(orders).where(
@@ -422,8 +555,8 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
-  async getOrdersByStore(storeId: number, status?: string): Promise<OrderWithDetails[]> {
-    let query;
+  async getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]> {
+    let query: any;
     if (status) {
       query = db.select().from(orders)
         .where(and(eq(orders.storeId, storeId), eq(orders.status, status)))
@@ -433,7 +566,11 @@ export class DatabaseStorage implements IStorage {
         .where(eq(orders.storeId, storeId))
         .orderBy(desc(orders.createdAt));
     }
-    
+    // Pagination is opt-in: callers that need the full set (stats, exports,
+    // profit engine) call without limit and are unaffected.
+    if (typeof limit === "number") query = query.limit(limit);
+    if (typeof offset === "number") query = query.offset(offset);
+
     const allOrders = await query;
     const hydrated = await this.hydrateOrders(allOrders);
 
@@ -477,6 +614,42 @@ export class DatabaseStorage implements IStorage {
     return this.hydrateOrders(allOrders);
   }
 
+  /**
+   * Active orders for a phone in a store, most recent first.
+   * Used by the carrier-webhook phone fallback to link a status update onto the
+   * original order (e.g. a Shopify order that still carries the product name)
+   * instead of auto-creating a product-less duplicate. Excludes finished orders
+   * (delivered/refused/returned) so we only touch orders still in flight.
+   */
+  async getActiveOrdersByPhone(storeId: number, phone: string): Promise<Order[]> {
+    const digits = phone.replace(/\D/g, "");
+    if (!digits) return [];
+    const local = digits.startsWith("212")
+      ? `0${digits.slice(3)}`
+      : (digits.startsWith("0") ? digits : `0${digits}`);
+    const intl = digits.startsWith("212") ? digits : `212${local.slice(1)}`;
+    const variants = Array.from(new Set([digits, phone, local, intl, `+${intl}`]));
+    const rows = await db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        or(
+          inArray(orders.customerPhone, variants),
+          like(orders.customerPhone, `%${local.slice(-9)}`),
+        ),
+      ))
+      .orderBy(desc(orders.createdAt));
+    // Exclude finished orders. Filter in JS (case-insensitive) so French status
+    // variants stored by raw imports/webhooks (livré, livrée, retourné, …) are
+    // all treated as finished, not just the canonical English values.
+    const FINISHED_STATUSES = new Set([
+      "delivered", "livré", "livre", "livrée", "livree",
+      "refused", "refusé", "refuse",
+      "retourné", "retourne", "returned",
+      "retour recu", "retour reçu",
+    ]);
+    return rows.filter(r => !FINISHED_STATUSES.has((r.status || "").toLowerCase().trim()));
+  }
+
   private async hydrateOrders(allOrders: Order[]): Promise<OrderWithDetails[]> {
     if (allOrders.length === 0) return [];
 
@@ -484,14 +657,32 @@ export class DatabaseStorage implements IStorage {
     const agentIds   = Array.from(new Set(allOrders.map(o => o.assignedToId).filter((id): id is number => id != null)));
     const magasinIds = Array.from(new Set(allOrders.map(o => (o as any).magasinId).filter((id): id is number => id != null)));
 
-    // ── 4 batched queries instead of N×3 individual queries ──────────────
-    const [allItems, allAgents, allMagasins] = await Promise.all([
+    // Collect storeIds for YouCan orders that have no magasinId — we'll
+    // look up the integration's connectionName (= YouCan shop name) to
+    // populate the "Boutique" column for those orders.
+    const youcanStoreIds = Array.from(new Set(
+      allOrders
+        .filter(o => (o as any).source === 'youcan' && !(o as any).magasinId)
+        .map(o => o.storeId)
+        .filter((id): id is number => id != null)
+    ));
+
+    // ── batched queries ──────────────────────────────────────────────────
+    const [allItems, allAgents, allMagasins, youcanIntegrations] = await Promise.all([
       db.select().from(orderItems).where(inArray(orderItems.orderId, orderIds)),
       agentIds.length > 0
         ? db.select().from(users).where(inArray(users.id, agentIds))
         : Promise.resolve([]),
       magasinIds.length > 0
         ? db.select({ id: stores.id, name: stores.name }).from(stores).where(inArray(stores.id, magasinIds))
+        : Promise.resolve([]),
+      youcanStoreIds.length > 0
+        ? db.select({ storeId: storeIntegrations.storeId, name: storeIntegrations.connectionName })
+            .from(storeIntegrations)
+            .where(and(
+              inArray(storeIntegrations.storeId, youcanStoreIds),
+              eq(storeIntegrations.provider, 'youcan')
+            ))
         : Promise.resolve([]),
     ]);
 
@@ -510,6 +701,10 @@ export class DatabaseStorage implements IStorage {
     const agentById   = new Map(allAgents.map(a => [a.id, a]));
     const productById = new Map(allProducts.map(p => [p.id, p]));
     const magasinById = new Map(allMagasins.map(m => [m.id, m]));
+    // Map storeId → YouCan shop name (for orders with source='youcan' and no magasinId)
+    const youcanNameByStoreId = new Map(
+      youcanIntegrations.map(i => [i.storeId, i.name])
+    );
 
     // Assemble results
     return allOrders.map(order => {
@@ -519,11 +714,17 @@ export class DatabaseStorage implements IStorage {
         product: item.productId ? productById.get(item.productId) : undefined,
       }));
       const mid = (order as any).magasinId as number | null | undefined;
+      const isYoucan = (order as any).source === 'youcan';
       return {
         ...order,
         agent:   order.assignedToId ? agentById.get(order.assignedToId) ?? null : null,
         magasin: (mid && magasinById.get(mid)) || null,
         items:   itemsWithProducts,
+        // Include the YouCan shop name so the Boutique column can show it
+        // for YouCan orders that have no magasinId association.
+        youcanStoreName: (isYoucan && !mid)
+          ? (youcanNameByStoreId.get(order.storeId!) ?? null)
+          : null,
       } as OrderWithDetails;
     });
   }
@@ -576,7 +777,7 @@ export class DatabaseStorage implements IStorage {
 
     if (filters.status) {
       if (filters.status === 'annule_group') {
-        conditions.push(sql`${orders.status} LIKE 'Annulé%'`);
+        conditions.push(sql`(${orders.status} LIKE 'Annulé%' OR ${orders.commentStatus} ILIKE '%supprim%')`);
       } else if (filters.status === 'pas_reponse_group') {
         // Matches "Pas de réponse 1" through "Pas de réponse 4"
         // and any future numbered variants without code changes.
@@ -585,16 +786,18 @@ export class DatabaseStorage implements IStorage {
         // Primary: any order that has been shipped (has a tracking number) and isn't in a terminal state.
         // This catches orders whose carrier sent a custom status not in our internal status list.
         // Secondary fallback: explicit list that also covers Moroccan carrier in-transit statuses.
+        // Supprimée orders are excluded from Suivi (they go to Annulés).
         conditions.push(
           or(
             and(
               sql`${orders.trackNumber} IS NOT NULL`,
               sql`${orders.trackNumber} != ''`,
-              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'refused')`,
-              sql`${orders.status} NOT LIKE 'Annulé%'`
+              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'refused', 'Supprimée', 'retourné', 'Retour Recu', 'En Cours De Retour')`,
+              sql`${orders.status} NOT LIKE 'Annulé%'`,
+              sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`
             ),
             inArray(orders.status, [
-              'in_progress', 'expédié', 'retourné', 'Attente De Ramassage',
+              'in_progress', 'expédié', 'Attente De Ramassage',
               // Moroccan carrier in-transit statuses
               'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
               'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
@@ -603,6 +806,31 @@ export class DatabaseStorage implements IStorage {
             ])
           )
         );
+        // Also exclude deleted parcels caught via commentStatus on any status path
+        conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
+      } else if (filters.status === 'retour_group') {
+        // Catch both: (a) orders whose internal status contains "retour" (correct mapping),
+        // and (b) legacy orders stored as "refused" whose commentStatus contains "retour"
+        // (old webhook mapping bug where "retour" raw text → "refused" internal status).
+        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
+      } else if (filters.status === 'retour_en_route') {
+        // In-transit returns only: status contains "retour" but is NOT a terminal arrival
+        // ("retourné", "retournée", "retour recu") AND not yet physically confirmed by user.
+        conditions.push(sql`(
+          (LOWER(${orders.status}) LIKE '%retour%' AND LOWER(${orders.status}) NOT IN ('retourné', 'retournée', 'retour recu'))
+          OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'
+              AND LOWER(COALESCE(${orders.commentStatus}, '')) NOT IN ('retourné', 'retournée', 'retour recu'))
+        )`);
+        conditions.push(sql`${(orders as any).returnConfirmedAt} IS NULL`);
+      } else if (filters.status === 'retour_recu') {
+        // "Reçus" = physically confirmed by the user (scan/button), regardless of carrier status.
+        conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
+      } else if (filters.status === 'retour_non_confirme') {
+        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
+        conditions.push(sql`${(orders as any).returnConfirmedAt} IS NULL`);
+      } else if (filters.status === 'retour_confirme') {
+        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
+        conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
         conditions.push(inArray(orders.status, [
@@ -612,6 +840,9 @@ export class DatabaseStorage implements IStorage {
           'Pas de réponse + SMS', 'Boîte vocale', 'Pas réponse 1 (Suivi)',
           'Pas réponse 2 (Suivi)', 'Pas réponse 3 (Suivi)', 'Demande retour',
         ]));
+      } else if (filters.status === 'in_progress') {
+        conditions.push(eq(orders.status, 'in_progress'));
+        conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
       } else {
         conditions.push(eq(orders.status, filters.status));
       }
@@ -650,20 +881,47 @@ export class DatabaseStorage implements IStorage {
           ? orders.pickupDate
           : orders.createdAt;
       if (filters.dateFrom) {
-        conditions.push(gte(dateCol, new Date(filters.dateFrom + 'T00:00:00')));
+        conditions.push(gte(dateCol, new Date(filters.dateFrom + 'T00:00:00.000+01:00')));
       }
       if (filters.dateTo) {
-        conditions.push(lte(dateCol, new Date(filters.dateTo + 'T23:59:59')));
+        conditions.push(lte(dateCol, new Date(filters.dateTo + 'T23:59:59.999+01:00')));
       }
     }
     if (filters.search) {
-      const term = `%${filters.search}%`;
-      conditions.push(or(
-        like(orders.customerName, term),
-        like(orders.customerPhone, term),
-        like(orders.orderNumber, term),
-        like(orders.customerCity, term)
-      ));
+      const raw = filters.search.trim();
+      const term = `%${raw}%`;
+
+      // Normalize phone: strip all non-digits, then match last 9 digits
+      const digitsOnly = raw.replace(/\D/g, '');
+      const phoneSuffix = digitsOnly.length >= 6 ? `%${digitsOnly.slice(-9)}` : null;
+
+      const searchConditions: any[] = [
+        ilike(orders.customerName, term),
+        ilike(orders.orderNumber, term),
+        ilike(orders.customerCity, term),
+        ilike(orders.customerAddress, term),
+        ilike(orders.trackNumber, term),
+      ];
+
+      // Phone: match by suffix of digits (handles +212, 06, 6 prefixes)
+      if (phoneSuffix) {
+        searchConditions.push(
+          sql`regexp_replace(${orders.customerPhone}, '[^0-9]', '', 'g') LIKE ${phoneSuffix}`
+        );
+      } else {
+        searchConditions.push(ilike(orders.customerPhone, term));
+      }
+
+      // Product name: subquery on order_items joined with products
+      const matchingOrderIds = db
+        .select({ orderId: orderItems.orderId })
+        .from(orderItems)
+        .innerJoin(products, eq(orderItems.productId, products.id))
+        .where(ilike(products.name, term));
+
+      searchConditions.push(sql`${orders.id} IN (${matchingOrderIds})`);
+
+      conditions.push(or(...searchConditions));
     }
 
     const whereClause = and(...conditions);
@@ -912,6 +1170,15 @@ export class DatabaseStorage implements IStorage {
         setPayload.scheduledFor = null;
       }
 
+      // ── Auto-populate pickupDate on ship transition ────────────────────
+      // Whenever a status update moves an order into a "shipped" status,
+      // stamp pickupDate = now() UNLESS one is already set. COALESCE keeps
+      // this update-only-if-null so a later status change never overwrites
+      // the original ship timestamp.
+      if (SHIPPED_STATUS_SET.has(status)) {
+        setPayload.pickupDate = sql`COALESCE(${orders.pickupDate}, ${new Date()})`;
+      }
+
       const [updated] = await tx.update(orders)
         .set(setPayload)
         .where(eq(orders.id, id))
@@ -943,17 +1210,59 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      // ── RULE 0.5: First-time shipped transition → write stock_movements ───
+      // Covers every transition INTO a shipped/in-transit status that is NOT
+      // 'delivered' (RULE 1 handles that), and only the FIRST such transition
+      // (shipped→shipped carrier updates don't re-fire).
+      // Physical stock is only decremented if RULE 0 didn't already do it
+      // (i.e., if prev status was NOT in CONFIRMED_FOR_STOCK).
+      const isFirstShippedTransition = SHIPPED_STATUS_SET.has(status) &&
+        status !== 'delivered' &&
+        !SHIPPED_STATUS_SET.has(prevStatus ?? '');
+      if (isFirstShippedTransition) {
+        const skipStockDeductionShip = this.CONFIRMED_FOR_STOCK.has(prevStatus ?? '');
+        for (const item of items) {
+          if (!item.productId) continue;
+          const qty = Number(item.quantity);
+          if (!skipStockDeductionShip) {
+            await tx.update(products)
+              .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
+              .where(eq(products.id, item.productId));
+            await tx.insert(stockLogs).values({
+              storeId: currentOrder.storeId!,
+              productId: item.productId,
+              orderId: id,
+              changeAmount: -qty,
+              reason: `Commande #${id} expédiée`,
+            });
+          }
+          await tx.insert(stockMovements).values({
+            storeId: currentOrder.storeId!,
+            productId: item.productId,
+            type: 'shipped',
+            quantity: -qty,
+            orderId: id,
+            userId: actorId ?? null,
+            reason: skipStockDeductionShip
+              ? `Commande #${id} expédiée (stock déjà déduit à la confirmation)`
+              : `Commande #${id} expédiée`,
+          });
+        }
+      }
+
       // ── RULE 1: First-time delivery ────────────────────────────────────
       // The ledger MUST log every transition into 'delivered', regardless of
       // what the prev status was — that's the whole point of "sortie" in the
       // insights view (units actually shipped to customers).
       // Physical stock subtraction is conditional: if the prev status was
-      // already stock-deducting (RULE 0 ran on confirme), we skip the
-      // subtraction but still write the ledger row so the audit trail is
-      // accurate. The legacy stock_logs row only fires on the path that also
-      // touches physical stock to preserve old behavior.
+      // already stock-deducting (RULE 0 ran on confirme or RULE 0.5 ran on
+      // expédié), we skip the subtraction but still write the ledger row so
+      // the audit trail is accurate.
       if (status === 'delivered' && prevStatus !== 'delivered') {
-        const skipStockDeduction = this.CONFIRMED_FOR_STOCK.has(prevStatus);
+        // Skip deduction if: came from confirme (RULE 0) OR from any shipped
+        // status (RULE 0.5 handled it, or RULE 0 ran before the ship step).
+        const skipStockDeduction = this.CONFIRMED_FOR_STOCK.has(prevStatus ?? '') ||
+          (SHIPPED_STATUS_SET.has(prevStatus ?? '') && prevStatus !== 'delivered');
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
@@ -983,9 +1292,12 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      // ── RULE 2: Return/cancel from delivered OR confirmed → restore stock ─
-      // Triggers when prev was delivered/confirme/confirme_reporte AND now switching to a return status
-      if ((prevStatus === 'delivered' || this.CONFIRMED_FOR_STOCK.has(prevStatus)) && this.RETURN_STATUSES.has(status)) {
+      // ── RULE 2a: Refus/Annulation → restauration AUTOMATIQUE ─────────────
+      // Refused et Annulé* ne correspondent pas à un colis qui revient
+      // physiquement (annulation/refus administratif) → pas de scan requis,
+      // le stock est restauré immédiatement comme avant.
+      const AUTO_RESTORE_STATUSES = new Set(['refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']);
+      if ((prevStatus === 'delivered' || this.CONFIRMED_FOR_STOCK.has(prevStatus)) && AUTO_RESTORE_STATUSES.has(status)) {
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
@@ -993,23 +1305,20 @@ export class DatabaseStorage implements IStorage {
             .set({ stock: sql`${products.stock} + ${qty}` })
             .where(eq(products.id, item.productId));
           await tx.insert(stockLogs).values({
-            storeId: currentOrder.storeId!,
-            productId: item.productId,
-            orderId: id,
+            storeId: currentOrder.storeId!, productId: item.productId, orderId: id,
             changeAmount: qty,
-            reason: `Retour commande #${id} → ${status}`,
+            reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
           });
           await tx.insert(stockMovements).values({
-            storeId: currentOrder.storeId!,
-            productId: item.productId,
-            type: 'returned',
-            quantity: qty,
-            orderId: id,
-            userId: actorId ?? null,
-            reason: `Retour commande #${id} → ${status}`,
+            storeId: currentOrder.storeId!, productId: item.productId, type: 'returned', quantity: qty,
+            orderId: id, userId: actorId ?? null,
+            reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
           });
         }
       }
+      // ── RULE 2b: Vrai retour physique (statut contenant "retour") ─────────
+      // Pas de restauration automatique ici. Attend confirmReturnReceipt()
+      // (scan douchette ou caméra). Rien à faire volontairement.
 
       return updated;
     });
@@ -1021,12 +1330,83 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(stockLogs).where(and(...conds)).orderBy(desc(stockLogs.createdAt));
   }
 
+  async getStockMovementsWithProducts(storeId: number, productId?: number): Promise<any[]> {
+    const conds: any[] = [eq(stockMovements.storeId, storeId)];
+    if (productId) conds.push(eq(stockMovements.productId, productId));
+    return await db
+      .select({
+        id:          stockMovements.id,
+        storeId:     stockMovements.storeId,
+        productId:   stockMovements.productId,
+        variantId:   stockMovements.variantId,
+        type:        stockMovements.type,
+        quantity:    stockMovements.quantity,
+        reason:      stockMovements.reason,
+        orderId:     stockMovements.orderId,
+        createdAt:   stockMovements.createdAt,
+        productName: products.name,
+        productSku:  products.sku,
+      })
+      .from(stockMovements)
+      .leftJoin(products, eq(stockMovements.productId, products.id))
+      .where(and(...conds))
+      .orderBy(desc(stockMovements.createdAt))
+      .limit(500);
+  }
+
   async assignOrder(id: number, agentId: number | null): Promise<Order | undefined> {
     const [updated] = await db.update(orders)
       .set({ assignedToId: agentId })
       .where(eq(orders.id, id))
       .returning();
     return updated;
+  }
+
+  async confirmReturnReceipt(storeId: number, orderId: number, actorId: number | null): Promise<{ success: boolean; message: string; order?: any }> {
+    return await db.transaction(async (tx) => {
+      const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
+      if (!order) return { success: false, message: "Commande introuvable" };
+      // Accept both new mapping (status contains "retour") and legacy mapping
+      // (status = "refused" but commentStatus contains "retour" — old webhook bug).
+      if (!isReturnStatus(order.status) && !isReturnStatus((order as any).commentStatus)) {
+        return { success: false, message: `Cette commande n'est pas en statut retour (statut actuel: ${order.status})` };
+      }
+      if ((order as any).returnConfirmedAt) {
+        return { success: false, message: `Retour déjà confirmé le ${new Date((order as any).returnConfirmedAt).toLocaleString('fr-FR')}` };
+      }
+
+      const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+      for (const item of items) {
+        if (!item.productId) continue;
+        const qty = Number(item.quantity);
+        await tx.update(products)
+          .set({ stock: sql`${products.stock} + ${qty}` })
+          .where(eq(products.id, item.productId));
+        await tx.insert(stockLogs).values({
+          storeId,
+          productId: item.productId,
+          orderId,
+          changeAmount: qty,
+          reason: `Retour confirmé physiquement — commande #${orderId}`,
+        });
+        await tx.insert(stockMovements).values({
+          storeId,
+          productId: item.productId,
+          type: 'returned',
+          quantity: qty,
+          orderId,
+          userId: actorId,
+          reason: `Retour confirmé physiquement (scan/tracking) — commande #${orderId}`,
+        });
+      }
+
+      const [updated] = await tx.update(orders)
+        .set({ returnConfirmedAt: new Date(), returnConfirmedBy: actorId } as any)
+        .where(eq(orders.id, orderId))
+        .returning();
+
+      return { success: true, message: "Retour confirmé, stock mis à jour", order: updated };
+    });
   }
 
   async getAdSpend(storeId: number, date?: string): Promise<AdSpendEntry[]> {
@@ -1204,29 +1584,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async resolveExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null> {
-    const norm = (s: string) => (s || "")
-      .toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const key = norm(cityName);
-    if (!key) return null;
-
-    // 1. Exact normalized match against synced EC cities
-    const [exact] = await db.select().from(expressCoursierCities)
-      .where(and(eq(expressCoursierCities.storeId, storeId), eq(expressCoursierCities.nameNorm, key)))
-      .limit(1);
-    if (exact && /^\d+$/.test(exact.externalId)) return exact.externalId;
-
-    // 2. Fuzzy: normalized name contains the key (handles trailing/leading words)
-    const fuzzy = await db.select().from(expressCoursierCities)
-      .where(and(eq(expressCoursierCities.storeId, storeId), like(expressCoursierCities.nameNorm, `%${key}%`)))
-      .limit(1);
-    if (fuzzy[0] && /^\d+$/.test(fuzzy[0].externalId)) return fuzzy[0].externalId;
-
-    // 3. Not found → return null. The caller MUST fail fast — never send the
-    //    city name, which EC rejects ("Ville invalide").
-    return null;
+    if (!(cityName || "").trim()) return null;
+    // Fetch the full synced city list once and match in-memory — this lets us
+    // apply alias resolution (Arabic ↔ Latin), token-based matching, and
+    // startsWith matching, none of which are practical as SQL LIKE queries.
+    const cities = await db.select().from(expressCoursierCities)
+      .where(eq(expressCoursierCities.storeId, storeId));
+    // Not found → matchCityId returns null. The caller MUST fail fast — never
+    // send the city name, which EC rejects ("Ville invalide").
+    return matchCityId(cities, cityName);
   }
 
   // ── Ozon Express city ID mapping (name → numeric ID) ─────────────────────
@@ -1247,29 +1613,110 @@ export class DatabaseStorage implements IStorage {
   }
 
   async resolveOzonExpressCityId(storeId: number, cityName: string): Promise<string | null> {
-    const norm = (s: string) => (s || "")
-      .toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const key = norm(cityName);
-    if (!key) return null;
+    if (!(cityName || "").trim()) return null;
+    // Fetch the full synced city list once and match in-memory — mirrors
+    // resolveExpressCoursierCityId's alias/token/startsWith matching so both
+    // carriers benefit from the same Arabic↔Latin + fuzzy handling.
+    const cities = await db.select().from(ozonExpressCities)
+      .where(eq(ozonExpressCities.storeId, storeId));
+    // Not found → matchCityId returns null. The caller MUST fail fast — never
+    // send the city name, which Ozon Express rejects.
+    return matchCityId(cities, cityName);
+  }
 
-    // 1. Exact normalized match against synced Ozon cities
-    const [exact] = await db.select().from(ozonExpressCities)
-      .where(and(eq(ozonExpressCities.storeId, storeId), eq(ozonExpressCities.nameNorm, key)))
-      .limit(1);
-    if (exact && /^\d+$/.test(exact.externalId)) return exact.externalId;
+  // ── Vitipsexpress city abbr mapping (name → abbr) ────────────────────────
+  // Vitipsexpress requires 'city' = abbr (e.g. "Casablanca"), not the full
+  // uppercase name (e.g. "CASABLANCA"). externalId stores the abbr.
 
-    // 2. Fuzzy: normalized name contains the key (handles trailing/leading words)
-    const fuzzy = await db.select().from(ozonExpressCities)
-      .where(and(eq(ozonExpressCities.storeId, storeId), like(ozonExpressCities.nameNorm, `%${key}%`)))
-      .limit(1);
-    if (fuzzy[0] && /^\d+$/.test(fuzzy[0].externalId)) return fuzzy[0].externalId;
+  async upsertVitipsCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void> {
+    if (!cities.length) return;
+    await db.delete(vitipsCities).where(eq(vitipsCities.storeId, storeId));
+    await db.insert(vitipsCities).values(
+      cities.map(c => ({ storeId, externalId: c.externalId, name: c.name, nameNorm: c.nameNorm }))
+    );
+  }
 
-    // 3. Not found → return null. The caller MUST fail fast — never send the
-    //    city name, which Ozon Express rejects.
-    return null;
+  async getVitipsCityAbbr(storeId: number, cityName: string): Promise<string | null> {
+    if (!(cityName || "").trim()) return null;
+    const cities = await db.select().from(vitipsCities)
+      .where(eq(vitipsCities.storeId, storeId));
+
+    // Primary: alias-aware match (accent-insensitive, handles common variants)
+    const matched = matchCityId(cities, cityName);
+    if (matched) return matched;
+
+    // Fallback: direct case-insensitive match on nameNorm, name, or externalId
+    const norm = cityName.toLowerCase().trim();
+    const found = cities.find(c =>
+      c.nameNorm === norm ||
+      (c.name || "").toLowerCase() === norm ||
+      (c.externalId || "").toLowerCase() === norm
+    );
+    return found?.externalId ?? null;
+  }
+
+  // ── Per-city delivery pricing ─────────────────────────────────────────────
+  // Used for carriers that don't expose a per-city cost via API (Express
+  // Coursier has no such endpoint). priceDh is stored in CENTIMES (×100).
+
+  async getCarrierCityPricing(storeId: number, carrierName: string) {
+    return db.select().from(carrierCityPricing)
+      .where(and(
+        eq(carrierCityPricing.storeId, storeId),
+        eq(carrierCityPricing.carrierName, carrierName),
+      ));
+  }
+
+  // Returns price in centimes, or null if city is not in the table.
+  async getCarrierCityPrice(storeId: number, carrierName: string, cityRaw: string): Promise<number | null> {
+    const norm = normalizeCityKey(cityRaw || "");
+    if (!norm) return null;
+    const [row] = await db.select().from(carrierCityPricing)
+      .where(and(
+        eq(carrierCityPricing.storeId, storeId),
+        eq(carrierCityPricing.carrierName, carrierName),
+        eq(carrierCityPricing.cityNorm, norm),
+      ));
+    return row ? row.priceDh : null;
+  }
+
+  // Returns all orders for a store where carrierName or shippingProvider matches
+  // any alias of the given carrier (e.g. "expresscoursier", "express coursier", "olivraison").
+  async getOrdersByStoreAndCarrier(storeId: number, carrier: string): Promise<OrderWithDetails[]> {
+    const aliases: Record<string, string[]> = {
+      expresscoursier: ["expresscoursier", "express coursier", "olivraison"],
+      digylog: ["digylog"],
+      ameex: ["ameex"],
+      "ozon express": ["ozon express", "ozonexpress"],
+    };
+    const norm = carrier.toLowerCase().replace(/\s+/g, "");
+    const key = Object.keys(aliases).find(k => k.replace(/\s+/g, "") === norm) || carrier.toLowerCase();
+    const list = aliases[key] || [carrier.toLowerCase()];
+
+    const all = await this.getOrdersByStore(storeId);
+    return all.filter((o: any) => {
+      const cn = (o.carrierName || "").toLowerCase();
+      const sp = (o.shippingProvider || "").toLowerCase();
+      return list.some(a => cn.includes(a) || sp.includes(a));
+    });
+  }
+
+  async upsertCarrierCityPrice(storeId: number, carrierName: string, cityName: string, priceDh: number, source = "manual"): Promise<void> {
+    const norm = normalizeCityKey(cityName);
+    const existing = await db.select().from(carrierCityPricing)
+      .where(and(
+        eq(carrierCityPricing.storeId, storeId),
+        eq(carrierCityPricing.carrierName, carrierName),
+        eq(carrierCityPricing.cityNorm, norm),
+      ));
+    if (existing.length) {
+      await db.update(carrierCityPricing)
+        .set({ priceDh, cityName, source, updatedAt: new Date() })
+        .where(eq(carrierCityPricing.id, existing[0].id));
+    } else {
+      await db.insert(carrierCityPricing)
+        .values({ storeId, carrierName, cityName, cityNorm: norm, priceDh, source });
+    }
   }
 
   /**
@@ -1428,6 +1875,14 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
+  async clearIntegrationLogsByProvider(storeId: number, provider: string): Promise<void> {
+    const p = (provider || "").toLowerCase().trim();
+    await db.delete(integrationLogs).where(and(
+      eq(integrationLogs.storeId, storeId),
+      sql`lower(${integrationLogs.provider}) = ${p}`
+    ));
+  }
+
   async updateOrderShipping(orderId: number, trackingNumber: string, labelLink: string | null, shippingProvider: string): Promise<Order | undefined> {
     const [updated] = await db.update(orders)
       .set({ trackNumber: trackingNumber, labelLink, shippingProvider, carrierName: shippingProvider })
@@ -1469,6 +1924,53 @@ export class DatabaseStorage implements IStorage {
     return order;
   }
 
+  async getOrdersForFeeBackfill(storeId: number, provider: string): Promise<Order[]> {
+    return db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        inArray(orders.status, ['delivered', 'Retour Recu', 'refused']),
+        sql`${orders.trackNumber} IS NOT NULL AND ${orders.trackNumber} != ''`,
+        or(isNull(orders.shippingCost), eq(orders.shippingCost, 0)),
+        or(
+          sql`lower(${orders.shippingProvider}) = lower(${provider})`,
+          sql`lower(${orders.carrierName}) = lower(${provider})`,
+        ),
+      ))
+      .limit(200);
+  }
+
+  async getOzonOrdersToReconcile(storeId: number): Promise<Order[]> {
+    // Selects Ozon orders that need reconciliation:
+    //   • non-final orders (still in transit) — status update may be inferred from parcel-info price fields
+    //   • final orders (delivered/Retour Recu/refused) missing their shipping fee
+    // Ozon orders are identified by shippingProvider/carrierName = 'ozonexpress' OR trackNumber starting with 'TG-'
+    return db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        sql`${orders.trackNumber} IS NOT NULL AND ${orders.trackNumber} != ''`,
+        or(
+          sql`lower(${orders.shippingProvider}) = 'ozonexpress'`,
+          sql`lower(${orders.carrierName}) = 'ozonexpress'`,
+          sql`${orders.trackNumber} LIKE 'TG-%'`,
+        ),
+        or(
+          // Non-final: status update may arrive via parcel-info
+          sql`${orders.status} NOT IN ('delivered', 'Retour Recu', 'refused', 'annule')`,
+          // Final but fee still missing
+          and(
+            inArray(orders.status, ['delivered', 'Retour Recu', 'refused']),
+            or(isNull(orders.shippingCost), eq(orders.shippingCost, 0)),
+          ),
+        ),
+      ))
+      .limit(300);
+  }
+
+  async getAllCarrierAccountsByProvider(provider: string): Promise<CarrierAccount[]> {
+    return db.select().from(carrierAccounts)
+      .where(sql`lower(${carrierAccounts.carrierName}) = lower(${provider})`);
+  }
+
   async updateOrder(id: number, data: Partial<InsertOrder>, actorId?: number | null): Promise<Order | undefined> {
     // Stamp last_action_at / last_action_by ONLY for human-driven mutations
     // (route handler passes actorId = req.user.id). Webhooks / sync jobs /
@@ -1477,6 +1979,17 @@ export class DatabaseStorage implements IStorage {
     if (actorId != null) {
       setPayload.lastActionAt = new Date();
       setPayload.lastActionBy = actorId;
+    }
+    // ── Auto-populate pickupDate on ship transition ─────────────────────
+    // Same rule as updateOrderStatus: whenever this generic update moves an
+    // order into a shipped status (or writes a tracking number — the other
+    // reliable "just shipped" signal), stamp pickupDate = now() UNLESS one
+    // is already set. COALESCE guarantees we never overwrite an existing
+    // value, so later unrelated updates on an already-shipped order are safe.
+    const nextStatus = (data as any).status as string | undefined;
+    const isShipTransition = (nextStatus && SHIPPED_STATUS_SET.has(nextStatus)) || !!(data as any).trackNumber;
+    if (isShipTransition) {
+      setPayload.pickupDate = sql`COALESCE(${orders.pickupDate}, ${new Date()})`;
     }
     const [updated] = await db.update(orders).set(setPayload).where(eq(orders.id, id)).returning();
     return updated;
@@ -1488,8 +2001,126 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteProduct(id: number): Promise<void> {
-    await db.delete(productVariants).where(eq(productVariants.productId, id));
-    await db.delete(products).where(eq(products.id, id));
+    await db.transaction(async (tx) => {
+      await tx.delete(adCampaignProductMap).where(eq(adCampaignProductMap.productId, id));
+      await tx.delete(adSpend).where(eq(adSpend.productId, id));
+      await tx.delete(adSpendTracking).where(eq(adSpendTracking.productId, id));
+      await tx.delete(agentProducts).where(eq(agentProducts.productId, id));
+      await tx.delete(stockLogs).where(eq(stockLogs.productId, id));
+      await tx.delete(stockMovements).where(eq(stockMovements.productId, id));
+      await tx.delete(productVariants).where(eq(productVariants.productId, id));
+      await tx.delete(products).where(eq(products.id, id));
+    });
+  }
+
+  async archiveProduct(id: number): Promise<void> {
+    await db.update(products).set({ archivedAt: new Date() } as any).where(eq(products.id, id));
+  }
+
+  async getProductUsage(storeId: number, productId: number): Promise<{ ordersCount: number; deliveredCount: number; inStockOrders: number; totalRevenue: number }> {
+    const items = await db.select({ orderId: orderItems.orderId })
+      .from(orderItems)
+      .where(eq(orderItems.productId, productId));
+    if (items.length === 0) return { ordersCount: 0, deliveredCount: 0, inStockOrders: 0, totalRevenue: 0 };
+    const orderIds = Array.from(new Set(items.map(i => i.orderId)));
+    const ordersList = await db.select().from(orders)
+      .where(and(eq(orders.storeId, storeId), inArray(orders.id, orderIds)));
+    const deliveredCount = ordersList.filter(o => /livr/i.test(String(o.status || ""))).length;
+    const inStockOrders = ordersList.filter(o => !/livr|annul|retour/i.test(String(o.status || ""))).length;
+    const totalRevenue = ordersList
+      .filter(o => /livr/i.test(String(o.status || "")))
+      .reduce((sum, o) => sum + (Number(o.totalPrice) || 0), 0);
+    return { ordersCount: ordersList.length, deliveredCount, inStockOrders, totalRevenue };
+  }
+
+  async bulkDeleteProducts(storeId: number, productIds: number[], force: boolean): Promise<{ deleted: number; archived: number; skipped: number; errors: any[] }> {
+    const results = { deleted: 0, archived: 0, skipped: 0, errors: [] as any[] };
+    for (const id of productIds) {
+      try {
+        const product = await this.getProduct(id);
+        if (!product || product.storeId !== storeId) { results.skipped += 1; continue; }
+        const usage = await this.getProductUsage(storeId, id);
+        if (usage.ordersCount > 0) {
+          if (force) { await this.archiveProduct(id); results.archived += 1; }
+          else { results.skipped += 1; }
+        } else {
+          await this.deleteProduct(id); results.deleted += 1;
+        }
+      } catch (err: any) {
+        results.errors.push({ id, message: err.message });
+      }
+    }
+    return results;
+  }
+
+  async getProductsWithoutOrders(storeId: number): Promise<any[]> {
+    const allProducts = await db.select().from(products)
+      .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`));
+    if (allProducts.length === 0) return [];
+    const productIds = allProducts.map(p => p.id);
+    const usedItems = await db.selectDistinct({ productId: orderItems.productId })
+      .from(orderItems)
+      .where(and(inArray(orderItems.productId, productIds), sql`${orderItems.productId} IS NOT NULL`));
+    const usedIds = new Set(usedItems.map(i => i.productId));
+    return allProducts.filter(p => !usedIds.has(p.id));
+  }
+
+  async getDuplicateProducts(storeId: number): Promise<any[]> {
+    const allProducts = await db.select().from(products)
+      .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`))
+      .orderBy(desc(products.createdAt));
+    const normName = (s: string) => (s || "").toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+    const groups: Record<string, typeof allProducts> = {};
+    for (const p of allProducts) {
+      const key = normName(p.name);
+      (groups[key] ||= []).push(p);
+    }
+    const dupes: any[] = [];
+    for (const items of Object.values(groups)) {
+      if (items.length >= 2) {
+        for (let i = 1; i < items.length; i++) {
+          dupes.push({ ...items[i], duplicateGroup: normName(items[i].name), keepId: items[0].id });
+        }
+      }
+    }
+    return dupes;
+  }
+
+  async getArchivedProducts(storeId: number): Promise<any[]> {
+    return await db.select().from(products)
+      .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NOT NULL`))
+      .orderBy(desc(products.archivedAt));
+  }
+
+  async getCsvProfitReports(storeId: number): Promise<CsvProfitReport[]> {
+    return await db.select().from(csvProfitReports)
+      .where(eq(csvProfitReports.storeId, storeId))
+      .orderBy(desc(csvProfitReports.createdAt));
+  }
+
+  async getCsvProfitReport(id: number, storeId: number): Promise<CsvProfitReport | undefined> {
+    const [r] = await db.select().from(csvProfitReports)
+      .where(and(eq(csvProfitReports.id, id), eq(csvProfitReports.storeId, storeId)));
+    return r;
+  }
+
+  async createCsvProfitReport(data: InsertCsvProfitReport): Promise<CsvProfitReport> {
+    const [r] = await db.insert(csvProfitReports).values(data).returning();
+    return r;
+  }
+
+  async updateCsvProfitReport(id: number, storeId: number, data: Partial<InsertCsvProfitReport>): Promise<CsvProfitReport | undefined> {
+    const [r] = await db.update(csvProfitReports)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(csvProfitReports.id, id), eq(csvProfitReports.storeId, storeId)))
+      .returning();
+    return r;
+  }
+
+  async deleteCsvProfitReport(id: number, storeId: number): Promise<void> {
+    await db.delete(csvProfitReports)
+      .where(and(eq(csvProfitReports.id, id), eq(csvProfitReports.storeId, storeId)));
   }
 
   async getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]> {
@@ -1520,7 +2151,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getInventoryStats(storeId: number): Promise<any> {
-    const allProducts = await db.select().from(products).where(eq(products.storeId, storeId));
+    const allProducts = await db.select().from(products).where(and(eq(products.storeId, storeId), isNull(products.archivedAt)));
     const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
 
     const totalProducts = allProducts.length;
@@ -1559,15 +2190,18 @@ export class DatabaseStorage implements IStorage {
       const variants = allVariants.filter(v => v.productId === p.id);
       const totalStock = p.stock + variants.reduce((s, v) => s + v.stock, 0);
       
-      // Cumulative: count all statuses reached after agent confirmation
-      const INVENTORY_CONFIRMED = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
+      // Cumulative: count all statuses reached after agent confirmation.
+      // Subtractive definition (see @shared/order-status-sets) — every status
+      // EXCEPT new/uncontacted/cancelled/no-answer counts as confirmed, so
+      // carrier/transit statuses are never silently dropped from this count.
       const confirmedItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
         .where(and(
           eq(orderItems.productId, p.id),
           eq(orders.storeId, storeId),
-          inArray(orders.status, INVENTORY_CONFIRMED)
+          notInArray(orders.status, NOT_CONFIRMED_STATUSES_ARRAY),
+          notLike(orders.status, 'Pas de réponse%'),
         ));
       
       const deliveredItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
@@ -1576,7 +2210,7 @@ export class DatabaseStorage implements IStorage {
         .where(and(
           eq(orderItems.productId, p.id),
           eq(orders.storeId, storeId),
-          eq(orders.status, 'delivered')
+          inArray(orders.status, ['delivered', 'Livré', 'livré'])
         ));
 
       const inTransitItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
@@ -1585,7 +2219,10 @@ export class DatabaseStorage implements IStorage {
         .where(and(
           eq(orderItems.productId, p.id),
           eq(orders.storeId, storeId),
-          inArray(orders.status, ['in_progress', 'expédié', 'Attente De Ramassage'])
+          inArray(orders.status, [
+            'in_progress', 'expédié', 'Attente De Ramassage',
+            'transit', 'unreachable', 'En Cours De Retour', 'refused', 'Retour Recu',
+          ])
         ));
 
       const totalOrderItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
@@ -1632,6 +2269,9 @@ export class DatabaseStorage implements IStorage {
         reference: p.reference,
         hasVariants: p.hasVariants,
         baseStock: p.stock,
+        settings: p.settings,
+        descriptionDarija: p.descriptionDarija,
+        aiFeatures: p.aiFeatures,
         stock: totalStock,
         variantCount: variants.length || 1,
         recu,
@@ -1706,8 +2346,8 @@ export class DatabaseStorage implements IStorage {
     }
     // Collect all unique campaigns before product filter (for dropdown population)
     const campaigns = [...new Set(allOrders.map(o => o.utmCampaign).filter(Boolean))].sort() as string[];
-    // Cumulative confirmed statuses: once confirmed by agent, always counted as confirmed
-    const CONFIRMED_STATUSES = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
+    // Cumulative confirmed statuses: once confirmed by agent, always counted as confirmed.
+    // Subtractive definition — see isConfirmedCumulative in @shared/order-status-sets.
     const DELIVERED_STATUS = 'delivered';
     const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
@@ -1761,7 +2401,7 @@ export class DatabaseStorage implements IStorage {
 
     // Compute stats over the fully-filtered order set
     const total = allOrders.length;
-    const confirmed = allOrders.filter(o => CONFIRMED_STATUSES.includes(o.status)).length;
+    const confirmed = allOrders.filter(o => isConfirmedCumulative(o.status)).length;
     const inProgress = allOrders.filter(o => o.status === 'in_progress').length;
     const delivered = allOrders.filter(o => o.status === DELIVERED_STATUS).length;
     const cancelled = allOrders.filter(o => CANCELLED_STATUSES.includes(o.status) || o.status.startsWith('Annulé')).length;
@@ -1777,7 +2417,7 @@ export class DatabaseStorage implements IStorage {
       const day = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
       if (!dailyMap[day]) dailyMap[day] = { total: 0, confirmed: 0, delivered: 0 };
       dailyMap[day].total++;
-      if (CONFIRMED_STATUSES.includes(o.status)) dailyMap[day].confirmed++;
+      if (isConfirmedCumulative(o.status)) dailyMap[day].confirmed++;
       if (o.status === DELIVERED_STATUS) dailyMap[day].delivered++;
     }
     const daily = Object.entries(dailyMap)
@@ -1793,7 +2433,7 @@ export class DatabaseStorage implements IStorage {
       const c = o.customerCity || 'Inconnue';
       if (!cityMap[c]) cityMap[c] = { total: 0, confirmed: 0, delivered: 0 };
       cityMap[c].total++;
-      if (CONFIRMED_STATUSES.includes(o.status)) cityMap[c].confirmed++;
+      if (isConfirmedCumulative(o.status)) cityMap[c].confirmed++;
       if (o.status === DELIVERED_STATUS) cityMap[c].delivered++;
     }
     const cities = Object.entries(cityMap)
@@ -1818,8 +2458,8 @@ export class DatabaseStorage implements IStorage {
       const displayKey = (variantNotInName && v !== 'Default Title' && v !== 'null' && v !== '-') ? `${name} - ${v}` : name;
       if (!productMap[displayKey]) productMap[displayKey] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
       productMap[displayKey].total++;
-      if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[displayKey].confirmed++;
-      if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(item.orderStatus)) productMap[displayKey].inProgress++;
+      if (isConfirmedCumulative(item.orderStatus)) productMap[displayKey].confirmed++;
+      if (['in_progress', 'expédié', 'Attente De Ramassage', 'transit', 'unreachable', 'En Cours De Retour'].includes(item.orderStatus)) productMap[displayKey].inProgress++;
       if (item.orderStatus === DELIVERED_STATUS) productMap[displayKey].delivered++;
     }
     const products = Object.entries(productMap)
@@ -1852,13 +2492,12 @@ export class DatabaseStorage implements IStorage {
             : eq(orders.mediaBuyerId, buyer.id),
           ...dateConditions,
         ));
-      const CONF_STATUSES = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
       const platformMap: Record<string, { total: number; confirmed: number; delivered: number; revenue: number }> = {};
       for (const o of buyerOrders) {
         const plt = (o as any).trafficPlatform || 'Organique';
         if (!platformMap[plt]) platformMap[plt] = { total: 0, confirmed: 0, delivered: 0, revenue: 0 };
         platformMap[plt].total++;
-        if (CONF_STATUSES.includes(o.status)) platformMap[plt].confirmed++;
+        if (isConfirmedCumulative(o.status)) platformMap[plt].confirmed++;
         if (o.status === 'delivered') { platformMap[plt].delivered++; platformMap[plt].revenue += o.totalPrice; }
       }
       const platformBreakdown = Object.entries(platformMap).map(([platform, s]) => ({
@@ -2380,9 +3019,10 @@ export class DatabaseStorage implements IStorage {
     const result = await db.select({
       agentId: orders.lastActionBy,
       total: count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'))`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
+      avgResponseMinutes: sql<number>`ROUND(AVG(EXTRACT(EPOCH FROM (${orders.updatedAt} - ${orders.createdAt}))/60))::int`,
     }).from(orders)
       .where(and(...conditions))
       .groupBy(orders.lastActionBy);
@@ -2393,6 +3033,32 @@ export class DatabaseStorage implements IStorage {
       confirmed: Number(r.confirmed),
       delivered: Number(r.delivered),
       cancelled: Number(r.cancelled),
+      avgResponseMinutes: r.avgResponseMinutes != null ? Number(r.avgResponseMinutes) : null,
+    }));
+  }
+
+  async getAgentComparisonByProduct(
+    storeId: number,
+  ): Promise<{ productId: number; productName: string; agentId: number; total: number; confirmed: number }[]> {
+    const rows = await db.select({
+      productId: products.id,
+      productName: products.name,
+      agentId: orders.assignedToId,
+      total: count(),
+      confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
+    })
+      .from(orders)
+      .innerJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .innerJoin(products, eq(products.id, orderItems.productId))
+      .where(and(eq(orders.storeId, storeId), sql`${orders.assignedToId} IS NOT NULL`))
+      .groupBy(products.id, products.name, orders.assignedToId);
+
+    return rows.map(r => ({
+      productId: r.productId,
+      productName: r.productName,
+      agentId: r.agentId!,
+      total: Number(r.total),
+      confirmed: Number(r.confirmed),
     }));
   }
 
@@ -2413,13 +3079,13 @@ export class DatabaseStorage implements IStorage {
     if (options?.dateFrom)          conditions.push(gte(orders.createdAt, new Date(`${options.dateFrom}T00:00:00.000Z`)));
     if (options?.dateTo)            conditions.push(lte(orders.createdAt, new Date(`${options.dateTo}T23:59:59.999Z`)));
 
-    // 'confirmed' counts every order that progressed past confirmation:
-    // confirme + every downstream carrier state that proves the agent's call
-    // led to a real shipment (in_progress, expédié, Attente De Ramassage, delivered, refused/retourné).
+    // 'confirmed' counts every order that progressed past confirmation, using
+    // the subtractive definition: everything except new/uncontacted/cancelled/
+    // no-answer statuses (see @shared/order-status-sets).
     const rows = await db.select({
       agentId:   orders.assignedToId,
       total:     count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme','confirme_reporte','confirmé','expédié','in_progress','Attente De Ramassage','delivered','refused','retourné'))`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)','Annulé (faux numéro)','Annulé (double)'))`,
     })
@@ -2437,6 +3103,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAllStores(): Promise<any[]> {
+    try {
     // Optimized: 5 bulk queries instead of N×4 (safe at 1000+ stores)
     const allStores = await db.select().from(stores).orderBy(desc(stores.createdAt));
     if (allStores.length === 0) return [];
@@ -2553,24 +3220,38 @@ export class DatabaseStorage implements IStorage {
     }));
 
     return allStores.map(store => {
-      const owner = ownerMap.get(store.id);
-      const sub = subMap.get(store.id) ?? null;
-      return {
-        ...store,
-        ownerEmail: owner?.email ?? null,
-        ownerName: owner?.username ?? null,
-        ownerPhone: owner?.phone ?? null,
-        ownerCreatedAt: owner?.createdAt ?? null,
-        ownerIsActive: owner?.isActive ?? 1,
-        isEmailVerified: owner?.isEmailVerified ?? 0,
-        ownerId: owner?.id ?? null,
-        teamCount: teamCountMap.get(store.id) ?? 0,
-        totalOrders: orderCountMap.get(store.id) ?? 0,
-        monthlyOrders: monthOrderMap.get(store.id) ?? 0,
-        totalNetProfit: profitMap.get(store.id) ?? 0,
-        subscription: sub,
-      };
-    });
+      try {
+        const owner = ownerMap.get(store.id);
+        const sub   = subMap.get(store.id) ?? null;
+        return {
+          ...store,
+          ownerEmail:      owner?.email      ?? null,
+          ownerName:       owner?.username   ?? null,
+          ownerPhone:      owner?.phone      ?? null,
+          ownerCreatedAt:  owner?.createdAt  ?? null,
+          ownerIsActive:   owner?.isActive   ?? 1,
+          isEmailVerified: owner?.isEmailVerified ?? 0,
+          ownerId:         owner?.id         ?? null,
+          teamCount:    teamCountMap.get(store.id)  ?? 0,
+          totalOrders:  orderCountMap.get(store.id) ?? 0,
+          monthlyOrders: monthOrderMap.get(store.id) ?? 0,
+          totalNetProfit: profitMap.get(store.id)   ?? 0,
+          subscription: sub ? {
+            ...sub,
+            automationEnabled:  sub.automationEnabled  ?? null,
+            mediaBuyersEnabled: sub.mediaBuyersEnabled ?? null,
+            importCsvEnabled:   sub.importCsvEnabled   ?? null,
+          } : null,
+        };
+      } catch (mapErr: any) {
+        console.error(`[getAllStores] Error mapping store ${store.id}:`, mapErr?.message ?? mapErr);
+        return null;
+      }
+    }).filter(Boolean);
+    } catch (err: any) {
+      console.error("[getAllStores] Fatal error:", err?.message ?? err);
+      throw err;
+    }
   }
 
   async getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number; mrr: number; totalOrders: number; expiringCount: number }> {
@@ -3089,12 +3770,15 @@ export class DatabaseStorage implements IStorage {
       // Count deliveries in date range — using createdAt (order creation date)
       // Must match the agent's own my-stats and wallet endpoints which also
       // filter by createdAt so admin and agent see identical numbers.
+      // Uses the SAME DELIVERED_STATUSES set as /api/stats/filtered (LIVRÉES
+      // card) — previously this only matched the exact 'delivered' status,
+      // undercounting French status variants and disagreeing with the card.
       const allDelivered = await db.select()
         .from(orders)
         .where(and(
           eq(orders.assignedToId, agent.id),
           eq(orders.storeId, storeId),
-          eq(orders.status, 'delivered'),
+          inArray(orders.status, DELIVERED_STATUSES as unknown as string[]),
           gte(orders.createdAt, cutoff),
           lte(orders.createdAt, endDate),
         ));
@@ -3201,12 +3885,39 @@ export class DatabaseStorage implements IStorage {
     return rows as any[];
   }
 
+  async updateAdSpendEntry(id: number, storeId: number, userId: number | undefined, fields: { date?: string; source?: string; amount?: number; productId?: number | null }): Promise<AdSpendNewEntry | undefined> {
+    const conditions: any[] = [eq(adSpend.id, id), eq(adSpend.storeId, storeId)];
+    if (userId !== undefined) conditions.push(eq((adSpend as any).userId, userId));
+    const [updated] = await db.update(adSpend).set(fields as any).where(and(...conditions)).returning();
+    return updated;
+  }
+
   async deleteAdSpendNew(id: number, storeId: number, userId?: number): Promise<void> {
     // If userId is provided, only delete if ownership matches (for media buyers)
     if (userId !== undefined) {
       await db.delete(adSpend).where(and(eq(adSpend.id, id), eq(adSpend.storeId, storeId), eq((adSpend as any).userId, userId)));
     } else {
       await db.delete(adSpend).where(and(eq(adSpend.id, id), eq(adSpend.storeId, storeId)));
+    }
+  }
+
+  async getCampaignMap(storeId: number): Promise<Record<string, number>> {
+    const rows = await db.select().from(adCampaignProductMap)
+      .where(eq(adCampaignProductMap.storeId, storeId));
+    const map: Record<string, number> = {};
+    for (const r of rows) map[r.campaignName] = r.productId;
+    return map;
+  }
+
+  async upsertCampaignMap(storeId: number, campaignName: string, productId: number): Promise<void> {
+    const existing = await db.select().from(adCampaignProductMap)
+      .where(and(eq(adCampaignProductMap.storeId, storeId), eq(adCampaignProductMap.campaignName, campaignName)));
+    if (existing.length > 0) {
+      await db.update(adCampaignProductMap)
+        .set({ productId })
+        .where(and(eq(adCampaignProductMap.storeId, storeId), eq(adCampaignProductMap.campaignName, campaignName)));
+    } else {
+      await db.insert(adCampaignProductMap).values({ storeId, campaignName, productId });
     }
   }
 
@@ -3305,6 +4016,7 @@ export class DatabaseStorage implements IStorage {
     productId?: number,
     mediaBuyerIdFilter?: number,
     magasinId?: number,
+    source?: string,
   ): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
@@ -3312,16 +4024,22 @@ export class DatabaseStorage implements IStorage {
     byAgent: { agentId: number; agentName: string; commissionRate: number; deliveredCount: number; totalCommission: number }[];
     ordersCount: number;
   }> {
-    const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
-    const storePackaging = store[0]?.packagingCost ?? 0;
-
     // --- Delivered orders (COD: only status='delivered' counts) ---
     const orderConds: any[] = [eq(orders.storeId, storeId), eq(orders.status, 'delivered')];
     if (dateFrom) orderConds.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
-    if (dateTo) orderConds.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+    // +1 day so dateTo="2026-07-31" includes orders created on July 31 at any time (matches Dashboard)
+    if (dateTo) orderConds.push(sql`${orders.createdAt} <= ${dateTo}::timestamp + interval '1 day' - interval '1 second'`);
     if (mediaBuyerIdFilter) orderConds.push(eq(orders.mediaBuyerId, mediaBuyerIdFilter));
     if (magasinId) orderConds.push(eq(orders.magasinId, magasinId));
     let deliveredOrders = await db.select().from(orders).where(and(...orderConds));
+
+    // Source filter (substring, case-insensitive — same logic as Dashboard /api/stats/filtered)
+    if (source) {
+      const s = source.toLowerCase();
+      deliveredOrders = deliveredOrders.filter(o =>
+        ((o.utmSource || o.source || '') as string).toLowerCase().includes(s)
+      );
+    }
 
     // Product filter: keep only orders that have an item for the given product
     if (productId) {
@@ -3336,13 +4054,37 @@ export class DatabaseStorage implements IStorage {
     // --- COGS: use order_items × products.cost_price (ground truth), fallback to orders.product_cost ---
     const cogsMap = await this.computeOrdersCOGS(deliveredOrders.map(o => ({ id: o.id, productCost: o.productCost })));
 
+    // --- Per-product packaging cost map (DH/commande from settings.profitDefaults.coutEmballage) ---
+    const storeProductsList = await db.select({ id: products.id, settings: products.settings }).from(products).where(eq(products.storeId, storeId));
+    const emballageByProductId = new Map<number, number>();
+    for (const p of storeProductsList) {
+      const val = Number((p.settings as any)?.profitDefaults?.coutEmballage ?? 0);
+      if (val > 0) emballageByProductId.set(p.id, val);
+    }
+
+    // --- Order items map for delivered orders (needed for per-order packaging) ---
+    const deliveredOrderIds = deliveredOrders.map(o => o.id);
+    const deliveredItems = deliveredOrderIds.length > 0
+      ? await db.select({ orderId: orderItems.orderId, productId: orderItems.productId })
+          .from(orderItems).where(inArray(orderItems.orderId, deliveredOrderIds))
+      : [];
+    const itemsByOrderId = new Map<number, { productId: number | null }[]>();
+    for (const item of deliveredItems) {
+      const arr = itemsByOrderId.get(item.orderId) ?? [];
+      arr.push({ productId: item.productId });
+      itemsByOrderId.set(item.orderId, arr);
+    }
+
     // --- Revenue & order costs (delivered only) --- strict Number() to prevent concatenation ---
     let revenue = 0, productCost = 0, shippingCost = 0, packagingCostTotal = 0;
     for (const o of deliveredOrders) {
       revenue += Number(o.totalPrice ?? 0);
       productCost += Number(cogsMap.get(o.id) ?? 0);
       shippingCost += Number(o.shippingCost ?? 0);
-      packagingCostTotal += Number(storePackaging);
+      // Packaging: per order (not per quantity) — sum coutEmballage(DH) over items, convert to centimes
+      const orderEmballageDH = (itemsByOrderId.get(o.id) ?? [])
+        .reduce((sum, item) => sum + (emballageByProductId.get(item.productId ?? 0) ?? 0), 0);
+      packagingCostTotal += Math.round(orderEmballageDH * 100);
     }
 
     // --- Agent commissions (delivered orders only) ---
@@ -3373,7 +4115,11 @@ export class DatabaseStorage implements IStorage {
     if (productId) legacyConds.push(eq(adSpendTracking.productId, productId));
     // When a magasin is selected, scope ad spend to that magasin (legacy NULL rows excluded)
     if (magasinId) legacyConds.push(eq((adSpendTracking as any).magasinId, magasinId));
-    const legacyAdSpend = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId }).from(adSpendTracking).where(and(...legacyConds));
+    const legacyAdSpendRaw = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId, source: adSpendTracking.source }).from(adSpendTracking).where(and(...legacyConds));
+    // Source filter: substring match (e.g. "facebook" matches "Facebook Ads") — same as Dashboard
+    const legacyAdSpend = source
+      ? legacyAdSpendRaw.filter(e => ((e.source as string) || '').toLowerCase().includes(source.toLowerCase()))
+      : legacyAdSpendRaw;
     // Legacy adSpendTracking amounts are stored in DH → multiply by 100 to convert to centimes
     const legacyTotal = legacyAdSpend.reduce((s, e) => s + Math.round(Number(e.amount ?? 0) * 100), 0);
 
@@ -3386,7 +4132,11 @@ export class DatabaseStorage implements IStorage {
     if (productId) newAdConds.push(eq(adSpend.productId, productId));
     // When a magasin is selected, scope ad spend to that magasin (legacy NULL rows excluded)
     if (magasinId) newAdConds.push(eq((adSpend as any).magasinId, magasinId));
-    const newAdEntries = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId }).from(adSpend).where(and(...newAdConds));
+    const newAdEntriesRaw = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId, source: adSpend.source }).from(adSpend).where(and(...newAdConds));
+    // Source filter: substring match (e.g. "google" matches "Google Ads")
+    const newAdEntries = source
+      ? newAdEntriesRaw.filter(e => ((e.source as string) || '').toLowerCase().includes(source.toLowerCase()))
+      : newAdEntriesRaw;
     const newAdTotal = newAdEntries.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 
     const totalAdSpend = legacyTotal + newAdTotal;
@@ -3408,7 +4158,9 @@ export class DatabaseStorage implements IStorage {
       const agentComm = o.assignedToId ? Number(agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0;
       const realCogs = Number(cogsMap.get(o.id) ?? 0);
       existing.revenue += Number(o.totalPrice ?? 0);
-      existing.orderProfit += Number(o.totalPrice ?? 0) - realCogs - Number(o.shippingCost ?? 0) - Number(storePackaging) - agentComm;
+      const orderPkgDH = (itemsByOrderId.get(o.id) ?? [])
+        .reduce((sum, item) => sum + (emballageByProductId.get(item.productId ?? 0) ?? 0), 0);
+      existing.orderProfit += Number(o.totalPrice ?? 0) - realCogs - Number(o.shippingCost ?? 0) - Math.round(orderPkgDH * 100) - agentComm;
       buyerOrderMap.set(attributedId, existing);
     }
     const buyerAdSpendMap = new Map<number, number>();
@@ -3548,7 +4300,15 @@ export class DatabaseStorage implements IStorage {
     return s === 'delivered' || s === 'livré' || s === 'livre' || s === 'livrée' || s === 'livree';
   }
 
-  async getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+  async getTeamProfitSummary(
+    storeId: number,
+    dateFrom?: string,
+    dateTo?: string,
+    productId?: number,
+    mediaBuyerIdFilter?: number,
+    magasinId?: number,
+    source?: string,
+  ): Promise<{
     rows: {
       userId: number; userName: string; role: string;
       totalLeads: number; deliveredCount: number;
@@ -3564,23 +4324,50 @@ export class DatabaseStorage implements IStorage {
 
     const orderConditions: any[] = [eq(orders.storeId, storeId)];
     if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
-    if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
-    const allOrders = await db.select().from(orders).where(and(...orderConditions));
+    // +1 day so dateTo="2026-07-31" includes orders created on July 31 at any time (matches Dashboard)
+    if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp + interval '1 day' - interval '1 second'`);
+    if (mediaBuyerIdFilter) orderConditions.push(eq(orders.mediaBuyerId, mediaBuyerIdFilter));
+    if (magasinId) orderConditions.push(eq(orders.magasinId, magasinId));
+    let allOrders = await db.select().from(orders).where(and(...orderConditions));
+
+    // Source filter: substring, case-insensitive — same logic as Dashboard /api/stats/filtered
+    if (source) {
+      const s = source.toLowerCase();
+      allOrders = allOrders.filter(o =>
+        ((o.utmSource || o.source || '') as string).toLowerCase().includes(s)
+      );
+    }
+
+    // Product filter: keep only orders that have an item for the selected product
+    if (productId) {
+      const matchingItems = await db
+        .select({ orderId: orderItems.orderId })
+        .from(orderItems)
+        .where(eq(orderItems.productId, productId));
+      const matchingOrderIds = new Set(matchingItems.map(i => i.orderId));
+      allOrders = allOrders.filter(o => matchingOrderIds.has(o.id));
+    }
 
     // Real COGS: order_items × products.cost_price (fallback: orders.product_cost)
     const allDelivered = allOrders.filter(o => this.isDeliveredStatus(o.status));
     const teamCogsMap = await this.computeOrdersCOGS(allDelivered.map(o => ({ id: o.id, productCost: Number(o.productCost) })));
 
-    // Ad spend tables
+    // Ad spend tables — fetch with source column for filtering
     const adDateConds: any[] = [eq(adSpend.storeId, storeId)];
     if (dateFrom) adDateConds.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) adDateConds.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
-    const allNewAdSpend = await db.select({ userId: (adSpend as any).userId, amount: adSpend.amount }).from(adSpend).where(and(...adDateConds));
+    const allNewAdSpendRaw = await db.select({ userId: (adSpend as any).userId, amount: adSpend.amount, source: adSpend.source }).from(adSpend).where(and(...adDateConds));
+    const allNewAdSpend = source
+      ? allNewAdSpendRaw.filter(e => ((e.source as string) || '').toLowerCase().includes(source.toLowerCase()))
+      : allNewAdSpendRaw;
 
     const legDateConds: any[] = [eq(adSpendTracking.storeId, storeId)];
     if (dateFrom) legDateConds.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) legDateConds.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
-    const allLegacyAdSpend = await db.select().from(adSpendTracking).where(and(...legDateConds));
+    const allLegacyAdSpendRaw = await db.select().from(adSpendTracking).where(and(...legDateConds));
+    const allLegacyAdSpend = source
+      ? allLegacyAdSpendRaw.filter(e => ((e.source as string) || '').toLowerCase().includes(source.toLowerCase()))
+      : allLegacyAdSpendRaw;
 
     // Determine fallback user (owner first, then first admin)
     const ownerUser = allUsers.find(u => u.role === 'owner') ?? allUsers.find(u => u.role === 'admin') ?? null;
@@ -3599,8 +4386,9 @@ export class DatabaseStorage implements IStorage {
         productCost += Number(teamCogsMap.get(o.id) ?? 0);
         shippingCost += Number(o.shippingCost ?? 0);
         if (o.assignedToId) {
-          const s = agentSettingsAll.find(s => s.agentId === o.assignedToId);
-          agentCommissions += Number(s?.commissionRate ?? 0) * 100;
+          // Use Number() coercion to avoid type mismatch between agentId (number) and assignedToId (may be string)
+          const agentSetting = agentSettingsAll.find(as => Number(as.agentId) === Number(o.assignedToId));
+          agentCommissions += Number(agentSetting?.commissionRate ?? 0) * 100;
         }
       }
       const packagingCost = deliveredOrders.length * storePackaging;
@@ -3888,6 +4676,7 @@ export class DatabaseStorage implements IStorage {
     shippingCost?: number;
     status?: string;
     rawStatus?: string;
+    productName?: string;
   }): Promise<import("@shared/schema").Order> {
     // Idempotency guard — if an order with this tracking already exists for the
     // store, return it instead of creating a duplicate. Defends against
@@ -3900,6 +4689,7 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
+    const productName = params.productName?.trim() || null;
     const orderNumber = `EXT-${params.trackingNumber}`;
     let assignedToId: number | null = null;
     try {
@@ -3926,10 +4716,28 @@ export class DatabaseStorage implements IStorage {
       trackNumber:      params.trackingNumber,
       shippingProvider: params.provider,
       status:           params.status || 'Attente De Ramassage',
+      // Brand-new order created directly from a carrier record — it is
+      // shipped by definition, so stamp pickupDate at creation time (no
+      // prior value to preserve, unlike updateOrder/updateOrderStatus).
+      pickupDate:       SHIPPED_STATUS_SET.has(params.status || 'Attente De Ramassage') ? new Date() : null,
       commentStatus:    params.rawStatus || '',
       source:           `${params.provider}_webhook`,
+      rawProductName:   productName,
       assignedToId:     assignedToId ?? undefined,
     } as any).returning();
+
+    // If the carrier payload carried a product name, persist one order_items row
+    // so the parcel shows the product in both the Confirmés and Suivi views.
+    if (productName) {
+      await db.insert(orderItems).values({
+        orderId:        created.id,
+        productId:      null,
+        rawProductName: productName,
+        quantity:       1,
+        price:          0,
+      });
+    }
+
     return created;
   }
 

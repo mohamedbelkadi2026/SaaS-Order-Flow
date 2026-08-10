@@ -1,0 +1,100 @@
+DIAGNOSTIC — Comprendre pourquoi certaines commandes Vitips Express
+échouent avec "produit invalide" ou une erreur de ville, alors que le
+produit et la ville semblent corrects dans l'interface.
+
+PISTES DÉJÀ IDENTIFIÉES DANS LE CODE (à confirmer par les logs)
+
+1) `getProductName()` (server/routes.ts, ~ligne 1635) ne prend QUE le
+   PREMIER article de la commande :
+   ```ts
+   const getProductName = (order: any) =>
+     order.rawProductName ||
+     (order.items?.length > 0
+       ? (order.items[0].rawProductName || order.items[0].product?.name || 'Produit')
+       : 'Produit');
+   ```
+   Si le 1er article n'a ni `rawProductName` ni `product` lié (produit non
+   rattaché au catalogue — même bug déjà rencontré avec d'autres
+   transporteurs), le nom envoyé à Vitips devient le mot générique
+   `"Produit"` — que Vitips rejette très probablement comme "invalide" (il
+   ne correspond à aucun produit connu de leur système). C'est la piste la
+   plus probable pour les erreurs "produit invalide".
+
+2) Pour la ville, même si le champ affiche "AGADIR" dans l'interface,
+   l'ERREUR précise renvoyée par Vitips ("La ville du client destinataire
+   ...") n'est pas visible en entier dans le screenshot — il faut le
+   message complet pour savoir si c'est un problème d'orthographe, de ville
+   non synchronisée pour CE compte précis, ou autre chose.
+
+────────────────────────────────────────────────────────────────────────────
+FIX — Logger le payload exact envoyé à Vitips ET sa réponse brute, pour
+CHAQUE commande, dans server/services/carrier-service.ts, fonction
+`buildVitipsPayload` et la fonction qui envoie la requête HTTP vers
+`https://app.vitipsexpress.com/api/client/post/colis/add-colis` :
+
+```ts
+function buildVitipsPayload(input: CarrierShipInput): Record<string, any> {
+  // ... construction existante du payload, inchangée ...
+  const payload = {
+    fullname: input.customerName.trim(),
+    phone,
+    city,
+    address: addr,
+    price: priceDH,
+    product: (input.productName || "Produit").trim(),
+    qty: String(input.quantity ?? 1),
+    note: input.note || "",
+    exchange: 0,
+    openpackage: input.canOpen ? 1 : 0,
+    from_stock: input.isStock ? 1 : 0,
+    try_product: 0,
+    internal_id: input.orderNumber,
+  };
+  console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — payload:`, JSON.stringify(payload));
+  return payload;
+}
+```
+
+Et là où la réponse HTTP de Vitips est reçue (chercher l'appel `fetch(...)`
+vers `add-colis`), logger la réponse COMPLÈTE, succès ou échec :
+```ts
+const vitipsResp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+const vitipsData = await vitipsResp.json().catch(() => ({}));
+console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — HTTP ${vitipsResp.status} — response:`, JSON.stringify(vitipsData));
+```
+
+────────────────────────────────────────────────────────────────────────────
+FIX ADDITIONNEL (probable, à appliquer en même temps) — utiliser TOUS les
+articles de la commande, pas seulement le premier
+
+Remplacer `getProductName` par :
+```ts
+const getProductName = (order: any) => {
+  if (order.rawProductName) return order.rawProductName;
+  if (!order.items || order.items.length === 0) return null; // ← plus de fallback "Produit" générique
+  const names = order.items
+    .map((it: any) => it.rawProductName || it.product?.name)
+    .filter(Boolean);
+  return names.length > 0 ? names.join(" + ") : null;
+};
+```
+
+Et, juste avant d'appeler `buildPayload`/l'envoi vers Vitips, si
+`getProductName(order)` renvoie `null` (aucun nom exploitable trouvé), NE
+PAS envoyer la commande et retourner une erreur claire côté plateforme
+(`"Commande #X — aucun produit identifiable, impossible d'expédier via
+Vitips"`) plutôt que de laisser Vitips la rejeter avec un message opaque.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add diagnostic logging for Vitips shipping payload/response, use all order items for product name, fail fast on missing product" && git push
+
+VÉRIFICATION
+1. Réessayer d'expédier les commandes qui ont échoué (bouton "Réessayer").
+2. Dans les logs Railway, chercher `[VITIPS-SHIP]` pour CHAQUE commande —
+   copier-coller-moi les lignes payload + réponse pour au moins 2-3
+   commandes en échec (produit invalide) ET 1-2 commandes qui RÉUSSISSENT,
+   pour comparer.
+3. Avec ces logs, je pourrai confirmer si c'est bien le fallback "Produit"
+   générique qui pose problème, ou identifier une autre cause précise
+   (format de ville, caractères spéciaux, etc.).

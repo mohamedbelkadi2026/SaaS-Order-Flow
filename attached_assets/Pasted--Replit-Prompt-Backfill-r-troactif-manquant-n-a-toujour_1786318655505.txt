@@ -1,0 +1,32 @@
+# Replit Prompt — Backfill rétroactif manquant : "الشريط اللاصق مطاطي القوي" n'a toujours pas ses 5 mouvements historiques
+
+## Confirmation que le mécanisme automatique fonctionne désormais
+
+Produit "ماكينة الحلاقة الكهربائية" : l'Historique affiche correctement chaque "Livraison -1 #numéro" avec la bonne commande et la bonne date — le fix précédent (décrément + écriture `stock_movements` automatique à chaque transition de statut) **fonctionne bien pour les commandes traitées depuis le déploiement du fix**.
+
+## Ce qui reste cassé
+
+Produit "الشريط اللاصق مطاطي القوي" : Disponible = 15 (correct), mais l'Historique montre seulement :
+- "Stock initial +20" (09 août)
+- "Ajustement +1 — Édition manuelle du stock (14 → 15)" (10 août 00:31)
+
+**Aucune ligne "Livraison" ou "Expédition"** pour les 2 commandes livrées et les 3 commandes en cours de ce produit, contrairement à "ماكينة الحلاقة الكهربائية" qui les a toutes. Ça confirme que le correctif automatique ne s'applique qu'aux commandes traitées APRÈS son déploiement — les commandes historiques de CE produit (antérieures au fix) n'ont jamais été backfillées, et quelqu'un a visiblement forcé le chiffre "Disponible" à la main (l'ajustement +1 de 14→15) plutôt que d'avoir le vrai historique en dessous.
+
+## Fix demandé (uniquement le backfill rétroactif — le mécanisme automatique n'est PAS à retoucher)
+
+1. Identifier, pour "الشريط اللاصق مطاطي القوي" (productId correspondant, SKU 0013) — et par la même occasion pour TOUT AUTRE produit dans le même cas — les commandes actuellement `delivered` ou dans un statut "en cours" (`in_progress`, `expédié`, `Attente De Ramassage`, etc.) qui contiennent ce produit dans `order_items`, et qui n'ont AUCUNE ligne correspondante dans `stock_movements` (`type IN ('shipped','delivered')` pour ce `order_id` + `product_id`).
+2. Pour chacune, insérer la ligne manquante dans `stock_movements` :
+   - `type` = `'delivered'` si la commande est `delivered`, `'shipped'` si en cours/expédiée.
+   - `quantity` = `-quantity` de la ligne `order_items`.
+   - `orderId`, `productId` (et `variantId` si applicable) corrects.
+   - `reason` = `"Commande #{orderNumber} livrée"` ou `"Expédition commande #{orderNumber}"` (cohérent avec le format déjà utilisé pour "ماكينة الحلاقة الكهربائية").
+   - `createdAt` = la date réelle de la commande (`orders.updatedAt`, pas la date du jour) — pour que l'ordre chronologique dans l'Historique reste correct.
+3. **Ne PAS re-décrémenter `products.stock`** pour ce backfill : le stock est déjà à 15 (via l'ajustement manuel +1 déjà appliqué), ce backfill sert uniquement à compléter l'audit trail, pas à changer le chiffre.
+4. Optionnel mais recommandé : une fois les 5 lignes réelles ajoutées, envisager de supprimer la ligne "Ajustement +1 — Édition manuelle du stock" si elle n'est plus nécessaire pour expliquer l'écart (puisque les vraies lignes couvrent maintenant tout l'écart 20→15) — à faire seulement si ça ne fausse pas le total (vérifier que 20 (reçu) − 5 (les 5 vraies sorties) = 15, auquel cas l'ajustement +1 devient redondant et peut être retiré pour un historique plus propre).
+5. Lancer ce backfill pour TOUS les produits du store (pas seulement celui-ci), pour rattraper le même problème partout où il existe.
+
+## Testing checklist
+1. Historique de "الشريط اللاصق مطاطي القوي" → doit maintenant afficher les 5 lignes "Livraison"/"Expédition" avec les vrais numéros de commande et dates, en plus de "Stock initial +20".
+2. Total sorti dans l'Historique doit devenir **-5** (au lieu de -0 actuellement), et Disponible doit rester **15** (aucun changement du chiffre, juste de l'audit trail complété).
+3. Vérifier qu'aucun produit n'a de mouvement en double après ce backfill (le check "déjà existe" avant insertion doit bien fonctionner).
+4. Confirmer sur 2-3 autres produits au hasard que leur historique est maintenant complet et cohérent avec leur "Disponible" affiché.

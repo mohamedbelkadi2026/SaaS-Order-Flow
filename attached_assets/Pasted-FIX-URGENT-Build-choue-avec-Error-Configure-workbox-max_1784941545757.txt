@@ -1,0 +1,60 @@
+FIX URGENT — Build échoue avec :
+```
+Error: Configure "workbox.maximumFileSizeToCacheInBytes" to change the limit: the default value is 2 MiB.
+Assets exceeding the limit:
+- assets/index-DwUA6sC5.js is 2.33 MB, and won't be precached.
+code: 'PLUGIN_ERROR', plugin: 'vite-plugin-pwa:build', hook: 'closeBundle'
+```
+
+CAUSE
+L'ajout de `@zxing/library` a fait grossir le bundle principal à 2.33 MB,
+au-delà de la limite par défaut de `vite-plugin-pwa` pour le pré-cache du
+service worker (2 MiB). C'est bloquant tel que configuré actuellement.
+
+────────────────────────────────────────────────────────────────────────────
+FIX IMMÉDIAT — Augmenter la limite de taille dans la config VitePWA
+
+Trouver la configuration du plugin `VitePWA` (dans `vite.config.ts`), et
+ajouter/ajuster l'option `workbox.maximumFileSizeToCacheInBytes` :
+
+```ts
+VitePWA({
+  // ... options existantes inchangées ...
+  workbox: {
+    // ... autres options workbox existantes ...
+    maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MB (au lieu de 2 MB par défaut)
+  },
+}),
+```
+
+Si le bloc `workbox: {}` n'existe pas encore dans la config `VitePWA(...)`,
+l'ajouter tel quel.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Increase vite-plugin-pwa precache size limit to accommodate ZXing bundle" && git push
+
+VÉRIFICATION
+- Le build doit maintenant passer l'étape `npm run build` sans erreur
+  `PLUGIN_ERROR` / `vite-plugin-pwa:build`.
+- Le déploiement doit atteindre ACTIVE normalement.
+
+────────────────────────────────────────────────────────────────────────────
+AMÉLIORATION RECOMMANDÉE (PAS URGENTE — à faire dans un prompt séparé plus
+tard, une fois le déploiement actuel débloqué)
+
+Le bundle principal à 2.33 MB (et le warning Rollup "chunks larger than
+500 kB") indique que ZXing (et probablement d'autres librairies utilisées
+seulement sur certaines pages, comme xlsx) sont inclus dans le bundle
+INITIAL chargé sur CHAQUE page, au lieu d'être chargés uniquement quand
+nécessaire. Ça ralentit le premier chargement de toute la plateforme pour
+tout le monde, même ceux qui n'utilisent jamais le scanner.
+
+Piste : s'assurer que le composant contenant le scanner caméra (et donc
+l'import de `@zxing/library`) est chargé via un `import()` dynamique /
+`React.lazy()`, pas un import statique en haut d'un fichier partagé — Vite
+le mettra alors automatiquement dans un chunk séparé, téléchargé uniquement
+quand quelqu'un ouvre la page Retours et utilise le scanner. Ça réduirait le
+bundle principal significativement et améliorerait le temps de chargement
+général de l'app — cohérent avec la demande précédente de rendre la
+plateforme plus rapide.

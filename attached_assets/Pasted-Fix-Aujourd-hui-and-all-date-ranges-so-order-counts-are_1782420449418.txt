@@ -1,0 +1,34 @@
+Fix "Aujourd'hui" (and all date ranges) so order counts are accurate and CONSISTENT between the
+dashboard stats and the orders list. Currently they compute the day boundary in the SERVER local
+timezone (UTC on the host), not Morocco time (UTC+1, Africa/Casablanca), so orders created near
+midnight fall into the wrong day and the dashboard total is inflated vs reality.
+
+Use Morocco timezone (UTC+1, no DST) for the day boundaries in BOTH places. Simplest robust
+approach: when building the from/to Date objects from a 'YYYY-MM-DD' string, treat the start as
+00:00:00 Casablanca = (that date)T00:00:00+01:00, and the end as 23:59:59.999 Casablanca.
+
+1) server/routes.ts — GET /api/stats/filtered, the date filter block. Replace:
+     const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
+     ... and the matching dateTo `to` construction ...
+   with explicit +01:00 boundaries:
+     const from = new Date(`${dateFrom}T00:00:00.000+01:00`);
+     ... allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from) ...
+     const to   = new Date(`${dateTo}T23:59:59.999+01:00`);
+     ... allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to) ...
+
+2) server/storage.ts — getFilteredOrders date block. Replace:
+     conditions.push(gte(dateCol, new Date(filters.dateFrom + 'T00:00:00')));
+     conditions.push(lte(dateCol, new Date(filters.dateTo + 'T23:59:59')));
+   with:
+     conditions.push(gte(dateCol, new Date(filters.dateFrom + 'T00:00:00.000+01:00')));
+     conditions.push(lte(dateCol, new Date(filters.dateTo + 'T23:59:59.999+01:00')));
+
+3) Do not change which field is used (still createdAt by default). Only fix the timezone of the
+   day boundaries. Apply the same +01:00 boundary to any other place that builds a day range from a
+   YYYY-MM-DD string for stats (search for `T00:00:00` and `new Date(fy, fm`).
+
+VERIFY:
+- For "Aujourd'hui", the dashboard COMMANDES count equals the number of orders whose createdAt is
+  within today in Morocco time, and matches the orders list filtered to Aujourd'hui exactly.
+- Counts no longer shift by ~1h around midnight.
+- App compiles.

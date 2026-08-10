@@ -1,0 +1,60 @@
+Fix inventory stats — "EN COURS" and "SORTIE" columns show wrong numbers.
+
+In server/storage.ts, find getInventoryStats() function (around line 2014).
+
+PROBLEM 1: inTransitItems query only counts these statuses:
+['in_progress', 'expédié', 'Attente De Ramassage']
+
+This misses: 'transit', 'unreachable', 'En Cours De Retour', 'refused', 'Retour Recu'
+
+Fix — replace the inTransitItems query statuses with ALL active shipping statuses:
+
+const EN_COURS_STATUSES = [
+  'in_progress',
+  'expédié', 
+  'Attente De Ramassage',
+  'transit',
+  'unreachable',
+  'En Cours De Retour',
+  'refused',
+  'Retour Recu',
+];
+
+const inTransitItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
+  .from(orderItems)
+  .innerJoin(orders, eq(orderItems.orderId, orders.id))
+  .where(and(
+    eq(orderItems.productId, p.id),
+    eq(orders.storeId, storeId),
+    inArray(orders.status, EN_COURS_STATUSES)
+  ));
+
+PROBLEM 2: SORTIE (livrées) only counts status = 'delivered'
+But "delivered" in Vitipsexpress maps to 'delivered' — make sure this is correct.
+Also add 'Livré' as an alias just in case:
+
+const deliveredItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
+  .from(orderItems)
+  .innerJoin(orders, eq(orderItems.orderId, orders.id))
+  .where(and(
+    eq(orderItems.productId, p.id),
+    eq(orders.storeId, storeId),
+    inArray(orders.status, ['delivered', 'Livré', 'livré'])
+  ));
+
+PROBLEM 3: DISPONIBLE should show real available stock
+Currently: available = totalStock (just current DB stock number)
+This is correct IF stock is being decremented on shipment.
+But since stock decrement was just added, historical orders haven't been decremented yet.
+
+Keep available = totalStock as-is (it's correct going forward after stock fix).
+
+PROBLEM 4: The EN COURS count in inventory should match dashboard "EN COURS"
+In dashboard (server/routes.ts around line 935), EN COURS is defined as:
+['in_progress', 'expédié', 'Attente De Ramassage']
+
+Update dashboard EN COURS definition to also include 'transit':
+if (['in_progress', 'expédié', 'Attente De Ramassage', 'transit', 'unreachable', 'En Cours De Retour'].includes(o.status)) rawProductMap[key].inProgress++;
+
+Also in the main stats calculation (GET /api/stats/filtered), make sure 'transit' is counted under "EN COURS":
+Find the inProgress/enCours counter and add 'transit' to it.

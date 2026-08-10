@@ -1,0 +1,54 @@
+# Replit Prompt — Profit Analyzer Pro: show full product names + fix white-on-white inputs
+
+Two UI bugs to fix on the **Profit Analyzer Pro** page (`client/src/pages/profit-analyzer.tsx`).
+Inspect the file first, then apply both fixes. Do NOT change any calculation logic — these are display-only fixes.
+
+═══════════════════════════════════════════════════════════════════════
+BUG 1 — Product names are cut off with "…" (ellipsis)
+═══════════════════════════════════════════════════════════════════════
+In the **Par Produit** results table the PRODUIT column truncates long names, e.g.
+"CONFORT TOP BOSS EN CUIR B…", "Sandale En Cuir Evo Rf 0011 noir…". The user needs the
+FULL name visible.
+
+Do this:
+1. Find the product-name cell(s). Look for the column header "PRODUIT" / "Produit" and the
+   element that renders the product name string.
+2. On that cell, REMOVE any of these classes if present: `truncate`, `text-ellipsis`,
+   `overflow-hidden`, `whitespace-nowrap`, and any fixed/`max-w-[...]` width clamp.
+3. REPLACE with: `whitespace-normal break-words` so the name wraps onto multiple lines and
+   stays fully readable. Let the row height auto-grow.
+4. Give the PRODUIT column more room than the others (make it the widest column — e.g. the
+   largest flex value or `w-1/2`), since "CMD / UNITÉS" and "CA BRUT" are short.
+5. Add `title={productName}` on the cell as a hover-tooltip fallback.
+6. IMPORTANT: apply the SAME fix in EVERY place the product name is shown on this page —
+   not only the "Par Produit" table, but also the Step 2 "Saisie des coûts" table and the
+   saved-reports preview/list. Search the file for all product-name renders and de-truncate
+   each one.
+
+═══════════════════════════════════════════════════════════════════════
+BUG 2 — White text on white background in the Save-report form (month / title / date)
+═══════════════════════════════════════════════════════════════════════
+When saving a report — the **month** picker, the **title** input, and the **date** shown —
+the text is white on a white field, so nothing is visible. Make it all black and readable.
+
+Do this:
+1. Find the save-report dialog/form (the one with the month + title fields that POSTs to
+   `/api/profit-reports`).
+2. On EVERY `<input>`, `<select>`, and `<textarea>` inside that form, force readable colors:
+   `text-gray-900 bg-white placeholder:text-gray-400 border border-gray-300`.
+3. For any native date input, ALSO add `[color-scheme:light]` so the calendar text/icon is dark.
+4. Anywhere the chosen date or title is DISPLAYED (form preview, saved-reports list, report
+   header), set the text color explicitly to `text-gray-900` so it can't inherit a white/light
+   color from a dark container.
+5. Check for a parent wrapper with `text-white` or a dark-theme class leaking into these
+   inputs; if found, override at the input level (the classes in step 2 already do this, but
+   verify the result is truly black-on-white).
+
+═══════════════════════════════════════════════════════════════════════
+VERIFY
+═══════════════════════════════════════════════════════════════════════
+1. Long product names (e.g. "Sandale En Cuir Evo Rf 0011 Noir 43") now show in FULL, wrapped,
+   with no "…", in the Par Produit table, Step 2 table, and saved reports.
+2. In the save form, the month, the title, and the date are all clearly BLACK on white and
+   readable/typeable.
+3. The saved-reports list shows the date and title in black, not white.

@@ -1,5 +1,5 @@
-import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { relations, sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -40,6 +40,7 @@ export const stores = pgTable("stores", {
   // created AFTER this timestamp — so percentage rebalances are not poisoned
   // by historical data when the user changes config mid-day or adds agents.
   distributionEpoch: timestamp("distribution_epoch").defaultNow(),
+  settings: jsonb("settings"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -61,7 +62,14 @@ export const users = pgTable("users", {
   preferredLanguage: text("preferred_language").default("fr"),
   dashboardPermissions: jsonb("dashboard_permissions"),
   buyerCode: text("buyer_code"),
+  notifSettings: jsonb("notif_settings").$type<{
+    sound?: boolean;
+    newOrder?: boolean;
+    statusUpdate?: boolean;
+    importantOnly?: boolean;
+  }>(),
   createdAt: timestamp("created_at").defaultNow(),
+  lastSeenAt: timestamp("last_seen_at"),
 });
 
 export const emailVerificationCodes = pgTable("email_verification_codes", {
@@ -86,7 +94,9 @@ export const products = pgTable("products", {
   imageUrl: text("image_url"),
   reference: text("reference"),
   hasVariants: integer("has_variants").default(0),
+  settings: jsonb("settings"),
   createdAt: timestamp("created_at").defaultNow(),
+  archivedAt: timestamp("archived_at"),
 });
 
 export const productVariants = pgTable("product_variants", {
@@ -136,6 +146,8 @@ export const orders = pgTable("orders", {
   commentStatus: text("comment_status"),
   commentOrder: text("comment_order"),
   returnTrackingNumber: text("return_tracking_number"),
+  returnConfirmedAt: timestamp("return_confirmed_at"),
+  returnConfirmedBy: integer("return_confirmed_by").references(() => users.id),
   wasAbandoned: integer("was_abandoned").default(0),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
@@ -149,7 +161,17 @@ export const orders = pgTable("orders", {
   driverPhone: text("driver_phone").default(""),
   offerName:       text("offer_name"),        // enrichment from Google Sheets / forms
   ameexProductId:  text("ameex_product_id"),  // Ameex catalog product UUID for catalog-based shipping
-});
+}, (table) => ({
+  // Race-safe dedupe for Shopify webhook orders: two concurrent webhook
+  // retries (orders/create + orders/paid, etc.) can both pass the app-level
+  // getOrderByNumber guard before either inserts. A partial UNIQUE index on
+  // (storeId, orderNumber) scoped to source='shopify' makes the second insert
+  // fail with a unique-violation (23505), which the webhook handler catches
+  // and treats as a duplicate. Other sources are unaffected.
+  shopifyOrderNumberUnique: uniqueIndex("orders_shopify_order_number_unique")
+    .on(table.storeId, table.orderNumber)
+    .where(sql`${table.source} = 'shopify'`),
+}));
 
 export const orderItems = pgTable("order_items", {
   id: serial("id").primaryKey(),
@@ -266,6 +288,40 @@ export const ozonExpressCities = pgTable("ozon_express_cities", {
 });
 export type OzonExpressCity = typeof ozonExpressCities.$inferSelect;
 
+// ─── Vitipsexpress City Map — display name → API abbr ────────────────────────
+// Vitipsexpress's add-parcel API requires the 'city' field to be an abbr (e.g.
+// "Casablanca"), NOT the full uppercase name (e.g. "CASABLANCA"). This table
+// maps synced city display names to their abbr values.
+// Populated by "Synchroniser les villes" on the Vitipsexpress carrier account.
+export const vitipsCities = pgTable("vitips_cities", {
+  id:         serial("id").primaryKey(),
+  storeId:    integer("store_id").notNull(),
+  externalId: text("external_id").notNull(),   // abbr sent to Vitips API (e.g. "Casablanca")
+  name:       text("name").notNull(),           // full display name (e.g. "CASABLANCA")
+  nameNorm:   text("name_norm").notNull(),      // lowercase + accent-stripped for fuzzy match
+  createdAt:  timestamp("created_at").defaultNow(),
+});
+export type VitipsCity = typeof vitipsCities.$inferSelect;
+
+// ─── Per-city delivery pricing (per carrier) ────────────────────────────────
+// Fills orders.shippingCost automatically for carriers that don't return a
+// real per-city cost via API (Express Coursier has no such endpoint — unlike
+// Digylog's getDigylogDeliveryCost). One row per store+carrier+city.
+export const carrierCityPricing = pgTable("carrier_city_pricing", {
+  id:          serial("id").primaryKey(),
+  storeId:     integer("store_id").notNull(),
+  carrierName: text("carrier_name").notNull(),   // e.g. "expresscoursier"
+  cityName:    text("city_name").notNull(),       // display name, as typed by the user
+  cityNorm:    text("city_norm").notNull(),        // normalizeCityKey(cityName) — used for lookup
+  priceDh:     integer("price_dh").notNull(),      // price in CENTIMES (e.g. 3500 = 35.00 DH)
+  source:      text("source").default("manual"),   // "manual" | "import_historique"
+  createdAt:   timestamp("created_at").defaultNow(),
+  updatedAt:   timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  uniqueCityPerCarrier: uniqueIndex("carrier_city_pricing_unique")
+    .on(table.storeId, table.carrierName, table.cityNorm),
+}));
+export type CarrierCityPricing = typeof carrierCityPricing.$inferSelect;
 
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),
@@ -320,6 +376,10 @@ export const subscriptions = pgTable("subscriptions", {
   planExpiryDate: timestamp("plan_expiry_date"),
   isActive: integer("is_active").default(1),
   isBlocked: integer("is_blocked").default(0),
+  // Per-store feature overrides — null = follow plan default, 1 = force on, 0 = force off
+  automationEnabled: integer("automation_enabled"),
+  mediaBuyersEnabled: integer("media_buyers_enabled"),
+  importCsvEnabled: integer("import_csv_enabled"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -592,6 +652,21 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({ id: true,
 export type Payment = typeof payments.$inferSelect;
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 
+export const csvProfitReports = pgTable("csv_profit_reports", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").notNull().references(() => stores.id, { onDelete: 'cascade' }),
+  userId: integer("user_id").references(() => users.id),
+  month: text("month").notNull(),
+  title: text("title"),
+  payload: jsonb("payload").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCsvProfitReportSchema = createInsertSchema(csvProfitReports).omit({ id: true, createdAt: true, updatedAt: true });
+export type CsvProfitReport = typeof csvProfitReports.$inferSelect;
+export type InsertCsvProfitReport = z.infer<typeof insertCsvProfitReportSchema>;
+
 // ─── Stock Logs (Audit Trail) ──────────────────────────────────────────────
 export const stockLogs = pgTable("stock_logs", {
   id: serial("id").primaryKey(),
@@ -614,6 +689,7 @@ export type InsertStockLog = z.infer<typeof insertStockLogSchema>;
 // silently inflates historical totals.
 //   type='restock'    → +qty: manual purchase, initial stock, or reorder
 //   type='delivered'  → -qty: order status flipped to delivered
+//   type='shipped'    → -qty: order dispatched to carrier (Attente De Ramassage)
 //   type='returned'   → +qty: carrier returned the goods (refused/retourné)
 //   type='adjustment' → ± qty: manual correction (recount, damage, etc.)
 //   type='reservation'/ 'release' (reserved for future soft-reservation work)
@@ -821,6 +897,37 @@ export const passwordSchema = z.string()
   .regex(/[A-Z]/, "Au moins une majuscule requise")
   .regex(/[a-z]/, "Au moins une minuscule requise")
   .regex(/[0-9]/, "Au moins un chiffre requis");
+
+// ── Ad Campaign → Product Mapping ────────────────────────────────────────
+// Persists normalized campaign names to product IDs per store so that
+// re-importing the same campaigns skips the manual mapping step.
+export const adCampaignProductMap = pgTable("ad_campaign_product_map", {
+  id:           serial("id").primaryKey(),
+  storeId:      integer("store_id").notNull().references(() => stores.id, { onDelete: "cascade" }),
+  campaignName: text("campaign_name").notNull(),
+  productId:    integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  createdAt:    timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertAdCampaignProductMapSchema = createInsertSchema(adCampaignProductMap).omit({ id: true, createdAt: true });
+export type InsertAdCampaignProductMap = z.infer<typeof insertAdCampaignProductMapSchema>;
+export type AdCampaignProductMap = typeof adCampaignProductMap.$inferSelect;
+
+// ── Web Push Subscriptions ────────────────────────────────────────────────────
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id:        serial("id").primaryKey(),
+  userId:    integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  storeId:   integer("store_id").notNull().references(() => stores.id, { onDelete: "cascade" }),
+  endpoint:  text("endpoint").notNull().unique(),
+  p256dh:    text("p256dh").notNull(),
+  auth:      text("auth").notNull(),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({ id: true, createdAt: true });
+export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 
 // Email schema — RFC-bounded length, lowercase + trim normalisation.
 export const emailSchema = z.string()

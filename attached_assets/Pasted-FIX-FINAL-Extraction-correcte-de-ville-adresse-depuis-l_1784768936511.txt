@@ -1,0 +1,95 @@
+FIX FINAL — Extraction correcte de ville/adresse depuis la réponse YouCan
+réelle (confirmée par les logs).
+
+Structure réelle observée (customer.city est parfois du texte comme
+"agadir", et customer.region / customer.location contiennent l'adresse en
+texte libre — il n'y a PAS d'objet "shipping" séparé pour ce type de
+commande) :
+```json
+{
+  "customer": {
+    "first_name": "brahim",
+    "phone": "0632595440",
+    "region": "Douar aghechi freija taroudant",
+    "city": "agadir",
+    "location": "Douar aghechi freija taroudant, ",
+    "address": []
+  }
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+FIX — server/routes.ts, remplacer le bloc d'extraction (celui avec les logs
+de diagnostic ajoutés au fix précédent) par :
+
+```ts
+let customerCity = "";
+let customerAddress = "";
+const accessToken = decrypt(integration.oauthAccessToken || "");
+if (accessToken && payload.id) {
+  try {
+    const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const fullOrder = await fullOrderResp.json() as any;
+
+    const customer = fullOrder?.customer || {};
+    const shippingAddr = fullOrder?.shipping?.address || null; // peut être absent selon le type de commande
+
+    // Ville : privilégier shipping.address.city si présent (commandes avec
+    // adresse structurée), sinon customer.city (texte libre côté COD).
+    customerCity = shippingAddr?.city || customer.city || "";
+
+    // Adresse : region/location du customer contiennent le texte libre saisi
+    // par le client (quartier, repère...) — c'est la meilleure adresse
+    // disponible pour ce type de commande YouCan.
+    customerAddress = shippingAddr?.address
+      || customer.location
+      || customer.region
+      || "";
+
+    // Si "city" ressemble à un code numérique pur (ex: "66") plutôt qu'à un
+    // nom de ville, ce n'est pas exploitable tel quel — dans ce cas, se
+    // rabattre sur region/location pour au moins avoir un texte utile.
+    if (customerCity && /^\d+$/.test(customerCity.trim())) {
+      console.warn(`[YOUCAN-WEBHOOK] city looks like a numeric code ("${customerCity}") for order ${payload.id}, falling back to region/location`);
+      customerCity = customer.region || customer.location || "";
+    }
+
+    if (!customerCity) console.warn(`[YOUCAN-WEBHOOK] Still no usable city for order ${payload.id}`);
+  } catch (fetchErr: any) {
+    console.error("[YOUCAN-WEBHOOK] Failed to fetch full order for address:", fetchErr.message);
+  }
+}
+```
+
+(Le `console.log` complet de `fullOrder` ajouté au fix précédent peut être
+retiré maintenant qu'on a confirmé la structure — ou gardé, au choix, ça ne
+gêne rien.)
+
+S'assurer que `customerAddress` est bien passé à `storage.createOrder(...)`
+(ajouté au fix précédent — vérifier qu'il est toujours là) :
+```ts
+const order = await storage.createOrder({
+  storeId,
+  orderNumber: `YC-${orderRef}`,
+  customerName,
+  customerPhone,
+  customerCity,
+  customerAddress,
+  totalPrice: totalPriceCents,
+  ...
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix YouCan city/address extraction using confirmed real API response structure" && git push
+
+VÉRIFICATION
+1. Passer une nouvelle commande test sur YouCan avec ville + repère/adresse
+   remplis.
+2. La commande doit apparaître dans la plateforme avec VILLE et ADRESSE
+   remplies (plus de "Champs manquants: ville, adresse").
+3. Vérifier aussi une ancienne commande où city="66" (numérique) — dans ce
+   cas, la ville affichée doit être le texte de region/location plutôt qu'un
+   nombre brut inutilisable.

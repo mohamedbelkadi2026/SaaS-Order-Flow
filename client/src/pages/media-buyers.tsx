@@ -2,10 +2,11 @@ import { useState, Fragment } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
-import { useLocation } from "wouter";
+import { useSubscription } from "@/hooks/use-store-data";
+import { useLocation, Link } from "wouter";
 import { formatCurrency } from "@/lib/utils";
 import { cn } from "@/lib/utils";
-import { Target, UserPlus, Loader2, Copy, Check, TrendingUp, ShoppingCart, Truck, DollarSign, Pencil, X, ChevronDown, ChevronRight, Monitor, Search, Calendar, Award, BarChart3 } from "lucide-react";
+import { Target, UserPlus, Loader2, Copy, Check, TrendingUp, ShoppingCart, Truck, DollarSign, Pencil, X, ChevronDown, ChevronRight, Monitor, Search, Calendar, Award, BarChart3, Crown, Zap, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -53,8 +54,12 @@ function PctCell({ value, type }: { value: number; type: 'confirm' | 'delivery' 
 
 export default function MediaBuyersPage() {
   const { user } = useAuth();
+  const { data: subscription } = useSubscription();
   const [, navigate] = useLocation();
   const { toast } = useToast();
+
+  const hasMediaBuyers = (subscription as any)?.hasMediaBuyers ?? true;
+  const isOwnerOrAdmin = user?.role === 'owner' || user?.role === 'admin';
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [editBuyer, setEditBuyer] = useState<any>(null);
@@ -110,6 +115,39 @@ export default function MediaBuyersPage() {
   if (user && user.role !== 'owner' && user.role !== 'admin' && !user.isSuperAdmin) {
     navigate('/');
     return null;
+  }
+
+  // Feature gate — Starter plan doesn't include Media Buyers management
+  if (subscription && !hasMediaBuyers && isOwnerOrAdmin && !user?.isSuperAdmin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 bg-gray-50">
+        <div className="bg-white rounded-3xl shadow-xl w-full max-w-md overflow-hidden">
+          <div className="px-6 pt-8 pb-6 text-center" style={{ background: 'linear-gradient(135deg, #0f1e38 0%, #1a3a8f 100%)' }}>
+            <div className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(197,160,89,0.2)', border: '2px solid #C5A059' }}>
+              <Crown className="w-7 h-7" style={{ color: '#C5A059' }} />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-1">Gestion Media Buyers</h2>
+            <p className="text-white/60 text-sm">Fonctionnalité réservée au plan Pro</p>
+          </div>
+          <div className="px-6 py-6 space-y-4">
+            <ul className="space-y-2 text-sm text-gray-600">
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Tableau de bord Media Buyers</li>
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Suivi ROI & ROAS par buyer</li>
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Gestion des dépenses publicitaires</li>
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Rapports consolidés multi-sources</li>
+            </ul>
+            <Link
+              href="/billing"
+              className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold text-sm hover:opacity-90 transition-opacity"
+              style={{ background: 'linear-gradient(135deg, #C5A059 0%, #d4b06a 100%)' }}
+            >
+              <Zap className="w-4 h-4" />
+              Passer au plan Pro
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const filteredBuyers = buyers.filter((b: any) => {

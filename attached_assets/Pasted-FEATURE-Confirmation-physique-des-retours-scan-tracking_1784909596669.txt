@@ -1,0 +1,259 @@
+FEATURE — Confirmation physique des retours (scan / tracking number),
+indépendante du transporteur, avec restauration du stock UNIQUEMENT après
+confirmation manuelle. Doit fonctionner pour TOUS les transporteurs
+(Express Coursier, Digylog, Ozon Express, Ameex, manuel...) car elle opère
+au niveau de la commande, pas du transporteur.
+
+CONTEXTE / PROBLÈME ACTUEL (confirmé dans le code)
+server/storage.ts, méthode qui gère les changements de statut, RULE 2 :
+```ts
+// ── RULE 2: Return/cancel from delivered OR confirmed → restore stock ─
+if ((prevStatus === 'delivered' || this.CONFIRMED_FOR_STOCK.has(prevStatus)) && this.RETURN_STATUSES.has(status)) {
+  for (const item of items) {
+    ...
+    await tx.update(products).set({ stock: sql`${products.stock} + ${qty}` })...
+```
+Dès que le statut de la commande passe à "retourné" (ou refusé/annulé selon
+`RETURN_STATUSES`) — que ce soit via webhook transporteur, mise à jour
+manuelle, ou synchronisation API — le stock est remis à jour AUTOMATIQUEMENT,
+sans aucune vérification que le colis est physiquement revenu à l'entrepôt.
+C'est ce qui rend le stock peu fiable : "Retournée" reflète ce que dit le
+transporteur, pas ce qui est réellement dans les mains du seller.
+
+OBJECTIF
+Découpler complètement les deux notions :
+- **Statut "Retournée"** = information transporteur (inchangé, continue de
+  s'afficher comme avant).
+- **Confirmation physique** = action manuelle (scan ou saisie du
+  tracking number / code de commande) qui, elle seule, déclenche la
+  restauration du stock.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — shared/schema.ts : nouveaux champs sur `orders`
+
+Ajouter juste après `returnTrackingNumber` :
+```ts
+returnConfirmedAt: timestamp("return_confirmed_at"),
+returnConfirmedBy: integer("return_confirmed_by").references(() => users.id),
+```
+Migration : `npm run db:push` (ou script existant du projet).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — server/storage.ts : retirer la restauration automatique de RULE 2,
+créer une méthode dédiée `confirmReturnReceipt`
+
+2a) Dans RULE 2, retirer la partie qui touche `products.stock` / `stockLogs`
+/ `stockMovements` — GARDER uniquement le changement de statut lui-même
+(déjà géré par le `tx.update(orders)...` plus haut dans la fonction, avant
+RULE 0/1/2 — donc il suffit de supprimer le corps de RULE 2, pas la
+transition de statut). Remplacer le bloc RULE 2 entier par un simple
+commentaire expliquant que la restauration de stock a été déplacée vers
+`confirmReturnReceipt()` (appelée uniquement après confirmation physique
+manuelle — voir ÉTAPE 2b) :
+```ts
+// ── RULE 2 (RETIRÉE) ─────────────────────────────────────────────────────
+// La restauration du stock au passage en statut retour a été déplacée vers
+// confirmReturnReceipt() : elle ne se déclenche plus automatiquement sur un
+// simple changement de statut rapporté par le transporteur, mais uniquement
+// après confirmation physique manuelle (scan / tracking number) par un
+// utilisateur de la plateforme. Voir server/storage.ts confirmReturnReceipt().
+```
+
+2b) Ajouter une nouvelle méthode sur la classe storage (à côté des autres
+méthodes liées aux commandes) :
+```ts
+async confirmReturnReceipt(storeId: number, orderId: number, actorId: number | null): Promise<{ success: boolean; message: string; order?: any }> {
+  return await db.transaction(async (tx) => {
+    const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
+    if (!order) return { success: false, message: "Commande introuvable" };
+    if (!this.RETURN_STATUSES.has(order.status)) {
+      return { success: false, message: `Cette commande n'est pas en statut retour (statut actuel: ${order.status})` };
+    }
+    if (order.returnConfirmedAt) {
+      return { success: false, message: `Retour déjà confirmé le ${new Date(order.returnConfirmedAt).toLocaleString('fr-FR')}` };
+    }
+
+    const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+    for (const item of items) {
+      if (!item.productId) continue;
+      const qty = Number(item.quantity);
+      await tx.update(products)
+        .set({ stock: sql`${products.stock} + ${qty}` })
+        .where(eq(products.id, item.productId));
+      await tx.insert(stockLogs).values({
+        storeId,
+        productId: item.productId,
+        orderId,
+        changeAmount: qty,
+        reason: `Retour confirmé physiquement — commande #${orderId}`,
+      });
+      await tx.insert(stockMovements).values({
+        storeId,
+        productId: item.productId,
+        type: 'returned',
+        quantity: qty,
+        orderId,
+        userId: actorId,
+        reason: `Retour confirmé physiquement (scan/tracking) — commande #${orderId}`,
+      });
+    }
+
+    const [updated] = await tx.update(orders)
+      .set({ returnConfirmedAt: new Date(), returnConfirmedBy: actorId })
+      .where(eq(orders.id, orderId))
+      .returning();
+
+    return { success: true, message: "Retour confirmé, stock mis à jour", order: updated };
+  });
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — server/routes.ts : 2 nouveaux endpoints
+
+```ts
+// Confirmation manuelle par bouton (une commande précise, depuis la liste)
+app.post("/api/orders/:id/confirm-return", requireAuth, async (req: any, res) => {
+  const storeId = req.user.storeId;
+  const orderId = parseInt(req.params.id, 10);
+  const result = await storage.confirmReturnReceipt(storeId, orderId, req.user.id);
+  if (!result.success) return res.status(400).json(result);
+  res.json(result);
+});
+
+// Confirmation par scan / saisie de code — cherche la commande par
+// trackNumber, returnTrackingNumber, OU orderNumber (peu importe lequel le
+// scanner/l'utilisateur a lu), scopé au store, quel que soit le
+// transporteur.
+app.post("/api/orders/confirm-return-by-code", requireAuth, async (req: any, res) => {
+  const storeId = req.user.storeId;
+  const code = String(req.body.code || "").trim();
+  if (!code) return res.status(400).json({ success: false, message: "Code vide" });
+
+  const [order] = await db.select().from(orders).where(and(
+    eq(orders.storeId, storeId),
+    or(
+      eq(orders.trackNumber, code),
+      eq(orders.returnTrackingNumber, code),
+      eq(orders.orderNumber, code),
+    ),
+  )).limit(1);
+
+  if (!order) return res.status(404).json({ success: false, message: `Aucune commande trouvée pour le code "${code}"` });
+
+  const result = await storage.confirmReturnReceipt(storeId, order.id, req.user.id);
+  res.status(result.success ? 200 : 400).json({ ...result, orderNumber: order.orderNumber, customerName: order.customerName });
+});
+```
+
+Importer `or` depuis `drizzle-orm` en haut de server/routes.ts si pas déjà
+importé.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 4 — UI : page Retours (celle du screenshot "Commandes / RETOURS")
+
+4a) Ajouter une colonne "**Confirmé**" dans le tableau, entre STATUS et
+PRIX : badge vert "✅ Confirmé (date)" si `returnConfirmedAt` est rempli,
+sinon badge orange "⏳ Non confirmé" avec un bouton "**Confirmer réception**"
+à côté (appelle `POST /api/orders/:id/confirm-return`, toast succès/erreur,
+invalide le cache de la liste au succès).
+
+4b) Ajouter 2 nouveaux onglets à côté de "Tous / En route / Reçus" :
+"**Non confirmés**" et "**Confirmés**" (filtrent sur `returnConfirmedAt`
+null / non-null, uniquement parmi les commandes en statut retour).
+
+4c) Ajouter en haut de la page, à côté des boutons existants (écouteurs,
+poubelle, etc.), un bloc "**Scanner un retour**" :
+- Un input texte auto-focus, placeholder "Scanner ou taper le code de
+  suivi...", qui se soumet automatiquement sur Enter (comportement standard
+  des douchettes/scanners physiques : ils tapent le code + Enter comme un
+  clavier — pas besoin de librairie caméra spécifique pour ce cas).
+- Au submit : appelle `POST /api/orders/confirm-return-by-code` avec
+  `{ code }`, affiche un toast succès ("✅ Retour confirmé — {orderNumber},
+  {customerName}") ou erreur (commande introuvable / pas en statut retour /
+  déjà confirmé), VIDE le champ et le REFOCUS immédiatement pour permettre
+  d'enchaîner les scans sans re-cliquer.
+- Un compteur visible à côté "X retours confirmés aujourd'hui" pour un
+  feedback de productivité pendant une session de scan.
+
+Composant React (à intégrer dans le fichier existant de la page Retours,
+adapter les imports/styles au reste du projet) :
+```tsx
+function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
+  const [code, setCode] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+  const [todayCount, setTodayCount] = useState(0);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!code.trim()) return;
+    try {
+      const res = await apiRequest("POST", "/api/orders/confirm-return-by-code", { code: code.trim() });
+      const data = await res.json();
+      if (data.success) {
+        toast({ title: "✅ Retour confirmé", description: `${data.orderNumber} — ${data.customerName}` });
+        setTodayCount((c) => c + 1);
+        onConfirmed();
+      } else {
+        toast({ title: "Non confirmé", description: data.message, variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
+    } finally {
+      setCode("");
+      inputRef.current?.focus();
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
+      <span className="text-sm font-medium">📷 Scanner un retour :</span>
+      <input
+        ref={inputRef}
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        placeholder="Scanner ou taper le code de suivi..."
+        className="flex-1 rounded border px-3 py-1.5 text-sm"
+        autoComplete="off"
+      />
+      <span className="text-xs text-gray-500">{todayCount} confirmés aujourd'hui</span>
+    </form>
+  );
+}
+```
+`onConfirmed` doit invalider/refetch la liste des retours pour que le
+tableau se mette à jour immédiatement.
+
+────────────────────────────────────────────────────────────────────────────
+NE PAS TOUCHER
+- RULE 0 (déduction stock à la confirmation) et RULE 1 (déduction stock à la
+  livraison) restent identiques — seule RULE 2 (restauration au retour)
+  change de déclencheur.
+- Le statut "Retournée" continue de s'afficher normalement partout ailleurs
+  dans la plateforme (tableau commandes, filtres, stats) — rien ne change
+  côté affichage du statut lui-même, seulement le comportement du stock.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add physical return confirmation (scan/tracking) gating stock restoration, decoupled from carrier-reported status" && git push
+npm run db:push (migration des 2 nouveaux champs)
+
+VÉRIFICATION
+1. Faire passer une commande en statut "Retournée" (via changement manuel ou
+   webhook transporteur) → le STOCK NE DOIT PLUS bouger automatiquement.
+2. Sur la page Retours, cette commande apparaît sous "Non confirmés" avec
+   bouton "Confirmer réception".
+3. Cliquer "Confirmer réception" (ou scanner son trackNumber dans le champ
+   scanner) → le stock du produit augmente de la quantité de la commande,
+   la commande passe sous "Confirmés", `returnConfirmedAt` est rempli.
+4. Re-scanner le même code → message "déjà confirmé", stock inchangé (pas
+   de double-comptage).
+5. Scanner un code qui n'existe pas → message "commande introuvable", rien
+   ne casse.
+6. Tester avec des commandes de différents transporteurs (Express Coursier,
+   Digylog, manuel...) — le comportement doit être identique pour tous,
+   puisque la confirmation opère sur `orders`, pas sur des champs
+   spécifiques à un transporteur.

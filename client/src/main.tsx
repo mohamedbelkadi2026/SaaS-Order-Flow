@@ -3,6 +3,7 @@ import App from "./App";
 import "./index.css";
 import "./i18n/index";
 
+
 const savedLang = localStorage.getItem("tajer_lang") || "fr";
 const isRtl = savedLang === "ar";
 document.documentElement.dir = isRtl ? "rtl" : "ltr";

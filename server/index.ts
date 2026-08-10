@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cors from "cors";
+import compression from "compression";
 import { registerRoutes } from "./routes";
 import { setupAuth, ensureSessionTable } from "./auth";
 import { serveStatic } from "./static";
@@ -124,6 +125,7 @@ app.get("/api/health", (_req, res) =>
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
+    webhookRawBody?: Buffer; // set by the webhook raw-body capture middleware
   }
 }
 
@@ -136,6 +138,17 @@ const ALLOWED_ORIGINS = [
   /https:\/\/.*\.railway\.app$/,
   /https:\/\/.*\.up\.railway\.app$/,
 ];
+// ── Gzip compression — shrinks JSON/HTML/JS responses over the wire ──────────
+// Skip Server-Sent Events: compressing/buffering text/event-stream breaks the
+// real-time monitoring streams (WhatsApp, shipping progress, new orders).
+app.use(compression({
+  filter: (req, res) => {
+    const ct = String(res.getHeader("Content-Type") || "");
+    if (ct.includes("text/event-stream")) return false;
+    return compression.filter(req, res);
+  },
+}));
+
 app.use(cors({
   origin: (origin, callback) => {
     // allow requests with no origin (server-to-server, mobile, curl)
@@ -206,6 +219,59 @@ app.use("/api/dashboard",          heavyLimiter);
 app.use("/api/stats",              heavyLimiter);
 app.use("/api/agents/performance", heavyLimiter);
 app.use("/api/exports",            heavyLimiter);
+
+// ── Webhook raw-body capture (MUST come before express.json / express.urlencoded) ──
+// express.urlencoded() only parses when Content-Type is exactly
+// application/x-www-form-urlencoded. Some carriers (Ameex, etc.) send with a
+// missing, wrong, or charset-suffixed Content-Type, causing req.body to arrive
+// as an empty object. This middleware reads the raw stream for all /api/webhooks/
+// and /api/webhook/ paths, stores the buffer in req.webhookRawBody, and parses
+// defensively (urlencoded first, then JSON) so the handler always sees the fields.
+app.use(['/api/webhooks/', '/api/webhook/'], (req: any, _res: any, next: any) => {
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  req.on('end', () => {
+    try {
+      const raw = Buffer.concat(chunks);
+      req.webhookRawBody = raw;
+      const rawStr = raw.toString('utf-8').trim();
+      if (!rawStr) { next(); return; }
+
+      const ct = (req.headers['content-type'] || '').toLowerCase().trim();
+
+      // If Content-Type is explicitly JSON, try JSON first
+      if (ct.startsWith('application/json')) {
+        try {
+          req.body = JSON.parse(rawStr);
+          (req as any)._body = true; // signal body-parser not to re-read / overwrite
+          next(); return;
+        } catch { /* fall through */ }
+      }
+
+      // Try URL-encoded (covers application/x-www-form-urlencoded, text/plain,
+      // no Content-Type, and even wrong content-type headers with form bodies).
+      // IMPORTANT: setting _body=true prevents express.urlencoded() from re-reading
+      // the now-drained stream and overwriting req.body with {}.
+      try {
+        const params: Record<string, string> = {};
+        new URLSearchParams(rawStr).forEach((v: string, k: string) => { params[k] = v; });
+        if (Object.keys(params).length > 0) {
+          req.body = params;
+          (req as any)._body = true;
+          next(); return;
+        }
+      } catch { /* fall through */ }
+
+      // Last resort: try JSON
+      try { req.body = JSON.parse(rawStr); } catch { req.body = {}; }
+      (req as any)._body = true;
+      next();
+    } catch (e) {
+      next(); // never block the webhook on a parse error
+    }
+  });
+  req.on('error', next);
+});
 
 // ── Body parsers (MUST come before any route handlers) ───────────────────────
 app.use(
@@ -573,6 +639,35 @@ app.use((req, res, next) => {
     })
   );
 
+  // ── One-shot Ameex CSV backfill (Railway only, gated on env var) ────────
+  if (process.env.RUN_AMEEX_CSV_BACKFILL === "1") {
+    console.log("[AMEEX-CSV-BACKFILL] Env flag detected — running in 3 s…");
+    setTimeout(async () => {
+      try {
+        const { runAmeexCsvBackfill } = await import("./ameex-csv-backfill-once");
+        await runAmeexCsvBackfill();
+      } catch (err: any) {
+        console.error("[AMEEX-CSV-BACKFILL] FATAL:", err?.message ?? err);
+      }
+    }, 3000);
+  }
+
+  // ── One-shot Ameex carrier correction (Railway only, gated on env var) ───
+  // =1        → dry-run: logs which orders need correction, writes nothing
+  // =apply    → applies corrections (shippingProvider/carrierName → 'ameex')
+  if (process.env.RUN_AMEEX_CARRIER_CORRECTION) {
+    const mode = process.env.RUN_AMEEX_CARRIER_CORRECTION;
+    console.log(`[AMEEX-CARRIER-FIX] Env flag detected (mode=${mode}) — running in 4 s…`);
+    setTimeout(async () => {
+      try {
+        const { runAmeexCarrierCorrection } = await import("./ameex-carrier-correction");
+        await runAmeexCarrierCorrection();
+      } catch (err: any) {
+        console.error("[AMEEX-CARRIER-FIX] FATAL:", err?.message ?? err);
+      }
+    }, 4000);
+  }
+
   // ── DB keepalive — ping every 4 min to prevent idle connection drops ─────
   const dbKeepalive = setInterval(async () => {
     try {
@@ -661,6 +756,70 @@ app.use((req, res, next) => {
   setTimeout(() => runDigylogSync('initial'), 2 * 60 * 1000);
   const autoDigylogSync = setInterval(() => runDigylogSync('interval'), 15 * 60 * 1000);
   intervals.push(autoDigylogSync);
+
+  // ── Auto Vitipsexpress status sync ─────────────────────────────────────────
+  async function runVitipsSync(label: string) {
+    try {
+      const { storage: st } = await import('./storage');
+      const { trackVitipsShipment } = await import('./services/carrier-service');
+      const { db: dbInst } = await import('./db');
+      const { carrierAccounts: caTable } = await import('@shared/schema');
+      const { eq: eqFn } = await import('drizzle-orm');
+
+      const accounts = await dbInst.select().from(caTable)
+        .where(eqFn(caTable.carrierName, 'vitipsexpress'));
+
+      for (const account of accounts) {
+        const storeId = (account as any).storeId;
+        const apiKey  = (account as any).apiKey;
+        const allOrders = await st.getOrdersByStore(storeId);
+        const toSync = allOrders.filter((o: any) =>
+          o.shippingProvider === 'vitipsexpress' &&
+          o.trackNumber &&
+          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
+        );
+        if (!toSync.length) continue;
+
+        console.log(`[VITIPS-AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
+        for (const order of toSync) {
+          try {
+            const result = await trackVitipsShipment(order.trackNumber!, apiKey);
+            if (result.status && result.status !== order.status) {
+              await st.updateOrderStatus(order.id, result.status);
+              await st.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+              await st.createOrderFollowUpLog({
+                orderId:   order.id,
+                agentId:   null,
+                agentName: 'Vitipsexpress Auto-Sync',
+                note:      `📦 Statut mis à jour automatiquement: ${result.rawStatus} → ${result.status}`,
+              });
+              console.log(`[VITIPS-AUTO-SYNC][${label}] Order #${(order as any).orderNumber} → ${result.rawStatus} (${result.status})`);
+              try {
+                const { broadcastToStore } = await import('./sse');
+                broadcastToStore(storeId, 'order_updated', {
+                  orderId: order.id,
+                  status:  result.status,
+                  commentStatus: result.rawStatus,
+                });
+              } catch {}
+            }
+          } catch (e: any) {
+            console.error(`[VITIPS-AUTO-SYNC][${label}] Error for order ${(order as any).orderNumber}: ${e?.message}`);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[VITIPS-AUTO-SYNC][${label}] Error:`, err?.message);
+    }
+  }
+  // Run once after 3 minutes on startup, then every 10 minutes
+  setTimeout(() => runVitipsSync('initial'), 3 * 60 * 1000);
+  const autoVitipsSync = setInterval(() => runVitipsSync('interval'), 10 * 60 * 1000);
+  intervals.push(autoVitipsSync);
+
+  // Ozon Express delivers status via WEBHOOK only — polling endpoints return auth errors.
+  // No polling job registered; statuses update automatically via
+  // POST /api/webhooks/shipping/ozonexpress/:storeId.
 
   setTimeout(() => {
     autoStartBaileys().catch(err =>

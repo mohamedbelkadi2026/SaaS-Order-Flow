@@ -1,0 +1,79 @@
+FIX — Le bip sonore ne se joue pas sur mobile (Android testé, probablement
+pareil sur iPhone).
+
+CAUSE
+Les navigateurs mobiles bloquent l'audio tant que l'`AudioContext` n'a pas
+été explicitement "débloqué" par une interaction utilisateur DIRECTE et
+SYNCHRONE (clic). Si `playSuccessBeep()` crée un `new AudioContext()` à
+chaque appel, et surtout si cet appel se produit APRÈS un `await` (ex:
+après `await detector.detect(canvas)` ou après la réponse du fetch de
+confirmation), le navigateur ne considère plus ça comme "dans" le geste
+utilisateur d'origine — le contexte audio reste "suspended" et aucun son ne
+sort, même si le code s'exécute sans erreur.
+
+FIX — Créer UN SEUL `AudioContext` partagé, le débloquer immédiatement au
+moment du clic (avant tout `await`), et le réutiliser pour tous les beeps :
+
+```ts
+// Un seul AudioContext partagé pour toute la session — créé/débloqué une
+// fois, réutilisé ensuite pour chaque bip (plus fiable que d'en recréer un
+// nouveau à chaque scan, surtout sur mobile).
+let sharedAudioContext: AudioContext | null = null;
+
+function unlockAudio() {
+  if (!sharedAudioContext) {
+    sharedAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  if (sharedAudioContext.state === "suspended") {
+    sharedAudioContext.resume().catch(() => {});
+  }
+}
+
+function playSuccessBeep() {
+  try {
+    if (!sharedAudioContext || sharedAudioContext.state === "suspended") {
+      unlockAudio();
+    }
+    const ctx = sharedAudioContext!;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.15);
+  } catch { /* audio non disponible, pas fatal */ }
+}
+```
+
+Appeler `unlockAudio()` de façon SYNCHRONE, dès le tout premier `onClick`
+utilisateur pertinent — c'est-à-dire :
+- Au clic sur le bouton qui ouvre la caméra ("📷 Caméra"), TOUT AU DÉBUT du
+  handler, avant tout `await`.
+- Au clic sur "📸 Prendre une photo", TOUT AU DÉBUT du handler `capturePhoto`,
+  avant le premier `await`.
+- Idéalement aussi au focus initial du champ texte du scanner douchette
+  (`onFocus` de l'input dans `ReturnScanner`), pour débloquer l'audio même
+  pour ce flux-là.
+
+Exemple pour `capturePhoto` :
+```ts
+const capturePhoto = async () => {
+  unlockAudio(); // ← EN PREMIER, avant tout await, pour rester dans le geste utilisateur
+  const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+  // ... reste du code inchangé ...
+};
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix beep sound not playing on mobile by unlocking a shared AudioContext synchronously on user click" && git push
+
+VÉRIFICATION
+1. Android : cliquer "📷 Caméra" puis scanner/capturer → le bip doit
+   maintenant se faire entendre.
+2. iPhone : même test.
+3. Douchette physique (champ texte) : taper un code et valider → bip aussi.

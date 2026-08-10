@@ -1,0 +1,89 @@
+واضح المشكلتين:
+
+LIVRÉES: 204 (card) vs 169 (Statistiques) — رقمين مختلفين
+Taux de confirmation: 76.3% — خاص يبان كيفاش تحسب (confirmed / total بدل confirmed / leads)
+
+خليني نفهم السبب:
+
+204 = كل orders بـ status delivered بما فيها اللي جاو من carriers (carrier statuses)
+169 = فقط اللي عندهم trackNumber و expédiés (252)
+
+هاهو الـ prompt:
+
+FIX: Dashboard — LIVRÉES count inconsistent + confirmation rate formula wrong
+Files to change: server/routes.ts only
+
+Fix 1 — LIVRÉES card must match Statistiques Livraison
+Problem: The LIVRÉES card (204) counts all orders with status = 'delivered' globally. The Statistiques Livraison (169) counts only delivered orders that were shipped (have a trackNumber). They must show the same number.
+The correct definition: A delivered order = any order with status delivered OR livré OR livrée. This is the single source of truth.
+Find the /api/stats/filtered endpoint. It returns both delivered (used by the card) and deliveredShipped (used by Statistiques). Make them use the same count:
+ts// ONE definition for delivered — use everywhere
+const DELIVERED_STATUSES = ['delivered', 'livré', 'livrée', 'Livrée', 'Livré'];
+
+// Count delivered orders
+const delivered = allOrders.filter(o => DELIVERED_STATUSES.includes(o.status)).length;
+
+// Use this SAME count in both the card and Statistiques Livraison
+// Remove any separate `deliveredShipped` calculation — use `delivered` for both
+Also find where totalShipped is calculated. It should be:
+ts// Shipped = all orders that left the warehouse (have trackNumber OR carrier status)
+const SHIPPED_STATUSES = [
+  'expédié', 'Attente De Ramassage', 'Ramassé', 'En cours de livraison',
+  'En transit', 'delivered', 'livré', 'livrée', 'Livrée', 'Livré',
+  'Tentative échouée', 'retourné', 'refused', 'En cours de réception',
+  'in_progress',
+];
+const totalShipped = allOrders.filter(o => SHIPPED_STATUSES.includes(o.status) || o.trackNumber).length;
+Then Taux de livraison = delivered / totalShipped * 100.
+
+Fix 2 — Confirmation rate must show breakdown that sums to 100%
+Problem: 76.3% confirmation rate is shown but no breakdown to 100%.
+The correct formula:
+Total leads = 321
+Confirmés = 245 → 76.3%
+Annulés   = 16  → 5.0%
+Injoignables = 0 → 0%
+Pas de réponse / Boite vocale / Nouveaux / Rappel = remaining
+All percentages must sum to 100%.
+Find the confirmation stats section. Make sure ALL statuses are categorized and percentages add up:
+tsconst confirmRate   = total > 0 ? (confirme / total * 100) : 0;
+const cancelRate    = total > 0 ? (cancelled / total * 100) : 0;
+const injoignRate   = total > 0 ? (injoignable / total * 100) : 0;
+const pasReponseRate = total > 0 ? (pasReponse / total * 100) : 0;
+const nouveauRate   = total > 0 ? (nouveau / total * 100) : 0;
+// remaining = 100 - confirmRate - cancelRate - injoignRate - pasReponseRate - nouveauRate
+Return all rates in the response:
+tsres.json({
+  ...existingFields,
+  confirmRate,
+  cancelRate,
+  injoignRate,
+  pasReponseRate,
+  nouveauRate,
+  // so client can display a full breakdown
+});
+
+Fix 3 — client/src/pages/dashboard.tsx — Display the breakdown
+Find the STATISTIQUES CONFIRMATION section. After the existing 4 cards (Total, Confirmés, Annulés, Injoignables), add a percentage breakdown row:
+tsx<div className="mt-4 pt-4 border-t border-gray-100">
+  <p className="text-xs font-semibold text-gray-400 uppercase mb-2">Répartition (total = 100%)</p>
+  <div className="flex flex-wrap gap-2 text-xs">
+    <span className="px-2 py-1 bg-green-50 text-green-700 rounded-full font-semibold">
+      ✅ Confirmés: {stats?.confirmRate?.toFixed(1)}%
+    </span>
+    <span className="px-2 py-1 bg-red-50 text-red-700 rounded-full font-semibold">
+      ❌ Annulés: {stats?.cancelRate?.toFixed(1)}%
+    </span>
+    <span className="px-2 py-1 bg-orange-50 text-orange-700 rounded-full font-semibold">
+      📵 Injoignables: {stats?.injoignRate?.toFixed(1)}%
+    </span>
+    <span className="px-2 py-1 bg-gray-50 text-gray-600 rounded-full font-semibold">
+      🔕 Pas de réponse: {stats?.pasReponseRate?.toFixed(1)}%
+    </span>
+    <span className="px-2 py-1 bg-yellow-50 text-yellow-700 rounded-full font-semibold">
+      🆕 Nouveaux: {stats?.nouveauRate?.toFixed(1)}%
+    </span>
+  </div>
+</div>
+
+Do not change any other logic. Only fix the delivered count consistency and add the confirmation breakdown.

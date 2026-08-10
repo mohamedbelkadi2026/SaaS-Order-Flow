@@ -1,0 +1,97 @@
+Fix 3 bugs in Vitipsexpress shipping:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BUG 1: Price = 0.00 DH — order blocked
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+In server/services/carrier-service.ts, find the pre-validation function (around line 876):
+
+if (input.totalPrice <= 0) {
+  return "⚠️ السعر صفر أو غير محدد...";
+}
+
+The order YC-39233 has totalPrice = 0 because YouCan sent price as 0 or the price is stored in centimes vs DH.
+
+Fix: In the pre-validation, totalPrice for Vitipsexpress is passed in CENTIMES (multiply by 100 internally).
+Change the check to only block if price is truly 0 after dividing by 100:
+
+if (input.totalPrice < 0) {
+  return "⚠️ السعر غير صحيح.";
+}
+// Allow 0 price (free orders or price set at delivery)
+
+OR better: In the Vitipsexpress shipOrder handler, when building the request body, use:
+  price: input.totalPrice > 0 ? Math.round(input.totalPrice / 100) : 1
+
+This sends minimum 1 DH if price is 0, so the shipment goes through.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BUG 2: OUJDA city not found — "La ville du client destinataire"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+In server/services/city-aliases.ts, find matchCityId function.
+
+The problem: order city = "OUJDA", vitips_cities table has nameNorm = "oujda" and externalId = "Oujda".
+matchCityId should find it via nameNorm matching but may be failing.
+
+Also in server/storage.ts, getVitipsCityAbbr(), the matching uses matchCityId which returns externalId.
+The Vitipsexpress API requires city = abbr (e.g. "Oujda").
+
+Add a fallback in getVitipsCityAbbr: if matchCityId returns null, try direct case-insensitive match:
+
+async getVitipsCityAbbr(storeId: number, cityName: string): Promise<string | null> {
+  if (!(cityName || "").trim()) return null;
+  const cities = await db.select().from(vitipsCities).where(eq(vitipsCities.storeId, storeId));
+  
+  // Try matchCityId first
+  const matched = matchCityId(cities, cityName);
+  if (matched) return matched;
+  
+  // Fallback: case-insensitive name match
+  const norm = cityName.toLowerCase().trim();
+  const found = cities.find(c => 
+    c.nameNorm === norm ||
+    c.name.toLowerCase() === norm ||
+    c.externalId.toLowerCase() === norm
+  );
+  return found?.externalId ?? null;
+}
+
+Also: if getVitipsCityAbbr returns null, DON'T block the shipment — send the city name directly:
+
+In server/routes.ts around line 1815:
+Change:
+  if (resolved) {
+    vitipsCityAbbr = resolved;
+  } else {
+    console.warn(...);
+  }
+
+To:
+  vitipsCityAbbr = resolved || resolvedCity; // fallback to original city name
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BUG 3: Mobile — "Ajouter un produit" field not visible
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+In the new order form (client/src/pages/orders.tsx or new-order.tsx or the order creation modal):
+
+Find the "Produits de la commande" section with the product input row.
+On mobile, the input fields are too small/cut off.
+
+Fix the product row for mobile:
+- The product name input: set min-width: 0, flex: 1, w-full on mobile
+- The row container: use flex-col on mobile (sm:flex-row on desktop) 
+- Add overflow-x: visible on the table/grid
+
+Find the product item row (PRODUIT, REFERENCE(SKU), VARIANT, PRIX, QTE, TOTAL columns).
+On mobile, change to a stacked layout:
+
+<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+  <input className="w-full" placeholder="Produit..." /> {/* product name */}
+  <input className="w-24" placeholder="SKU" />
+  <input className="w-24" placeholder="Variante" />
+  <input className="w-20" placeholder="Prix" />
+  <input className="w-16" placeholder="Qté" />
+  <span>Total</span>
+  <button>🗑</button>
+</div>
+
+Make sure on mobile the product input is full width and readable.

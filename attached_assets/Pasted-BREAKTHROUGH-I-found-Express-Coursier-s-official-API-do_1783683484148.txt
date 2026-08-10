@@ -1,0 +1,42 @@
+BREAKTHROUGH: I found Express Coursier's official API documentation. It confirms:
+ - The webhook payload is exactly {package_id, delivery_status (integer), event_time, 
+   notif_type} — no status text is sent.
+ - Official quote: "delivery_status — Delivery status ID at the time of the event. To 
+   obtain the corresponding name, use the endpoint GET /v1.0/statuses."
+ - GET https://expresscoursier.ma/v1.0/statuses is a PUBLIC endpoint (no token) returning 
+   the list of all possible package statuses with their IDs and names.
+ - There is NO tracking endpoint. The old GET /v1.0/track/{apiKey}/{tracking} does not 
+   exist — that's why it returned 404. Remove/disable any code calling it.
+ - notif_type values: package_paid, package_unpaid, ChangeStatus (case-sensitive, exact 
+   match; ChangeStatus is PascalCase).
+ - Idempotency: use the tuple (package_id, notif_type, delivery_status) to ignore duplicate 
+   webhook deliveries.
+ - Webhooks have NO signature/HMAC. Verify package_id against our DB before processing.
+
+IMPLEMENT:
+1) Fetch and cache the EC status table from GET https://expresscoursier.ma/v1.0/statuses 
+   (public, no auth). Store it (e.g. in the EC integration settings or a small table), 
+   refresh on "Synchroniser" and on server start, with a sane TTL. Log the full table once 
+   so I can see it.
+2) Build EC_NUMERIC_STATUS_MAP dynamically from that endpoint: map each EC status ID → our 
+   internal status by matching the EC status NAME through the EXISTING text mapper 
+   (mapEcStatus / EC_STATUS_MAP: livre→delivered, refuse/retour→refused, 
+   in_transit→in_progress). Extend the text map with the real French labels returned by the 
+   endpoint (e.g. "Livré", "Refusé", "En cours de livraison", "Retourné", "En attente de 
+   ramassage", "Ramassé", "En transport", "Reçu sur agence", "Reporté"). Normalize 
+   (lowercase, strip accents) before matching.
+3) Any EC status ID whose name doesn't confidently match delivered/refused must map to 
+   'in_progress'. Never guess.
+4) orders.status must ALWAYS be a valid internal status — never "EC 3" or 
+   "EC delivery_status=35". Put the EC status NAME (from /statuses) in commentStatus so 
+   Suivi shows the real French label.
+5) CLEAN UP: find every order whose status contains "EC " / "delivery_status" / 
+   "expedition" and re-map it correctly using the fetched status table. DRY-RUN first: 
+   report the count and 10 examples, then apply after I approve.
+6) Apply the same mapping in BOTH the live webhook handler and the "Synchroniser" replay 
+   (which re-reads stored webhook events by package_id).
+7) Implement idempotency on (package_id, notif_type, delivery_status) so repeated webhooks 
+   don't re-trigger updates. Respond HTTP 200 immediately, process after.
+
+Deploy to main and paste me: (a) the full status table returned by /v1.0/statuses, 
+(b) the resulting EC_NUMERIC_STATUS_MAP, (c) the dry-run cleanup summary.

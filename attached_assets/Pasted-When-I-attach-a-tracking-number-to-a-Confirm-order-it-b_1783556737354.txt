@@ -1,0 +1,41 @@
+When I attach a tracking number to a Confirmé order, it becomes "Attente de Ramassage" 
+even though EC already delivered it. Make the status reflect EC's real current status.
+
+KEY FACT (do NOT re-investigate): EC has NO working tracking API — 
+GET /v1.0/track/{apiKey}/{tracking} returns HTML 404. So do NOT try to pull status from 
+EC's API. Instead, use the webhooks EC already sends: every ChangeStatus event is stored 
+in integration_logs with a payload like 
+{"package_id":"CL-EXP-...","delivery_status":"30","event_time":"...","notif_type":"ChangeStatus"} 
+— including the ones logged as "No order found". The status is already in our DB.
+
+TASK 1 — RETRO-APPLY ON ATTACH:
+In the attach-tracking endpoint, right after saving track_number, look up the MOST RECENT 
+integration_logs webhook event (provider expresscoursier/olivraison) whose payload 
+package_id equals the attached tracking. If found, map its delivery_status through 
+EC_NUMERIC_STATUS_MAP and set the order's status to that instead of defaulting to 
+'Attente De Ramassage'. Also store the raw label in commentStatus. If no event exists, 
+keep 'Attente De Ramassage'.
+
+TASK 2 — "SYNCHRONISER" BUTTON = REPLAY WEBHOOKS (not an API pull):
+Rewire the EC "Synchroniser" action so that, for every EC order in the store, it finds 
+the most recent stored webhook event matching that order's track_number and applies the 
+mapped status (same logic as TASK 1). Report how many orders were updated / had no event. 
+Remove the per-order 404 error toasts — never call the broken track endpoint.
+
+TASK 3 — EC_NUMERIC_STATUS_MAP (critical):
+EC sends numeric delivery_status codes (we've observed 30, 34, 35, 36). Create a single 
+exported EC_NUMERIC_STATUS_MAP constant. Since I have not yet confirmed the official code 
+meanings with EC, do this: 
+ - Add the map with a clearly-marked TODO and DO NOT guess mappings for delivered/refused.
+ - Default unknown codes to 'in_progress' (safe: keeps the order in Suivi, never falsely 
+   marks delivered/refused).
+ - Log every distinct delivery_status code seen with its count, so I can send EC the list 
+   and fill in the real meanings.
+Then, print me a summary of all distinct delivery_status codes currently present in 
+integration_logs with their counts and one example package_id each.
+
+TASK 4 — FORWARD: ensure the live EC webhook handler uses the same EC_NUMERIC_STATUS_MAP 
+so numeric codes map consistently everywhere.
+
+Do NOT invent status meanings. Do NOT mark orders delivered/refused until I supply the 
+official code table. Deploy to main and paste me the distinct-codes summary.

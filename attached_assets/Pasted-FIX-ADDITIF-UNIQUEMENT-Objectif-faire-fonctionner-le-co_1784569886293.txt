@@ -1,0 +1,204 @@
+FIX — ADDITIF UNIQUEMENT. Objectif : faire fonctionner le coût des variantes
+(ex: "Sandale En Cuir Rf 1012 Noir 42") SANS RIEN CHANGER au calcul déjà
+correct des produits qui marchent bien aujourd'hui (ex: "Sandale En Cuir
+Rf210 X2 Noir" → Sourcing -3.450,00 DH, Marge 55.7%, exactement comme dans
+l'état actuel après le revert). La requête SQL existante dans
+server/services/profit.ts (celle qui donne le bon résultat aujourd'hui) NE
+DOIT PAS ÊTRE MODIFIÉE. Cette fois on ajoute une info EN PLUS, en dehors du
+chemin de calcul existant, avec un fallback qui ne s'active QUE dans les cas
+où le calcul actuel donne 0/rien.
+
+────────────────────────────────────────────────────────────────────────────
+PRÉ-REQUIS — vérifier d'abord que le revert précédent est bien complet
+
+Avant de commencer, confirmer que server/services/profit.ts, la requête
+`itemRows`, est EXACTEMENT dans cet état (pas de join sur productVariants,
+pas de champ `variantCostPrice`) :
+
+```ts
+const itemRows = orderIds.length > 0 ? await db
+  .select({
+    orderId:          orderItems.orderId,
+    productId:        orderItems.productId,
+    rawProductName:   orderItems.rawProductName,
+    quantity:         orderItems.quantity,
+    price:            orderItems.price,
+    productName:      products.name,
+    productCostPrice: products.costPrice,
+    productSettings:  products.settings,
+  })
+  .from(orderItems)
+  .leftJoin(products, eq(orderItems.productId, products.id))
+  .where(inArray(orderItems.orderId, orderIds)) : [];
+```
+
+Si ce n'est pas déjà le cas, remettre EXACTEMENT ce bloc avant de continuer.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/services/variants.ts : matching des tailles sans séparateur
+(inchangé par rapport au fix précédent, cette partie n'a RIEN cassé — le
+problème venait uniquement du join SQL dans profit.ts, pas d'ici)
+
+Si ce n'est pas déjà fait (vérifier avant d'appliquer à nouveau), ajouter
+l'étape 3 dans `resolveProductId` :
+
+```ts
+export type ProductWithVariants = {
+  id: number;
+  name: string;
+  variants?: { name: string }[];
+};
+
+export function resolveProductId(
+  rawName: string,
+  storeProducts: ProductWithVariants[],
+): { productId: number | null; variantName: string | null } {
+  const n = normStr;
+  const rawNorm = n(rawName);
+
+  const exact = storeProducts.find(p => n(p.name) === rawNorm);
+  if (exact) return { productId: exact.id, variantName: null };
+
+  const { base, suffix } = splitVariant(rawName);
+  if (suffix && base !== rawName) {
+    const parent = storeProducts.find(p => n(p.name) === n(base));
+    if (parent) return { productId: parent.id, variantName: suffix };
+  }
+
+  // Étape 3 (nouvelle) — "Nom Produit 42" sans tiret, matché contre les
+  // variantes CONNUES de ce produit uniquement.
+  for (const p of storeProducts) {
+    if (!p.variants || p.variants.length === 0) continue;
+    for (const v of p.variants) {
+      if (n(`${p.name} ${v.name}`) === rawNorm) {
+        return { productId: p.id, variantName: v.name };
+      }
+    }
+  }
+
+  return { productId: null, variantName: null };
+}
+```
+
+Cette fonction n'est appelée QUE pour les commandes qui n'ont PAS de
+`orderId` déjà couvert par `order_items` (donc les "(non lié)") — elle ne
+touche jamais les commandes déjà liées comme "Rf210 X2 Noir", pas de risque
+de régression ici.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — server/services/profit.ts : ajouter le coût de variante EN
+PARALLÈLE de la requête existante, PAS DEDANS
+
+Ne PAS toucher `itemRows`. À la place, juste après le bloc "── Catalog maps
+──" (là où `costByName` est construit, ~ligne 210-225), ajouter un chargement
+séparé des variantes et une Map de coût par variante :
+
+```ts
+// ── Variant cost map (séparé, n'affecte jamais la requête itemRows) ──────────
+const storeVariantsList = await db.select({
+  productId: productVariants.productId,
+  name:      productVariants.name,
+  costPrice: productVariants.costPrice,
+}).from(productVariants).where(eq(productVariants.storeId, storeId));
+
+const variantCostByKey = new Map<string, number>(); // key = `${productId}::${normVariantName}`
+for (const v of storeVariantsList) {
+  if (v.costPrice && v.costPrice > 0) {
+    variantCostByKey.set(`${v.productId}::${norm(v.name)}`, Number(v.costPrice));
+  }
+}
+```
+
+Importer `productVariants` dans l'import `@shared/schema` en haut du fichier
+(ajout simple, ne retire rien de l'existant).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — server/services/profit.ts : utiliser cette Map en PLUS du calcul
+existant, avec le coût de variante en dernier recours seulement quand le
+calcul actuel donnerait 0
+
+Trouver le calcul actuel du coût unitaire (dans la boucle `for (const item of
+itemRows)`, ~ligne 296) :
+
+```ts
+const unitCostCents = item.productCostPrice
+  ?? costByName.get(key)
+  ?? costByName.get(norm(item.rawProductName || ''))
+  ?? (order as any).productCost
+  ?? 0;
+```
+
+Le remplacer par (le comportement existant reste identique dans TOUS les cas
+où `item.productCostPrice` etc. donnent déjà un résultat > 0 — on ajoute
+juste UNE tentative supplémentaire, seulement quand tout le reste vaut 0 ET
+qu'on a un nom de variante détecté) :
+
+```ts
+let unitCostCents = item.productCostPrice
+  ?? costByName.get(key)
+  ?? costByName.get(norm(item.rawProductName || ''))
+  ?? (order as any).productCost
+  ?? 0;
+
+// Fallback additionnel — UNIQUEMENT si tout le reste a donné 0 : essayer le
+// coût de la variante spécifique déduite du rawProductName (ex: "... 42").
+if (!unitCostCents && item.productId && item.rawProductName) {
+  const { variantName } = splitVariant(item.rawProductName) as any;
+  const suffixGuess = variantName || item.rawProductName.trim().split(' ').pop();
+  if (suffixGuess) {
+    const vCost = variantCostByKey.get(`${item.productId}::${norm(suffixGuess)}`);
+    if (vCost) unitCostCents = vCost;
+  }
+}
+
+s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
+```
+
+Importer `splitVariant` depuis `./variants` si pas déjà importé dans
+profit.ts (il l'est déjà probablement, vérifier en haut du fichier).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 4 — server/routes.ts : enrichir `storeProducts` avec les variantes
+UNIQUEMENT dans les endroits qui appellent `resolveProductId` pour matcher
+des commandes "(non lié)" — ne touche AUCUN autre chemin de code
+
+Dans les 2 webhooks gsheets (~5178/~5283) et l'endpoint
+`POST /api/orders/repair-unlinked`, juste avant l'appel à
+`resolveProductId(...)`, ajouter (sans modifier le reste de ces routes) :
+
+```ts
+const storeProducts = await storage.getProductsByStore(storeId);
+const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+const variantsByProduct = new Map<number, { name: string }[]>();
+for (const v of allVariants) {
+  if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+  variantsByProduct.get(v.productId)!.push({ name: v.name });
+}
+const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+```
+puis appeler `resolveProductId(rawName, storeProductsWithVariants)` au lieu
+de `resolveProductId(rawName, storeProducts)`.
+
+────────────────────────────────────────────────────────────────────────────
+NE PAS TOUCHER
+- La requête `itemRows` dans profit.ts (Étape "PRÉ-REQUIS") reste identique
+  du début à la fin de ce fix.
+- Aucun `leftJoin` supplémentaire sur `productVariants` dans `itemRows`.
+- Rien d'autre dans server/routes.ts en dehors des 3 endroits listés à
+  l'Étape 4.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+1. git add -A && git commit -m "Additive fix: variant matching + variant cost fallback, no change to existing working path" && git push
+2. Rappeler POST /api/orders/repair-unlinked une fois déployé.
+
+VÉRIFICATION (LES DEUX DOIVENT ÊTRE VRAIES EN MÊME TEMPS)
+- "Sandale En Cuir Rf210 X2 Noir" reste IDENTIQUE à l'état actuel : Sourcing
+  -3.450,00 DH, Marge 55.7% (ou très proche, à la commande près) — AUCUN
+  changement sur cette ligne ni sur les autres lignes déjà correctes.
+- "Sandale En Cuir Rf 1012 Noir 42" n'apparaît plus en "(non lié)" — elle
+  rejoint la ligne "Sandale En Cuir Rf 1012 Noir" avec un Sourcing calculé
+  à partir du Prix coûtant de la variante "42" (140,00 DH × quantité).
+- Si un produit/variante a un Sourcing à "—" après ce fix, vérifier que son
+  Prix coûtant (produit OU variante) est bien renseigné dans le catalogue —
+  sinon c'est une donnée manquante à compléter, pas un bug de calcul.

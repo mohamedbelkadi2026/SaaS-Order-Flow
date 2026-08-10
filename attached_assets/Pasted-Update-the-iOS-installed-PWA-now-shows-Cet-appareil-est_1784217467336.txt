@@ -1,0 +1,35 @@
+Update: the iOS installed PWA now shows "Cet appareil est inscrit" (subscription saved) and 
+notifications are allowed in iOS Settings. So SUBSCRIPTION works. But NO push arrives — not the 
+test, not new orders, not status changes. The problem is now the SEND side. Find the exact 
+send error and fix it.
+
+STEP 1 — EXPOSE THE SEND RESULT (do this first):
+Make the "Envoyer une notification de test" endpoint send via web-push to THIS user's 
+push_subscriptions and RETURN + LOG a detailed result per subscription:
+  { subscriptions: N, results: [{ host, statusCode, body, error }] }
+Show it in the profile UI. This tells us exactly why Apple/Google rejects the send.
+
+STEP 2 — CHECK THE USUAL SEND-SIDE CAUSES (report each):
+ a) VAPID KEY MATCH: log (server startup) the VAPID_PUBLIC_KEY the server uses, and log the 
+    VAPID public key the CLIENT used to subscribe. They MUST be byte-identical. A mismatch → 
+    Apple/FCM returns 403 Forbidden on send. If they differ, fix so client and server use the 
+    same public key, then RE-SUBSCRIBE the device (unsubscribe + subscribe again, because old 
+    subscriptions made with the wrong key are permanently invalid).
+ b) VAPID_SUBJECT: must be exactly "mailto:someone@domain.com" or an https URL. web.push.apple.com 
+    rejects sends if the JWT "sub" is invalid. Validate at startup; log the current value 
+    (masked) and reject if malformed.
+ c) web-push CALL: confirm webpush.sendNotification(subscription, payload, { vapidDetails:{ 
+    subject, publicKey, privateKey }}) is actually invoked, awaited, and errors are caught + 
+    logged (not swallowed). Log the statusCode from the PushService for every send.
+ d) PAYLOAD + SW: the payload the SW receives must be parsed and passed to showNotification. 
+    Log inside the SW 'push' handler what it received. If the payload is empty/undefined, 
+    showNotification may silently do nothing on iOS — always send a proper JSON body 
+    {title, body, icon}.
+
+STEP 3 — REPORT BACK before/after:
+ - Paste the test endpoint JSON result (statusCode per subscription).
+ - Tell me the root cause (403 key mismatch? invalid subject? send not called? empty payload?).
+ - After fixing, the test notification must visibly appear on the installed iOS app.
+
+Then verify new-order and status-change triggers call the same working send path (with logs). 
+Do NOT change unrelated features. Deploy to main.

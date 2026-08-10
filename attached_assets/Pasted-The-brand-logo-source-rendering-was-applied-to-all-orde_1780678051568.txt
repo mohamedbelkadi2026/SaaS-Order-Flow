@@ -1,0 +1,36 @@
+The brand-logo source rendering was applied to all-orders.tsx but NOT to orders.tsx
+("Mes Commandes"), which still shows the Source as plain text ("Manual") and the UTM Source as
+a violet text Badge. Fix orders.tsx to use the same brand-logo badge. To avoid duplication,
+extract SourceBadge into a shared component.
+
+STEP 1 — Create a shared component: client/src/components/source-badge.tsx
+Move the SOURCE_CONFIG map and the SourceBadge component (currently defined inside
+all-orders.tsx) into this new file and export both. It must import the brand icons:
+   import { FaFacebook, FaInstagram, FaTiktok, FaGoogle, FaWhatsapp } from 'react-icons/fa';
+Keep the same normalize/alias logic (whatsapp/facebook/instagram/tiktok/google) and the same
+JSX (icon + label, brand color), with the plain capitalized fallback for unknown values.
+
+STEP 2 — all-orders.tsx
+Remove the local SOURCE_CONFIG + SourceBadge definitions and instead:
+   import { SourceBadge } from '@/components/source-badge';
+(Everything else in all-orders.tsx stays the same.)
+
+STEP 3 — orders.tsx  (the page in the screenshot)
+   a) Add import: import { SourceBadge } from '@/components/source-badge';
+   b) DESKTOP "Source" cell — replace:
+        <span className="capitalize text-muted-foreground">{order.source || 'manual'}</span>
+      with:
+        <SourceBadge source={order.source} />
+   c) DESKTOP "UTM Source" cell — replace the violet badge:
+        <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[10px] font-medium">{order.utmSource}</Badge>
+      with:
+        order.utmSource ? <SourceBadge source={order.utmSource} /> : <span className="text-muted-foreground">-</span>
+   d) MOBILE card — do the same two replacements:
+      - the utmSource violet badge → <SourceBadge source={order.utmSource} />
+      - the source span ( ...capitalize...>{order.source || 'manual'} ) → <SourceBadge source={order.source} />
+
+VERIFY:
+- In "Mes Commandes" (orders.tsx), the UTM Source column now shows the WhatsApp green logo +
+  "WhatsApp" (not violet text), and the Source column shows "Manuel" via the badge.
+- Same correct rendering in "Commandes (Toutes)" (all-orders.tsx) — unchanged behaviour.
+- App compiles.

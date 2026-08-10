@@ -1,0 +1,153 @@
+FEATURE / PERF FIX — Rendre l'interface instantanée sur les actions les plus
+utilisées (changement de statut, assignation d'agent, édition de commande),
+au lieu d'attendre un aller-retour serveur avant que quoi que ce soit
+change à l'écran.
+
+CONSTAT (confirmé dans le code)
+94 `useMutation` dans le frontend, ZÉRO n'utilise `onMutate` (mise à jour
+optimiste). Le pattern actuel partout, ex. client/src/hooks/use-store-data.ts
+`useUpdateOrderStatus` / `useAssignAgent` :
+
+```ts
+onSuccess: () => {
+  queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+},
+```
+
+Ça veut dire : clic → attendre la réponse du PATCH → PUIS invalider le cache
+→ PUIS re-fetch toute la liste des commandes → PUIS enfin l'écran change.
+Deux aller-retours réseau complets avant le moindre changement visible —
+c'est la cause principale de la sensation de lenteur au clic.
+
+────────────────────────────────────────────────────────────────────────────
+FIX — Mise à jour optimiste sur les 2 mutations les plus utilisées
+
+Dans client/src/hooks/use-store-data.ts, remplacer :
+
+```ts
+export function useUpdateOrderStatus() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, status }: { id: number; status: string }) => {
+      const res = await apiRequest("PATCH", `/api/orders/${id}/status`, { status });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+    },
+  });
+}
+```
+
+par :
+
+```ts
+// Patch générique : trouve toute commande d'id donné dans n'importe quel
+// cache dont la clé commence par "/api/orders", et applique `patch` dessus.
+// Gère les deux formes de données possibles : un tableau direct, ou un
+// objet { orders: [...] }. Ne casse rien si la clé/forme ne matche pas.
+function patchOrderInCaches(queryClient: ReturnType<typeof useQueryClient>, orderId: number, patch: Record<string, any>) {
+  queryClient.setQueriesData(
+    { predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/orders") },
+    (old: any) => {
+      if (!old) return old;
+      const patchArr = (arr: any[]) => arr.map((o) => (o.id === orderId ? { ...o, ...patch } : o));
+      if (Array.isArray(old)) return patchArr(old);
+      if (Array.isArray(old?.orders)) return { ...old, orders: patchArr(old.orders) };
+      return old;
+    }
+  );
+}
+
+export function useUpdateOrderStatus() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, status }: { id: number; status: string }) => {
+      const res = await apiRequest("PATCH", `/api/orders/${id}/status`, { status });
+      return res.json();
+    },
+    onMutate: async ({ id, status }) => {
+      await queryClient.cancelQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/orders") });
+      // Snapshot pour rollback si le serveur refuse le changement.
+      const previous = queryClient.getQueriesData({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/orders") });
+      patchOrderInCaches(queryClient, id, { status });
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      // Rollback : remettre exactement les données d'avant le clic.
+      context?.previous?.forEach(([key, data]: any) => queryClient.setQueryData(key, data));
+    },
+    onSettled: () => {
+      // Réconciliation en arrière-plan (silencieuse, ne bloque plus l'UI).
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+    },
+  });
+}
+```
+
+Appliquer EXACTEMENT le même pattern à `useAssignAgent` juste en dessous
+(patch `{ assignedToId: agentId }` au lieu de `{ status }`) :
+
+```ts
+export function useAssignAgent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, agentId }: { id: number; agentId: number | null }) => {
+      const res = await apiRequest("PATCH", `/api/orders/${id}/assign`, { agentId });
+      return res.json();
+    },
+    onMutate: async ({ id, agentId }) => {
+      await queryClient.cancelQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/orders") });
+      const previous = queryClient.getQueriesData({ predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/orders") });
+      patchOrderInCaches(queryClient, id, { assignedToId: agentId });
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      context?.previous?.forEach(([key, data]: any) => queryClient.setQueryData(key, data));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
+    },
+  });
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+IMPORTANT — vérifier la forme réelle du cache avant de considérer que c'est
+fini
+
+`patchOrderInCaches` gère 2 formes (tableau direct, ou `{ orders: [...] }`).
+Après déploiement, ouvrir la page des commandes, changer un statut, et
+vérifier dans les React Query Devtools (ou en inspectant le comportement)
+que le changement apparaît INSTANTANÉMENT (avant même que le spinner de
+la requête réseau ait fini). Si une page de commandes garde un ancien
+comportement (délai visible), c'est que sa clé de requête ne commence pas
+par la string `"/api/orders"` (ex: elle utilise un objet ou un tableau comme
+premier élément de queryKey) — dans ce cas, envoie-moi le nom exact de la
+query key utilisée sur cette page et j'ajusterai le predicate.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add optimistic UI updates for order status and agent assignment (instant click feedback)" && git push
+
+VÉRIFICATION
+- Changer le statut d'une commande dans le tableau → le badge de statut doit
+  changer À L'INSTANT du clic, pas après un délai.
+- Assigner un agent → pareil, changement instantané.
+- Débrancher le wifi 2 secondes puis refaire l'action → l'UI doit d'abord
+  montrer le changement puis, faute de réponse serveur, revenir en arrière
+  (rollback) — ça confirme que le filet de sécurité fonctionne.

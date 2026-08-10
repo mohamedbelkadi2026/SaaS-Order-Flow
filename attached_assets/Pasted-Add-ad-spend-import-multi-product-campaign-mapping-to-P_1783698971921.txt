@@ -1,0 +1,84 @@
+Add ad-spend import + multi-product campaign mapping to "Profit Analyzer Pro" 
+(client/src/pages/profit-analyzer.tsx), Import CSV mode. Do NOT change any other feature 
+of the platform.
+
+CONTEXT: Step 2 "Saisie des coûts" has a PUB (DH) column per product, filled by hand today. 
+The user imports a Facebook Ads export (spend in USD), enters a USD→MAD rate, then assigns 
+each campaign to ONE OR MORE products, so each product's PUB (DH) is auto-filled and profit 
+per product is correct. Real case: one campaign sells 3 tent variants 
+("240x240x135cm خيمة التخييم الأوتوماتيكية", "240X240X140CM ...", "280X240X160CM ...") — its 
+spend must be split across all three.
+
+1) In Step 2, next to the "Par produit" radio, add "Importer les dépenses publicitaires". 
+   It opens a dropzone accepting .csv/.xlsx/.xls, MULTIPLE files allowed (merge them).
+
+2) COLUMN DETECTION (permissive — Facebook headers vary):
+   - Campaign column: case-insensitive match on "campaign name", "nom de la campagne", 
+     "campagne", "campaign".
+   - Spend column: match on "amount spent", "amount spent (usd)", "montant dépensé", 
+     "spend", "dépenses", "cost", or any header containing USD.
+   - Optional date columns ("reporting starts"/"reporting ends"/"date").
+   - If detection is ambiguous or fails, show a mapping UI to pick the columns manually. 
+     Never guess silently.
+   - Parse spend as a number: strip currency symbols/spaces; handle BOTH "1 234,56" and 
+     "1,234.56".
+
+3) USD → MAD CONVERSION (required):
+   - Input "Taux USD → MAD" filled manually by the user (e.g. 10.15). Default empty; never 
+     fetch or hardcode a rate.
+   - Block Apply until a valid positive rate is entered (inline validation message).
+   - Show each campaign's spend as "$X (≈ Y DH)". Converted MAD = usd × rate, 2 decimals.
+   - Changing the rate recomputes all conversions and totals live. Persist the rate in 
+     component state across the 3-step flow.
+   - If the spend column clearly indicates MAD/DH, skip conversion and disable the rate 
+     input with a note.
+
+4) CAMPAIGN → MULTI-PRODUCT MAPPING (the key feature):
+   - Show a table of DISTINCT campaigns with total spend (summed across rows and files), 
+     sorted desc, showing USD and converted MAD.
+   - Each campaign row allows selecting MULTIPLE products (multi-select / checkbox list) 
+     from the imported orders dataset, plus an "Ignorer" option. Selecting 3 products must 
+     be possible.
+   - SPLIT MODE per campaign, defaulting to "Prorata du CA":
+       • "Prorata du CA" (default): split that campaign's MAD spend across its selected 
+         products proportionally to each product's CA brut in the imported dataset.
+       • "Parts égales": split equally.
+       • "Manuel (%)": user types a percentage per selected product; validate the row sums to 
+         100% (block Apply otherwise, show which campaign is off).
+     Show the resulting DH amount next to each selected product, live, so the split is 
+     visible before applying.
+   - Edge case: if "Prorata du CA" is chosen but all selected products have CA = 0, fall back 
+     to equal parts and show a small notice.
+   - Convenience: pre-select products whose name is contained in the campaign name (fuzzy, 
+     accent/case-insensitive). The user can always override. Leave unmatched campaigns 
+     unselected rather than guessing.
+   - Running summary: total imported (USD + MAD), total assigned, total unassigned/ignored.
+
+5) APPLY:
+   - For each product, sum its share from EVERY campaign assigned to it (a product can 
+     receive shares from several campaigns — these must ADD UP), and write the total into 
+     that product's PUB (DH) in Saisie des coûts.
+   - Overwrite, but confirm first if the field already holds a non-zero manual value.
+   - Campaigns assigned to no product are NOT distributed; keep them in the unassigned total 
+     so the user notices.
+   - Guarantee no money is created or lost: the sum of all products' assigned PUB must equal 
+     the total assigned campaign spend (allow rounding to 2 decimals; show a reconciliation 
+     line).
+   - Persist the mapping + split choices in component state so navigating the 3-step flow 
+     doesn't lose them. Allow reopening the mapping table to edit.
+
+6) Step 3 "Rapport final" computes profit per product using these PUB values exactly as it 
+   does today with manual values. Do NOT change the profit formula.
+
+CONSTRAINTS:
+ - Keep the 3-step flow and the "Par Produit (Live)" mode untouched.
+ - Use the xlsx (SheetJS) library already available; parse large files without freezing the 
+   UI (progress indicator).
+ - Per-file errors name the file and never block the other valid files.
+
+VERIFY: one campaign assigned to 3 tent variants splits its MAD spend across them per the 
+chosen mode; the three products' PUB sum to that campaign's spend; a product targeted by two 
+campaigns accumulates both shares; ignoring a campaign leaves it out; the final report 
+reflects all of it.
+
+Deploy to main.

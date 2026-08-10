@@ -14,6 +14,29 @@ export function serveStatic(app: Express) {
     );
   }
 
+  // ── PWA: service worker — must be served before generic static middleware ──
+  // Browsers require sw.js to have no long-term cache (each navigation checks
+  // for a new version) and the Service-Worker-Allowed header to set scope to /.
+  const swPath = path.resolve(distPath, "sw.js");
+  if (fs.existsSync(swPath)) {
+    app.get("/sw.js", (_req, res) => {
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Service-Worker-Allowed", "/");
+      res.sendFile(swPath);
+    });
+  }
+
+  // ── PWA: manifest — explicit route so it always returns the right MIME type ─
+  const manifestPath = path.resolve(distPath, "site.webmanifest");
+  if (fs.existsSync(manifestPath)) {
+    app.get("/site.webmanifest", (_req, res) => {
+      res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache");
+      res.sendFile(manifestPath);
+    });
+  }
+
   // Serve static assets (JS, CSS, images, etc.)
   app.use(express.static(distPath));
 

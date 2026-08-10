@@ -1,0 +1,80 @@
+Fix the manual "Synchroniser Ozon Express" button so it pulls the REAL delivery status from
+Ozon Express and reflects it in the platform. Today it polls /parcel-info, which does NOT return
+any status (confirmed: response only has receiver/city/price/DELIVERED-PRICE, no status field) —
+so it always reports updated=0. Ozon's status comes from a TRACKING endpoint, not parcel-info.
+
+All work in server/services/carrier-service.ts.
+
+1) Make the Ozon status mapper accept BOTH status CODES and French status NAMES (we don't know
+   which the tracking endpoint returns). Keep the existing OZON_STATUS_MAP (codes) and ADD a
+   French-name map, then make mapOzonStatus try both:
+
+   export const OZON_NAME_MAP: Record<string,string> = {
+     "paye":"delivered","livre":"delivered",
+     "retourne":"Retour Recu",
+     "refuse":"refused",
+     "annule":"annule",
+     "nouveau colis":"Attente De Ramassage","attente de ramassage":"Attente De Ramassage","pre ramasse":"Attente De Ramassage",
+     "ramasse":"transit","expedie":"transit","recu":"transit","mise en distribution":"transit",
+     "en cours":"transit","programme":"transit","retarde":"transit","livraison sous conditions":"transit",
+     "envoye a l'agence":"transit","recu en agence de livraison":"transit",
+     "reporte":"confirme_reporte","reporte aujourd hui":"confirme_reporte",
+     "pas de reponse + sms":"unreachable","pas reponse +deplacement":"unreachable",
+     "pas de reponse j+2":"unreachable","pas de reponse j+3":"unreachable",
+     "pas reponse + deplacement j+2":"unreachable","pas reponse + deplacement j+3":"unreachable",
+     // intentionally unmapped (null): facture, hors-zone, erreur numero, client interesse,
+     // non paye, sans adresse, rembourse, saisi par barid al-maghrib, endommage, hors secteur, zone non-couverte
+   };
+   function stripAccents(s:string){ return s.normalize("NFD").replace(/[\u0300-\u036f]/g,""); }
+   export function mapOzonStatus(raw: string): string | null {
+     if (!raw) return null;
+     const code = raw.toString().trim().toUpperCase().replace(/[\s-]+/g,"_");
+     if (OZON_STATUS_MAP[code]) return OZON_STATUS_MAP[code];
+     const name = stripAccents(raw.toString().toLowerCase().trim());
+     return OZON_NAME_MAP[name] ?? null;   // unknown → null = keep current status, just log
+   }
+
+2) Rewrite trackOzonExpressShipment to call Ozon's TRACKING endpoint (NOT parcel-info), trying
+   the known path variants, logging the raw response, and extracting the status from the common
+   shapes:
+
+   export async function trackOzonExpressShipment(trackingNumber: string, apiKey: string, account: any) {
+     const customerId = account?.settings?.ozonExpressCustomerId ?? account?.ozonSettings?.ozonExpressCustomerId;
+     const base = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}`;
+     // Ozon uses multipart/form-data elsewhere; send tracking-number as form field.
+     const FormData = (await import("form-data")).default;
+     const tryEndpoints = [`${base}/parcels/tracking`, `${base}/tracking`, `${base}/parcel-info`];
+     let body:any = null, used = "";
+     for (const url of tryEndpoints) {
+       try {
+         const fd = new FormData();
+         fd.append("tracking-number", trackingNumber);
+         const r = await axios.post(url, fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true });
+         console.log(`[OZON-TRACK] ${trackingNumber} via ${url} HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+         if (r.status < 400 && r.data) { body = r.data; used = url; break; }
+       } catch (e:any) { console.log(`[OZON-TRACK] ${trackingNumber} ${url} error ${e?.message}`); }
+     }
+     if (!body) return { status: null, rawStatus: null, rawResponse: null, error: "Ozon: no tracking response" };
+     // Extract the latest status text/code from the common Ozon shapes:
+     const t = body["TRACKING"] || body["PARCEL-TRACKING"] || body["PARCEL-INFO"] || body;
+     const rawStatus =
+       t?.["LAST-TRANSITION"]?.["STATUT"] ??
+       t?.["LAST-TRANSITION"]?.["STATUS"] ??
+       (Array.isArray(t?.["TRANSITIONS"]) && t["TRANSITIONS"].length ? t["TRANSITIONS"][t["TRANSITIONS"].length-1]?.["STATUT"] : null) ??
+       (Array.isArray(t?.["TRACKING"]) && t["TRACKING"].length ? t["TRACKING"][t["TRACKING"].length-1]?.["STATUT"] : null) ??
+       t?.["STATUT"] ?? t?.["STATUS"] ?? t?.["INFOS"]?.["STATUT"] ?? null;
+     return { status: rawStatus ? mapOzonStatus(rawStatus) : null, rawStatus, rawResponse: body, error: undefined };
+   }
+   (Install form-data if not present: npm i form-data.)
+
+3) Keep trackByCarrier's ozonexpress case calling trackOzonExpressShipment. The generic sync loop
+   then updates each shipped, non-terminal Ozon order to the mapped status. Make the sync result
+   message reflect the real updated count.
+
+VERIFY / one-time confirm:
+   - Click "Synchroniser Ozon Express", then read the `[OZON-TRACK] ... via <url> HTTP 200: {...}`
+     line in the server logs. It reveals which endpoint works and the exact status field/value.
+   - Statuses in the platform should now match Ozon (e.g. "Attente De Ramassage" → "transit" /
+     "delivered" as Ozon reports). Unknown statuses never overwrite (just logged).
+   - If the tracking response shape differs from the parsing above, paste that one [OZON-TRACK]
+     log line and the field path can be locked exactly.

@@ -1,0 +1,63 @@
+Scope: the "Par Produit (Live)" profit analyzer. Backend endpoint is
+GET /api/products/profitability in server/routes.ts. Frontend is
+client/src/pages/profit-analyzer.tsx (the live per-product table).
+The CSV-import mode already handles confirmation/packaging correctly — only the
+LIVE mode is wrong. Do not touch the CSV-import code path.
+
+PROBLEM 1 — Frais de confirmation is never subtracted in Live mode.
+The live netProfit formula is: revenue − productCost − shippingCost − packagingCost − adSpend.
+It is missing the confirmation fee (coutConfirmation, stored per product in
+settings.profitDefaults.coutConfirmation, in DH per order). The confirmation fee must be
+charged ONLY on DELIVERED orders (per commande livrée), exactly like packaging.
+
+PROBLEM 2 — Units (quantity) are not shown. Product cost already uses quantity
+(cost × item.quantity), but the table only shows order count, not units. When an order
+has quantity 2, the user needs to see the unit count (like a "7 cmd / 10 u" display).
+
+FIX A — server/routes.ts, GET /api/products/profitability:
+1. In the ProductStats type, add these numeric fields:
+     confirmationCost: number;
+     totalUnits: number;
+     deliveredUnits: number;
+   Initialize them to 0 in the statsMap[key] = { ... } object.
+
+2. Units: in the per-item loop, OUTSIDE the `if (isDelivered)` block, add:
+     s.totalUnits += Number(item.quantity || 1);
+   INSIDE the `if (isDelivered)` block, add:
+     s.deliveredUnits += Number(item.quantity || 1);
+
+3. Confirmation cost — charge it ONLY on delivered orders. Add it INSIDE the
+   `if (isDelivered)` block, right next to where packaging (emballageDH) is added:
+     const confDH = Number((item.productSettings as any)?.profitDefaults?.coutConfirmation || 0);
+     s.confirmationCost += confDH;
+   (Per delivered order, NOT multiplied by quantity — it is DH/commande.)
+
+4. Update the netProfit formula in the productResult map to subtract confirmation:
+     const netProfit = s.revenue - s.productCost - s.shippingCost - s.packagingCost - s.confirmationCost - totalAdSpend;
+   Include the new fields in the returned object:
+     return { ...s, adSpend: totalAdSpend, packagingCost: s.packagingCost,
+              confirmationCost: s.confirmationCost, totalUnits: s.totalUnits,
+              deliveredUnits: s.deliveredUnits, netProfit, margin, roi, confirmRate, deliveryRate };
+   Also make sure the "merge stock products with no orders" block initializes
+   confirmationCost: 0, totalUnits: 0, deliveredUnits: 0 so nothing is undefined.
+
+FIX B — client/src/pages/profit-analyzer.tsx (live table):
+1. In the product type/interface used for live rows, add:
+     confirmationCost?: number; totalUnits?: number; deliveredUnits?: number;
+2. In the CMD column cell that currently renders `{p.totalOrders}`, show the unit count
+   underneath ONLY when units differ from orders:
+     <div className="font-bold">{p.totalOrders} cmd</div>
+     {p.totalUnits != null && p.totalUnits !== p.totalOrders && (
+       <div className="text-[11px] text-slate-400">{p.totalUnits} u</div>
+     )}
+   Keep styling consistent with the existing table.
+
+VERIFY:
+- For a product with coutConfirmation set, PROFIT NET drops by
+  (coutConfirmation × number of DELIVERED orders) — confirmed-but-not-delivered orders
+  must NOT be charged.
+- PROFIT NET TOTAL card updates accordingly (it sums product netProfit).
+- A product with an order of quantity 2 shows "X cmd / Y u" with Y > X, and its COÛT =
+  unit cost × total delivered units (unchanged, already correct).
+- CSV-import mode results are unchanged.
+- App compiles, /api/products/profitability returns 200.

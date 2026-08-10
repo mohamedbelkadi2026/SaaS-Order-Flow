@@ -1,0 +1,65 @@
+Ameex status sync is fully broken. Root causes confirmed from the Journal:
+ - Ameex sends TWO different webhook payload formats hitting two routes/connections:
+   FORMAT A (carrier "ameex"): top-level keys CODE, STATUT, STATUT_NAME, STATUT_COLOR — but the 
+     handler reads them EMPTY ("CODE=? statut:''"), so it never matches.
+   FORMAT B (carrier "olivraison"): keys code_colis, event, payload{order_id,status,description,
+     return_status,reported_date,current_driver{phone}}, commentaire, date_reporte_colis.
+ - There is NO reliable link between the carrier's code and our order: we ship and store a 
+   placeholder trackNumber AMEEX-PENDING-TJG-<orderNumber>; the ship response doesn't return 
+   Ameex's code; and we never send OUR order reference to Ameex, so webhooks can't be matched.
+ - A previous phone-fallback matched on the DRIVER phone (shared) and corrupted order #1532 — 
+   NEVER match on driver phone.
+
+FIX EVERYTHING (one deploy):
+
+1) PARSE BOTH FORMATS in the Ameex/olivraison webhook handler:
+   - Accept application/x-www-form-urlencoded AND json. Read case-insensitively.
+   - FORMAT A: tracking = CODE, status = STATUT, label = STATUT_NAME, sub = STATUT_S.
+   - FORMAT B: parse `payload` (JSON-parse if string); tracking = payload.order_id (fallback 
+     top-level code_colis), status = payload.status, label = payload.description, 
+     return_status = payload.return_status, reported = payload.reported_date || date_reporte_colis.
+   - Log the FULL raw body VALUES for one event of each format so we confirm.
+
+2) ESTABLISH A RELIABLE LINK (this is the core fix, forward-looking):
+   a) SHIP TIME: in buildAmeexPayload, SEND our order number/internal_id to Ameex as its 
+      partner/external reference (inspect Ameex's create/batch API for the exact field — 
+      partner_id / partnerTrackingID / external_ref / ref — and set it). Paste the create 
+      request+response shapes.
+   b) SHIP TIME: if the create response returns Ameex's code per package, store it as 
+      order.trackNumber immediately (replace the placeholder). Paste the response shape.
+   c) WEBHOOK MATCH priority: (i) order.trackNumber === tracking(code); (ii) 
+      payload.partner_id/partnerTrackingID === our order number; (iii) the CUSTOMER phone IF the 
+      payload contains it (check the full dump — do NOT use current_driver.phone). If none 
+      match, log webhook_no_match and DO NOT attach. NEVER attach the same code to multiple 
+      orders; a code maps to exactly one order.
+
+3) AMEEX_STATUS_MAP (single source of truth, for BOTH formats; input = STATUT or payload.status, 
+   uppercase-normalized):
+     DELIVERED -> delivered
+     INHOUSE / RECEIVED -> in_progress
+     INDELIVERY / DISTRIBUTION / OUT -> in_progress
+     IN_PROGRESS / PENDING / PICKED / NO_ANSWER* -> in_progress
+     RETURNED / RTS / RETOUR -> retourné   (also if return_status===true -> retourné)
+     REFUSED / REJECTED -> refused
+     CANCELED / ANNULE -> refused
+     POSTPONED (or reported_date present) -> in_progress + label "Reporté"
+     unknown -> in_progress   (NEVER guess delivered/refused)
+   Store the human label in commentStatus. Log every distinct STATUT/payload.status value seen 
+   with counts, so I can confirm the full list with Ameex.
+
+4) EXISTING ORPHANS: check integration_logs for Ameex shipping_sent entries — if the create 
+   response (with the code per order) was logged, backfill trackNumber from there (DRY-RUN first, 
+   report count). Also check if Ameex has a list-parcels API (AMEEX_TRACKING_URL = 
+   https://api.ameex.app/customer/Delivery/Parcels/Track) that returns our reference to 
+   reconcile. If neither works, these must be attached manually — report how many remain.
+
+5) Fix the two Ameex connections showing "Erreur": verify both webhookTokens/URLs are correct 
+   and both point at a working handler.
+
+VERIFY: a newly shipped Ameex order (with our ref sent) → its webhook matches exactly ONE 
+correct order and updates status (DELIVERED->Livré, INHOUSE->in_progress, return_status=true->
+retourné). No cross-matching. Statuses then count in Dashboard + Profit.
+
+Deploy to main. Paste me: (a) full raw values of one webhook of EACH format, (b) the Ameex 
+create request+response shapes + the reference field name, (c) the distinct status list with 
+counts, (d) the orphan-backfill dry-run count.

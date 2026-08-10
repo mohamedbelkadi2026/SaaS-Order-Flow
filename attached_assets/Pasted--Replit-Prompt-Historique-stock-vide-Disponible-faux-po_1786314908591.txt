@@ -1,0 +1,42 @@
+# Replit Prompt — Historique stock vide + "Disponible" faux pour les commandes déjà expédiées/livrées
+
+## Bug confirmé
+
+Produit "الشريط اللاصق مطاطي القوي" : Reçu = 20, Sortie (Livrées) = 2, En cours = 3, **Disponible affiché = 17**.
+
+Le calcul attendu : 20 − 2 (livrées) − 3 (en cours, stock réservé/sorti) = **15**, pas 17.
+
+Le panneau "Historique" (`/api/stock-movements/:productId`) ne montre QUE **"Stock initial +20"** — aucune ligne pour les 2 commandes livrées ni les 3 en cours, alors que ces mouvements devraient exister et faire baisser le disponible.
+
+## Root cause
+
+Il y a **deux mécanismes de décrément de stock qui coexistent, plus un backfill incomplet** :
+
+1. **`server/storage.ts` ~ligne 1193 (RULE 0)** : au moment où une commande passe au statut `confirme`/`confirme_reporte`, le stock est décrémenté ET loggé dans la table **legacy `stock_logs`** (pas `stock_movements`).
+2. **`server/storage.ts` ~ligne 1222 (RULE 1)** : au moment où une commande passe à `delivered`, une ligne est écrite dans **`stock_movements`** (type `delivered`) — mais seulement si `prevStatus !== 'delivered'`, c'est-à-dire seulement si une VRAIE transition a été détectée par `updateOrderStatus`.
+3. **`decrementStockForOrder`** (~ligne 491) : appelé uniquement au moment de l'expédition/dispatch (bulk-ship, etc.), écrit dans `stock_movements` (type `shipped`).
+
+**Problème** : ces trois mécanismes ne se déclenchent QUE lors d'une transition de statut détectée EN DIRECT dans l'application (`updateOrderStatus`). Si une commande est créée directement avec un statut déjà avancé (import Excel, webhook YouCan/Shopify qui insère la commande déjà à `expédié`/`delivered`, réparation manuelle en masse, etc.), **aucune transition n'est jamais capturée**, donc :
+- Aucune ligne n'est écrite dans `stock_logs` NI `stock_movements` pour cette commande.
+- Le stock du produit (`products.stock`) n'est décrémenté que si un AUTRE mécanisme l'a fait à un moment donné (ex: RULE 0 lors d'un `confirme` antérieur réel) — ce qui explique le 17 actuel (20 − 3, probablement les 3 commandes "en cours" ont bien été confirmées une fois dans l'app avant d'être expédiées, donc RULE 0 a tourné), mais les 2 commandes "delivered" ne sont jamais passées par une transition captée (probablement importées/webhookées directement en `delivered`), donc ni RULE 0 ni RULE 1 n'ont jamais tourné pour elles → stock jamais décrémenté pour ces 2 unités, et aucune ligne d'historique.
+
+Le bouton **"Réparer l'historique des stocks"** existant (`/api/products/backfill-initial-stock-history`, `server/routes.ts` ~ligne 8810) NE RÉSOUT PAS ce cas : il ne fait que combler l'écart entre `products.stock` actuel et les mouvements déjà loggés en ajoutant UNE ligne "restock" — il ne recrée PAS les mouvements `shipped`/`delivered` manquants pour les commandes historiques déjà à un statut avancé.
+
+## Fix à implémenter
+
+### 1. Nouveau/étendu endpoint de réparation rétroactive
+Créer (ou étendre le bouton existant "Réparer l'historique des stocks") une route qui, pour CHAQUE produit du store :
+- Liste tous les `order_items` de ce produit dont la commande est actuellement `delivered` OU dans un statut "en cours/expédié" (`in_progress`, `expédié`, `Attente De Ramassage`, etc. — réutiliser la même liste de statuts que `inTransitItems` dans `getInventoryStats`, `server/storage.ts` ~ligne 2180).
+- Pour chaque commande de cette liste qui n'a PAS déjà de ligne correspondante dans `stock_movements` (`WHERE order_id = X AND product_id = Y AND type IN ('shipped','delivered')`), créer rétroactivement la ligne manquante (type `delivered` ou `shipped` selon le statut actuel de la commande) avec la date de la commande (`orders.updated_at` ou `orders.created_at`) comme `createdAt`.
+- Décrémenter `products.stock` (et `product_variants.stock` si variante) du total des quantités ainsi backfillées, avec `GREATEST(0, stock - qty)`.
+- Retourner un résumé (nombre de mouvements créés, quantité totale déduite, par produit) pour que l'admin puisse vérifier avant/après.
+
+### 2. Empêcher que ça se reproduise pour les futures commandes
+Vérifier tous les points d'insertion de commande avec un statut déjà avancé dès la création (webhooks YouCan/Shopify, `/api/orders/import`, `/api/orders/import-bulk`, `/api/orders/manual`) : si une commande est insérée directement avec `status IN ('delivered', 'expédié', 'Attente De Ramassage', ...)`, appeler explicitement la même logique de décrément + `stock_movements` (RULE 0/1 ou `decrementStockForOrder`) juste après l'insertion, plutôt que de compter uniquement sur une transition ultérieure qui n'arrivera jamais.
+
+## Testing checklist
+1. Après le fix, lancer "Réparer l'historique des stocks" (ou le nouvel outil) sur le store de test → le produit "الشريط اللاصق مطاطي القوي" doit passer à **Disponible = 15**.
+2. Ouvrir l'Historique de ce produit → doit maintenant afficher, en plus de "Stock initial +20", les 5 mouvements correspondant aux 2 livrées + 3 en cours (type `delivered` / `shipped`, avec le numéro de commande).
+3. Créer une commande de test avec un statut initial déjà `delivered` (simuler un import) → vérifier qu'une ligne `stock_movements` est créée immédiatement et que `products.stock` est décrémenté, sans avoir besoin de cliquer sur "Réparer l'historique".
+4. Faire passer une commande existante de `confirme` → `delivered` dans l'app normalement → vérifier qu'aucun double-décrément ne se produit (le stock ne doit baisser qu'une fois au total pour cette commande, pas une fois à la confirmation et une fois à la livraison).
+5. Vérifier un produit avec variantes pour confirmer que le stock des variantes est aussi correctement réconcilié.

@@ -16,6 +16,9 @@
 
 import axios, { AxiosError } from "axios";
 import https from "https";
+import { db } from "../db";
+import { orderItems, vitipsCities } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
 
 // ── SSL agent — bypasses self-signed / expired certs (common in .ma APIs) ────
 const SSL_AGENT = new https.Agent({ rejectUnauthorized: false });
@@ -24,6 +27,7 @@ const SSL_AGENT = new https.Agent({ rejectUnauthorized: false });
 const CARRIER_ENDPOINTS: Record<string, string> = {
   // Digylog V2.4 official endpoint (verified from API docs)
   digylog:        "https://api.digylog.com/api/v2/seller/orders",
+  vitipsexpress:  "https://app.vitipsexpress.com/api/client/post/colis/add-colis",
   ecotrack:       "https://app.ecotrack.ma/api/v1/orders",
   "eco-track":    "https://app.ecotrack.ma/api/v1/orders",
   cathedis:       "https://app.cathedis.ma/api/v1/parcels",
@@ -44,58 +48,94 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
 const AMEEX_TRACKING_URL = "https://api.ameex.app/customer/Delivery/Parcels/Track";
 
 // ── Ameex status → platform status mapping ────────────────────────────────────
-// Maps the French status labels Ameex returns to our internal status codes.
+// Ameex delivers status via WEBHOOK ONLY (no pull/tracking endpoint).
+// Webhook fields: CODE (tracking #), STATUT (enum), STATUT_S (sub-status enum),
+// STATUT_NAME (French label), STATUT_COLOR, DATE.
+// STATUT values are uppercase English enum codes — NOT French labels.
 export const AMEEX_STATUS_MAP: Record<string, string> = {
-  // Success statuses
-  "livrée":        "delivered",
-  "livré":         "delivered",
-  "livre":         "delivered",
-  "livree":        "delivered",
-  "livrée avec succès": "delivered",
+  // ── Terminal: delivered ───────────────────────────────────────────────────
+  'DELIVERED':    'delivered',
 
-  // Refusal / cancellation
-  "refusée":       "refused",
-  "refusé":        "refused",
-  "refuse":        "refused",
-  "refusee":       "refused",
-  "non livré":     "refused",
+  // ── Terminal: refused / cancelled ─────────────────────────────────────────
+  'REFUSED':      'refused',
+  'REJECTED':     'refused',
+  'CANCELED':     'refused',
+  'CANCELLED':    'refused',
+  'ANNULE':       'refused',
 
-  // Return
-  "retournée":     "Retour Recu",
-  "retourné":      "Retour Recu",
-  "retourne":      "Retour Recu",
-  "retournee":     "Retour Recu",
-  "en cours de retour": "En Cours De Retour",
+  // ── Terminal: returned ────────────────────────────────────────────────────
+  'RETURNED':     'retourné',
+  'RETOUR':       'retourné',
+  'RTS':          'retourné',         // Return to Sender
 
-  // In transit
-  "en transit":    "transit",
-  "en livraison":  "transit",
-  "en cours":      "transit",
-  "en cours de livraison": "transit",
-  "expédié":       "transit",
-  "expedie":       "transit",
+  // ── In progress: hub / warehouse ─────────────────────────────────────────
+  'INHOUSE':      'in_progress',      // received at sorting hub
 
-  // Pickup / collected
-  "ramassé":       "Attente De Ramassage",
-  "collecté":      "Attente De Ramassage",
-  "collecte":      "Attente De Ramassage",
-  "en attente de ramassage": "Attente De Ramassage",
-  "prêt":          "Attente De Ramassage",
+  // ── In progress: out for delivery ────────────────────────────────────────
+  'INDELIVERY':   'in_progress',      // out for delivery (variant 1)
+  'DISTRIBUTION': 'in_progress',      // out for delivery (variant 2)
+  'OUT':          'in_progress',      // out for delivery (variant 3)
 
-  // Unreachable / no answer
-  "injoignable":   "unreachable",
-  "non répondu":   "unreachable",
-  "absent":        "unreachable",
+  // ── In progress: waiting / picked / postponed / generic ──────────────────
+  'IN_PROGRESS':  'in_progress',
+  'PENDING':      'in_progress',
+  'PICKED':       'in_progress',      // picked up from merchant
+  'RECEIVED':     'in_progress',      // alias for INHOUSE (some API versions)
+  'POSTPONED':    'in_progress',      // postponed — label "Reporté" applied by handler
+  'NEW PACKAGE':  'in_progress',      // Ameex list-parcels API label for newly created parcels
+  'NEW_PACKAGE':  'in_progress',      // snake_case variant
+  'NEW':          'in_progress',      // bare variant
+
+  // ── Named sub-statuses ────────────────────────────────────────────────────
+  'PICKUP':       'Attente De Ramassage',
+  'NO_ANSWER':    'Injoignable',
+
+  // ── French labels (new olivraison/Ameex webhook format: nested.status) ────
+  // mapAmeexStatus() uppercases before lookup; JS .toUpperCase() preserves
+  // accented chars (e.g. 'Livr\u00e9'.toUpperCase() === 'LIVR\u00c9').
+  // Also include accent-stripped variants as a safe fallback.
+  '\u004c\u0049\u0056\u0052\u00c9':                   'delivered',   // LIVRÉ
+  '\u004c\u0049\u0056\u0052\u00c9\u0045':             'delivered',   // LIVRÉE
+  'LIVRE':                                             'delivered',
+  '\u0052\u0045\u0046\u0055\u0053\u00c9':             'refused',     // REFUSÉ
+  '\u0052\u0045\u0046\u0055\u0053\u00c9\u0045':       'refused',     // REFUSÉE
+  'REFUSE':                                            'refused',
+  '\u0041\u004e\u004e\u0055\u004c\u00c9':             'refused',     // ANNULÉ
+  'ANNULE':                                            'refused',
+  '\u0052\u0045\u0050\u004f\u0052\u0054\u00c9':       'in_progress', // REPORTÉ
+  'REPORTE':                                           'in_progress',
+  '\u0045\u0058\u0050\u00c9\u0044\u0049\u00c9':       'in_progress', // EXPÉDIÉ
+  'EXPEDIE':                                           'in_progress',
+  '\u0052\u0045\u00c7\u0055':                         'in_progress', // REÇU
+  'RECU':                                              'in_progress',
+  'MISE EN DISTRIBUTION':                              'in_progress',
+  'EN COURS DE DISTRIBUTION':                         'in_progress',
+  'EN COURS DE LIVRAISON':                            'in_progress',
+  'PAS DE R\u00c9PONSE':                              'in_progress', // PAS DE RÉPONSE
+  'PAS DE REPONSE':                                   'in_progress',
+  'EN COURS':                                         'in_progress',
+  'EN TRANSIT':                                       'in_progress',
+  'RAMASS\u00c9':                                     'in_progress', // RAMASSÉ
+  'RAMASSE':                                          'in_progress',
+  'SORTI POUR LIVRAISON':                             'in_progress',
+  'ARRIV\u00c9 AU HUB':                              'in_progress', // ARRIVÉ AU HUB
+  'ARRIVE AU HUB':                                    'in_progress',
+  'PRIS EN CHARGE':                                   'in_progress',
+  'INJOIGNABLE':                                      'in_progress',
+  'RETOUR\u004e\u00c9':                              'retourné',    // RETOURNÉ
+  'RETOURNE':                                         'retourné',
+  'ATTENTE DE RAMASSAGE':                             'Attente De Ramassage',
 };
 
 /**
- * Map a raw Ameex status string to the platform's internal status.
- * Returns null if no mapping found (keeps current status unchanged).
+ * Map Ameex webhook STATUT (+ optional STATUT_S) to the platform's internal status.
+ * Always returns a safe string — never null. Unknown STATUT → 'in_progress'
+ * (safe default: we never guess delivered/refused from an unknown code).
+ * Pass STATUT_NAME as the commentStatus so Suivi shows the real French label.
  */
-export function mapAmeexStatus(rawStatus: string): string | null {
-  if (!rawStatus) return null;
-  const normalized = rawStatus.toLowerCase().trim();
-  return AMEEX_STATUS_MAP[normalized] || null;
+export function mapAmeexStatus(statut: string, _statutS?: string): string {
+  const s = (statut || '').toUpperCase().trim();
+  return AMEEX_STATUS_MAP[s] ?? 'in_progress';
 }
 
 /**
@@ -254,6 +294,7 @@ export interface CarrierShipInput {
   totalPrice: number;      // in centimes — converted to DH before sending
   productName: string;
   canOpen: boolean;
+  isStock?: boolean;     // "Produit en stock" — wired to orders.isStock
   orderNumber: string;
   orderId: number;
   storeId: number;
@@ -469,7 +510,17 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     type:      "SIMPLE",
     business:  String(input.apiSecret || input.apiId || ""),
-    order_num: String(input.orderNumber),
+
+    // ── Our order reference — sent under every known field name ───────────
+    // Ameex echoes one of these back in webhooks as partner_id /
+    // partnerTrackingID so we can link payload.order_id to our order.
+    // We don't know which field Ameex reads, so we send all of them.
+    order_num:         String(input.orderNumber),
+    partner_id:        `TJG-${input.orderNumber}`,
+    partnerTrackingID: `TJG-${input.orderNumber}`,
+    ref:               `TJG-${input.orderNumber}`,
+    external_ref:      `TJG-${input.orderNumber}`,
+
     replace:   "true",
     open:      input.canOpen ? "YES" : "NO",
     try:       "YES",
@@ -524,10 +575,74 @@ const carrierConfigs: Record<string, {
   colisspeed:     { authType: 'bearer' },
 };
 
+/**
+ * Vitipsexpress — POST https://app.vitipsexpress.com/api/client/post/colis/add-colis
+ * Auth: "API Token": {token}
+ * city field = abbr from /villes (stored in input.cityId)
+ */
+/**
+ * Strip invisible Unicode characters that frequently appear in text imported
+ * from third-party platforms (YouCan, Shopify, etc.) and cause byte-level
+ * mismatches even when the string looks identical on screen.
+ * Exported so the YouCan webhook can sanitize rawProductName at ingestion time.
+ */
+export function sanitizeArabicText(input: string | null | undefined): string {
+  if (!input) return "";
+  return input
+    // RTL/LTR direction marks and other invisible control characters
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, "")
+    // Normalise to NFC — eliminates composed vs decomposed diacritic differences
+    .normalize("NFC")
+    // Non-breaking and exotic Unicode spaces → regular space
+    .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ")
+    // Collapse multiple spaces, trim
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
+  const phone   = sanitizePhone(input.phone);
+  // Vitipsexpress requires at least 1 DH — send 1 if price is 0 (free order / price set at delivery)
+  const priceDH = input.totalPrice > 0 ? +(input.totalPrice / 100).toFixed(2) : 1;
+  const addr    = (input.address || "").trim() || input.city.trim();
+  const city    = input.cityId || input.city.trim(); // abbr preferred; fall back to city name
+
+  const rawName   = input.productName || "Produit";
+  const cleanName = sanitizeArabicText(rawName);
+  if (rawName.length !== cleanName.length) {
+    console.log(`[VITIPS-SANITIZE] Order ${input.orderNumber} — nettoyage a retiré ${rawName.length - cleanName.length} caractère(s) invisible(s) du nom produit`);
+    console.log(`[VITIPS-SANITIZE] Avant (${rawName.length} car.):`, JSON.stringify(rawName));
+    console.log(`[VITIPS-SANITIZE] Après (${cleanName.length} car.):`, JSON.stringify(cleanName));
+  }
+
+  const payload = {
+    fullname:     sanitizeArabicText(input.customerName),
+    phone,
+    city,
+    address:      sanitizeArabicText(addr),
+    price:        priceDH,
+    product:      cleanName || "Produit",
+    qty:          String(input.quantity ?? 1),
+    note:         input.note || "",
+    exchange:     0,
+    // TEST TEMPORAIRE étape 4 — forcer à 0 pour isoler si from_stock/openpackage
+    // dynamiques sont la cause de "produit invalide". À retirer après confirmation.
+    openpackage:  0,   // était: input.canOpen ? 1 : 0
+    from_stock:   0,   // était: input.isStock ? 1 : 0
+    try_product:  0,
+    // TEST TEMPORAIRE internal_id — également actif (étape précédente).
+    internal_id:  `TEST-${Date.now()}`,
+  };
+  console.log(`[VITIPS-TEST] Order ${input.orderNumber} — openpackage=0 from_stock=0 forced (step4 test), internal_id="${payload.internal_id}"`);
+  console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — payload: ${JSON.stringify(payload)}`);
+  return payload;
+}
+
 /** Dispatch to the correct builder based on the carrier. */
 function buildPayload(input: CarrierShipInput, providerKey: string, _apiId?: string): Record<string, unknown> {
-  if (providerKey === "digylog") return buildDigylogPayload(input);
-  if (providerKey === "ameex")   return buildAmeexPayload(input);
+  if (providerKey === "digylog")       return buildDigylogPayload(input);
+  if (providerKey === "ameex")         return buildAmeexPayload(input);
+  if (providerKey === "vitipsexpress") return buildVitipsPayload(input);
   return buildGenericPayload(input);
 }
 
@@ -611,12 +726,30 @@ function extractTracking(body: any): string | undefined {
   // For non-Digylog carriers, `id` is also excluded — it's typically the
   // carrier's internal DB id, not the customer-facing tracking code.
   const t =
+    body.code_shippment         ||   // Vitipsexpress API typo field
+    body.code_shipment          ||
     body.tracking_number        ||
     body.trackingNumber         ||
     body.barcode                ||
     body.tracking               ||
     body.code_suivi             ||
     body.numero_suivi           ||
+    // ── Ameex confirmed shape: { login:"success", api:{ type:"success",
+    //    data:{ id:8998107, code:"ATQ0726B23187MR7018998", c_1, c_2 } } }
+    // `api.data.code` is the REAL Ameex parcel barcode returned at ship time.
+    body.api?.data?.code        ||
+    body.api?.data?.tracking    ||
+    body.api?.data?.barcode     ||
+    // Ameex ship-response fields — Ameex returns their parcel code under
+    // one of these; we try all of them since the field name varies by
+    // API version. order_id here is Ameex's OWN parcel code (e.g. CAS466…),
+    // not our internal DB id.
+    body.order_id               ||
+    body.parcel_id              ||
+    body.colis_id               ||
+    body.parcel?.order_id       ||
+    body.colis?.code            ||
+    body.data?.order_id         ||
     body.data?.tracking_number  ||
     body.data?.barcode          ||
     body.data?.tracking         ||
@@ -625,7 +758,7 @@ function extractTracking(body: any): string | undefined {
     body.result?.barcode        ||
     body.result?.tracking       ||
     // Nested data array (some carriers)
-    (Array.isArray(body.data) && (body.data[0]?.barcode || body.data[0]?.tracking)) ||
+    (Array.isArray(body.data) && (body.data[0]?.barcode || body.data[0]?.tracking || body.data[0]?.order_id)) ||
     undefined;
 
   if (t) {
@@ -653,8 +786,10 @@ function extractLabelUrl(body: any): string | undefined {
  */
 function extractCarrierErrorMsg(body: any): string | null {
   if (!body) return null;
-  if (typeof body === "string") return body.slice(0, 400);
-  if (typeof body !== "object") return String(body).slice(0, 400);
+  // No truncation — carrier messages (especially city-validation errors from Vitips)
+  // can be long and must be shown in full to the user and in logs.
+  if (typeof body === "string") return body;
+  if (typeof body !== "object") return String(body);
 
   const msg =
     body.message          ||
@@ -670,8 +805,8 @@ function extractCarrierErrorMsg(body: any): string | null {
     null;
 
   if (!msg) return null;
-  if (typeof msg === "object") return JSON.stringify(msg).slice(0, 400);
-  return String(msg).slice(0, 400);
+  if (typeof msg === "object") return JSON.stringify(msg);
+  return String(msg);
 }
 
 /**
@@ -774,12 +909,72 @@ function preValidate(input: CarrierShipInput, tag: string): string | null {
     return "⚠️ المدينة غير محددة — لم يتم الإرسال.";
   }
 
-  if (input.totalPrice <= 0) {
-    console.error(`${tag} PRE-VALIDATION ❌ Price is 0 or negative: ${input.totalPrice}`);
-    return "⚠️ السعر صفر أو غير محدد — يرجى التحقق من سعر الطلب.";
+  if (input.totalPrice < 0) {
+    console.error(`${tag} PRE-VALIDATION ❌ Price is negative: ${input.totalPrice}`);
+    return "⚠️ السعر غير صحيح.";
   }
+  // 0-price orders are allowed — buildVitipsPayload will send 1 DH as minimum
 
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ozon Express helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function extractOzonTracking(data: any): string | null {
+  if (!data || typeof data !== 'object') return null;
+
+  const ap = data?.['ADD-PARCEL'] || data?.add_parcel;
+
+  const candidates = [
+    // ADD-PARCEL shape (the real Ozon response envelope)
+    ap?.['TRACKING-NUMBER'],
+    ap?.tracking_number,
+    ap?.PARCEL?.['TRACKING-NUMBER'],
+    ap?.PARCEL?.tracking_number,
+    // Flat shapes
+    data['tracking-number'],
+    data.tracking_number,
+    data.trackingNumber,
+    data?.PARCEL?.['TRACKING-NUMBER'],
+    data?.PARCEL?.['tracking-number'],
+    data?.PARCEL?.tracking_number,
+    data?.DELIVERY?.['TRACKING-NUMBER'],
+    data?.DELIVERY?.['tracking-number'],
+    data?.RESULT?.['TRACKING-NUMBER'],
+    data?.data?.['tracking-number'],
+    data?.data?.tracking_number,
+    data?.data?.PARCEL?.['TRACKING-NUMBER'],
+    data?.parcel?.tracking_number,
+    data?.parcel?.['tracking-number'],
+    data?.parcel?.['TRACKING-NUMBER'],
+  ];
+  for (const v of candidates) {
+    const s = v == null ? '' : String(v).trim();
+    // Must look like a tracking number (alphanum+dashes, 6+ chars, no spaces)
+    if (s && /^[A-Z0-9][A-Z0-9\-_]{5,}$/i.test(s) && !/\s/.test(s)) return s;
+  }
+
+  // Last-resort: recursive key search for anything matching /tracking[-_]?number|tracking[-_]?code/i
+  const stack: any[] = [data];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== 'object') continue;
+    for (const [k, v] of Object.entries(cur)) {
+      if (/tracking[-_]?number|tracking[-_]?code/i.test(k) && v && typeof v !== 'object') {
+        const s = String(v).trim();
+        if (s) return s;
+      }
+      if (v && typeof v === 'object') stack.push(v);
+    }
+  }
+  return null;
+}
+
+function isOzonValidationOnly(data: any): boolean {
+  const msg = data?.CHECK_API?.MESSAGE || data?.check_api?.message || data?.CHECK_API?.message;
+  return !!msg && /valide/i.test(String(msg));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -872,6 +1067,9 @@ export async function shipOrderToCarrier(
     const cleanKey = (k: string) => k.replace(/<[^>]*>/g, "").trim();
     if (apiKey)    headers["C-Api-Key"] = cleanKey(apiKey);
     if (apiSecret) headers["C-Api-Id"]  = cleanKey(apiSecret);
+  } else if (providerKey === "vitipsexpress") {
+    // Vitipsexpress uses "api-token" header (not Bearer)
+    if (apiKey) headers["api-token"] = apiKey;
   } else {
     if (apiKey) {
       headers["Authorization"] = `Bearer ${apiKey}`;
@@ -1053,10 +1251,45 @@ export async function shipOrderToCarrier(
     fd.append('parcel-city',     String(cityId));
     fd.append('parcel-address',  input.address || input.city || '');
     fd.append('parcel-price',    String(priceDH));
-    fd.append('parcel-stock',    '1');                                   // 1 = stock, 0 = pickup
+    // parcel-stock: "0" = Pickup/Ramassage (default, recommended for COD/dropshipping)
+    //              "1" = Stock chez Ozon (requires SKUs pre-registered in Ozon portal)
+    const parcelStockMode = String(ozonSettings.ozonParcelStock ?? '0').trim() === '1' ? '1' : '0';
+    fd.append('parcel-stock', parcelStockMode);
     fd.append('parcel-note',     input.note || '');
     fd.append('parcel-nature',   input.productName || 'Produit');
     if (input.orderNumber) fd.append('tracking-number', `TG-${input.orderNumber}`);
+
+    // ── Products field: required only in stock mode (parcel-stock=1) ──
+    // In pickup mode Ozon ignores the field — omitting it avoids the
+    // "Products data required for stock parcels" rejection.
+    if (parcelStockMode === '1') {
+      let rawItems: Array<{ sku: string | null; quantity: number }> = [];
+      try {
+        rawItems = await db
+          .select({ sku: orderItems.sku, quantity: orderItems.quantity })
+          .from(orderItems)
+          .where(eq(orderItems.orderId, input.orderId));
+      } catch (itemErr: any) {
+        console.warn(`[OZON-SHIP][#${input.orderNumber}] Could not fetch order items: ${itemErr.message}`);
+      }
+
+      const productsArr: Array<{ ref: string; qnty: number }> = [];
+      for (const it of rawItems) {
+        const sku = String(it.sku || '').trim();
+        if (!sku) continue; // Stock mode strictly needs pre-registered SKUs
+        const qnty = Math.max(1, parseInt(String(it.quantity ?? 1), 10) || 1);
+        productsArr.push({ ref: sku, qnty });
+      }
+      if (productsArr.length === 0) {
+        const errMsg = `Ozon Express (mode Stock): aucun SKU valide trouvé pour cette commande. Enregistrez les produits dans votre portail Ozon Express ou passez en mode Pickup dans les paramètres du compte.`;
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ ${errMsg}`);
+        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
+      }
+      fd.append('products', JSON.stringify(productsArr));
+      console.log(`[OZON-SHIP][#${input.orderNumber}] products payload (stock mode): ${JSON.stringify(productsArr)}`);
+    } else {
+      console.log(`[OZON-SHIP][#${input.orderNumber}] pickup mode — products field omitted`);
+    }
 
     const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey.trim())}/add-parcel`;
     console.log(`[OZON-SEND] order=${input.orderNumber} url=https://api.ozonexpress.ma/customers/${customerId}/***/add-parcel city=${cityId} price=${priceDH}`);
@@ -1068,44 +1301,69 @@ export async function shipOrderToCarrier(
         validateStatus: () => true,
       });
       const ozonData: any = ozonResp.data;
-      console.log(`[OZON-RESP] HTTP ${ozonResp.status}: ${JSON.stringify(ozonData).slice(0, 500)}`);
+
+      // ── DIAGNOSTIC: log full response so we can see the real shape ──
+      console.log(`[OZON-SHIP][#${input.orderNumber}] HTTP ${ozonResp.status}`);
+      console.log(`[OZON-SHIP][#${input.orderNumber}] Response body (first 1000 chars): ${JSON.stringify(ozonData).slice(0, 1000)}`);
+
       if (ozonResp.status >= 400) {
-        const msg = ozonData?.message || ozonData?.error || (typeof ozonData === 'string' ? ozonData : '') || `HTTP ${ozonResp.status}`;
-        console.error(`[OZON][#${input.orderNumber}] ❌ ${msg}`);
+        const msg = ozonData?.message || ozonData?.error || ozonData?.MESSAGE || (typeof ozonData === 'string' ? ozonData : '') || `HTTP ${ozonResp.status}`;
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ HTTP error: ${msg}`);
         return { success: false, error: `Ozon Express: ${msg}`, carrierMessage: msg, httpStatus: ozonResp.status, rawResponse: ozonData };
       }
 
-      // Ozon may signal a logical failure inside a 200 body — guard for it.
+      // ── Guard: validation-only response means NO parcel was created ──
+      // Shape: { "CHECK_API": { "RESULT": "SUCCESS", "MESSAGE": "Valide API Key" } }
+      if (isOzonValidationOnly(ozonData)) {
+        const errMsg = `Ozon Express: la réponse contient seulement une validation API (Valide API Key), aucun colis créé. Vérifiez les paramètres d'envoi (Customer ID, City ID, format form-data).`;
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ Validation-only response. Full data: ${JSON.stringify(ozonData)}`);
+        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
+      }
+
+      // ── Guard: ADD-PARCEL envelope (real Ozon response shape) ──
+      // Shape: { "ADD-PARCEL": { "CUSTOMER": { "RESULT": "SUCCESS" }, "RESULT": "ERROR"|"SUCCESS", "MESSAGE": "..." } }
+      const addParcel = ozonData?.['ADD-PARCEL'] || ozonData?.add_parcel;
+      if (addParcel && typeof addParcel === 'object') {
+        const customerResult = String(addParcel?.CUSTOMER?.RESULT || addParcel?.customer?.result || '');
+        const parcelResult   = String(addParcel?.RESULT   || addParcel?.result   || '');
+        const parcelMessage  = String(addParcel?.MESSAGE  || addParcel?.message  || '');
+
+        if (/error/i.test(customerResult)) {
+          const errMsg = `Ozon Express (Customer): ${addParcel?.CUSTOMER?.MESSAGE || customerResult}`;
+          console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ ${errMsg}`);
+          return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
+        }
+        if (/error/i.test(parcelResult)) {
+          const errMsg = `Ozon Express: ${parcelMessage || parcelResult}`;
+          console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ ${errMsg}`);
+          return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
+        }
+        // ADD-PARCEL.RESULT === "SUCCESS" — fall through to tracking extraction
+      }
+
+      // ── Guard: logical failure embedded in a 200 body ──
       const okFlag =
         ozonData?.success !== false &&
         String(ozonData?.STATUS ?? ozonData?.status ?? '').toLowerCase() !== 'error' &&
         ozonData?.error == null;
       if (!okFlag) {
         const reason = ozonData?.message || ozonData?.error || ozonData?.MESSAGE || "Échec à l'import côté Ozon Express";
-        console.error(`[OZON][#${input.orderNumber}] ❌ ${reason}`);
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ Logical failure: ${reason}`);
         return { success: false, error: `Ozon Express: ${reason}`, carrierMessage: reason, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
       }
 
-      // Extract the tracking number from the known response shapes.
-      const trackingNumber =
-        ozonData?.['tracking-number'] ||
-        ozonData?.tracking_number ||
-        ozonData?.trackingNumber ||
-        ozonData?.data?.['tracking-number'] ||
-        ozonData?.data?.tracking_number ||
-        ozonData?.parcel?.tracking_number ||
-        ozonData?.parcel?.['tracking-number'] ||
-        null;
+      // ── Extract tracking number (handles uppercase keys + recursive search) ──
+      const trackingNumber = extractOzonTracking(ozonData);
 
       if (!trackingNumber) {
-        // Ozon accepted the shipment but returned no tracking number.
-        // Do NOT mark the order as failed — surface a warning instead.
-        const warn = `Expédition acceptée par Ozon Express mais aucun numéro de suivi retourné. Vérifiez le portail Ozon.`;
-        console.warn(`[OZON][#${input.orderNumber}] ⚠️ ${warn}. Raw: ${JSON.stringify(ozonData)}`);
-        return { success: true, trackingNumber: undefined, warning: warn, httpStatus: ozonResp.status, rawResponse: ozonData };
+        // CRITICAL: Ozon returned HTTP 200 but no tracking number → parcel was NOT created.
+        // Throw so the caller never marks the order as shipped.
+        const errMsg = `Ozon Express a répondu HTTP 200 mais aucun numéro de suivi n'a été retourné. Le colis n'a probablement pas été créé — vérifiez le portail Ozon. Réponse: ${JSON.stringify(ozonData).slice(0, 300)}`;
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ No tracking number in response. Full data: ${JSON.stringify(ozonData)}`);
+        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
       }
 
-      console.log(`[OZON][#${input.orderNumber}] ✅ SUCCESS! tracking=${trackingNumber}`);
+      console.log(`[OZON-SHIP][#${input.orderNumber}] ✅ tracking=${trackingNumber}`);
       return { success: true, trackingNumber: String(trackingNumber), httpStatus: ozonResp.status, rawResponse: ozonData };
     } catch (ozonErr: any) {
       const msg = ozonErr?.message || "Erreur réseau Ozon Express";
@@ -1259,11 +1517,15 @@ export async function shipOrderToCarrier(
         permanent:      !!ameexApiMsg,
       };
     }
-    // Placeholder embeds TJG-{orderNumber} so the webhook can correlate before
-    // the real tracking number arrives.
+    // Use the real Ameex parcel code if extractTracking found it (api.data.code etc.).
+    // Only fall back to AMEEX-PENDING-... when the response genuinely didn't include a code.
     const finalTracking = trackingNumber || `AMEEX-PENDING-TJG-${input.orderNumber}`;
     const labelUrl = `/api/labels/${finalTracking}.pdf`;
-    console.log(`${tag} ✅ Ameex SUCCESS! Tracking: ${finalTracking} (webhook will resolve real number later)`);
+    if (trackingNumber) {
+      console.log(`${tag} ✅ Ameex SUCCESS! Real code captured: ${finalTracking}`);
+    } else {
+      console.log(`${tag} ✅ Ameex SUCCESS (no code in response — placeholder stored: ${finalTracking}). Use /api/shipping/ameex/backfill to resolve from logged responses, or /api/shipping/ameex/reconcile to match via parcel-list API.`);
+    }
     return {
       success: true,
       trackingNumber: finalTracking,
@@ -1274,6 +1536,123 @@ export async function shipOrderToCarrier(
       externalRef: `TJG-${input.orderNumber}`,
     };
   }
+
+  // ── Vitips: auto-retry with city-format cascade ─────────────────────────────
+  // Vitips is very picky about city spelling. Instead of failing immediately,
+  // try several plausible representations until one succeeds or we run out.
+  // On success with a non-primary format, cache the working spelling back to
+  // vitipsCities.externalId so future orders skip the retry entirely.
+  if (providerKey === "vitipsexpress") {
+    const rawCity     = input.city;
+    const primaryCity = String((payload as any).city || rawCity); // resolved by buildVitipsPayload
+
+    const seen            = new Set<string>();
+    const cityCandidates: string[] = [];
+    const addCity = (v?: string) => {
+      const t = (v || "").trim();
+      if (t && !seen.has(t)) { seen.add(t); cityCandidates.push(t); }
+    };
+    addCity(primaryCity);                                                                    // synced abbr (first priority)
+    addCity(rawCity);                                                                        // raw order city
+    addCity(rawCity.toUpperCase());                                                          // MAJUSCULES
+    addCity(rawCity.charAt(0).toUpperCase() + rawCity.slice(1).toLowerCase());              // Première lettre
+    addCity(rawCity.replace(/-/g, " "));                                                    // tirets → espaces
+    addCity(rawCity.replace(/\s+/g, "-"));                                                  // espaces → tirets
+    if (input.cityId) {
+      addCity(input.cityId);
+      addCity(input.cityId.toUpperCase());
+      addCity(input.cityId.charAt(0).toUpperCase() + input.cityId.slice(1).toLowerCase());
+    }
+
+    let vitipsHttp = 0;
+    let vitipsBody: any = null;
+    let finalCity  = cityCandidates[0] ?? rawCity;
+
+    for (let ci = 0; ci < cityCandidates.length; ci++) {
+      const cityCandidate = cityCandidates[ci];
+      const tryPayload    = { ...payload, city: cityCandidate };
+      console.log(`[VITIPS-CITY-RETRY] Order ${input.orderNumber} — trying city="${cityCandidate}" (${ci + 1}/${cityCandidates.length})`);
+
+      let resp: any;
+      try {
+        resp = await axios.post(apiUrl, tryPayload, {
+          headers,
+          timeout:     TIMEOUT_MS,
+          httpsAgent:  SSL_AGENT,
+          validateStatus: () => true,
+        });
+      } catch (netErr: any) {
+        console.error(`[VITIPS-CITY-RETRY] Network error on city="${cityCandidate}": ${netErr?.message}`);
+        throw netErr; // bubble up to outer catch
+      }
+
+      vitipsHttp  = resp.status;
+      vitipsBody  = resp.data;
+      finalCity   = cityCandidate;
+
+      const body      = resp.data || {};
+      const isVitipsOk =
+        body?.code    === "ok"      ||
+        body?.status  === "ok"      ||
+        body?.success === true      ||
+        !!extractTracking(body);
+
+      if (isVitipsOk) {
+        console.log(`[VITIPS-CITY-RETRY] ✅ Order ${input.orderNumber} — accepted with city="${cityCandidate}"`);
+        // Cache the working format so the NEXT order to this city goes straight through
+        if (cityCandidate !== cityCandidates[0]) {
+          try {
+            await db.update(vitipsCities)
+              .set({ externalId: cityCandidate })
+              .where(and(
+                eq(vitipsCities.storeId,    input.storeId),
+                eq(vitipsCities.externalId, cityCandidates[0]),
+              ));
+            console.log(`[VITIPS-CITY-CACHE] storeId=${input.storeId} — externalId updated "${cityCandidates[0]}" → "${cityCandidate}"`);
+          } catch (dbErr: any) {
+            console.warn(`[VITIPS-CITY-CACHE] DB update skipped (non-fatal): ${dbErr?.message}`);
+          }
+        }
+        break;
+      }
+
+      const errMsg       = String(body?.error || body?.message || "").toLowerCase();
+      const isCityRelated = errMsg.includes("ville") || errMsg.includes("city") || errMsg.includes("wilaya") || errMsg.length === 0;
+      if (!isCityRelated) {
+        console.log(`[VITIPS-CITY-RETRY] ⛔ Order ${input.orderNumber} — non-city error ("${body?.error || body?.message}") — halting retry`);
+        break; // no point trying other city formats
+      }
+      if (ci < cityCandidates.length - 1) {
+        console.log(`[VITIPS-CITY-RETRY] ❌ city="${cityCandidate}" rejected: "${body?.error || body?.message}" — trying next...`);
+      } else {
+        console.log(`[VITIPS-CITY-RETRY] ❌ All ${cityCandidates.length} city formats exhausted for "${rawCity}" — last error: "${body?.error || body?.message}"`);
+      }
+    }
+
+    console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — finalCity="${finalCity}" HTTP ${vitipsHttp} — response: ${JSON.stringify(vitipsBody)}`);
+
+    // ── Vitips response processing ───────────────────────────────────────────
+    if (vitipsHttp >= 400) {
+      const errMsg = extractCarrierErrorMsg(vitipsBody) || `HTTP ${vitipsHttp}`;
+      console.error(`${tag} ❌ Vitips HTTP ${vitipsHttp}: ${errMsg}`);
+      return { success: false, httpStatus: vitipsHttp, rawResponse: vitipsBody, error: errMsg, carrierMessage: errMsg };
+    }
+    const vitipsLogicalErr = detectLogicalError(vitipsBody);
+    if (vitipsLogicalErr) {
+      console.error(`${tag} ❌ Vitips logical error: ${vitipsLogicalErr}`);
+      return { success: false, httpStatus: vitipsHttp, rawResponse: vitipsBody, error: vitipsLogicalErr, carrierMessage: vitipsLogicalErr };
+    }
+    const vitipsTracking = extractTracking(vitipsBody);
+    if (!vitipsTracking) {
+      const noTrack = `Vitipsexpress n'a pas retourné de numéro de suivi. La commande reste Confirmée — vérifiez le portail Vitips.`;
+      console.error(`${tag} ❌ ${noTrack}`);
+      return { success: false, error: noTrack, carrierMessage: noTrack, httpStatus: vitipsHttp, rawResponse: vitipsBody };
+    }
+    const vitipsLabel = extractLabelUrl(vitipsBody) || `/api/labels/${vitipsTracking}.pdf`;
+    console.log(`${tag} ✅ Vitips SUCCESS! tracking=${vitipsTracking}`);
+    return { success: true, trackingNumber: vitipsTracking, labelUrl: vitipsLabel, httpStatus: vitipsHttp, rawResponse: vitipsBody };
+  }
+  // ── END Vitips city-retry block ──────────────────────────────────────────────
 
   // Inner helper — runs one attempt and throws on network error (non-Ameex carriers)
   const timeoutMs = TIMEOUT_MS;
@@ -1368,6 +1747,8 @@ export async function shipOrderToCarrier(
       // Full pretty-printed body so we can see exactly what Digylog returns
       console.log(`[DIGYLOG-RESP]: HTTP ${httpStatus}`);
       console.log(`[DIGYLOG-RESP-FULL]: ${JSON.stringify(rawBody, null, 2)}`);
+    } else if (providerKey === "vitipsexpress") {
+      console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — HTTP ${httpStatus} — response: ${JSON.stringify(rawBody)}`);
     } else {
       console.log(`${tag} Body: ${JSON.stringify(rawBody)}`);
     }
@@ -1723,6 +2104,7 @@ export async function trackDigylogShipment(
           rawLow === 'delivered' || rawLow.includes('distribu')
         ) { mappedStatus = 'delivered'; }
         else if (rawLow.includes('livr') || rawLow.includes('cours de livr')) { mappedStatus = 'in_progress'; }
+        else if (rawLow.includes('supprim')) { mappedStatus = 'Supprimée'; }
         else if (rawLow.includes('retour') && !rawLow.includes('en cours')) { mappedStatus = 'retourné'; }
         else if (rawLow.includes('refus') || rawLow.includes('annul')) { mappedStatus = 'refused'; }
         else if (rawLow.includes('injoignable') || rawLow.includes('absent')) { mappedStatus = 'Injoignable'; }
@@ -1783,6 +2165,7 @@ export async function trackDigylogShipment(
           rawLow === 'delivered' || rawLow.includes('distribu')
         ) { mappedStatus = 'delivered'; }
         else if (rawLow.includes('livr') || rawLow.includes('cours de livr')) { mappedStatus = 'in_progress'; }
+        else if (rawLow.includes('supprim')) { mappedStatus = 'Supprimée'; }
         else if (rawLow.includes('retour') && !rawLow.includes('en cours')) { mappedStatus = 'retourné'; }
         else if (rawLow.includes('refus')) { mappedStatus = 'refused'; }
         else if (rawLow.includes('ramass') || rawLow.includes('attente')) { mappedStatus = 'Attente De Ramassage'; }
@@ -1951,6 +2334,7 @@ export async function fetchOrderDetails(
   customerCity?: string;
   totalPrice?: number;
   shippingCost?: number;
+  productName?: string;
   driverName?: string;
   driverPhone?: string;
   rawPayload?: any;
@@ -1995,6 +2379,7 @@ export async function fetchOrderDetails(
       customerCity:    b.city        || b.ville        || '',
       totalPrice:      priceCentimes(b.price ?? b.amount ?? b.cod),
       shippingCost:    priceCentimes(b.deliveryCost ?? b.frais_livraison ?? b.port),
+      productName:     (b.product || b.produit || b.article || b.designation || b.product_name || '').toString().trim() || undefined,
       driverName:      tracked.driverName,
       driverPhone:     tracked.driverPhone,
       rawPayload:      b,
@@ -2024,6 +2409,7 @@ export async function listOrdersFromCarrier(
   customerCity: string;
   totalPrice: number;
   shippingCost: number;
+  productName?: string;
   rawStatus: string;
   status: string;
 }>> {
@@ -2071,6 +2457,7 @@ export async function listOrdersFromCarrier(
           customerCity:    String(o.city    || o.ville       || ''),
           totalPrice:      priceCentimes(o.price ?? o.amount ?? o.cod),
           shippingCost:    priceCentimes(o.deliveryCost ?? o.frais_livraison ?? o.port),
+          productName:     (o.product || o.produit || o.article || o.designation || o.product_name || '').toString().trim() || undefined,
           rawStatus:       String(o.status || o.etat || ''),
           status:          mapDigylogStatus(String(o.status || o.etat || '')),
         };
@@ -2090,7 +2477,7 @@ export async function trackByCarrier(
   provider: string,
   trackingNumber: string,
   account: any
-): Promise<{ status: string | null; rawStatus: string | null; error?: string }> {
+): Promise<{ status: string | null; rawStatus: string | null; fee?: number | null; error?: string }> {
   const p = (provider || '').toLowerCase().trim();
   const apiKey  = (account as any)?.apiKey;
   const apiUrl  = (account as any)?.apiUrl || undefined;
@@ -2109,5 +2496,647 @@ export async function trackByCarrier(
     return { status: r.status, rawStatus: r.rawStatus, error: r.error };
   }
 
+  if (p === 'ozonexpress') {
+    const r = await trackOzonExpressShipment(trackingNumber, apiKey, account);
+    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+  }
+
+  if (p === 'expresscoursier') {
+    const r = await trackExpressCoursierShipment(trackingNumber, apiKey, account);
+    return { status: r.status, rawStatus: r.rawStatus, fee: r.fee, error: r.error };
+  }
+
+  if (p === 'vitipsexpress') {
+    const r = await trackVitipsShipment(trackingNumber, apiKey);
+    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+  }
+
   return { status: null, rawStatus: null, error: `Carrier "${provider}" sync not implemented yet` };
+}
+
+// ─── Ozon Express tracking ────────────────────────────────────────────────────
+
+// ── Status CODES (sent by webhook + possibly by tracking endpoint) ────────────
+// Unknown/financial codes intentionally absent — they return null (keep current status).
+export const OZON_STATUS_MAP: Record<string, string> = {
+  DELIVERED:             "delivered",
+  PAID:                  "delivered",
+  RETURNED:              "Retour Recu",
+  REFUSE:                "refused",
+  CANCELED:              "annule",
+  NEW_PARCEL:            "Attente De Ramassage",
+  WAITING_PICKUP:        "Attente De Ramassage",
+  PRE_PICKED_UP:         "Attente De Ramassage",
+  PICKED_UP:             "transit",
+  SENT:                  "transit",
+  SENT_TO_AGENCY:        "transit",
+  RECEIVED:              "transit",
+  RECEIVED_IN_AGENCY:    "transit",
+  DISTRIBUTION:          "transit",
+  IN_PROGRESS:           "transit",
+  DELAYED:               "transit",
+  VLMN:                  "transit",
+  PROGRAMED:             "transit",
+  NOANSWER:              "unreachable",
+  NOANSWER_DAY_2:        "unreachable",
+  NOANSWER_DAY_3:        "unreachable",
+  DEPLA:                 "unreachable",
+  DEPLA_DAY_2:           "unreachable",
+  DEPLA_DAY_3:           "unreachable",
+  POSTPONED:             "confirme_reporte",
+  RPO:                   "confirme_reporte",
+  // Intentionally unmapped (financial/edge — never overwrite):
+  // INVOICED, NOT_PAID, REMBOURSED, EN, INT, SANS_ADRE, OUT_OF_AREA, SCTR, NCVRT, BAM_SEIZED, DAMAGED
+};
+
+// ── French STATUS NAMES (returned by the tracking/polling endpoint) ───────────
+export const OZON_NAME_MAP: Record<string, string> = {
+  "paye":                              "delivered",
+  "livre":                             "delivered",
+  "retourne":                          "Retour Recu",
+  "refuse":                            "refused",
+  "annule":                            "annule",
+  "nouveau colis":                     "Attente De Ramassage",
+  "attente de ramassage":              "Attente De Ramassage",
+  "pre ramasse":                       "Attente De Ramassage",
+  "ramasse":                           "transit",
+  "expedie":                           "transit",
+  "recu":                              "transit",
+  "mise en distribution":              "transit",
+  "en cours":                          "transit",
+  "programme":                         "transit",
+  "retarde":                           "transit",
+  "livraison sous conditions":         "transit",
+  "envoye a l'agence":                 "transit",
+  "recu en agence de livraison":       "transit",
+  "reporte":                           "confirme_reporte",
+  "reporte aujourd hui":               "confirme_reporte",
+  "pas de reponse + sms":              "unreachable",
+  "pas reponse +deplacement":          "unreachable",
+  "pas de reponse j+2":                "unreachable",
+  "pas de reponse j+3":                "unreachable",
+  "pas reponse + deplacement j+2":     "unreachable",
+  "pas reponse + deplacement j+3":     "unreachable",
+  // Intentionally unmapped (null): facture, hors-zone, erreur numero, client interesse,
+  // non paye, sans adresse, rembourse, saisi par barid al-maghrib, endommage, hors secteur
+};
+
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+export function mapOzonStatus(raw: string): string | null {
+  if (!raw) return null;
+  // Try CODE lookup first (webhook path)
+  const code = raw.toString().trim().toUpperCase().replace(/[\s-]+/g, "_");
+  if (OZON_STATUS_MAP[code]) return OZON_STATUS_MAP[code];
+  // Fall back to French name lookup (polling/tracking path)
+  const name = stripAccents(raw.toString().toLowerCase().trim());
+  return OZON_NAME_MAP[name] ?? null; // unknown → null = keep current status, just log
+}
+
+export async function trackOzonExpressShipment(
+  trackingNumber: string,
+  apiKey: string,
+  account: any
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; error?: string }> {
+  const customerId =
+    account?.settings?.ozonExpressCustomerId ??
+    account?.ozonSettings?.ozonExpressCustomerId ??
+    (account as any)?.customerId;
+  const base = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}`;
+
+  // Try the tracking endpoint first, then fall back to parcel-info
+  const tryEndpoints = [
+    `${base}/parcels/tracking`,
+    `${base}/tracking`,
+    `${base}/parcel-info`,
+  ];
+
+  const { default: FormData } = await import('form-data');
+  let body: any = null;
+  let usedUrl = "";
+
+  for (const url of tryEndpoints) {
+    try {
+      const fd = new FormData();
+      fd.append('tracking-number', trackingNumber);
+      const r = await axios.post(url, fd, {
+        headers: { ...fd.getHeaders() },
+        timeout: 15000,
+        validateStatus: () => true,
+      });
+      console.log(`[OZON-TRACK] ${trackingNumber} via ${url} HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+      if (r.status < 400 && r.data) { body = r.data; usedUrl = url; break; }
+    } catch (e: any) {
+      console.log(`[OZON-TRACK] ${trackingNumber} ${url} error: ${e?.message}`);
+    }
+  }
+
+  if (!body) {
+    return { status: null, rawStatus: null, rawResponse: null, error: "Ozon: no tracking response" };
+  }
+
+  // Extract status from the common Ozon tracking response shapes
+  const t = body['TRACKING'] || body['PARCEL-TRACKING'] || body['PARCEL-INFO'] || body;
+  const rawStatus =
+    t?.['LAST-TRANSITION']?.['STATUT'] ??
+    t?.['LAST-TRANSITION']?.['STATUS'] ??
+    (Array.isArray(t?.['TRANSITIONS']) && t['TRANSITIONS'].length
+      ? t['TRANSITIONS'][t['TRANSITIONS'].length - 1]?.['STATUT'] : null) ??
+    (Array.isArray(t?.['TRACKING']) && t['TRACKING'].length
+      ? t['TRACKING'][t['TRACKING'].length - 1]?.['STATUT'] : null) ??
+    t?.['STATUT'] ?? t?.['STATUS'] ?? t?.['INFOS']?.['STATUT'] ?? null;
+
+  return {
+    status: rawStatus ? mapOzonStatus(rawStatus) : null,
+    rawStatus,
+    rawResponse: body,
+    error: undefined,
+  };
+}
+
+// ─── Express Coursier tracking ────────────────────────────────────────────────
+
+export const EC_STATUS_MAP: Record<string, string> = {
+  // TODO: fill remaining real Express Coursier status labels → internal codes
+  // once API docs are confirmed. Confirmed so far from real webhook traffic:
+  //   "Livré" (2026-07-06, live "olivraison" webhook test) → delivered
+  "delivered":  "delivered",
+  "livre":      "delivered",
+  "livré":      "delivered",
+  "retour":     "refused",
+  "refuse":     "refused",
+  "refusé":     "refused",
+  "in_transit": "in_progress",
+};
+
+// ── EC official status table ──────────────────────────────────────────────────
+// Source: GET https://expresscoursier.ma/v1.0/statuses (public, no auth)
+// Verified live on 2026-07-10. {{city}} placeholders are stripped before display.
+export const EC_STATUS_NAMES: Record<string, string> = {
+  "0":  "Nouveau colis",
+  "1":  "En attente de ramassage",
+  "3":  "Livré au client",
+  "4":  "Retourné vers agence casa",
+  "5":  "le client ne répond pas",
+  "8":  "Reçu par erreur",
+  "9":  "Non reçu",
+  "10": "Hors zone",
+  "13": "Nouvelle info",
+  "14": "Téléphone Injoignable",
+  "15": "Ramassé",
+  "17": "Reporté",
+  "18": "Colis prêt pour le retour",
+  "19": "Retour reçu par agence",
+  "20": "Retour livré au client",
+  "21": "Retour en cours de la livraison",
+  "27": "Retour débarrasse",
+  "28": "Refusé",
+  "29": "Annulé",
+  "30": "Interessé",
+  "32": "Retour en stock",
+  "33": "Produit endommagé",
+  "34": "Recu sur agence",
+  "35": "en cours de livraison",
+  "36": "Demande retour",
+  "37": "reportée indéfiniment",
+  "38": "Toujours injoignable",
+  "39": "en cours de preparation",
+  "48": "Retour reçu par",
+  "49": "En Transport",
+  "50": "Retour prêt pour l'expedition",
+  "51": "Retour expidié",
+  "52": "Perdu",
+  "53": "Colis archivé",
+};
+
+// Live cache — refreshed by fetchEcStatusTable() at startup and before each Synchroniser run
+let _ecStatusNamesLive: Record<string, string> = { ...EC_STATUS_NAMES };
+
+/** Return the French label for an EC delivery_status ID.
+ *  Strips {{city}} placeholders left untemplated by EC. Falls back to hardcoded table. */
+export function getEcStatusName(id: string | number): string {
+  const key = String(id ?? '').trim();
+  const raw = _ecStatusNamesLive[key] ?? EC_STATUS_NAMES[key];
+  if (!raw) return `EC ${key}`;
+  return raw.replace(/\s*\{\{[^}]+\}\}/g, '').trim();
+}
+
+/** Fetch the official EC status table from the public /v1.0/statuses endpoint.
+ *  Updates the in-process live cache. Falls back silently on network error. */
+export async function fetchEcStatusTable(): Promise<Record<string, string>> {
+  try {
+    const r = await axios.get("https://expresscoursier.ma/v1.0/statuses", {
+      timeout: 10000,
+      validateStatus: () => true,
+    });
+    if (r.status === 200 && Array.isArray(r.data)) {
+      const fresh: Record<string, string> = {};
+      for (const item of r.data) {
+        if (item.id != null && item.name) {
+          fresh[String(item.id)] = String(item.name).replace(/\s*\{\{[^}]+\}\}/g, '').trim();
+        }
+      }
+      if (Object.keys(fresh).length > 0) {
+        _ecStatusNamesLive = fresh;
+        console.log(`[EC-STATUS-TABLE] Refreshed ${Object.keys(fresh).length} statuses from /v1.0/statuses`);
+        console.log('[EC-STATUS-TABLE]', JSON.stringify(fresh));
+        return fresh;
+      }
+    }
+    console.warn(`[EC-STATUS-TABLE] Unexpected response (HTTP ${r.status}) — using hardcoded fallback`);
+  } catch (e: any) {
+    console.warn(`[EC-STATUS-TABLE] Fetch failed: ${e?.message} — using hardcoded fallback`);
+  }
+  return { ...EC_STATUS_NAMES };
+}
+
+// ── EC numeric → internal status map ─────────────────────────────────────────
+// Official mapping from GET /v1.0/statuses + user confirmation on 2026-07-10.
+// Values must ALWAYS be valid entries in ORDER_STATUSES (status-badge.tsx).
+// Unknown/new codes → 'in_progress' (safe non-terminal fallback, never delivered/refused).
+export const EC_NUMERIC_STATUS_MAP: Record<string, string> = {
+  // ── Delivered ─────────────────────────────────────────────────────────────
+  "3":  "delivered",            // Livré au client
+  // ── Refused ───────────────────────────────────────────────────────────────
+  "28": "refused",              // Refusé
+  "29": "refused",              // Annulé
+  // ── Retourné (all return stages) ──────────────────────────────────────────
+  "4":  "retourné",             // Retourné vers agence casa
+  "18": "retourné",             // Colis prêt pour le retour
+  "19": "retourné",             // Retour reçu par agence
+  "20": "retourné",             // Retour livré au client
+  "21": "retourné",             // Retour en cours de la livraison
+  "27": "retourné",             // Retour débarrasse
+  "32": "retourné",             // Retour en stock
+  "36": "retourné",             // Demande retour
+  "48": "retourné",             // Retour reçu par (city)
+  "50": "retourné",             // Retour prêt pour l'expedition
+  "51": "retourné",             // Retour expidié
+  "52": "retourné",             // Perdu
+  // ── Attente de ramassage ───────────────────────────────────────────────────
+  "1":  "Attente De Ramassage", // En attente de ramassage
+  // ── In progress (non-terminal transit stages) ─────────────────────────────
+  "0":  "in_progress",          // Nouveau colis
+  "5":  "in_progress",          // le client ne répond pas
+  "8":  "in_progress",          // Reçu par erreur
+  "9":  "in_progress",          // Non reçu
+  "10": "in_progress",          // Hors zone
+  "13": "in_progress",          // Nouvelle info
+  "14": "in_progress",          // Téléphone Injoignable
+  "15": "in_progress",          // Ramassé (city)
+  "17": "in_progress",          // Reporté
+  "30": "in_progress",          // Interessé
+  "33": "in_progress",          // Produit endommagé
+  "34": "in_progress",          // Recu sur agence (city)
+  "35": "in_progress",          // en cours de livraison
+  "37": "in_progress",          // reportée indéfiniment
+  "38": "in_progress",          // Toujours injoignable
+  "39": "in_progress",          // en cours de preparation
+  "49": "in_progress",          // En Transport
+  "53": "in_progress",          // Colis archivé
+};
+
+/** Maps an EC numeric delivery_status code to an internal platform status.
+ *  Returns 'in_progress' for any unrecognised code — NEVER guesses delivered/refused. */
+export function mapEcNumericStatus(code: string | number): string {
+  const key = String(code ?? '').trim();
+  if (!key) return 'in_progress';
+  return EC_NUMERIC_STATUS_MAP[key] ?? 'in_progress';
+}
+
+/** Alias — identical to mapEcNumericStatus. */
+export const mapEcDeliveryStatus = mapEcNumericStatus;
+
+export function mapEcStatus(raw: string): string | null {
+  const normalized = (raw || '').toLowerCase().trim();
+  if (!normalized) return null;
+  // Text label lookup first (Livré, delivered, retour, etc.)
+  if (EC_STATUS_MAP[normalized] !== undefined) return EC_STATUS_MAP[normalized];
+  // Numeric code lookup — EC ChangeStatus events carry codes like "34", "35"
+  if (/^\d+$/.test(normalized)) {
+    return mapEcNumericStatus(normalized);
+  }
+  return null;
+}
+
+// Masks an API key for logging — keeps only the last 4 characters visible.
+function maskApiKey(apiKey: string): string {
+  const trimmed = (apiKey || '').trim();
+  if (trimmed.length <= 4) return '****';
+  return `****${trimmed.slice(-4)}`;
+}
+
+// Express Coursier has NO tracking pull endpoint — confirmed from official API docs.
+// All status updates come exclusively via the ChangeStatus webhook.
+// The old /v1.0/track/{apiKey}/{tracking} URL does not exist (confirmed 404).
+
+// ─── Express Coursier endpoint discovery probe (one-off diagnostic) ──────────
+// We don't have EC's tracking API docs and the assumed endpoint 404s on real
+// package_ids. This tries a curated list of plausible endpoint shapes for a
+// SINGLE tracking number and reports exactly what each one returned, so the
+// real endpoint can be identified by inspecting the JSON summary — no order
+// loop, no side effects (GET/POST probes only, nothing is written anywhere).
+export interface EcProbeAttempt {
+  method: "GET" | "POST";
+  urlTemplate: string;
+  maskedUrl: string;
+  status: number | null;
+  contentType: string | null;
+  bodyPreview: string;
+  looksLikeJson: boolean;
+  error?: string;
+}
+
+export async function probeExpressCoursierEndpoints(
+  trackingNumber: string,
+  apiKey: string,
+  storeId: number | string
+): Promise<EcProbeAttempt[]> {
+  const key = encodeURIComponent(apiKey.trim());
+  const tracking = encodeURIComponent(trackingNumber.trim());
+  const sid = encodeURIComponent(String(storeId));
+  const base = "https://expresscoursier.ma";
+  const masked = maskApiKey(apiKey);
+
+  const getCandidates: { path: string }[] = [
+    { path: `/v1.0/track/${key}/${tracking}` },
+    { path: `/v1.0/tracking/${key}/${tracking}` },
+    { path: `/v1.0/status/${key}/${tracking}` },
+    { path: `/v1.0/track/${key}/${sid}/${tracking}` },
+    { path: `/v1.0/parcel/${key}/${tracking}` },
+    { path: `/v1.0/parcels/${key}/${tracking}` },
+  ];
+  const postCandidates: { path: string; body: any }[] = [
+    { path: `/v1.0/track/${key}`, body: { tracking: trackingNumber } },
+    { path: `/v1.0/track/${key}`, body: { codes: [trackingNumber] } },
+    { path: `/v1.0/status/${key}`, body: { package_id: trackingNumber } },
+  ];
+
+  const attempts: EcProbeAttempt[] = [];
+
+  for (const { path } of getCandidates) {
+    const url = `${base}${path}`;
+    const maskedUrl = url.replace(key, masked);
+    try {
+      const r = await axios.get(url, { timeout: 8000, validateStatus: () => true });
+      const contentType = String(r.headers?.["content-type"] || "") || null;
+      const bodyStr = typeof r.data === "string" ? r.data : JSON.stringify(r.data);
+      attempts.push({
+        method: "GET",
+        urlTemplate: path.replace(key, "{apiKey}").replace(tracking, "{tracking}").replace(sid, "{storeId}"),
+        maskedUrl,
+        status: r.status,
+        contentType,
+        bodyPreview: bodyStr.slice(0, 200),
+        looksLikeJson: !!contentType?.includes("application/json") && r.status < 400,
+      });
+    } catch (e: any) {
+      attempts.push({
+        method: "GET",
+        urlTemplate: path.replace(key, "{apiKey}").replace(tracking, "{tracking}").replace(sid, "{storeId}"),
+        maskedUrl,
+        status: null,
+        contentType: null,
+        bodyPreview: "",
+        looksLikeJson: false,
+        error: e?.message || String(e),
+      });
+    }
+    console.log(`[EC-PROBE] GET ${maskedUrl} → ${attempts[attempts.length - 1].status ?? "ERR"} (${attempts[attempts.length - 1].contentType || "no content-type"})`);
+  }
+
+  for (const { path, body } of postCandidates) {
+    const url = `${base}${path}`;
+    const maskedUrl = url.replace(key, masked);
+    try {
+      const r = await axios.post(url, body, { timeout: 8000, validateStatus: () => true });
+      const contentType = String(r.headers?.["content-type"] || "") || null;
+      const bodyStr = typeof r.data === "string" ? r.data : JSON.stringify(r.data);
+      attempts.push({
+        method: "POST",
+        urlTemplate: `${path.replace(key, "{apiKey}")} body=${JSON.stringify(body).replace(trackingNumber, "{tracking}")}`,
+        maskedUrl,
+        status: r.status,
+        contentType,
+        bodyPreview: bodyStr.slice(0, 200),
+        looksLikeJson: !!contentType?.includes("application/json") && r.status < 400,
+      });
+    } catch (e: any) {
+      attempts.push({
+        method: "POST",
+        urlTemplate: `${path.replace(key, "{apiKey}")} body=${JSON.stringify(body).replace(trackingNumber, "{tracking}")}`,
+        maskedUrl,
+        status: null,
+        contentType: null,
+        bodyPreview: "",
+        looksLikeJson: false,
+        error: e?.message || String(e),
+      });
+    }
+    console.log(`[EC-PROBE] POST ${maskedUrl} → ${attempts[attempts.length - 1].status ?? "ERR"} (${attempts[attempts.length - 1].contentType || "no content-type"})`);
+  }
+
+  return attempts;
+}
+
+// ─── Vitipsexpress ───────────────────────────────────────────────────────────
+
+export const VITIPS_STATUS_MAP: Record<string, string> = {
+  // ── English statuses (original) ──────────────────────────────────────────
+  'Delivered':                    'delivered',
+  'Collected':                    'Attente De Ramassage',
+  'Awaiting pickup':              'Attente De Ramassage',
+  'Waiting for pickup':           'Attente De Ramassage',
+  'Received':                     'transit',
+  'Received by courier':          'transit',
+  'Ready for Shipment':           'transit',
+  'Shipped':                      'transit',
+  'Traveling':                    'transit',
+  'Distribution':                 'transit',
+  'Distributed':                  'transit',
+  'Tracking Request':             'transit',
+  'Refused':                      'refused',
+  'Cancel':                       'refused',
+  'Postponed':                    'unreachable',
+  'Scheduled':                    'unreachable',
+  'no response 1':                'unreachable',
+  'no response 2':                'unreachable',
+  'no response 3':                'unreachable',
+  'unreachable':                  'unreachable',
+  'out of zone':                  'unreachable',
+  // ── French statuses (actual API responses) ────────────────────────────────
+  'En attente de ramassage':      'Attente De Ramassage',
+  'En attente':                   'Attente De Ramassage',
+  'Collecté':                     'Attente De Ramassage',
+  'Collecte':                     'Attente De Ramassage',
+  'Ramassé':                      'Attente De Ramassage',
+  'Ramasse':                      'Attente De Ramassage',
+  'En cours de livraison':        'transit',
+  'En livraison':                 'transit',
+  'En transit':                   'transit',
+  'En cours':                     'transit',
+  'Expédié':                      'transit',
+  'Expedie':                      'transit',
+  'Reçu par le coursier':         'transit',
+  'Recu par le coursier':         'transit',
+  'Reçu par livreur':             'transit',
+  'Recu par livreur':             'transit',
+  'Reçu par le livreur':          'transit',
+  'Recu par le livreur':          'transit',
+  'Prêt pour expédition':         'transit',
+  'Pret pour expedition':         'transit',
+  'En distribution':              'transit',
+  'Distribué':                    'transit',
+  'Distribue':                    'transit',
+  'Livré':                        'delivered',
+  'Livre':                        'delivered',
+  'Livrée':                       'delivered',
+  'Livree':                       'delivered',
+  'Refusé':                       'refused',
+  'Refuse':                       'refused',
+  'Refusée':                      'refused',
+  'Annulé':                       'refused',
+  'Annule':                       'refused',
+  'Reporté':                      'unreachable',
+  'Reporte':                      'unreachable',
+  'Planifié':                     'unreachable',
+  'Planifie':                     'unreachable',
+  'Programmé':                    'unreachable',
+  'Programme':                    'unreachable',
+  'Pas de réponse 1':             'unreachable',
+  'Pas de réponse 2':             'unreachable',
+  'Pas de réponse 3':             'unreachable',
+  'Injoignable':                  'unreachable',
+  'Hors zone':                    'unreachable',
+  'Retourné':                     'Retour Recu',
+  'Retourne':                     'Retour Recu',
+  'En cours de retour':           'En Cours De Retour',
+  // ── status_code values (API field) ────────────────────────────────────────
+  'NEW_PARCEL':                   'Attente De Ramassage',
+  'COLLECTED':                    'Attente De Ramassage',
+  'SENT':                         'transit',
+  'RECEIVED':                     'transit',
+  'IN_TRANSIT':                   'transit',
+  'OUT_FOR_DELIVERY':             'transit',
+  'DELIVERED':                    'delivered',
+  'REFUSED':                      'refused',
+  'CANCELED':                     'refused',
+  'RETURNED':                     'Retour Recu',
+  'RETURNED_TO_SENDER':           'Retour Recu',
+  'UNREACHABLE':                  'unreachable',
+  'POSTPONED':                    'unreachable',
+  'SCHEDULED':                    'unreachable',
+  'NO_RESPONSE':                  'unreachable',
+  'NO_RESPONSE_1':                'unreachable',
+  'NO_RESPONSE_2':                'unreachable',
+  'NO_RESPONSE_3':                'unreachable',
+  'OUT_OF_ZONE':                  'unreachable',
+  'RETURN_IN_PROGRESS':           'En Cours De Retour',
+};
+
+export function mapVitipsStatus(raw: string, statusCode?: string): string | null {
+  if (!raw && !statusCode) return null;
+  // 1. Try status_code first (most reliable)
+  if (statusCode) {
+    const byCode = VITIPS_STATUS_MAP[statusCode];
+    if (byCode) return byCode;
+    const byCodeUp = VITIPS_STATUS_MAP[statusCode.toUpperCase()];
+    if (byCodeUp) return byCodeUp;
+  }
+  if (!raw) return null;
+  // 2. Try exact match
+  const direct = VITIPS_STATUS_MAP[raw];
+  if (direct) return direct;
+  // 3. Try case-insensitive + accent-insensitive match
+  const rawLow = raw.toLowerCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  for (const [key, val] of Object.entries(VITIPS_STATUS_MAP)) {
+    const keyNorm = key.toLowerCase().trim()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (keyNorm === rawLow) return val;
+    // Partial match for long strings
+    if (rawLow.includes(keyNorm) && keyNorm.length > 4) return val;
+  }
+  return null;
+}
+
+/**
+ * Track a Vitipsexpress shipment by code.
+ * GET https://app.vitipsexpress.com/api/client/colis/track/{code}
+ * Auth: "API Token": {token}
+ * Response: { "data": [{ "status": "...", "Date_Evenement": ... }, ...] }
+ * → Use the FIRST element of data[] as current status.
+ */
+export async function trackVitipsShipment(
+  trackingCode: string,
+  apiToken: string,
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+  const url = `https://app.vitipsexpress.com/api/client/colis/track/${encodeURIComponent(trackingCode)}`;
+  console.log(`[VITIPS-TRACK] ${trackingCode} → GET ${url}`);
+  try {
+    const response = await axios.get(url, {
+      headers: { 'api-token': apiToken, 'Accept': 'application/json' },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+    const body = response.data;
+    console.log(`[VITIPS-TRACK] ${trackingCode} → HTTP ${response.status}: ${JSON.stringify(body).slice(0, 300)}`);
+    if (response.status >= 400) {
+      const errMsg = (body?.message || body?.error || `HTTP ${response.status}`).toString();
+      return { status: null, rawStatus: null, rawResponse: body, error: errMsg };
+    }
+    const events = Array.isArray(body?.data) ? body.data : [];
+    const first  = events[0];
+    const rawStatus: string | null = first?.status || null;
+    const statusCode: string | null = first?.status_code || null;
+    console.log(`[VITIPS-TRACK] ${trackingCode} → rawStatus="${rawStatus}" status_code="${statusCode}"`);
+    const mapped = mapVitipsStatus(rawStatus ?? '', statusCode ?? undefined);
+    return { status: mapped, rawStatus: rawStatus ?? statusCode, rawResponse: body };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    console.error(`[VITIPS-TRACK] Error for ${trackingCode}: ${errMsg}`);
+    return { status: null, rawStatus: null, rawResponse: null, error: errMsg };
+  }
+}
+
+/**
+ * Fetch the city list from Vitipsexpress.
+ * GET https://app.vitipsexpress.com/api/client/villes
+ * Returns [{ name, abbr }]
+ */
+export async function getVitipsCities(
+  apiToken: string,
+): Promise<{ name: string; abbr: string }[]> {
+  const url = 'https://app.vitipsexpress.com/api/client/villes';
+  console.log(`[VITIPS-CITIES] → GET ${url}`);
+  try {
+    const response = await axios.get(url, {
+      headers: { 'api-token': apiToken, 'Accept': 'application/json' },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+    const body = response.data;
+    const data = Array.isArray(body?.data) ? body.data : (Array.isArray(body) ? body : []);
+    return data
+      .map((c: any) => ({ name: c.name || c.ville || '', abbr: c.abbr || c.code || c.id || '' }))
+      .filter((c: any) => c.name);
+  } catch (err: any) {
+    console.error(`[VITIPS-CITIES] Error: ${err?.message}`);
+    return [];
+  }
+}
+
+// EC has NO tracking pull endpoint — confirmed from official API docs (2026-07-10).
+// All status updates arrive exclusively via ChangeStatus webhook.
+// This stub prevents 404 errors and accidental network calls to the dead endpoint.
+export async function trackExpressCoursierShipment(
+  _trackingNumber: string,
+  _apiKey: string,
+  _account?: any
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; fee: number | null; error?: string }> {
+  return { status: null, rawStatus: null, rawResponse: null, fee: null, error: 'EC_NO_TRACKING_API' };
 }

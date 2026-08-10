@@ -13,8 +13,9 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
   User, Globe, MessageCircle, CreditCard, Shield,
-  Camera, TrendingUp, Store, Zap, Lock, Save, CheckCircle,
+  Camera, TrendingUp, Store, Zap, Lock, Save, CheckCircle, Bell, Smartphone, BellOff,
 } from "lucide-react";
+import { usePushNotifications } from "@/hooks/usePushNotifications";
 
 const GOLD = "#C5A059";
 
@@ -34,6 +35,7 @@ const TABS = [
   { id: "whatsapp", label: "WhatsApp", icon: MessageCircle },
   { id: "abonnement", label: "Abonnement", icon: CreditCard },
   { id: "securite", label: "Sécurité", icon: Shield },
+  { id: "notifications", label: "Notifications", icon: Bell },
 ];
 
 const WA_TABS = ["Défaut", "Personnalisé", "Après Expédition"];
@@ -307,6 +309,41 @@ export default function Profile() {
   const testSound = (id: string) => {
     playTone(id);
   };
+
+  // ── Push notifications ────────────────────────────────────────────────────────
+  const { permission, subscribed, loading: pushLoading, error: pushError, isSupported, isIOS, isPWA, subscribe, unsubscribe } = usePushNotifications();
+  const [testResult, setTestResult] = useState<any>(null);
+  const sendTestPush = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/push/test", {}),
+    onSuccess: (data: any) => {
+      setTestResult(data);
+      const hasErrors = (data.results ?? []).some((r: any) => r.error !== null);
+      const sent = data.sent ?? 0;
+      if (sent > 0) {
+        toast({ title: "Notification de test envoyée ✅", description: `${sent} appareil(s) notifié(s)` });
+      } else if (data.subscriptions === 0) {
+        toast({ title: "Aucun abonnement", description: "Cliquez d'abord sur « Activer ».", variant: "destructive" });
+      } else if (hasErrors) {
+        toast({ title: "Envoi échoué", description: "Vérifiez les détails ci-dessous.", variant: "destructive" });
+      }
+    },
+    onError: (e: any) => {
+      setTestResult(null);
+      toast({ title: "Erreur test push", description: e.message, variant: "destructive" });
+    },
+  });
+  const [notifSettings, setNotifSettings] = useState<{
+    newOrder: boolean; statusUpdate: boolean; importantOnly: boolean;
+  }>({
+    newOrder:     (user as any)?.notifSettings?.newOrder     !== false,
+    statusUpdate: (user as any)?.notifSettings?.statusUpdate !== false,
+    importantOnly:(user as any)?.notifSettings?.importantOnly!== false,
+  });
+  const saveNotifSettings = useMutation({
+    mutationFn: (data: typeof notifSettings) => apiRequest("PUT", "/api/user/notification-settings", data),
+    onSuccess: () => toast({ title: "Préférences de notifications sauvegardées" }),
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
 
   // ── Plan usage ───────────────────────────────────────────────────────────────
   const monthlyOrders = sub?.currentMonthOrders ?? 0;
@@ -870,6 +907,218 @@ export default function Profile() {
                 </div>
               </Card>
             )}
+
+            {/* ── Tab: Notifications ───────────────────────────────────── */}
+            {activeTab === "notifications" && (
+              <div className="space-y-4">
+
+                {/* Push subscription card */}
+                <Card className="p-4 md:p-6 rounded-2xl">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Bell className="w-4 h-4" style={{ color: GOLD }} />
+                    <h3 className="font-semibold text-sm">Notifications Push (PWA)</h3>
+                  </div>
+
+                  {/* iOS not in PWA warning */}
+                  {isIOS && !isPWA && (
+                    <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 mb-4">
+                      <Smartphone className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-800 dark:text-amber-300">iPhone / iPad</p>
+                        <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                          Les notifications Push nécessitent iOS 16.4+ et que l'app soit installée depuis Safari (
+                          <span className="font-semibold">Partager → Sur l'écran d'accueil</span>).
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Not supported */}
+                  {!isSupported && !(isIOS && !isPWA) && (
+                    <div className="flex items-start gap-3 p-3 rounded-lg bg-muted mb-4">
+                      <BellOff className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
+                      <p className="text-sm text-muted-foreground">
+                        Les notifications Push ne sont pas disponibles dans ce navigateur.
+                      </p>
+                    </div>
+                  )}
+
+                  {isSupported && (
+                    <div className="space-y-3">
+                      {/* Permission status */}
+                      <div className="flex items-center gap-2 text-sm">
+                        <div className={cn(
+                          "w-2.5 h-2.5 rounded-full",
+                          permission === "granted" ? "bg-green-500" : permission === "denied" ? "bg-red-500" : "bg-amber-500"
+                        )} />
+                        <span className="text-muted-foreground">
+                          {permission === "granted" ? "Permission accordée" : permission === "denied" ? "Permission refusée (à réactiver dans les paramètres navigateur)" : "Permission non encore demandée"}
+                        </span>
+                      </div>
+
+                      {permission === "denied" && (
+                        <p className="text-xs text-destructive">
+                          Vous avez bloqué les notifications. Activez-les dans les paramètres du navigateur puis rechargez la page.
+                        </p>
+                      )}
+
+                      {/* Subscribe / unsubscribe row */}
+                      <div className="flex items-center justify-between pt-1">
+                        <div>
+                          <p className="text-sm font-medium">Recevoir des notifications</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {subscribed ? "Cet appareil est inscrit ✅" : "Cet appareil n'est pas inscrit"}
+                          </p>
+                        </div>
+                        <Button
+                          data-testid="button-toggle-push"
+                          size="sm"
+                          disabled={pushLoading || permission === "denied"}
+                          onClick={async () => {
+                            if (subscribed) {
+                              await unsubscribe();
+                            } else {
+                              const ok = await subscribe();
+                              if (!ok) {
+                                toast({
+                                  title: "Erreur d'inscription",
+                                  description: pushError || "Impossible d'activer les notifications.",
+                                  variant: "destructive",
+                                });
+                              }
+                            }
+                          }}
+                          variant={subscribed ? "outline" : "default"}
+                          style={!subscribed ? { backgroundColor: GOLD, color: "white" } : {}}
+                        >
+                          {pushLoading ? "..." : subscribed ? "Désactiver" : "Activer"}
+                        </Button>
+                      </div>
+
+                      {/* Inline error display */}
+                      {pushError && (
+                        <p className="text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2">
+                          {pushError}
+                        </p>
+                      )}
+
+                      {/* Test notification button — only shown when subscribed */}
+                      {subscribed && (
+                        <div className="pt-1 border-t border-border space-y-3">
+                          <Button
+                            data-testid="button-test-push"
+                            size="sm"
+                            variant="outline"
+                            disabled={sendTestPush.isPending}
+                            onClick={() => { setTestResult(null); sendTestPush.mutate(); }}
+                            className="w-full"
+                          >
+                            <Bell className="w-3.5 h-3.5 mr-2" />
+                            {sendTestPush.isPending ? "Envoi en cours..." : "Envoyer une notification de test"}
+                          </Button>
+
+                          {/* Per-subscription diagnostic result */}
+                          {testResult && (
+                            <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-2 text-xs font-mono">
+                              <div className="flex gap-2 flex-wrap">
+                                <span className="text-muted-foreground">abonnements:</span>
+                                <span className="font-semibold">{testResult.subscriptions ?? 0}</span>
+                                <span className="text-muted-foreground ml-2">envoyés:</span>
+                                <span className={cn("font-semibold", testResult.sent > 0 ? "text-green-600 dark:text-green-400" : "text-destructive")}>
+                                  {testResult.sent ?? 0}
+                                </span>
+                              </div>
+                              <div className="text-muted-foreground">
+                                VAPID key: <span className="text-foreground">{testResult.vapidPublicKeyPrefix ?? "—"}</span>
+                              </div>
+                              <div className="text-muted-foreground break-all">
+                                subject: <span className="text-foreground">{testResult.vapidSubject ?? "—"}</span>
+                              </div>
+                              {(testResult.results ?? []).map((r: any, i: number) => (
+                                <div key={i} className={cn(
+                                  "rounded p-2 space-y-0.5",
+                                  r.error ? "bg-destructive/10 border border-destructive/30" : "bg-green-500/10 border border-green-500/30"
+                                )}>
+                                  <div className="flex gap-2 items-center">
+                                    <span className={r.error ? "text-destructive" : "text-green-600 dark:text-green-400"}>
+                                      {r.error ? "❌" : "✅"}
+                                    </span>
+                                    <span className="font-semibold">{r.host}</span>
+                                    <span className="text-muted-foreground">…{r.endpointTail}</span>
+                                    {r.statusCode && <span className="ml-auto text-muted-foreground">HTTP {r.statusCode}</span>}
+                                  </div>
+                                  {r.error && <div className="text-destructive break-all">{r.error}</div>}
+                                  {r.body   && <div className="text-muted-foreground break-all">{r.body}</div>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </Card>
+
+                {/* Notification preference toggles */}
+                <Card className="p-4 md:p-6 rounded-2xl">
+                  <h3 className="font-semibold text-sm mb-4">⚙️ Préférences de notifications</h3>
+
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium">Nouvelle commande</p>
+                        <p className="text-xs text-muted-foreground">Notifier à chaque nouvelle commande reçue</p>
+                      </div>
+                      <Switch
+                        data-testid="switch-notif-new-order"
+                        checked={notifSettings.newOrder}
+                        onCheckedChange={v => setNotifSettings(s => ({ ...s, newOrder: v }))}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium">Mise à jour de statut</p>
+                        <p className="text-xs text-muted-foreground">Notifier lors d'un changement de statut</p>
+                      </div>
+                      <Switch
+                        data-testid="switch-notif-status-update"
+                        checked={notifSettings.statusUpdate}
+                        onCheckedChange={v => setNotifSettings(s => ({ ...s, statusUpdate: v }))}
+                      />
+                    </div>
+
+                    {notifSettings.statusUpdate && (
+                      <div className="flex items-center justify-between pl-4 border-l-2 border-muted">
+                        <div>
+                          <p className="text-sm font-medium">Statuts importants uniquement</p>
+                          <p className="text-xs text-muted-foreground">Confirmé, Livré, Refusé, Retourné, Annulé</p>
+                        </div>
+                        <Switch
+                          data-testid="switch-notif-important-only"
+                          checked={notifSettings.importantOnly}
+                          onCheckedChange={v => setNotifSettings(s => ({ ...s, importantOnly: v }))}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex justify-end mt-5">
+                    <Button
+                      data-testid="button-save-notif-settings"
+                      disabled={saveNotifSettings.isPending}
+                      onClick={() => saveNotifSettings.mutate(notifSettings)}
+                      className="w-full md:w-auto"
+                      style={{ backgroundColor: GOLD, color: "white" }}
+                    >
+                      <Save className="w-4 h-4 mr-2" />
+                      {saveNotifSettings.isPending ? "Enregistrement..." : "Sauvegarder"}
+                    </Button>
+                  </div>
+                </Card>
+              </div>
+            )}
+
           </div>
         </div>
       </div>

@@ -1,0 +1,47 @@
+# Replit Prompt — DECISIVE FIX: Super Admin empty because subscription columns are missing in the DB
+
+The Super Admin panel is empty (no boutiques, all stats "—") because every Drizzle query on the `subscriptions` table now fails. The schema defines `automation_override`, `media_buyers_override`, and `import_csv_override`, but those columns do **not exist in the database** (the migration didn't actually apply). Since `db.select().from(subscriptions)` selects every schema-defined column, `getAllStores()` and `getGlobalStats()` both throw `column "import_csv_override" does not exist` → empty UI.
+
+`npm run db:push` didn't fix it (drizzle-kit can require interactive confirmation). Apply the columns/table directly with SQL — this is reliable.
+
+## Step 1 — Run these SQL statements against the database (psql / Drizzle / a one-off script)
+```sql
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS automation_override   integer;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS media_buyers_override integer;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS import_csv_override   integer;
+
+CREATE TABLE IF NOT EXISTS csv_profit_reports (
+  id         serial PRIMARY KEY,
+  store_id   integer NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  user_id    integer REFERENCES users(id),
+  month      text NOT NULL,
+  title      text,
+  payload    jsonb NOT NULL,
+  created_at timestamp DEFAULT now() NOT NULL,
+  updated_at timestamp DEFAULT now() NOT NULL
+);
+```
+If you have a DB shell, run them there. Otherwise add a tiny one-off script using the existing db client and execute it once.
+
+## Step 2 — Verify the columns now exist
+```sql
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'subscriptions'
+  AND column_name IN ('automation_override','media_buyers_override','import_csv_override');
+-- should return all three rows
+SELECT to_regclass('public.csv_profit_reports');  -- should NOT be null
+```
+
+## Step 3 — Confirm the column names match the schema mapping
+In `shared/schema.ts`, the three fields must map to exactly these snake_case names:
+`automationOverride: integer("automation_override")`, `mediaBuyersOverride: integer("media_buyers_override")`, `importCsvOverride: integer("import_csv_override")`. Fix any mismatch.
+
+## Step 4 — Make the admin endpoints fail loudly (so this can't silently blank the UI again)
+Wrap `GET /api/admin/stores` and `GET /api/admin/stats` handlers in try/catch with `console.error(err)` and return `res.status(500).json({ message: String(err?.message || err) })` instead of letting the promise reject into an empty body. (Same for `storage.getAllStores` / `getGlobalStats` if they swallow errors.)
+
+## Testing checklist
+1. The three `information_schema` rows are returned and `csv_profit_reports` exists.
+2. Super Admin shows all boutiques again and VUE PLATEFORME stats are populated.
+3. `GET /api/admin/stores` and `/api/admin/stats` return 200.
+4. The normal app `/api/subscription` works (it also selects subscriptions).
+5. The per-store feature toggles (Automation, Media Buyers, Import CSV) render and save.

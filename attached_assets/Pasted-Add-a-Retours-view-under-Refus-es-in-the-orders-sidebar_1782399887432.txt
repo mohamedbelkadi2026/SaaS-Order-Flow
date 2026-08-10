@@ -1,0 +1,38 @@
+Add a "Retours" view under "Refusées" in the orders sidebar. It must show EVERY returned order
+from ALL carriers. Across carriers the internal return statuses are: "retourné", "Retour Recu",
+and "En Cours De Retour". Use a status GROUP exactly like the existing "annule_group" pattern.
+
+1) BACKEND — server/storage.ts, getFilteredOrders: in the `if (filters.status)` block (next to the
+   'annule_group' / 'pas_reponse_group' / 'suivi_group' branches), add a new branch:
+       } else if (filters.status === 'retour_group') {
+         conditions.push(
+           sql`(${orders.status} IN ('retourné','Retour Recu','En Cours De Retour')
+                OR ${orders.status} ILIKE 'retour%'
+                OR ${orders.status} ILIKE '%retourné%')`
+         );
+   Keep the existing final `else { conditions.push(eq(orders.status, filters.status)); }` for normal
+   single statuses.
+
+2) FRONTEND — client/src/pages/orders.tsx:
+   - In STATUS_MAP add:   retours: "retour_group",
+   - In TITLE_MAP add:    retours: "RETOURS",
+   (The route /orders/:filter already renders this page, so /orders/retours will work automatically.)
+
+3) FRONTEND — client/src/components/layout/app-layout.tsx:
+   - In ORDER_SUB_ITEMS, add a new item right AFTER the "Refusées" entry:
+       { name: "Retours", href: "/orders/retours" },
+   - In the label/translation map (where "Refusées": "orderSub.refused" is), add:
+       "Retours": "orderSub.returns",
+     and add the i18n key "orderSub.returns" = "Retours" (FR) / "Retours" / "المرتجعات" (AR) in the
+     translation files; if no AR file, a plain "Retours" label fallback is fine.
+   - In the role-based filtering (the two ORDER_SUB_ITEMS.filter(...) calls), add 'Retours' wherever
+     'Refusées' appears, so Retours shows for the SAME roles as Refusées:
+       • the exclusion list: [...,'Refusées'] → [...,'Refusées','Retours']
+       • the inclusion list: [...,'Refusées','Rappel'] → [...,'Refusées','Retours','Rappel']
+
+VERIFY:
+- A "Retours" item appears under "Refusées" in the sidebar.
+- Clicking it opens /orders/retours titled "RETOURS" and lists every order whose status is a
+  return (retourné / Retour Recu / En Cours De Retour) — regardless of carrier (Ozon, Express
+  Coursier, Ameex, etc.).
+- Other views are unaffected. App compiles.

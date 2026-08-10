@@ -1,0 +1,63 @@
+# Replit Prompt — DEFINITIVE FIX: stop duplicating products in Profit Analyzer
+
+Products still appear twice in `GET /api/products/profitability` (e.g. "ميزان ليزر" shows as a 2-cmd row and a 4-cmd row; same for "ماكينة حلاقة الأغنام الاحترافية", "ماكينة صودور محمولة"). Cause: a product whose orders are **partly linked** (`order_items.product_id` set) and **partly historical/unlinked** (`product_id` NULL) gets split into two buckets — one keyed by productId, one keyed by raw name. The previous keying (pid for linked, raw-name for unlinked) does not merge them.
+
+Fix: group **everything by the normalized product NAME**, and attach ad spend by name too, so one product = exactly one row regardless of linkage.
+
+## Implementation (in `GET /api/products/profitability`, `server/routes.ts`)
+
+### 1. Build catalog maps from store products (once, before the loops)
+```ts
+const norm = (s: string) =>
+  (s || '').toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g,'') // strip Arabic diacritics
+    .replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+
+const displayById = new Map<number, string>();   // productId -> canonical display name
+const costByName  = new Map<string, number>();    // normName -> costPrice (centimes)
+const idByName    = new Map<string, number>();    // normName -> productId (first match)
+for (const p of storeProductsList) {
+  displayById.set(p.id, p.name);
+  costByName.set(norm(p.name), Number(p.costPrice || 0));
+  if (!idByName.has(norm(p.name))) idByName.set(norm(p.name), p.id);
+}
+```
+
+### 2. Group ORDER ITEMS by normalized name (not by productId)
+For each order item, compute the display name and key:
+```ts
+const display = (item.productId && displayById.get(item.productId)) || item.rawProductName || item.productName || 'Produit inconnu';
+const key = norm(display);
+// statsMap[key]: set .name = display (canonical when available), .id = item.productId || idByName.get(key) || 0
+```
+Accumulate revenue, units, counts, shipping, packaging, confirmation, and COGS into `statsMap[key]`.
+COGS per unit must use, in order: `item.productCostPrice ?? costByName.get(key) ?? (order as any).productCost ?? 0`.
+This merges linked + unlinked orders of the same name into ONE bucket.
+
+### 3. Attach AD SPEND by name (so it lands in the same bucket)
+Ad spend rows are keyed by `productId`. Convert each to its name bucket:
+```ts
+for (const [pid, amountCents] of Object.entries(productAdSpendMap)) {
+  const display = displayById.get(Number(pid)) || '';
+  const key = norm(display);
+  if (!key) continue;                 // ad spend for a deleted product: skip or bucket as "Autres"
+  if (!statsMap[key]) statsMap[key] = makeEmptyRow(display, Number(pid));
+  statsMap[key].adSpend = (statsMap[key].adSpend || 0) + Number(amountCents)/100;
+}
+```
+Apply ad spend ONCE here; do not also add `productAdSpendMap[s.id]` later in `productResult` (remove that to avoid double counting).
+
+### 4. Merge catalog products with no orders/spend — keyed by name too
+When adding store products that have no bucket yet, use `norm(p.name)` as the key and skip if that key already exists. This prevents a "no-orders" duplicate of a product that already has an orders bucket under the same name.
+
+### 5. Final safety: collapse any remaining same-name rows
+After building `productResult`, do a final pass that merges rows sharing the same `norm(name)` by summing all numeric fields (orders, units, revenue, costs, adSpend, profit) and keeping one display name. This guarantees zero visible duplicates even if the catalog itself has duplicate product entries.
+
+## Note on the real catalog
+If two items have **different** names (e.g. "ZOMAX 43" vs "ZOMAX 44"), they stay separate — that is correct, they are different SKUs. Only identical names merge. If you want those merged too, clean the duplicates in Stock.
+
+## Testing checklist
+1. "ميزان ليزر" now shows as ONE row whose CMD = 6 (2+4), revenue/costs/ad spend summed; not two rows.
+2. "ماكينة حلاقة الأغنام الاحترافية" and "ماكينة صودور محمولة" each show once.
+3. Ad spend for a product appears once (no double counting); PROFIT NET TOTAL updates accordingly.
+4. A product whose orders are partly linked and partly historical/unlinked is fully merged.
+5. Genuinely different SKUs with different names remain separate.

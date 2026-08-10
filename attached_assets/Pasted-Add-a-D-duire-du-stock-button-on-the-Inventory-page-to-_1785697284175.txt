@@ -1,0 +1,46 @@
+Add a "Déduire du stock" button on the Inventory page to manually fix historical orders that were shipped before the auto-decrement feature was added.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BACKEND: Add new endpoint in server/routes.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+POST /api/stock/fix-historical-shipments
+
+This endpoint finds all orders that were shipped (status IN: 'Attente De Ramassage', 'transit', 'delivered', 'refused', 'Retour Recu', 'En Cours De Retour') 
+but whose stock was never decremented (no stockMovement with type='shipped' for that orderId).
+
+Logic:
+1. Get all orders for storeId where status IN ('Attente De Ramassage', 'transit', 'delivered', 'refused', 'Retour Recu', 'En Cours De Retour')
+2. For each order, check if a stockMovement with orderId = order.id and type = 'shipped' already exists
+3. If NO stock movement exists → this order's stock was never decremented → add to "pending" list
+4. Return the pending list with preview (orderId, orderNumber, customerName, products, quantities)
+
+GET /api/stock/fix-historical-shipments/preview
+- Returns: { count: number, orders: [{id, orderNumber, customerName, items: [{productName, qty, productId}]}] }
+
+POST /api/stock/fix-historical-shipments/apply
+- Body: { orderIds: number[] } — optional, if empty apply to ALL pending
+- Calls decrementStockForOrder() for each pending order
+- Returns: { applied: number, skipped: number, errors: string[] }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FRONTEND: Add button in Inventory page (client/src/pages/inventory.tsx)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add a new button in the top-right actions area of the Inventory page, next to "Importer des produits" and "Nouveau Produit":
+
+Button: "🔧 Corriger l'historique stock"
+
+When clicked:
+1. First call GET /api/stock/fix-historical-shipments/preview
+2. Show a modal/dialog with:
+   - Title: "Commandes expédiées sans déduction de stock"
+   - Summary: "X commandes trouvées dont le stock n'a pas été déduit."
+   - A scrollable list showing each order: "#orderNumber — clientName — produit × qty"
+   - Two buttons: "Annuler" and "Déduire le stock (X commandes)"
+3. On confirm → call POST /api/stock/fix-historical-shipments/apply
+4. Show result toast: "✅ Stock mis à jour pour X commandes"
+5. Refresh inventory data
+
+The modal should look clean and match the existing design system.
+Use the existing Dialog/Modal component already in the codebase.

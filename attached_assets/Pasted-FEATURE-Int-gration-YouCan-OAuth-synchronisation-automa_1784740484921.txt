@@ -1,0 +1,349 @@
+FEATURE — Intégration YouCan (OAuth + synchronisation automatique des
+commandes). Basé sur la documentation officielle YouCan
+(developer.youcan.shop) et calqué sur le pattern OAuth déjà utilisé pour
+Google Sheets dans ce projet (storeIntegrations.oauthAccessToken /
+oauthRefreshToken / oauthExpiresAt, helper encrypt() dans server/crypto.ts).
+
+PRÉ-REQUIS CÔTÉ YOUCAN (déjà fait par le seller, pas de code) :
+- Compte Partner créé sur https://partners.youcan.shop/
+- App créée manuellement (Apps → Create App → "create app manually"),
+  Embedded = False
+- Client ID + Client Secret disponibles
+- Redirect URL à configurer dans l'app YouCan : voir ÉTAPE 1 ci-dessous
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 0 — Variables d'environnement (Railway)
+
+Ajouter :
+```
+YOUCAN_CLIENT_ID=<Client ID depuis Partners Dashboard>
+YOUCAN_CLIENT_SECRET=<Client Secret depuis Partners Dashboard>
+YOUCAN_REDIRECT_URI=https://<ton-domaine-railway>/api/integrations/youcan/oauth/callback
+```
+Configurer EXACTEMENT cette même URL comme "Redirect URL" dans l'app YouCan
+(Partners Dashboard → ton app → Configuration).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/routes.ts : démarrage OAuth
+
+```ts
+// ─── YouCan OAuth flow ───────────────────────────────────────────────────
+app.get("/api/integrations/youcan/oauth/start", requireAuth, (req, res) => {
+  const clientId = process.env.YOUCAN_CLIENT_ID;
+  if (!clientId) return res.redirect("/integrations?youcan_error=not_configured");
+  const storeId = req.user!.storeId!;
+  const state = `${storeId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  (req.session as any).youcanOauthState = state;
+  const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+    `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+  const url = new URL("https://seller-area.youcan.shop/admin/oauth/authorize");
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.append("scope[]", "*");
+  url.searchParams.set("state", state);
+  res.redirect(url.toString());
+});
+```
+
+Note importante (vérifiée dans la doc officielle) : l'URL d'autorisation est
+sur un host DIFFÉRENT de l'API — `seller-area.youcan.shop/admin/oauth/authorize`
+(avec `/admin/oauth`), alors que le token endpoint est sur
+`api.youcan.shop/oauth/token`. Ne pas les confondre.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — server/routes.ts : callback OAuth + échange du code + abonnement
+webhook automatique
+
+```ts
+app.get("/api/integrations/youcan/oauth/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) return res.redirect(`/integrations?youcan_error=${error}`);
+  const sessionState = (req.session as any).youcanOauthState;
+  if (!state || state !== sessionState) return res.redirect("/integrations?youcan_error=invalid_state");
+  delete (req.session as any).youcanOauthState;
+  const storeId = parseInt((state as string).split("-")[0]);
+  if (isNaN(storeId)) return res.redirect("/integrations?youcan_error=invalid_state");
+  const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+    `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+
+  try {
+    const tokenResp = await fetch("https://api.youcan.shop/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: process.env.YOUCAN_CLIENT_ID!,
+        client_secret: process.env.YOUCAN_CLIENT_SECRET!,
+        redirect_uri: redirectUri,
+        code: code as string,
+      }),
+    });
+    const tokens = await tokenResp.json() as any;
+    if (!tokens.access_token) {
+      console.error("[YOUCAN-OAUTH] Token exchange failed:", tokens);
+      return res.redirect("/integrations?youcan_error=token_exchange_failed");
+    }
+
+    const webhookKey = await storage.getOrGenerateWebhookKey(storeId);
+    const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${webhookKey}`;
+
+    const oauthData: any = {
+      oauthAccessToken:  encrypt(tokens.access_token),
+      oauthExpiresAt:    new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
+      isActive: 1,
+    };
+    if (tokens.refresh_token) oauthData.oauthRefreshToken = encrypt(tokens.refresh_token);
+
+    const existing = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+      .limit(1);
+    if (existing.length > 0) {
+      await db.update(storeIntegrations).set(oauthData).where(eq(storeIntegrations.id, existing[0].id));
+    } else {
+      await db.insert(storeIntegrations).values({
+        storeId, provider: "youcan", type: "webhook", credentials: "{}", webhookKey, ...oauthData,
+      });
+    }
+
+    // Abonner automatiquement au webhook "order.create" (max 1 abonnement par event, 3 max par store).
+    try {
+      const subResp = await fetch("https://api.youcan.shop/resthooks/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.access_token}` },
+        body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
+      });
+      const subJson = await subResp.json();
+      console.log("[YOUCAN-OAUTH] resthooks/subscribe response:", subJson);
+    } catch (subErr: any) {
+      console.error("[YOUCAN-OAUTH] Failed to subscribe webhook (non-fatal):", subErr.message);
+    }
+
+    res.redirect("/integrations?youcan=connected");
+  } catch (err: any) {
+    console.error("[YOUCAN-OAUTH] Error:", err.message);
+    res.redirect("/integrations?youcan_error=server_error");
+  }
+});
+
+app.get("/api/integrations/youcan/status", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const rows = await db.select().from(storeIntegrations)
+    .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+    .limit(1);
+  const row = rows[0];
+  res.json({
+    connected: !!(row?.oauthAccessToken),
+    ordersCount: row?.ordersCount ?? 0,
+    connectionName: row?.connectionName ?? null,
+    createdAt: row?.createdAt ?? null,
+  });
+});
+
+app.post("/api/integrations/youcan/disconnect", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  await db.update(storeIntegrations)
+    .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
+    .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
+  res.json({ success: true });
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — server/routes.ts : réception du webhook "order.create" + création
+de la commande
+
+Vérifiée dans la doc officielle : YouCan signe chaque webhook avec le header
+`x-youcan-signature`, un HMAC-SHA256 du payload JSON, signé avec le Client
+Secret. Le payload `order.create` contient déjà `customer` (nom/téléphone)
+et `variants` (sku, quantité, prix, nom produit) — MAIS PAS l'adresse
+complète (ville). Il faut donc re-fetch la commande via l'API avec
+`include=customer,shipping` pour récupérer la ville de livraison.
+
+```ts
+// ─── YouCan webhook — order.create ─────────────────────────────────────────
+app.post("/api/webhooks/youcan/order/:webhookKey", async (req, res) => {
+  try {
+    const { webhookKey } = req.params;
+    const integrationRows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.webhookKey, webhookKey), eq(storeIntegrations.provider, "youcan")))
+      .limit(1);
+    const integration = integrationRows[0];
+    if (!integration) return res.status(404).json({ message: "Unknown webhook" });
+
+    // Vérification de la signature HMAC-SHA256 (x-youcan-signature).
+    const signature = req.headers["x-youcan-signature"] as string | undefined;
+    const clientSecret = process.env.YOUCAN_CLIENT_SECRET!;
+    if (signature) {
+      const expected = crypto.createHmac("sha256", clientSecret)
+        .update(JSON.stringify(req.body))
+        .digest("hex");
+      if (expected !== signature) {
+        console.warn("[YOUCAN-WEBHOOK] Invalid signature — rejecting");
+        return res.status(401).json({ message: "Invalid signature" });
+      }
+    }
+
+    const storeId = integration.storeId;
+    const payload = req.body as any;
+    const orderRef = payload.ref || payload.id;
+    const customerName  = [payload.customer?.first_name, payload.customer?.last_name].filter(Boolean).join(" ") || "Client YouCan";
+    const customerPhone = payload.customer?.phone || "";
+    let customerCity = "";
+
+    // Re-fetch la commande complète pour récupérer la ville (pas dans le payload webhook).
+    const accessToken = decrypt(integration.oauthAccessToken || "");
+    if (accessToken && payload.id) {
+      try {
+        const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const fullOrder = await fullOrderResp.json() as any;
+        customerCity = fullOrder?.shipping?.address?.city || fullOrder?.customer?.address?.city || "";
+      } catch (fetchErr: any) {
+        console.error("[YOUCAN-WEBHOOK] Failed to fetch full order for address:", fetchErr.message);
+      }
+    }
+
+    const totalPriceCents    = Math.round((payload.total || 0) * 100);
+    const shippingCostCents  = Math.round((payload.shipping?.price || 0) * 100);
+
+    const storeProducts = await storage.getProductsByStore(storeId);
+    const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+    const variantsByProduct = new Map<number, { name: string }[]>();
+    for (const v of allVariants) {
+      if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+      variantsByProduct.get(v.productId)!.push({ name: v.name });
+    }
+    const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+
+    const orderItemsToCreate: any[] = [];
+    let orderProductCost = 0;
+    for (const v of (payload.variants || [])) {
+      const rawName = v.variant?.product?.name || "Produit YouCan";
+      const resolved = resolveProductId(rawName, storeProductsWithVariants);
+      const matchedProduct = resolved.productId ? storeProducts.find(p => p.id === resolved.productId) : null;
+      orderItemsToCreate.push({
+        productId: matchedProduct?.id ?? null,
+        rawProductName: rawName,
+        variantInfo: resolved.variantName || v.variant?.sku || null,
+        quantity: v.quantity || 1,
+        price: Math.round((v.price || 0) * 100),
+        orderId: 0,
+      });
+      orderProductCost += (matchedProduct?.costPrice || 0) * (v.quantity || 1);
+    }
+
+    const order = await storage.createOrder({
+      storeId,
+      orderNumber: `YC-${orderRef}`,
+      customerName,
+      customerPhone,
+      customerCity,
+      totalPrice: totalPriceCents,
+      shippingCost: shippingCostCents,
+      productCost: orderProductCost,
+      status: "en_cours",
+      source: "youcan",
+      carrierName: null,
+      rawProductName: orderItemsToCreate.map(i => i.rawProductName).join(" + "),
+      rawQuantity: orderItemsToCreate.reduce((s, i) => s + i.quantity, 0),
+    } as any, orderItemsToCreate);
+
+    await db.update(storeIntegrations)
+      .set({ ordersCount: (integration.ordersCount || 0) + 1 })
+      .where(eq(storeIntegrations.id, integration.id));
+
+    const nextAgentId = await storage.getNextAgent(storeId, integration.magasinId, orderItemsToCreate[0]?.productId, customerCity);
+    if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
+    await storage.incrementMonthlyOrders(storeId);
+    await storage.createIntegrationLog({ storeId, integrationId: integration.id, provider: "youcan", action: "order_synced", status: "success", message: `Commande YouCan ${orderRef} importée` });
+    notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: order.totalPrice || 0 });
+
+    res.json({ success: true, orderId: order.id });
+
+    if (getWaAutoSettings(storeId).aiConfirmation) {
+      triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, orderItemsToCreate[0]?.productId)
+        .catch(err => console.error(`[AI] YouCan trigger failed for order ${order.id}:`, err.message));
+    }
+  } catch (err: any) {
+    console.error("[YOUCAN-WEBHOOK] Error:", err);
+    res.status(500).json({ success: false, message: "Processing failed" });
+  }
+});
+```
+
+Importer `crypto` (`import crypto from "crypto"`) et `decrypt` depuis
+`./crypto` en haut de server/routes.ts si pas déjà importés.
+
+Adapter les noms exacts des champs `orders` (`status` par défaut,
+`orderNumber` prefix, etc.) au reste du schéma déjà en place dans ce fichier
+pour les autres webhooks — copier la convention utilisée par le webhook
+gsheets juste au-dessus dans ce même fichier plutôt que d'introduire une
+convention différente.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 4 — Rafraîchissement du token (le token expire après ~15 jours)
+
+Ajouter un helper réutilisable, appelé en lazy-refresh avant chaque appel API
+YouCan (ex: au début du webhook handler, si `oauthExpiresAt` est dans moins
+de 24h) :
+
+```ts
+async function refreshYouCanToken(storeId: number, integration: any): Promise<string | null> {
+  const refreshToken = decrypt(integration.oauthRefreshToken || "");
+  if (!refreshToken) return decrypt(integration.oauthAccessToken || "");
+  const expiresAt = integration.oauthExpiresAt ? new Date(integration.oauthExpiresAt).getTime() : 0;
+  if (expiresAt - Date.now() > 24 * 60 * 60 * 1000) return decrypt(integration.oauthAccessToken || "");
+
+  const resp = await fetch("https://api.youcan.shop/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: process.env.YOUCAN_CLIENT_ID!,
+      client_secret: process.env.YOUCAN_CLIENT_SECRET!,
+      refresh_token: refreshToken,
+    }),
+  });
+  const tokens = await resp.json() as any;
+  if (!tokens.access_token) return decrypt(integration.oauthAccessToken || "");
+  await db.update(storeIntegrations).set({
+    oauthAccessToken: encrypt(tokens.access_token),
+    oauthRefreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : integration.oauthRefreshToken,
+    oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
+  }).where(eq(storeIntegrations.id, integration.id));
+  return tokens.access_token;
+}
+```
+
+Utiliser cette fonction à la place de `decrypt(integration.oauthAccessToken)`
+dans le webhook handler de l'ÉTAPE 3 avant le fetch de la commande complète.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 5 — UI : bouton "Connecter YouCan"
+
+Dans la page Intégrations (client/src/pages/integrations.tsx ou équivalent —
+regarder comment la carte "Google Sheets" est déjà affichée avec son bouton
+"Connecter" et suivre le même composant/style), ajouter une carte "YouCan" :
+- Bouton "Connecter YouCan" → `window.location.href = '/api/integrations/youcan/oauth/start'`
+- Lire `/api/integrations/youcan/status` pour afficher l'état connecté/déconnecté
+  et le nombre de commandes synchronisées (`ordersCount`)
+- Bouton "Déconnecter" → `POST /api/integrations/youcan/disconnect`
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+1. Ajouter les 3 variables d'environnement (ÉTAPE 0) sur Railway.
+2. git add -A && git commit -m "Add YouCan OAuth integration + order.create webhook sync" && git push
+3. Dans l'app YouCan (Partners Dashboard), vérifier que la Redirect URL
+   correspond exactement à `YOUCAN_REDIRECT_URI`.
+4. Dans la plateforme, aller sur Intégrations → cliquer "Connecter YouCan" →
+   se connecter avec le compte seller YouCan concerné → autoriser l'app.
+
+VÉRIFICATION
+- Après autorisation, redirection vers `/integrations?youcan=connected`.
+- `GET /api/integrations/youcan/status` renvoie `connected: true`.
+- Passer une commande test sur le store YouCan connecté → elle doit
+  apparaître automatiquement dans la liste des commandes de la plateforme en
+  quelques secondes, avec ville, nom, téléphone, produit(s) et montant
+  corrects.

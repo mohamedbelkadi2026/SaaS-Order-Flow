@@ -1,0 +1,39 @@
+CONFIRMED root cause: for the same order (Yassni, AGOURAY, 299 DH), our platform stores 
+trackNumber "AMEEX-PENDING-TJG-9230" (placeholder) but Ameex's REAL tracking code is 
+"AGRY0726B23187SM5808998". They're completely different → no matching possible. Ameex has a 
+parcel-list UI/API (columns: Tracking Code, Sender, RECIPIENT+phone, State, Status, City, Price) 
+— use it to reconcile.
+
+STEP 1 — FIND THE AMEEX LIST-PARCELS API:
+ - Ameex base https://api.ameex.app/customer/Delivery/Parcels/... . Find the endpoint that 
+   returns the store's parcels list (the data behind that table). It returns per parcel: real 
+   Tracking Code, recipient name, recipient PHONE, city, status. Paste the response shape + the 
+   auth used.
+
+STEP 2 — RECONCILE EXISTING ORDERS (backfill real codes; DRY-RUN first):
+ - Fetch all Ameex parcels for the store. For each of our orders whose trackNumber starts with 
+   "AMEEX-PENDING-", match to an Ameex parcel by normalized RECIPIENT PHONE (primary), fallback 
+   recipient name + city. On a unique match, set order.trackNumber = the real Ameex Tracking 
+   Code (e.g. AGRY0726B23187SM5808998). 
+ - DRY-RUN: report how many placeholders resolve, how many are ambiguous/unmatched, and 10 
+   examples (order → phone → real code). Skip ambiguous (multiple parcels same phone) — never 
+   guess. Only --apply after I approve.
+
+STEP 3 — MAP + SHOW STATUS:
+ - Also read each parcel's status from the list API and map via AMEEX_STATUS_MAP 
+   (DELIVERED->delivered, NEW PACKAGE->in_progress, INHOUSE/DISTRIBUTION->in_progress, 
+   RETURNED->retourné, REFUSED->refused, unknown->in_progress; store raw label in commentStatus). 
+   Apply to the matched orders so statuses show now.
+ - Once real codes are stored, incoming webhooks (payload.order_id = real code) will match by 
+   trackNumber automatically, and "Synchroniser les statuts" can also pull by real code.
+
+STEP 4 — FORWARD FIX (ship time) so no more placeholders:
+ - When shipping to Ameex, capture the real Tracking Code from the create/batch RESPONSE and 
+   store it as trackNumber immediately (replace placeholder). Also send our order reference to 
+   Ameex if the create API supports it. Paste the create request+response shapes.
+
+VERIFY: after backfill, the AMEEX-PENDING orders show their real Ameex codes and correct 
+statuses; new shipments store the real code directly; webhooks match automatically.
+
+Deploy to main. Paste: the list-parcels response shape, the create response shape, and the STEP 
+2 dry-run resolution count.

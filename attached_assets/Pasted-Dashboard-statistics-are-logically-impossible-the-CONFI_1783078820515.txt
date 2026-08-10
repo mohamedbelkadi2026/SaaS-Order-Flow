@@ -1,0 +1,67 @@
+Dashboard statistics are logically impossible: the "CONFIRMÉES" KPI (13) is LOWER than 
+"EXPÉDIÉS" (36) for the same period, even though an order must be confirmed before it 
+can be shipped. Also "EN COURS" shows 0 while 26 orders are in transit.
+
+ROOT CAUSE (already diagnosed — do NOT re-investigate):
+The stats code counts an order as "confirmed" only if its CURRENT status is in a 
+hard-coded list of 8 statuses:
+  ['confirme','confirme_reporte','expédié','delivered','refused','Attente De Ramassage','in_progress','retourné']
+But once an order ships, its status becomes a carrier/transit status that is NOT in 
+that list — e.g. 'En transit','En cours de livraison','Ramassé','Sorti pour livraison',
+'En cours de réception au network','Arrivé au hub','En cours de distribution','Reçu',
+'Programmé','En stock','Pris en charge','Collecté','Chargé','Confirmé par livreur',
+'Tentative échouée','Retour Recu', and French delivered variants 'Livré'/'Livrée'. 
+So confirmed shipped orders drop out of the confirmed count and land in "Autres" (49%), 
+making CONFIRMÉES < EXPÉDIÉS. This same 8-status list is DUPLICATED in many places.
+
+FIX — single source of truth, subtractive definition:
+1) Create ONE shared helper (e.g. in shared/schema.ts or a new shared/order-status.ts) 
+   and import it everywhere:
+     // A lead is "confirmed (cumulative)" once an agent confirms it; it STAYS 
+     // confirmed through every downstream carrier/transit/delivered/returned status.
+     export const NOT_CONFIRMED_STATUSES = new Set([
+       'nouveau','rappel','Injoignable','boite vocale',
+       'Annulé (fake)','Annulé (faux numéro)','Annulé (double)'
+     ]);
+     export function isConfirmedCumulative(status: string, trackNumber?: string | null): boolean {
+       if (!status) return false;
+       if (status.startsWith('Pas de réponse')) return false;
+       if (NOT_CONFIRMED_STATUSES.has(status)) return false;
+       return true; // everything else (confirme, confirme_reporte, all carrier/
+                    // transit/delivered/returned statuses) counts as confirmed
+     }
+   Rationale: carrier statuses are numerous and keep growing; the pre-confirmation/
+   cancelled lead statuses are few and stable. This guarantees confirmed >= shipped.
+
+2) Replace EVERY duplicated confirmed-status list with isConfirmedCumulative(...). 
+   Known locations (verify + find any others):
+   - server/routes.ts: ADMIN_CONFIRMED (~line 660) used at ~738 (confirme++), 
+     ~792 (cityMap.confirmed), ~827 (dailyMap.confirmed), ~862 (rawProductMap.confirme); 
+     CONFIRMED_STATUSES (~line 470) used at ~487.
+   - server/storage.ts: INVENTORY_CONFIRMED (~1771), CONFIRMED_STATUSES (~1921) used at 
+     ~1975/1991/2007/2032, CONF_STATUSES (~2066), and the raw SQL `count(*) filter (where 
+     status in (...))` (~2594) — update the SQL IN-list to exclude the not-confirmed 
+     statuses instead (NOT IN ('nouveau','rappel','Injoignable','boite vocale','Annulé 
+     (fake)','Annulé (faux numéro)','Annulé (double)') AND status NOT LIKE 'Pas de réponse%'), 
+     matching the helper's logic.
+
+3) Fix "EN COURS" / inProgress in server/routes.ts /api/stats/filtered:
+   Currently inProgress only counts status === 'in_progress'. Change it to the 
+   in-transit cohort = shipped but not delivered and not returned. Reuse the existing 
+   pendingShipped value (shippedOrders minus DELIVERED_STATUSES minus RETURNED_STATUSES) 
+   so the "En cours" card equals the "En attente / En transit" number in Statistiques 
+   Livraison. Set inProgress = pendingShipped.
+
+4) Do NOT change the delivered ("LIVRÉES") or shipped ("EXPÉDIÉS") logic — they are 
+   already correct. Keep confirme as a superset that includes them.
+
+VERIFY (with the current data: total 49, shipped 36, delivered 10, nouveau 10, 
+annulé 2):
+- CONFIRMÉES must be >= EXPÉDIÉS (expected ~37, i.e. everything except the 10 nouveaux 
+  and 2 annulés), never below 36.
+- EN COURS must be ~26 (in transit), not 0.
+- The "Autres" chip in the répartition must drop to ~0%.
+- Confirmation rate ≈ 75%, and confirmed + cancelled + injoignable + pasReponse + 
+  nouveau + autres still sums to 100%.
+
+Then commit and push to the main branch so Railway auto-redeploys.

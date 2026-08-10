@@ -15,6 +15,18 @@ import { Loader2, Plus, Trash2, Save, Upload } from "lucide-react";
 import { CityCombobox } from "@/components/city-combobox";
 import { MOROCCAN_CITIES } from "@/lib/carrier-cities";
 import { ProductCombobox, type ProductOption } from "@/components/product-combobox";
+import { FaFacebook, FaInstagram, FaTiktok, FaGoogle, FaWhatsapp } from 'react-icons/fa';
+
+const SOURCES = [
+  { value: 'facebook',  label: 'Facebook',  Icon: FaFacebook,  color: '#1877F2' },
+  { value: 'instagram', label: 'Instagram', Icon: FaInstagram, color: '#E4405F' },
+  { value: 'tiktok',    label: 'TikTok',    Icon: FaTiktok,    color: '#000000' },
+  { value: 'google',    label: 'Google',    Icon: FaGoogle,    color: '#EA4335' },
+  { value: 'whatsapp',  label: 'WhatsApp',  Icon: FaWhatsapp,  color: '#25D366' },
+  { value: 'manual',    label: 'Manuel',    Icon: null,        color: '#64748b' },
+];
+
+const UTM_SOURCES = SOURCES.filter(s => s.value !== 'manual');
 
 const ORDER_STATUSES = [
   { value: "nouveau", label: "Nouveau" },
@@ -68,6 +80,8 @@ export default function NewOrderAdd() {
   const [canOpen, setCanOpen] = useState(true);
   const [isStock, setIsStock] = useState(false);
   const [replace, setReplace] = useState(false);
+  const [source] = useState<string>('manual');
+  const [utmSource, setUtmSource] = useState<string>('');
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
@@ -171,10 +185,12 @@ export default function NewOrderAdd() {
         canOpen: canOpen ? 1 : 0,
         isStock: isStock ? 1 : 0,
         replace: replace ? 1 : 0,
-        agentId: agentId ? parseInt(agentId) : null,
+        agentId: agentId && agentId !== 'none' ? parseInt(agentId) : null,
+        source,
+        utmSource: utmSource || null,
         comment: comment.trim() || null,
         totalPrice: itemsTotal,
-        magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : null,
+        magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : (storeData?.id ?? null),
         items: items
           .filter(it => it.rawProductName.trim())
           .map(it => ({
@@ -329,6 +345,25 @@ export default function NewOrderAdd() {
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <Label className="text-xs mb-1.5 block">Source</Label>
+              <Input value="Manuel" readOnly className="bg-gray-50 text-sm" data-testid="input-source" />
+            </div>
+            <div>
+              <Label className="text-xs mb-1.5 block">Source UTM</Label>
+              <Select value={utmSource} onValueChange={setUtmSource} data-testid="select-utm-source">
+                <SelectTrigger className="text-sm"><SelectValue placeholder="Choisir la source" /></SelectTrigger>
+                <SelectContent>
+                  {UTM_SOURCES.map(s => (
+                    <SelectItem key={s.value} value={s.value}>
+                      <span className="flex items-center gap-2">
+                        {s.Icon && <s.Icon style={{ color: s.color }} />} {s.label}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             {!isAgent && (
             <div>
               <Label className="text-xs mb-1.5 block">Equipe</Label>
@@ -359,8 +394,8 @@ export default function NewOrderAdd() {
             </Button>
           </div>
 
-          {/* Table header */}
-          <div className="grid grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] gap-2 px-2 py-2 bg-gray-50 rounded text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+          {/* Table header — hidden on mobile, visible on sm+ */}
+          <div className="hidden sm:grid sm:grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] gap-2 px-2 py-2 bg-gray-50 rounded text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
             <span>Produit</span>
             <span>Reference (SKU)</span>
             <span>Variant</span>
@@ -370,9 +405,9 @@ export default function NewOrderAdd() {
             <span></span>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             {items.map(item => (
-              <div key={item.id} className="grid grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] gap-2 items-center">
+              <div key={item.id} className="flex flex-col gap-2 sm:grid sm:grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] sm:items-center border sm:border-0 rounded-lg sm:rounded-none p-3 sm:p-0 bg-gray-50 sm:bg-transparent">
                 <div>
                   <ProductCombobox
                     products={products as ProductOption[]}

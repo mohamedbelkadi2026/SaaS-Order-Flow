@@ -1,0 +1,94 @@
+Add 3 new features to the Gestion de l'Équipe page (client/src/pages/team.tsx) and related backend files.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FEATURE 1: Agent Online Status + Last Seen
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BACKEND:
+1. In shared/schema.ts, add to users table:
+   lastSeenAt: timestamp("last_seen_at")
+
+2. In server/routes.ts, in the requireAuth middleware or at the top of protected routes, add:
+   // Update lastSeenAt on every authenticated request
+   if (req.user?.id) {
+     db.update(users).set({ lastSeenAt: new Date() }).where(eq(users.id, req.user.id)).catch(() => {});
+   }
+
+3. In GET /api/agents/performance, add lastSeenAt to the returned data:
+   Join with users table to include lastSeenAt for each agent.
+
+4. Add migration in server/index.ts startup:
+   await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP`);
+
+FRONTEND (team.tsx):
+- In the agent row, add a status indicator dot next to the agent name:
+  - 🟢 Green dot = "En ligne" if lastSeenAt is within last 5 minutes
+  - 🟡 Yellow dot = "Récemment actif" if lastSeenAt is within last 30 minutes  
+  - ⚫ Grey dot = "Hors ligne" if lastSeenAt is older than 30 minutes or null
+- Show tooltip/text: "Dernière activité: X minutes ago" or "Jamais connecté"
+- Format: use a relative time like "il y a 3 min", "il y a 2h", "Aujourd'hui 14:32"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FEATURE 2: Average Response Time Per Order Per Agent
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BACKEND:
+In server/storage.ts, update getAgentPerformance() to also compute average response time:
+
+The orders table has: assignedAt (when order was assigned to agent) and updatedAt or a status change timestamp.
+Compute: average time between when order was assigned (assignedAt) and when it was first confirmed/processed.
+
+If assignedAt doesn't exist in orders table, use createdAt as fallback.
+
+Add to the SQL query:
+avgResponseMinutes: sql<number>`ROUND(AVG(EXTRACT(EPOCH FROM (${orders.updatedAt} - ${orders.createdAt}))/60))::int`
+
+Return avgResponseMinutes in the performance data.
+
+FRONTEND (team.tsx):
+- In each agent row in the table, add a new column "Temps moyen / commande"
+- Display as: "4 min", "1h 23min", "2h 05min"
+- Color code: green if < 10min, orange if 10-30min, red if > 30min
+- Show "—" if no data
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FEATURE 3: Agent Comparison by Product (new section below the table)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BACKEND:
+Add new endpoint: GET /api/agents/comparison-by-product
+
+This returns for each product, each agent's confirmation rate:
+SELECT 
+  p.id as product_id,
+  p.name as product_name,
+  o.assigned_to_id as agent_id,
+  COUNT(*) as total,
+  COUNT(*) FILTER (WHERE o.status IN ('confirme','expédié','delivered','Attente De Ramassage')) as confirmed
+FROM orders o
+JOIN products p ON o.product_id = p.id  
+WHERE o.store_id = $storeId AND o.assigned_to_id IS NOT NULL
+GROUP BY p.id, p.name, o.assigned_to_id
+
+FRONTEND (team.tsx):
+- Add a new section below the agents table titled "📊 Comparaison par Produit"
+- For each product, show a row with agent columns
+- Display each agent's confirmation rate % for that product
+- Highlight the best agent per product with a 🏆 trophy icon and green background
+- Show total orders per agent per product in small grey text
+- If an agent has 0 orders for a product, show "—"
+- Make it a clean table: rows = products, columns = agents
+
+Example layout:
+| Produit         | khawla      | fatima      | naima       |
+|----------------|-------------|-------------|-------------|
+| قطاعة الخضر    | 🏆 45% (20) | 38% (16)    | 29% (10)    |
+| Produit B      | 22% (5)     | 🏆 60% (8)  | —           |
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT NOTES:
+- Keep all existing team.tsx functionality intact
+- Add the 3 features progressively without breaking existing UI
+- Use the existing design system (same colors, cards, badges as the rest of the page)
+- The online status dot should refresh every 30 seconds automatically (useInterval or setInterval)
+- All text in French to match the existing UI language

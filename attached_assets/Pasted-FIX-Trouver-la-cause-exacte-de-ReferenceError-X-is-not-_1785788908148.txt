@@ -1,0 +1,76 @@
+FIX — Trouver la cause exacte de "ReferenceError: X is not defined" en
+ouvrant "Voir" sur Vitips Express (déjà contenu par l'ErrorBoundary, donc
+plus bloquant pour l'app — mais toujours à corriger).
+
+CONTEXTE
+Le stack trace récupéré vient du build de PRODUCTION, minifié — les noms de
+variables/fonctions réels sont remplacés par des lettres courtes (`cG`,
+`ig`, `Tj`...), donc "X" dans "ReferenceError: X is not defined" n'est très
+probablement PAS l'icône `X` de lucide-react, mais une variable quelconque
+renommée par le minifieur. Impossible de localiser la ligne exacte du code
+source sans reproduire l'erreur dans un contexte non-minifié.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Reproduire en local (dev, pas minifié) pour avoir la vraie stack
+trace
+
+Lancer le serveur de dev (`npm run dev` ou équivalent déjà configuré dans ce
+projet), ouvrir la page Intégrations transporteurs, cliquer "Voir" sur
+Vitips Express, et regarder la console : en mode dev, React affiche le nom
+RÉEL du composant et la ligne EXACTE du fichier source où l'erreur se
+produit (pas de minification en dev).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Pistes à vérifier en priorité une fois la ligne exacte trouvée
+
+Le crash a lieu dans un `.map()`, pendant le rendu du composant
+`CredentialsModal` (ouvert par le bouton "Voir") ou d'un composant qu'il
+utilise. Vérifier en particulier :
+
+1. Toute utilisation de l'icône `X` (croix de fermeture) — chercher
+   `<X ` dans TOUT client/src (pas seulement shipping-integrations.tsx,
+   qui a déjà été vérifié et ne l'utilise pas) :
+   ```bash
+   grep -rn "<X " client/src --include="*.tsx"
+   ```
+   Pour chaque résultat, vérifier que le fichier importe bien
+   `import { X } from "lucide-react";` — et l'ajouter s'il manque.
+
+2. Une comparaison ligne par ligne, dans la table `carrier_accounts`, entre
+   un compte Vitips Express et un compte Express Coursier qui fonctionne :
+   un champ NULL/undefined chez Vitips (mais jamais chez les autres
+   transporteurs) qui serait ensuite `.map()`é sans vérification (ex: un
+   champ JSON stocké comme string chez les uns et déjà parsé chez l'autre).
+
+3. Vérifier le composant `webhookIndicator` (utilisé dans le rendu de
+   chaque carte transporteur, visible juste avant le bouton "Voir") — sa
+   logique peut différer selon le provider et référencer une variable qui
+   n'existe que pour certains transporteurs.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Option accélératrice : activer les sourcemaps en production
+temporairement
+
+Si reproduire en dev est compliqué (données de test différentes, etc.),
+activer les sourcemaps pour le build de prod dans vite.config.ts :
+```ts
+build: {
+  sourcemap: true,
+  // ... reste de la config inchangé
+}
+```
+Redéployer, reproduire le bug en prod, et le stack trace dans la console
+affichera alors les vrais noms de fichiers/lignes malgré la minification.
+Warning : ça expose plus de détails du code source dans les fichiers `.map`
+livrés au navigateur — à retirer (`sourcemap: false`) une fois le bug
+corrigé, si la confidentialité du code source est une préoccupation.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT (une fois la cause trouvée et corrigée)
+git add -A && git commit -m "Fix ReferenceError X in Vitips Express credentials view" && git push
+
+VÉRIFICATION
+- Cliquer "Voir" sur Vitips Express → la modale s'affiche normalement, sans
+  passer par le fallback de l'ErrorBoundary.
+- Retirer `sourcemap: true` si activé temporairement à l'ÉTAPE 3, une fois
+  le bug résolu.
