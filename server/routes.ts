@@ -9121,6 +9121,164 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // POST /api/products/apply-product-link-corrections
+  // Applies the corrections identified by GET /api/products/audit-product-links.
+  // Use { dryRun: true } to preview what WOULD change without touching the DB.
+  // Use { dryRun: false } to actually apply corrections + fix stock_movements + recalculate products.stock.
+  // Always run the audit first and review its output before applying.
+  app.post("/api/products/apply-product-link-corrections", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const dryRun: boolean = req.body?.dryRun !== false; // default TRUE — safety first
+
+      // ── 1. Rebuild the audit (same logic as GET /api/products/audit-product-links) ──
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const storeProdsWithVariants = await Promise.all(
+        storeProducts.map(async (p: any) => ({
+          id: p.id,
+          name: p.name,
+          variants: await db.select({ name: productVariants.name })
+            .from(productVariants)
+            .where(eq(productVariants.productId, p.id)),
+        }))
+      );
+
+      const allItems = await db
+        .select({
+          oi_id: orderItems.id,
+          orderId: orderItems.orderId,
+          rawProductName: orderItems.rawProductName,
+          currentProductId: orderItems.productId,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            sql`${orderItems.rawProductName} IS NOT NULL`,
+            sql`${orderItems.rawProductName} != ''`,
+          )
+        );
+
+      if (allItems.length === 0) {
+        return res.json({ dryRun, corrected: 0, message: "Aucun order_item avec raw_product_name — rien à corriger." });
+      }
+
+      // Identify mismatches
+      const toFix: { oi_id: number; orderId: number; oldProductId: number | null; newProductId: number | null; rawProductName: string }[] = [];
+      for (const item of allItems) {
+        const { productId: computedId } = resolveProductId(item.rawProductName || '', storeProdsWithVariants);
+        if (computedId !== item.currentProductId) {
+          // Exclude already-null that stay null (unresolved_before) — no change needed
+          if (!computedId && !item.currentProductId) continue;
+          toFix.push({
+            oi_id: item.oi_id,
+            orderId: item.orderId,
+            oldProductId: item.currentProductId ?? null,
+            newProductId: computedId,
+            rawProductName: item.rawProductName || '',
+          });
+        }
+      }
+
+      const productNameById = new Map(storeProducts.map((p: any) => [p.id, p.name]));
+
+      if (dryRun) {
+        return res.json({
+          dryRun: true,
+          wouldCorrect: toFix.length,
+          preview: toFix.slice(0, 50).map(r => ({
+            oi_id: r.oi_id,
+            orderId: r.orderId,
+            rawProductName: r.rawProductName,
+            from: r.oldProductId ? `#${r.oldProductId} (${productNameById.get(r.oldProductId) ?? '?'})` : 'null',
+            to: r.newProductId ? `#${r.newProductId} (${productNameById.get(r.newProductId) ?? '?'})` : 'null (non reconnu)',
+          })),
+          message: `Dry-run: ${toFix.length} correction(s) prévue(s). Envoyez { dryRun: false } pour appliquer.`,
+        });
+      }
+
+      // ── 2. Apply corrections in a transaction ──
+      const affectedProductIds = new Set<number>();
+      toFix.forEach(r => {
+        if (r.oldProductId) affectedProductIds.add(r.oldProductId);
+        if (r.newProductId) affectedProductIds.add(r.newProductId);
+      });
+
+      let corrected = 0;
+      for (const fix of toFix) {
+        // 2a. Update order_items.product_id
+        await db.update(orderItems)
+          .set({ productId: fix.newProductId } as any)
+          .where(eq(orderItems.id, fix.oi_id));
+        corrected++;
+
+        // 2b. Update matching stock_movements for this order + old product
+        if (fix.oldProductId) {
+          if (fix.newProductId) {
+            // Reassign movement to correct product
+            await db.update(stockMovements)
+              .set({ productId: fix.newProductId })
+              .where(and(
+                eq(stockMovements.storeId, storeId),
+                eq(stockMovements.orderId, fix.orderId),
+                eq(stockMovements.productId, fix.oldProductId),
+              ));
+          } else {
+            // No valid product → delete the bogus movement (order will show as "non reconnu")
+            await db.delete(stockMovements)
+              .where(and(
+                eq(stockMovements.storeId, storeId),
+                eq(stockMovements.orderId, fix.orderId),
+                eq(stockMovements.productId, fix.oldProductId),
+              ));
+          }
+        }
+      }
+
+      // ── 3. Recalculate products.stock for all affected products ──
+      // Recount from stock_movements: outgoing (shipped/delivered) subtract, incoming (adjustment/return) add.
+      const stockReport: { productId: number; productName: string; newStock: number }[] = [];
+      for (const pid of affectedProductIds) {
+        const movs = await db
+          .select({ type: stockMovements.type, quantity: stockMovements.quantity })
+          .from(stockMovements)
+          .where(and(eq(stockMovements.storeId, storeId), eq(stockMovements.productId, pid)));
+
+        let newStock = 0;
+        for (const m of movs) {
+          const qty = Number(m.quantity ?? 1);
+          if (m.type === 'shipped' || m.type === 'delivered') {
+            newStock -= qty;
+          } else {
+            newStock += qty; // adjustment, return_to_stock, etc.
+          }
+        }
+        // Clamp to 0 to avoid negative available stock in edge cases
+        newStock = Math.max(0, newStock);
+
+        await db.update(products)
+          .set({ stock: newStock })
+          .where(and(eq(products.id, pid), eq(products.storeId, storeId)));
+
+        stockReport.push({ productId: pid, productName: productNameById.get(pid) ?? '?', newStock });
+      }
+
+      console.log(`[RepairProductLinks] store=${storeId} corrected=${corrected} affectedProducts=${affectedProductIds.size}`);
+
+      res.json({
+        dryRun: false,
+        corrected,
+        affectedProducts: stockReport.length,
+        stockRecalculated: stockReport,
+        message: `✅ ${corrected} correction(s) appliquée(s). Stock recalculé pour ${stockReport.length} produit(s).`,
+      });
+    } catch (err: any) {
+      console.error("[RepairProductLinks]", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.post("/api/products/bulk-apply-cost-to-variants", requireAuth, requireAdmin, async (req: any, res: any) => {
     try {
       const storeId = req.user!.storeId!;

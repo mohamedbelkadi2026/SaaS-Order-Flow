@@ -1,0 +1,39 @@
+# Replit Prompt — Le fix précédent n'a RIEN changé : il faut chercher un fallback codé en dur, pas re-toucher normStr
+
+## Constat important
+
+Le fix précédent (`normStr` + garde-fou) a été appliqué mais **le problème est identique**. Et il y a un indice qu'on avait raté : dans la liste "Suivi des Colis" filtrée par "الشريط اللاصق مطاطي القوي" (SKU **0013**), TOUTES les commandes affichées — quel que soit le produit réellement commandé (مشد الجسم, حامل هاتف السيارة, ميزان رقمي محمول, المروحة الذكية, جهاز شفط الحليب...) — ont la colonne **RÉFÉRENCE = 0013**.
+
+Or ces noms de produits n'ont **AUCUNE ressemblance textuelle** entre eux ("الشريط اللاصق مطاطي القوي" vs "مشد الجسم" vs "حامل هاتف السيارة") — même avec `normStr()` correctement réparé pour préserver l'arabe, un matching par similarité de texte ne pourrait JAMAIS les confondre. **Ça veut dire que le bug n'est probablement pas (ou plus) dans `normStr()`/`resolveProductId()` — c'est un fallback codé en dur qui pointe vers le produit SKU 0013 spécifiquement, indépendamment du nom du produit commandé.**
+
+## Ce qu'il faut chercher maintenant (recherche ciblée, pas un nouveau patch au hasard)
+
+1. **Chercher littéralement dans tout le code** toute occurrence de `"0013"` en dur :
+```bash
+grep -rn "0013" server/ client/src --include=*.ts --include=*.tsx
+```
+2. **Chercher tout fallback "produit par défaut"** dans le pipeline de création de commande (webhooks YouCan/Shopify/EasyOrders, import Excel, création manuelle) — motifs à rechercher :
+```bash
+grep -rn "storeProducts\[0\]\|products\[0\]\|defaultProduct\|fallbackProduct\||| products\[0\]" server/
+```
+Ce genre de pattern (`productId = matchedId || storeProducts[0].id` ou équivalent) est le suspect n°1 : si `resolveProductId()` retourne `null`/`undefined` (ce qui est justement le comportement attendu depuis le dernier fix quand rien ne matche), et que le code appelant fait `?? storeProducts[0]` ou `|| products[0].id` juste après, ÇA reproduit exactement ce qu'on observe — tout ce qui échoue à matcher tombe sur le même produit (probablement le premier produit créé dans le store, ou celui avec le plus petit `id`).
+3. Vérifier spécifiquement si le produit SKU 0013 est le produit avec le PLUS PETIT `id` dans la table `products` pour ce store (`SELECT id, sku, name FROM products WHERE store_id = X ORDER BY id ASC LIMIT 3;`) — si oui, c'est la confirmation quasi certaine que le fallback prend `products[0]` (premier par ordre de création/tri par défaut).
+4. Regarder aussi du côté de `orderItems.productId` par défaut au niveau du schéma (`shared/schema.ts`) — vérifier s'il y a une valeur par défaut (`.default(...)`) sur la colonne `product_id` de `order_items` qui pointerait vers un ID fixe.
+
+## Fix une fois la vraie cause localisée
+
+- Supprimer tout fallback silencieux vers un produit par défaut.
+- Si `resolveProductId()` ne trouve aucun match fiable : laisser `order_items.product_id` à `NULL` (si la colonne le permet) et marquer la commande/l'item comme "Produit non reconnu — à lier manuellement" (visible dans Suivi des Colis avec un badge distinct), plutôt que de deviner.
+- Auditer TOUTES les commandes actuelles liées au SKU 0013 : celles dont le `raw_product_name` ne correspond pas au nom du produit 0013 doivent être ré-analysées et re-liées au bon produit (ou laissées "non reconnues" si aucun match fiable) — pas seulement les nouvelles commandes à venir.
+
+## Ce que je veux en retour, avant tout nouveau déploiement
+
+Demander à Replit de coller ici (ou dans sa réponse) :
+1. Le résultat exact du `grep` demandé ci-dessus (les lignes trouvées).
+2. L'endroit précis (fichier + ligne) où le fallback incriminé a été trouvé, avec une explication de pourquoi il produit ce symptôme.
+3. Seulement APRÈS avoir confirmé la vraie cause, appliquer le fix — pas de nouveau patch "au cas où" sans avoir identifié la ligne exacte responsable, puisque les tentatives précédentes basées sur des hypothèses non vérifiées n'ont pas résolu le problème.
+
+## Testing checklist (une fois le vrai fix appliqué)
+1. Filtrer Suivi des Colis par "الشريط اللاصق مطاطي القوي" → ne doit plus remonter que des commandes de CE produit.
+2. Vérifier qu'aucune commande n'est plus jamais liée au SKU 0013 par défaut quand son vrai produit est différent.
+3. Repasser une commande de test avec un nom de produit qui n'existe pas dans le catalogue → elle doit apparaître comme "non reconnue", jamais liée automatiquement à 0013 ou à un autre produit au hasard.
