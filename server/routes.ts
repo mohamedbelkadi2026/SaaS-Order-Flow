@@ -2052,6 +2052,103 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // PRODUCT-LINK REPAIR (admin, dry-run + apply)
+  // Re-resolves each order_items.productId from its rawProductName:
+  // unique name match → correct link; ambiguous (several products share
+  // the normalized name) → NULL; no match → left untouched.
+  // ============================================================
+  app.post("/api/inventory/repair-product-links", requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const apply = req.body?.apply === true;
+
+      const normalizeName = (s: string) =>
+        s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+
+      const storeProducts = await db.select({ id: products.id, name: products.name })
+        .from(products).where(eq(products.storeId, storeId));
+      const nameMap = new Map<string, number[]>();
+      for (const p of storeProducts) {
+        const key = normalizeName(p.name || "");
+        if (!key) continue;
+        const arr = nameMap.get(key) || [];
+        arr.push(p.id);
+        nameMap.set(key, arr);
+      }
+
+      const items = await db.select({
+        id: orderItems.id,
+        productId: orderItems.productId,
+        rawProductName: orderItems.rawProductName,
+      }).from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(eq(orders.storeId, storeId));
+
+      let corrected = 0, nulled = 0, unmatched = 0, alreadyOk = 0, noName = 0;
+      // Group planned updates by (from → to) pair so apply can be conditioned on
+      // the originally-read productId — concurrent edits are skipped, not clobbered.
+      const updates = new Map<string, { from: number | null; to: number | null; ids: number[] }>();
+      const samples: { itemId: number; rawProductName: string; from: number | null; to: number | null }[] = [];
+
+      for (const item of items) {
+        const raw = (item.rawProductName || "").trim();
+        if (!raw) { noName++; continue; }
+        const matches = nameMap.get(normalizeName(raw)) || [];
+        let target: number | null;
+        if (matches.length === 1) target = matches[0];
+        else if (matches.length > 1) target = null; // ambiguous → unlink
+        else { unmatched++; continue; } // no match → leave as-is
+
+        if (target === item.productId) { alreadyOk++; continue; }
+        if (target === null && item.productId === null) { alreadyOk++; continue; }
+
+        if (target === null) nulled++; else corrected++;
+        const key = `${item.productId ?? 'null'}→${target ?? 'null'}`;
+        const group = updates.get(key) || { from: item.productId, to: target, ids: [] };
+        group.ids.push(item.id);
+        updates.set(key, group);
+        if (samples.length < 20) {
+          samples.push({ itemId: item.id, rawProductName: raw, from: item.productId, to: target });
+        }
+      }
+
+      let applied = 0;
+      if (apply) {
+        for (const group of Array.from(updates.values())) {
+          for (let i = 0; i < group.ids.length; i += 500) {
+            const chunk = group.ids.slice(i, i + 500);
+            // Condition each update on the originally-read productId so rows
+            // changed concurrently since the read are skipped, not overwritten.
+            const fromCond = group.from === null
+              ? sql`${orderItems.productId} IS NULL`
+              : eq(orderItems.productId, group.from);
+            const result = await db.update(orderItems)
+              .set({ productId: group.to })
+              .where(and(inArray(orderItems.id, chunk), fromCond));
+            applied += (result as any).rowCount ?? chunk.length;
+          }
+        }
+        console.log(`[REPAIR-PRODUCT-LINKS] store=${storeId} applied=${applied} (planned: corrected=${corrected}, nulled=${nulled})`);
+      }
+
+      res.json({
+        mode: apply ? "apply" : "dry-run",
+        totalItems: items.length,
+        corrected,
+        nulled,
+        alreadyOk,
+        unmatched,
+        noName,
+        applied: apply ? applied : undefined,
+        samples,
+      });
+    } catch (e: any) {
+      console.error("[REPAIR-PRODUCT-LINKS] error:", e);
+      res.status(500).json({ message: e.message || "Erreur lors de la réparation des liaisons produit" });
+    }
+  });
+
+  // ============================================================
   // NET PROFIT ENGINE
   // ============================================================
   app.get("/api/profit/admin-summary", requireAdmin, async (req, res) => {

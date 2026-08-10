@@ -1,0 +1,20 @@
+# Replit Prompt — Exécuter la réparation depuis la PRODUCTION, pas depuis le shell dev
+
+## Constat
+
+Le shell Replit dev n'a pas accès réseau à la base de données de production, donc la tentative précédente d'exécuter le script de réparation n'a eu AUCUN EFFET sur les vraies données — c'est pour ça que le problème est identique (filtre Produit remonte encore des commandes d'un autre produit).
+
+## Ce qu'il faut faire maintenant
+
+1. Lancer la tâche suggérée **"Let admins run the product-link audit and apply corrections from the dashboard UI"** — c'est la bonne approche : exposer la réparation comme une action déclenchable DEPUIS l'application déployée elle-même (qui, elle, a accès à la vraie base de production), pas depuis le terminal de dev.
+2. Concrètement : ajouter un bouton dans `/inventory` (à côté de "Corriger l'historique stock" / "Réparer l'historique des stocks" déjà existants), réservé aux admins, du type **"Réparer les liaisons produit"**, qui appelle un endpoint backend protégé (`requireAdmin`) exécutant exactement la même logique que le script fourni précédemment (`resolveProductId` sur chaque `order_items.rawProductName`, correction si différent, NULL si ambigu).
+3. Le bouton doit d'abord lancer un **mode aperçu** (dry-run) qui affiche combien de liens seraient corrigés (comme le script), avant un second clic de confirmation qui applique réellement les changements — pour éviter tout risque sur la production.
+4. Une fois le bouton en place et déployé : **aller sur l'URL de production réelle (celle que j'utilise tous les jours, pas l'aperçu dev Replit)**, ouvrir `/inventory`, cliquer sur ce nouveau bouton, vérifier l'aperçu, puis confirmer l'application.
+
+## Vérification après exécution
+1. Confirmer le nombre de corrections réellement appliquées (doit être > 0 si le problème existe encore).
+2. Retester immédiatement : filtrer Suivi des Colis par "الشريط اللاصق مطاطي القوي" → ne doit plus remonter que ses vraies commandes.
+3. Vérifier `/inventory` : Disponible redevient cohérent pour ce produit et les autres.
+4. Confirmer avec une capture d'écran que ça vient bien de l'URL de production (pas d'un aperçu/preview Replit) pour être sûr que le fix est réellement en ligne.
+
+Accepter aussi l'autre tâche suggérée **"Prevent stock_movements for returned/refused orders from pointing to wrong products"** ensuite, une fois celle-ci confirmée réussie — c'est un renforcement utile lié au même problème.

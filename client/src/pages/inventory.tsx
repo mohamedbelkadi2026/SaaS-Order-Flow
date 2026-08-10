@@ -13,9 +13,10 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Wrench, Loader2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 
 interface VariantForm {
   name: string;
@@ -31,6 +32,50 @@ export default function Inventory() {
   const updateProduct = useUpdateProduct();
   const deleteProduct = useDeleteProduct();
   const { toast } = useToast();
+  const { user } = useAuth();
+  // The backend requireAdmin middleware only admits 'owner' — gate the button the same way.
+  const isOwner = user?.role === 'owner';
+
+  // "Réparer les liaisons produit" (dry-run preview → confirm apply)
+  const [repairOpen, setRepairOpen] = useState(false);
+  const [repairPreview, setRepairPreview] = useState<any | null>(null);
+  const [repairLoading, setRepairLoading] = useState(false);
+  const [repairApplying, setRepairApplying] = useState(false);
+  const [repairResult, setRepairResult] = useState<any | null>(null);
+
+  const startRepairPreview = async () => {
+    setRepairOpen(true);
+    setRepairPreview(null);
+    setRepairResult(null);
+    setRepairLoading(true);
+    try {
+      const res = await apiRequest("POST", "/api/inventory/repair-product-links", { apply: false });
+      setRepairPreview(await res.json());
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message || "Erreur lors de l'aperçu", variant: "destructive" });
+      setRepairOpen(false);
+    } finally {
+      setRepairLoading(false);
+    }
+  };
+
+  const applyRepair = async () => {
+    setRepairApplying(true);
+    try {
+      const res = await apiRequest("POST", "/api/inventory/repair-product-links", { apply: true });
+      const data = await res.json();
+      setRepairResult(data);
+      toast({ title: "✅ Liaisons réparées", description: `${data.applied ?? 0} liaison(s) mise(s) à jour.` });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/inventory'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message || "Erreur lors de l'application", variant: "destructive" });
+    } finally {
+      setRepairApplying(false);
+    }
+  };
+
   const [logsProductId, setLogsProductId] = useState<number | null>(null);
   const [logsProductName, setLogsProductName] = useState<string>("");
 
@@ -345,9 +390,16 @@ export default function Inventory() {
           <h1 className="text-3xl font-display font-bold" data-testid="text-inventory-title">Inventaire</h1>
           <p className="text-muted-foreground mt-1">Gestion complète des produits et niveaux de stock.</p>
         </div>
-        <Button className="shadow-lg shadow-primary/20" data-testid="button-add-product" onClick={() => setAddOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" /> Nouveau Produit
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {isOwner && (
+            <Button variant="outline" data-testid="button-repair-product-links" onClick={startRepairPreview}>
+              <Wrench className="w-4 h-4 mr-2" /> Réparer les liaisons produit
+            </Button>
+          )}
+          <Button className="shadow-lg shadow-primary/20" data-testid="button-add-product" onClick={() => setAddOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" /> Nouveau Produit
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -1136,6 +1188,85 @@ export default function Inventory() {
             >
               {restockSaving ? "Sauvegarde..." : "Ajouter au stock"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Repair product links dialog (dry-run preview → confirm apply) */}
+      <Dialog open={repairOpen} onOpenChange={(o) => { if (!repairApplying) setRepairOpen(o); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Wrench className="w-5 h-5 text-primary" /> Réparer les liaisons produit
+            </DialogTitle>
+            <DialogDescription>
+              Ré-associe chaque article de commande au bon produit selon son nom d'origine.
+              Aucune modification n'est appliquée avant votre confirmation.
+            </DialogDescription>
+          </DialogHeader>
+
+          {repairLoading ? (
+            <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+              <Loader2 className="w-5 h-5 animate-spin" /> Analyse en cours...
+            </div>
+          ) : repairResult ? (
+            <div className="space-y-3 py-2">
+              <div className="flex items-center gap-2 text-emerald-600 font-medium">
+                <CheckCircle2 className="w-5 h-5" /> Réparation appliquée
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {repairResult.applied ?? 0} liaison(s) mise(s) à jour
+                ({repairResult.corrected} corrigée(s), {repairResult.nulled} déliée(s) car ambiguë(s)).
+              </p>
+            </div>
+          ) : repairPreview ? (
+            <div className="space-y-3 py-2" data-testid="repair-preview">
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Articles analysés</p>
+                  <p className="text-lg font-bold">{repairPreview.totalItems}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Déjà corrects</p>
+                  <p className="text-lg font-bold">{repairPreview.alreadyOk}</p>
+                </div>
+                <div className="rounded-lg border p-3 border-amber-300 bg-amber-50 dark:bg-amber-950/30">
+                  <p className="text-xs text-muted-foreground">À corriger</p>
+                  <p className="text-lg font-bold text-amber-600">{repairPreview.corrected}</p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">À délier (ambigus)</p>
+                  <p className="text-lg font-bold">{repairPreview.nulled}</p>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {repairPreview.unmatched} article(s) sans produit correspondant seront laissés tels quels.
+              </p>
+              {repairPreview.samples?.length > 0 && (
+                <div className="max-h-40 overflow-y-auto rounded-lg border text-xs">
+                  {repairPreview.samples.map((s: any) => (
+                    <div key={s.itemId} className="px-3 py-1.5 border-b last:border-b-0 flex justify-between gap-2">
+                      <span className="truncate">{s.rawProductName}</span>
+                      <span className="text-muted-foreground shrink-0">#{s.from ?? '—'} → #{s.to ?? '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(repairPreview.corrected + repairPreview.nulled) === 0 && (
+                <p className="text-sm text-emerald-600 font-medium">✅ Aucune correction nécessaire — toutes les liaisons sont correctes.</p>
+              )}
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRepairOpen(false)} disabled={repairApplying} data-testid="button-repair-close">
+              {repairResult ? "Fermer" : "Annuler"}
+            </Button>
+            {!repairResult && repairPreview && (repairPreview.corrected + repairPreview.nulled) > 0 && (
+              <Button onClick={applyRepair} disabled={repairApplying} data-testid="button-repair-apply">
+                {repairApplying ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Application...</>) : `Appliquer ${repairPreview.corrected + repairPreview.nulled} correction(s)`}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

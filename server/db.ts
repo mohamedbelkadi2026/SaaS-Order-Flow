@@ -246,6 +246,17 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: orders.offer_name + ameex_product_id columns ensured.");
 
+    // ── 5b. Indexes supporting the product-link repair join (order_items ⋈ orders) ─
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_order_items_order_id
+        ON public.order_items (order_id);
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_store_id
+        ON public.orders (store_id);
+    `);
+    console.log("[Migration] order_items/orders join indexes ensured ✅");
+
     // ── 6. orders: add carrier tracking columns ───────────────────────────────
     await client.query(`
       ALTER TABLE public.orders
