@@ -125,10 +125,10 @@ async function syncOneSpreadsheet(conn: any) {
       if (existing) continue;
 
       const totalPrice = Math.round(rawPrice * 100);
-      const matched = storeProducts.find(
-        (p) => p.name?.toLowerCase() === product.toLowerCase() ||
-               (p as any).sku?.toLowerCase() === product.toLowerCase()
-      );
+      // Name/SKU match only when UNIQUE — never guess between duplicates.
+      const nameMsGC = storeProducts.filter((p) => p.name?.toLowerCase() === product.toLowerCase());
+      const skuMsGC = nameMsGC.length === 1 ? [] : storeProducts.filter((p) => (p as any).sku?.toLowerCase() === product.toLowerCase());
+      const matched = nameMsGC.length === 1 ? nameMsGC[0] : (skuMsGC.length === 1 ? skuMsGC[0] : undefined);
 
       const orderItems = [{
         productId:      matched ? matched.id : (null as any),

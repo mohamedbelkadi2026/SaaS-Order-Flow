@@ -7178,10 +7178,10 @@ function ensureHeaders(sheet) {
       let productCost = 0;
       const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
       for (const item of parsed.lineItems) {
-        const matched = storeProducts.find(p =>
-          (item.sku && p.sku && p.sku.toLowerCase() === item.sku.toLowerCase()) ||
-          p.name.toLowerCase() === item.title.toLowerCase()
-        );
+        // SKU/name match only when UNIQUE — never guess between duplicates.
+        const skuMsSh = item.sku ? storeProducts.filter(p => p.sku && p.sku.toLowerCase() === item.sku.toLowerCase()) : [];
+        const nameMsSh = skuMsSh.length === 1 ? [] : storeProducts.filter(p => p.name.toLowerCase() === item.title.toLowerCase());
+        const matched = skuMsSh.length === 1 ? skuMsSh[0] : (nameMsSh.length === 1 ? nameMsSh[0] : undefined);
         orderItemsToCreate.push({
           productId: matched?.id ?? null,
           quantity: item.quantity,
@@ -8195,13 +8195,15 @@ function ensureHeaders(sheet) {
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
-      // Duplicate-SKU guard: two products sharing a SKU in the same store makes
+      // Normalize the SKU once (trimmed value is what gets persisted), then
+      // duplicate-SKU guard: two products sharing a SKU in the same store makes
       // SKU-first webhook matching link orders to the wrong product.
-      if (data.sku && data.sku.trim()) {
+      data.sku = data.sku.trim();
+      if (data.sku) {
         const existingSku = await db.select({ id: products.id, name: products.name }).from(products)
-          .where(and(eq(products.storeId, storeId), eq(products.sku, data.sku.trim()))).limit(1);
+          .where(and(eq(products.storeId, storeId), eq(products.sku, data.sku))).limit(1);
         if (existingSku.length > 0) {
-          return res.status(409).json({ message: `SKU "${data.sku.trim()}" déjà utilisé par le produit "${existingSku[0].name}". Chaque produit doit avoir un SKU unique.` });
+          return res.status(409).json({ message: `SKU "${data.sku}" déjà utilisé par le produit "${existingSku[0].name}". Chaque produit doit avoir un SKU unique.` });
         }
       }
       const { variants, coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, stockDate, ...productData } = data;
@@ -8237,8 +8239,10 @@ function ensureHeaders(sheet) {
         }
         res.status(201).json(product);
       }
-    } catch (err) {
+    } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      // Unique-index race safety net: concurrent create with the same SKU.
+      if (err?.code === '23505') return res.status(409).json({ message: "Ce SKU est déjà utilisé par un autre produit. Chaque produit doit avoir un SKU unique." });
       throw err;
     }
   });
@@ -8577,13 +8581,15 @@ function ensureHeaders(sheet) {
         })).optional(),
       });
       const data = schema.parse(req.body);
-      // Duplicate-SKU guard (same rule as creation): reject if another product
+      // Normalize the SKU once (trimmed value is what gets persisted), then
+      // duplicate-SKU guard (same rule as creation): reject if another product
       // of this store already uses the new SKU.
-      if (data.sku && data.sku.trim() && data.sku.trim() !== product.sku) {
+      if (data.sku !== undefined) data.sku = data.sku.trim();
+      if (data.sku && data.sku !== product.sku) {
         const existingSku = await db.select({ id: products.id, name: products.name }).from(products)
-          .where(and(eq(products.storeId, product.storeId), eq(products.sku, data.sku.trim()))).limit(1);
+          .where(and(eq(products.storeId, product.storeId), eq(products.sku, data.sku))).limit(1);
         if (existingSku.length > 0 && existingSku[0].id !== productId) {
-          return res.status(409).json({ message: `SKU "${data.sku.trim()}" déjà utilisé par le produit "${existingSku[0].name}". Chaque produit doit avoir un SKU unique.` });
+          return res.status(409).json({ message: `SKU "${data.sku}" déjà utilisé par le produit "${existingSku[0].name}". Chaque produit doit avoir un SKU unique.` });
         }
       }
       const { coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, variants: variantsPayload, ...updateData } = data;
@@ -8643,8 +8649,10 @@ function ensureHeaders(sheet) {
       // Return the updated product (re-fetch to include any variant flag changes)
       const final = await storage.getProduct(productId);
       res.json(final || updated);
-    } catch (err) {
+    } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      // Unique-index race safety net: concurrent edit with the same SKU.
+      if (err?.code === '23505') return res.status(409).json({ message: "Ce SKU est déjà utilisé par un autre produit. Chaque produit doit avoir un SKU unique." });
       throw err;
     }
   });
@@ -17259,10 +17267,10 @@ function submitOrder(e){
           let matched: any = undefined;
 
           if (productNameLower) {
-            matched = storeProducts.find((p: any) =>
-              (p.name && p.name.toLowerCase().trim() === productNameLower) ||
-              (p.sku && p.sku.toLowerCase().trim() === productNameLower)
-            );
+            // Name/SKU match only when UNIQUE — never guess between duplicates.
+            const nameMsSS = storeProducts.filter((p: any) => p.name && p.name.toLowerCase().trim() === productNameLower);
+            const skuMsSS = nameMsSS.length === 1 ? [] : storeProducts.filter((p: any) => p.sku && p.sku.toLowerCase().trim() === productNameLower);
+            matched = nameMsSS.length === 1 ? nameMsSS[0] : (skuMsSS.length === 1 ? skuMsSS[0] : undefined);
             if (matched) {
               console.log(`[SheetsScript] ✅ Matched existing product id=${matched.id} name="${matched.name}"`);
             } else {

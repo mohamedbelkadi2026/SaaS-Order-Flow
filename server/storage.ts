@@ -462,19 +462,47 @@ export class DatabaseStorage implements IStorage {
     );
     if (existing) return existing;
 
-    const sku = (opts.sku && String(opts.sku).trim())
-      ? String(opts.sku).trim()
-      : `IMP-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const generatedSku = () => `IMP-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    let sku = (opts.sku && String(opts.sku).trim()) ? String(opts.sku).trim() : generatedSku();
 
-    const [created] = await db.insert(products).values({
-      storeId,
-      name,
-      sku,
-      stock: 0,
-      costPrice: 0,
-      sellingPrice: Math.max(0, Math.round(opts.sellingPrice || 0)),
-    }).returning();
-    return created;
+    // The (store_id, sku) unique index forbids reusing a SKU owned by another
+    // product. If the incoming SKU is taken, fall back to a generated one —
+    // the product is genuinely new (different name), so it must not steal the SKU.
+    const [skuOwner] = await db.select({ id: products.id }).from(products)
+      .where(and(eq(products.storeId, storeId), eq(products.sku, sku)));
+    if (skuOwner) sku = generatedSku();
+
+    try {
+      const [created] = await db.insert(products).values({
+        storeId,
+        name,
+        sku,
+        stock: 0,
+        costPrice: 0,
+        sellingPrice: Math.max(0, Math.round(opts.sellingPrice || 0)),
+      }).returning();
+      return created;
+    } catch (e: any) {
+      // 23505 = unique violation (race with a concurrent insert): re-check by
+      // name (another worker may have created the same product), else retry
+      // once with a fresh generated SKU.
+      if (e?.code === '23505') {
+        const [byName] = await db.select().from(products).where(
+          and(eq(products.storeId, storeId), sql`lower(${products.name}) = lower(${name})`),
+        );
+        if (byName) return byName;
+        const [created] = await db.insert(products).values({
+          storeId,
+          name,
+          sku: generatedSku(),
+          stock: 0,
+          costPrice: 0,
+          sellingPrice: Math.max(0, Math.round(opts.sellingPrice || 0)),
+        }).returning();
+        return created;
+      }
+      throw e;
+    }
   }
 
   async updateProductStock(id: number, stockDelta: number): Promise<Product | undefined> {
