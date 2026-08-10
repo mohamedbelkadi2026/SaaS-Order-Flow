@@ -9122,16 +9122,21 @@ function ensureHeaders(sheet) {
   });
 
   // POST /api/products/apply-product-link-corrections
-  // Applies the corrections identified by GET /api/products/audit-product-links.
-  // Use { dryRun: true } to preview what WOULD change without touching the DB.
-  // Use { dryRun: false } to actually apply corrections + fix stock_movements + recalculate products.stock.
-  // Always run the audit first and review its output before applying.
+  // Applies the corrections identified by the audit:
+  //   - Updates order_items.product_id to the value computed by the corrected normStr
+  //   - Skips 'unresolved_before' rows (both sides null — no change possible)
+  //   - When newProductId is null: updates order_item to null but leaves stock_movements
+  //     untouched (cannot set NOT NULL movement column to null)
+  //   - Migrates stock_movements only when (orderId, oldProductId) maps unambiguously to
+  //     a single newProductId; ambiguous orders are reported for manual review
+  //   - Recalculates products.stock = SUM(movements) for EVERY product in the store
+  //     (full-catalog reconciliation, not only affected products)
+  //   - All writes are in a single transaction (auto-rollback on error)
   app.post("/api/products/apply-product-link-corrections", requireAuth, requireAdmin, async (req: any, res: any) => {
     try {
       const storeId = req.user!.storeId!;
-      const dryRun: boolean = req.body?.dryRun !== false; // default TRUE — safety first
 
-      // ── 1. Rebuild the audit (same logic as GET /api/products/audit-product-links) ──
+      // ── Re-run the audit to identify mismatches ─────────────────────────────
       const storeProducts = await storage.getProductsByStore(storeId);
       const storeProdsWithVariants = await Promise.all(
         storeProducts.map(async (p: any) => ({
@@ -9143,7 +9148,7 @@ function ensureHeaders(sheet) {
         }))
       );
 
-      const allItems = await db
+      const items = await db
         .select({
           oi_id: orderItems.id,
           orderId: orderItems.orderId,
@@ -9160,121 +9165,255 @@ function ensureHeaders(sheet) {
           )
         );
 
-      if (allItems.length === 0) {
-        return res.json({ dryRun, corrected: 0, message: "Aucun order_item avec raw_product_name — rien à corriger." });
+      // Classify each item — skip unresolved_before (both null) and ok (same)
+      const corrections: {
+        oi_id: number; orderId: number; rawProductName: string;
+        oldProductId: number | null; newProductId: number | null;
+      }[] = [];
+
+      for (const item of items) {
+        const { productId: computedId } = resolveProductId(item.rawProductName || '', storeProdsWithVariants);
+        if (!computedId && !item.currentProductId) continue; // unresolved_before — no change
+        if (computedId === item.currentProductId) continue;  // already correct
+        corrections.push({
+          oi_id: item.oi_id,
+          orderId: item.orderId,
+          rawProductName: item.rawProductName || '',
+          oldProductId: item.currentProductId ?? null,
+          newProductId: computedId,
+        });
       }
 
-      // Identify mismatches
-      const toFix: { oi_id: number; orderId: number; oldProductId: number | null; newProductId: number | null; rawProductName: string }[] = [];
-      for (const item of allItems) {
-        const { productId: computedId } = resolveProductId(item.rawProductName || '', storeProdsWithVariants);
-        if (computedId !== item.currentProductId) {
-          // Exclude already-null that stay null (unresolved_before) — no change needed
-          if (!computedId && !item.currentProductId) continue;
-          toFix.push({
-            oi_id: item.oi_id,
-            orderId: item.orderId,
-            oldProductId: item.currentProductId ?? null,
-            newProductId: computedId,
-            rawProductName: item.rawProductName || '',
+      // ── Determine which stock_movements are safe to migrate ─────────────────
+      // A movement row is keyed by (orderId, productId) in the ledger — one row covers
+      // the entire quantity for that order+product combination, regardless of how many
+      // order_items share that pair. We can only safely repoint the movement when EVERY
+      // order_item in the order that currently has product_id = oldProductId is being
+      // corrected to the SAME non-null newProductId. If even one item stays on oldProductId
+      // (i.e. was already correct and is not in the corrections list), migration would
+      // strip that item's quantity from its correct product — so we must leave the movement
+      // and report the group for manual review.
+      // Note: all Set/Map iterations use Array.from() to avoid TS errors under ES3 target.
+
+      type MovKey = string; // `${orderId}:${oldProductId}`
+
+      // Collect unique (orderId, oldProductId) pairs from corrections (no Set iteration needed)
+      const keysToCheckArr: MovKey[] = [];
+      const seenMovKeys: Record<string, true> = {};
+      for (const c of corrections) {
+        if (c.oldProductId !== null) {
+          const k: MovKey = `${c.orderId}:${c.oldProductId}`;
+          if (!seenMovKeys[k]) { seenMovKeys[k] = true; keysToCheckArr.push(k); }
+        }
+      }
+
+      // Build a lookup: corrected oi_id → newProductId (plain object, no Map iteration)
+      const correctionByOiId: Record<number, number | null | undefined> = {};
+      for (const c of corrections) correctionByOiId[c.oi_id] = c.newProductId;
+
+      // For each key, load ALL order_items in that order with product_id = oldProductId
+      // to verify every item in the group is covered by this correction run.
+      const safeMovMigrationsArr: Array<{ key: MovKey; newProductId: number }> = [];
+      const safeMovMigrationRecord: Record<MovKey, number> = {}; // for O(1) lookup in report
+      const ambiguousMovOrders: { orderId: number; oldProductId: number; targets: (number | null)[]; reason: string }[] = [];
+
+      for (const key of keysToCheckArr) {
+        const parts = key.split(':');
+        const orderId = Number(parts[0]);
+        const oldProductId = Number(parts[1]);
+
+        // All order_items in this order currently pointing to oldProductId
+        const allItemsForKey = await db
+          .select({ oi_id: orderItems.id })
+          .from(orderItems)
+          .where(
+            and(
+              eq(orderItems.orderId, orderId),
+              eq(orderItems.productId, oldProductId),
+            )
+          );
+
+        // Check: is every item being corrected, and do all corrections share the same non-null target?
+        const targetSet: Record<string, number | null> = {};
+        let allCovered = true;
+        for (const row of allItemsForKey) {
+          if (!(row.oi_id in correctionByOiId)) {
+            // This item is NOT being corrected — stays legitimately on oldProductId → unsafe.
+            allCovered = false;
+            break;
+          }
+          const t = correctionByOiId[row.oi_id] ?? null;
+          targetSet[t === null ? 'null' : String(t)] = t;
+        }
+
+        const targetValues = Object.values(targetSet);
+        if (!allCovered) {
+          ambiguousMovOrders.push({
+            orderId, oldProductId, targets: targetValues,
+            reason: "Un ou plusieurs order_items dans cette commande restent correctement liés à l'ancien produit",
+          });
+        } else if (targetValues.length === 1 && targetValues[0] !== null) {
+          const newProductId = targetValues[0] as number;
+          safeMovMigrationsArr.push({ key, newProductId });
+          safeMovMigrationRecord[key] = newProductId;
+        } else {
+          ambiguousMovOrders.push({
+            orderId, oldProductId, targets: targetValues,
+            reason: "Les corrections pointent vers des produits différents ou vers null",
           });
         }
       }
 
-      const productNameById = new Map(storeProducts.map((p: any) => [p.id, p.name]));
+      // Load all products and variants for this store — needed for full-catalog reconciliation
+      const allStoreProductIds = storeProducts.map((p: any) => p.id as number);
+      const allStoreVariants = allStoreProductIds.length > 0
+        ? await db
+            .select({ id: productVariants.id, productId: productVariants.productId })
+            .from(productVariants)
+            .where(eq(productVariants.storeId, storeId))
+        : [];
 
-      if (dryRun) {
-        return res.json({
-          dryRun: true,
-          wouldCorrect: toFix.length,
-          preview: toFix.slice(0, 50).map(r => ({
-            oi_id: r.oi_id,
-            orderId: r.orderId,
-            rawProductName: r.rawProductName,
-            from: r.oldProductId ? `#${r.oldProductId} (${productNameById.get(r.oldProductId) ?? '?'})` : 'null',
-            to: r.newProductId ? `#${r.newProductId} (${productNameById.get(r.newProductId) ?? '?'})` : 'null (non reconnu)',
-          })),
-          message: `Dry-run: ${toFix.length} correction(s) prévue(s). Envoyez { dryRun: false } pour appliquer.`,
-        });
-      }
+      // ── Apply everything in a single transaction ─────────────────────────────
+      let correctedCount = 0;
+      let movementsMigrated = 0;
 
-      // ── 2. Apply corrections in a transaction ──
-      const affectedProductIds = new Set<number>();
-      toFix.forEach(r => {
-        if (r.oldProductId) affectedProductIds.add(r.oldProductId);
-        if (r.newProductId) affectedProductIds.add(r.newProductId);
+      await db.transaction(async (tx) => {
+        // 1. Fix each order_item's product_id
+        for (const c of corrections) {
+          await tx
+            .update(orderItems)
+            .set({ productId: c.newProductId })   // null is valid on this column
+            .where(eq(orderItems.id, c.oi_id));
+          correctedCount++;
+        }
+
+        // 2. Migrate stock_movements for unambiguous (orderId, oldProductId) pairs only.
+        //    When newProductId is null or the group is ambiguous, we leave the movements
+        //    on the old product (they will be accounted for in its stock recalculation).
+        const migratedKeyRecord: Record<MovKey, true> = {};
+        for (const { key, newProductId } of safeMovMigrationsArr) {
+          if (migratedKeyRecord[key]) continue;
+          const keyParts = key.split(':');
+          const orderId = Number(keyParts[0]);
+          const oldProductId = Number(keyParts[1]);
+          await tx
+            .update(stockMovements)
+            .set({ productId: newProductId })
+            .where(
+              and(
+                eq(stockMovements.orderId, orderId),
+                eq(stockMovements.productId, oldProductId),
+                eq(stockMovements.storeId, storeId),
+              )
+            );
+          migratedKeyRecord[key] = true;
+          movementsMigrated++;
+        }
+
+        // 3. Full-catalog stock reconciliation for EVERY product in this store.
+        //
+        //    The ledger model keeps two distinct balances:
+        //      • products.stock      = movements where variantId IS NULL  (non-variant / parent qty)
+        //      • productVariants.stock = movements where variantId = v.id  (per-variant qty)
+        //
+        //    Summing ALL movements into products.stock would double-count variant quantities
+        //    because variant stock is displayed and managed separately. We reconcile each
+        //    side independently so the totals remain correct.
+        for (const productId of allStoreProductIds) {
+          // Parent stock: movements with no variantId
+          const [{ parentTotal }] = await tx
+            .select({ parentTotal: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)` })
+            .from(stockMovements)
+            .where(
+              and(
+                eq(stockMovements.productId, productId),
+                sql`${stockMovements.variantId} IS NULL`,
+              )
+            );
+
+          await tx
+            .update(products)
+            .set({ stock: Number(parentTotal) })
+            .where(
+              and(
+                eq(products.id, productId),
+                eq(products.storeId, storeId),
+              )
+            );
+        }
+
+        // Variant stock: movements scoped to each variantId
+        for (const v of allStoreVariants) {
+          const [{ variantTotal }] = await tx
+            .select({ variantTotal: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)` })
+            .from(stockMovements)
+            .where(
+              and(
+                eq(stockMovements.productId, v.productId),
+                eq(stockMovements.variantId, v.id),
+              )
+            );
+
+          await tx
+            .update(productVariants)
+            .set({ stock: Number(variantTotal) })
+            .where(eq(productVariants.id, v.id));
+        }
       });
 
-      let corrected = 0;
-      for (const fix of toFix) {
-        // 2a. Update order_items.product_id
-        await db.update(orderItems)
-          .set({ productId: fix.newProductId } as any)
-          .where(eq(orderItems.id, fix.oi_id));
-        corrected++;
+      // ── Build response report ─────────────────────────────────────────────────
+      const productNameById: Record<number, string> = {};
+      for (const p of storeProducts) productNameById[p.id] = p.name;
 
-        // 2b. Update matching stock_movements for this order + old product
-        if (fix.oldProductId) {
-          if (fix.newProductId) {
-            // Reassign movement to correct product
-            await db.update(stockMovements)
-              .set({ productId: fix.newProductId })
-              .where(and(
-                eq(stockMovements.storeId, storeId),
-                eq(stockMovements.orderId, fix.orderId),
-                eq(stockMovements.productId, fix.oldProductId),
-              ));
-          } else {
-            // No valid product → delete the bogus movement (order will show as "non reconnu")
-            await db.delete(stockMovements)
-              .where(and(
-                eq(stockMovements.storeId, storeId),
-                eq(stockMovements.orderId, fix.orderId),
-                eq(stockMovements.productId, fix.oldProductId),
-              ));
-          }
-        }
-      }
+      // Re-read final stock values for all store products
+      const finalStocks = allStoreProductIds.length > 0
+        ? await db
+            .select({ id: products.id, name: products.name, stock: products.stock })
+            .from(products)
+            .where(
+              and(
+                inArray(products.id, allStoreProductIds),
+                eq(products.storeId, storeId),
+              )
+            )
+        : [];
 
-      // ── 3. Recalculate products.stock for all affected products ──
-      // Recount from stock_movements: outgoing (shipped/delivered) subtract, incoming (adjustment/return) add.
-      const stockReport: { productId: number; productName: string; newStock: number }[] = [];
-      for (const pid of affectedProductIds) {
-        const movs = await db
-          .select({ type: stockMovements.type, quantity: stockMovements.quantity })
-          .from(stockMovements)
-          .where(and(eq(stockMovements.storeId, storeId), eq(stockMovements.productId, pid)));
-
-        let newStock = 0;
-        for (const m of movs) {
-          const qty = Number(m.quantity ?? 1);
-          if (m.type === 'shipped' || m.type === 'delivered') {
-            newStock -= qty;
-          } else {
-            newStock += qty; // adjustment, return_to_stock, etc.
-          }
-        }
-        // Clamp to 0 to avoid negative available stock in edge cases
-        newStock = Math.max(0, newStock);
-
-        await db.update(products)
-          .set({ stock: newStock })
-          .where(and(eq(products.id, pid), eq(products.storeId, storeId)));
-
-        stockReport.push({ productId: pid, productName: productNameById.get(pid) ?? '?', newStock });
-      }
-
-      console.log(`[RepairProductLinks] store=${storeId} corrected=${corrected} affectedProducts=${affectedProductIds.size}`);
+      const msgParts: string[] = [];
+      if (correctedCount > 0) msgParts.push(`${correctedCount} order_item(s) corrigé(s)`);
+      if (movementsMigrated > 0) msgParts.push(`${movementsMigrated} lot(s) de mouvements migré(s)`);
+      msgParts.push(`stock recalculé pour ${allStoreProductIds.length} produit(s) et ${allStoreVariants.length} variante(s)`);
 
       res.json({
-        dryRun: false,
-        corrected,
-        affectedProducts: stockReport.length,
-        stockRecalculated: stockReport,
-        message: `✅ ${corrected} correction(s) appliquée(s). Stock recalculé pour ${stockReport.length} produit(s).`,
+        message: correctedCount === 0
+          ? `✅ Aucune correction d'order_item nécessaire. Stock reconcilié pour ${allStoreProductIds.length} produit(s).`
+          : `✅ ${msgParts.join(', ')}.`,
+        corrected: correctedCount,
+        movementsMigrated,
+        ambiguousMovOrders: ambiguousMovOrders.map((a) => ({
+          orderId: a.orderId,
+          oldProductId: a.oldProductId,
+          oldProductName: productNameById[a.oldProductId] ?? null,
+          targets: a.targets,
+          note: "Mouvements non migrés automatiquement — résolution manuelle requise",
+        })),
+        corrections: corrections.map((c) => ({
+          oi_id: c.oi_id,
+          orderId: c.orderId,
+          rawProductName: c.rawProductName,
+          oldProductId: c.oldProductId,
+          oldProductName: c.oldProductId !== null ? (productNameById[c.oldProductId] ?? null) : null,
+          newProductId: c.newProductId,
+          newProductName: c.newProductId !== null ? (productNameById[c.newProductId] ?? null) : null,
+          movementMigrated: c.oldProductId !== null && (`${c.orderId}:${c.oldProductId}` in safeMovMigrationRecord),
+        })),
+        stockRecalculated: finalStocks.map((p) => ({
+          productId: p.id,
+          productName: p.name,
+          newStock: p.stock,
+        })),
       });
     } catch (err: any) {
-      console.error("[RepairProductLinks]", err);
+      console.error("[ApplyProductLinkCorrections]", err);
       res.status(500).json({ message: err.message });
     }
   });
