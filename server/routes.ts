@@ -5481,10 +5481,11 @@ export async function registerRoutes(
       const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
 
       for (const item of parsed.lineItems) {
-        // 1) Try SKU match (most reliable)
-        let matchedProduct: typeof storeProducts[0] | undefined = storeProducts.find(
-          p => item.sku && p.sku === item.sku
-        );
+        // 1) Try SKU match — only when it's UNIQUE. A duplicated SKU across two
+        // products would silently link to the wrong one (Array.find = first hit),
+        // so ambiguous matches fall through to resolveProductId() below.
+        const skuMatchesA = item.sku ? storeProducts.filter(p => p.sku === item.sku) : [];
+        let matchedProduct: typeof storeProducts[0] | undefined = skuMatchesA.length === 1 ? skuMatchesA[0] : undefined;
         let resolvedVariantName: string | null = null;
 
         if (!matchedProduct) {
@@ -5743,7 +5744,9 @@ export async function registerRoutes(
       for (const v of lineItems) {
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
         const sku = v.variant?.sku || v.sku || "";
-        let matchedProduct = storeProducts.find(p => sku && p.sku === sku);
+        // SKU match only when UNIQUE — ambiguous/duplicate SKUs fall through to resolveProductId().
+        const skuMatchesYC = sku ? storeProducts.filter(p => p.sku === sku) : [];
+        let matchedProduct = skuMatchesYC.length === 1 ? skuMatchesYC[0] : undefined;
         let resolvedVariantName: string | null = null;
         if (!matchedProduct) {
           const resolved = resolveProductId(rawName, storeProductsWithVariants);
@@ -5869,7 +5872,10 @@ export async function registerRoutes(
       // FIX (upsells): persist EVERY line item, including unmatched upsells.
       const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
       for (const item of parsed.lineItems) {
-        const matched = storeProducts.find(p => (item.sku && p.sku === item.sku) || p.name === item.title);
+        // SKU/name match only when UNIQUE — never guess between duplicates.
+        const skuMs = item.sku ? storeProducts.filter(p => p.sku === item.sku) : [];
+        const nameMs = skuMs.length === 1 ? [] : storeProducts.filter(p => p.name === item.title);
+        const matched = skuMs.length === 1 ? skuMs[0] : (nameMs.length === 1 ? nameMs[0] : undefined);
         orderItemsToCreate.push({
           productId: matched?.id ?? null,
           quantity: item.quantity,
@@ -6023,7 +6029,8 @@ export async function registerRoutes(
       const vByProdGS1 = new Map<number, { name: string }[]>();
       for (const v of allVariantsGS1) { if (!vByProdGS1.has(v.productId)) vByProdGS1.set(v.productId, []); vByProdGS1.get(v.productId)!.push({ name: v.name }); }
       const storeProductsGS1 = storeProducts.map(p => ({ ...p, variants: vByProdGS1.get(p.id) || [] }));
-      let matched = storeProducts.find(p => p.sku && p.sku === productName);
+      const skuMatchesGS1 = productName ? storeProducts.filter(p => p.sku && p.sku === productName) : [];
+      let matched = skuMatchesGS1.length === 1 ? skuMatchesGS1[0] : undefined;
       if (!matched) {
         const resolved = resolveProductId(productName, storeProductsGS1);
         if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
@@ -6137,7 +6144,8 @@ export async function registerRoutes(
       const vByProdGS2 = new Map<number, { name: string }[]>();
       for (const v of allVariantsGS2) { if (!vByProdGS2.has(v.productId)) vByProdGS2.set(v.productId, []); vByProdGS2.get(v.productId)!.push({ name: v.name }); }
       const storeProductsGS2 = storeProducts.map(p => ({ ...p, variants: vByProdGS2.get(p.id) || [] }));
-      let matched = storeProducts.find(p => p.sku && p.sku === productName);
+      const skuMatchesGS2 = productName ? storeProducts.filter(p => p.sku && p.sku === productName) : [];
+      let matched = skuMatchesGS2.length === 1 ? skuMatchesGS2[0] : undefined;
       if (!matched) {
         const resolved = resolveProductId(productName, storeProductsGS2);
         if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
@@ -7340,7 +7348,10 @@ function ensureHeaders(sheet) {
       const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
 
       for (const item of parsed.lineItems) {
-        const matchedProduct = storeProducts.find(p => (item.sku && p.sku === item.sku) || p.name === item.title);
+        // SKU/name match only when UNIQUE — never guess between duplicates.
+        const skuMs2 = item.sku ? storeProducts.filter(p => p.sku === item.sku) : [];
+        const nameMs2 = skuMs2.length === 1 ? [] : storeProducts.filter(p => p.name === item.title);
+        const matchedProduct = skuMs2.length === 1 ? skuMs2[0] : (nameMs2.length === 1 ? nameMs2[0] : undefined);
         orderItemsToCreate.push({
           productId: matchedProduct?.id ?? null,
           quantity: item.quantity,
@@ -8184,6 +8195,15 @@ function ensureHeaders(sheet) {
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
+      // Duplicate-SKU guard: two products sharing a SKU in the same store makes
+      // SKU-first webhook matching link orders to the wrong product.
+      if (data.sku && data.sku.trim()) {
+        const existingSku = await db.select({ id: products.id, name: products.name }).from(products)
+          .where(and(eq(products.storeId, storeId), eq(products.sku, data.sku.trim()))).limit(1);
+        if (existingSku.length > 0) {
+          return res.status(409).json({ message: `SKU "${data.sku.trim()}" déjà utilisé par le produit "${existingSku[0].name}". Chaque produit doit avoir un SKU unique.` });
+        }
+      }
       const { variants, coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, stockDate, ...productData } = data;
       const productSettings = { profitDefaults: { coutAchat: coutAchat ?? 0, prixVente: prixVente ?? 0, coutEmballage: coutEmballage ?? 0, coutLivraison: coutLivraison ?? 0, coutConfirmation: coutConfirmation ?? 0 } };
       const movementDate = stockDate ? new Date(stockDate) : new Date();
@@ -8557,6 +8577,15 @@ function ensureHeaders(sheet) {
         })).optional(),
       });
       const data = schema.parse(req.body);
+      // Duplicate-SKU guard (same rule as creation): reject if another product
+      // of this store already uses the new SKU.
+      if (data.sku && data.sku.trim() && data.sku.trim() !== product.sku) {
+        const existingSku = await db.select({ id: products.id, name: products.name }).from(products)
+          .where(and(eq(products.storeId, product.storeId), eq(products.sku, data.sku.trim()))).limit(1);
+        if (existingSku.length > 0 && existingSku[0].id !== productId) {
+          return res.status(409).json({ message: `SKU "${data.sku.trim()}" déjà utilisé par le produit "${existingSku[0].name}". Chaque produit doit avoir un SKU unique.` });
+        }
+      }
       const { coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, variants: variantsPayload, ...updateData } = data;
       const hasCostFields = [coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation].some(v => v !== undefined);
       if (hasCostFields) {

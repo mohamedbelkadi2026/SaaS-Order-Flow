@@ -1,0 +1,57 @@
+# Replit Prompt — 🎯 VRAIE cause racine trouvée : SKU dupliqué "0013" partagé par 2 produits + matching par SKU qui court-circuite resolveProductId
+
+## Preuve
+
+Dans `/inventory`, colonne SKU : **"الشريط اللاصق مطاطي القوي" a le SKU 0013**, et **"ماكينة الحلاقة الكهربائية" (un produit complètement différent) a AUSSI le SKU 0013**. Deux produits distincts, même SKU.
+
+Or dans le code, `server/routes.ts`, **5 endroits** matchent le produit d'une commande par SKU **AVANT** même d'essayer `resolveProductId()` (le matching par nom qu'on a corrigé) :
+```
+ligne 5746 (webhook YouCan)  : storeProducts.find(p => sku && p.sku === sku)
+ligne 5872 (webhook Shopify) : storeProducts.find(p => (item.sku && p.sku === item.sku) || p.name === item.title)
+ligne 6026                  : storeProducts.find(p => p.sku && p.sku === productName)
+ligne 6140                  : storeProducts.find(p => p.sku && p.sku === productName)
+ligne 7343                  : storeProducts.find(p => (item.sku && p.sku === item.sku) || p.name === item.title)
+```
+`Array.find()` retourne le PREMIER élément qui matche. Si deux produits partagent le même SKU "0013", **toute commande dont la ligne porte ce SKU sera systématiquement liée au même produit (le premier des deux dans la liste)**, peu importe le nom réel envoyé par la plateforme externe. C'est exactement pour ça que toutes nos corrections sur `normStr()`/`resolveProductId()` n'ont rien changé : **ce chemin de code prioritaire les court-circuite complètement**, il ne les atteint même pas quand un SKU matche.
+
+## Fix à appliquer, dans l'ordre
+
+### 1. Corriger le SKU dupliqué en base MAINTENANT
+Trouver et corriger le doublon :
+```sql
+SELECT id, store_id, sku, name FROM products WHERE sku = '0013';
+```
+Attribuer un SKU unique à "ماكينة الحلاقة الكهربائية" (ou au produit qui n'est pas censé avoir 0013) — ne jamais laisser deux produits du même store avec le même SKU.
+
+### 2. Auditer TOUT le catalogue pour d'autres doublons de SKU
+```sql
+SELECT store_id, sku, COUNT(*), array_agg(name) AS product_names
+FROM products
+WHERE sku IS NOT NULL AND sku != ''
+GROUP BY store_id, sku
+HAVING COUNT(*) > 1;
+```
+Corriger chaque doublon trouvé (SKU unique par produit et par store).
+
+### 3. Ajouter une contrainte d'unicité pour empêcher que ça recommence
+Ajouter une contrainte unique `(store_id, sku)` sur la table `products` (migration Drizzle), pour qu'il devienne IMPOSSIBLE de créer/éditer un produit avec un SKU déjà utilisé dans le même store — via l'UI ("Nouveau Produit"), l'import, ou l'édition manuelle.
+
+### 4. Rendre le matching par SKU sûr même s'il reste un doublon ailleurs (défense en profondeur)
+Dans les 5 endroits listés ci-dessus, remplacer `storeProducts.find(...)` par une version qui vérifie s'il y a plusieurs matches :
+```ts
+const skuMatches = storeProducts.filter(p => sku && p.sku === sku);
+let matchedProduct = skuMatches.length === 1 ? skuMatches[0] : undefined;
+// si 0 ou plusieurs matches, ne PAS deviner : laisser matchedProduct undefined
+// et laisser le code tomber sur resolveProductId(rawName, ...) juste après, comme c'est déjà prévu
+```
+(Le fallback vers `resolveProductId()` existe déjà dans le code quand `matchedProduct` est `undefined` — il suffit de ne plus assigner un match ambigu.)
+
+### 5. Ré-exécuter la réparation des données existantes maintenant que le vrai bug est corrigé
+Une fois les points 1-4 faits, ré-exécuter `POST /api/products/apply-product-link-corrections` (ou l'équivalent actuel) en production — cette fois le résultat devrait être correct puisque la cause qui empêchait le bon matching (SKU dupliqué) n'existe plus.
+
+## Testing checklist
+1. Confirmer qu'il n'y a plus AUCUN SKU dupliqué dans `products` pour aucun store (requête du point 2 doit retourner 0 lignes).
+2. Essayer de créer/éditer un produit avec un SKU déjà utilisé → doit être bloqué avec un message d'erreur clair.
+3. Rejouer un webhook YouCan de test avec le SKU "0013" (maintenant unique) → doit lier la commande au bon produit.
+4. Refaire le test principal : filtrer Suivi des Colis par "الشريط اللاصق مطاطي القوي" → seulement ses vraies commandes.
+5. Vérifier `/inventory` : plus aucun produit avec "En cours" ou "Disponible" absurdes (comme 127 ou 56 vus précédemment) après ré-exécution de la réparation.
