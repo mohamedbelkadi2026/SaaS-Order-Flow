@@ -5755,6 +5755,15 @@ export async function registerRoutes(
             resolvedVariantName = resolved.variantName;
           }
         }
+        console.log('[DEBUG-MATCH]', JSON.stringify({
+          orderNumber: payload.ref ?? payload.id,
+          rawName,
+          sku,
+          skuMatches: skuMatchesYC.map(p => ({ id: p.id, sku: p.sku, name: p.name })),
+          resolveProductIdResult: resolveProductId(rawName, storeProductsWithVariants),
+          finalMatchedProductId: matchedProduct?.id,
+          finalMatchedProductName: matchedProduct?.name,
+        }));
         orderItemsToCreate.push({
           productId: matchedProduct?.id ?? null,
           rawProductName: rawName,
