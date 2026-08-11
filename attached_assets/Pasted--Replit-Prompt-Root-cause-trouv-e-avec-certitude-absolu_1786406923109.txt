@@ -1,0 +1,43 @@
+# Replit Prompt — 🔴 Root cause trouvée avec certitude absolue (log de production) : `stock_movements_type_check` bloque tous les mouvements 'shipped'
+
+## Preuve (log de déploiement Railway, 2026-08-11 00:52 GMT+1)
+
+```
+[DATABASE] initializeDatabase error: new row for relation "stock_movements" violates check constraint "stock_movements_type_check"
+detail: 'Failing row contains (5998, 71, 2258, null, shipped, -1, "Expédition commande #YC-39702", 17789, null, ...)'
+```
+
+## Cause exacte, localisée dans le code
+
+`migrations/0004_stock_movements.sql` (ligne ~14) définit la contrainte :
+```sql
+type text NOT NULL CHECK (type IN (
+  'restock', 'delivered', 'returned', 'adjustment', 'reservation', 'release'
+))
+```
+**`'shipped'` n'est PAS dans cette liste.** Or le code applicatif insère bien `type: 'shipped'` à plusieurs endroits (`server/storage.ts`, lignes ~522, ~542, ~1242 — dans `decrementStockForOrder` et la logique de transition de statut). **Chaque tentative d'insertion d'un mouvement `'shipped'` échoue silencieusement en base depuis la création de cette table.**
+
+C'est la cause directe (au moins partielle) de plusieurs symptômes qu'on a observés precedemment :
+- L'Historique d'un produit qui ne montrait jamais les commandes "En cours"/expédiées, seulement "Stock initial".
+- Le crash de `initializeDatabase()` au démarrage du serveur en production (visible dans le log ci-dessus) — une routine de migration/backfill tente d'insérer une ligne `'shipped'` au boot et ça fait échouer une partie de l'initialisation à chaque redémarrage.
+
+## Fix (simple et sûr)
+
+Créer une nouvelle migration qui élargit la contrainte pour inclure toutes les valeurs réellement utilisées par le code. J'ai vérifié dans le code, les valeurs utilisées sont : `restock`, `delivered`, `returned`, `adjustment`, `reservation`, `release`, **`shipped`**.
+
+```sql
+-- migrations/2026_08_11_fix_stock_movements_type_check.sql
+ALTER TABLE public.stock_movements DROP CONSTRAINT IF EXISTS stock_movements_type_check;
+ALTER TABLE public.stock_movements ADD CONSTRAINT stock_movements_type_check
+  CHECK (type IN ('restock', 'delivered', 'returned', 'adjustment', 'reservation', 'release', 'shipped'));
+```
+
+Vérifier aussi qu'il n'y a pas d'autres valeurs de `type` utilisées ailleurs dans le code qui manqueraient encore à cette liste (chercher `type: '` dans tout `server/*.ts` pour toute insertion dans `stock_movements` — pas les faux positifs comme `type: 'image_url'`/`type: 'text'` qui concernent une autre table).
+
+## Une fois corrigé
+1. Redéployer — vérifier dans les logs que `initializeDatabase()` ne plante plus avec cette erreur au démarrage.
+2. Relancer la commande #YC-39702 (ou équivalent) pour vérifier qu'un mouvement `shipped` s'insère bien désormais.
+3. Ouvrir l'Historique d'un produit ayant des commandes "En cours" → vérifier que les lignes "Expédition"/"Livraison" apparaissent enfin correctement, cohérentes avec "Disponible".
+4. Ré-exécuter la réparation/réconciliation des mouvements historiques manquants (le backfill demandé dans un prompt précédent) — elle devrait maintenant réussir sans erreur puisque la contrainte accepte 'shipped'.
+
+Ce fix est indépendant du problème de filtre Produit (SKU dupliqué) qu'on traite en parallèle — les deux peuvent être corrigés dans la même session, mais ce sont deux bugs distincts.
