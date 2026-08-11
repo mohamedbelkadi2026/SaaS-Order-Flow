@@ -9599,6 +9599,128 @@ function ensureHeaders(sheet) {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // GET  /api/stock/recalculate-available/preview
+  // POST /api/stock/recalculate-available/apply
+  //
+  // Recalcule products.stock ("Disponible") selon la formule CANONIQUE déjà
+  // utilisée par /inventory (getInventoryStats) :
+  //   Disponible = Reçu (Σ mouvements 'restock')
+  //              − Sortie (Σ articles des commandes livrées)
+  //              − En cours (Σ articles des commandes expédiées/en transit)
+  // Nécessaire après le re-linking des order_items (SKU dupliqués corrigés) :
+  // le stock brut reflétait l'ANCIEN ensemble de commandes liées.
+  // Les produits à variantes sont ignorés (le stock affiché = Σ variantes,
+  // et les order_items ne portent pas de variantId fiable) et signalés.
+  // ─────────────────────────────────────────────────────────────────────────
+  const RECALC_DELIVERED_STATUSES = ['delivered', 'Livré', 'livré'];
+  const RECALC_TRANSIT_STATUSES = [
+    'in_progress', 'expédié', 'Attente De Ramassage',
+    'transit', 'unreachable', 'En Cours De Retour', 'refused', 'Retour Recu',
+  ];
+
+  async function computeAvailableRecalc(storeId: number) {
+    const allProducts = await db.select().from(products)
+      .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`));
+    const allVariants = await db.select({ productId: productVariants.productId })
+      .from(productVariants).where(eq(productVariants.storeId, storeId));
+    const variantProductIds = new Set(allVariants.map(v => v.productId));
+
+    const restockRows = await db.select({
+        productId: stockMovements.productId,
+        qty: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)`,
+      })
+      .from(stockMovements)
+      .where(and(eq(stockMovements.storeId, storeId), eq(stockMovements.type, 'restock')))
+      .groupBy(stockMovements.productId);
+    const recuByProduct = new Map(restockRows.map(r => [r.productId, Number(r.qty)]));
+
+    const sumItemsByStatus = async (statuses: string[]) => {
+      const rows = await db.select({
+          productId: orderItems.productId,
+          qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)`,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orders.storeId, storeId),
+          inArray(orders.status, statuses),
+          sql`${orderItems.productId} IS NOT NULL`,
+        ))
+        .groupBy(orderItems.productId);
+      return new Map(rows.map(r => [r.productId as number, Number(r.qty)]));
+    };
+    const sortieByProduct = await sumItemsByStatus(RECALC_DELIVERED_STATUSES);
+    const enCoursByProduct = await sumItemsByStatus(RECALC_TRANSIT_STATUSES);
+
+    const rows = allProducts.map(p => {
+      const recu = recuByProduct.get(p.id) || 0;
+      const sortie = sortieByProduct.get(p.id) || 0;
+      const enCours = enCoursByProduct.get(p.id) || 0;
+      return {
+        id: p.id, name: p.name, sku: p.sku,
+        recu, sortie, enCours,
+        currentStock: p.stock,
+        computedStock: recu - sortie - enCours,
+        hasVariants: variantProductIds.has(p.id),
+      };
+    });
+    return {
+      changes: rows.filter(r => !r.hasVariants && r.computedStock !== r.currentStock),
+      skippedVariants: rows.filter(r => r.hasVariants).map(r => ({ id: r.id, name: r.name })),
+      negatives: rows.filter(r => !r.hasVariants && r.computedStock < 0).map(r => ({ id: r.id, name: r.name, computedStock: r.computedStock })),
+      totalProducts: rows.length,
+    };
+  }
+
+  app.get("/api/stock/recalculate-available/preview", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const result = await computeAvailableRecalc(storeId);
+      res.json(result);
+    } catch (err) {
+      console.error('[RECALC-STOCK] Preview error:', err);
+      res.status(500).json({ message: 'Erreur lors de la prévisualisation du recalcul.' });
+    }
+  });
+
+  app.post("/api/stock/recalculate-available/apply", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { changes, skippedVariants, negatives } = await computeAvailableRecalc(storeId);
+      let applied = 0;
+      const errors: string[] = [];
+      for (const c of changes) {
+        try {
+          // Conditionné sur la valeur lue (concurrence-safe) : si le stock a
+          // bougé entre preview et apply, la ligne est simplement re-calculée
+          // à la prochaine exécution.
+          const updated = await db.update(products)
+            .set({ stock: c.computedStock })
+            .where(and(eq(products.id, c.id), eq(products.storeId, storeId), eq(products.stock, c.currentStock)))
+            .returning({ id: products.id });
+          if (updated.length === 0) { errors.push(`${c.name}: stock modifié entre-temps, ignoré`); continue; }
+          // Trace d'audit dans le ledger (type 'adjustment' accepté par la contrainte).
+          await db.insert(stockMovements).values({
+            storeId, productId: c.id,
+            type: 'adjustment',
+            quantity: c.computedStock - c.currentStock,
+            reason: `Recalcul Disponible (Reçu ${c.recu} − Livrées ${c.sortie} − En cours ${c.enCours})`,
+            userId: req.user!.id,
+          });
+          applied++;
+          console.log(`[RECALC-STOCK] ✅ ${c.name} (#${c.id}): ${c.currentStock} → ${c.computedStock}`);
+        } catch (err: any) {
+          errors.push(`${c.name}: ${err?.message || String(err)}`);
+        }
+      }
+      res.json({ applied, total: changes.length, skippedVariants, negatives, errors });
+    } catch (err) {
+      console.error('[RECALC-STOCK] Apply error:', err);
+      res.status(500).json({ message: 'Erreur lors du recalcul.' });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // GET /api/products/:id/insights
   // Per-product analytics for the inventory side-sheet:
   //   - KPIs (recu / sortie / available / refusal counts)

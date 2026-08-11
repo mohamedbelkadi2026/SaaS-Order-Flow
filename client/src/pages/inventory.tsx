@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2 } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2, Calculator } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -958,6 +958,45 @@ export default function Inventory() {
     }
   };
 
+  // ── Recalcul du stock "Disponible" (Reçu − Livrées − En cours) ──────────
+  const [recalcOpen, setRecalcOpen] = useState(false);
+  const [recalcPreview, setRecalcPreview] = useState<any | null>(null);
+  const [recalcLoading, setRecalcLoading] = useState(false);
+  const [recalcApplying, setRecalcApplying] = useState(false);
+
+  const openRecalc = async () => {
+    setRecalcPreview(null);
+    setRecalcOpen(true);
+    setRecalcLoading(true);
+    try {
+      const res = await apiRequest("GET", "/api/stock/recalculate-available/preview");
+      const data = await res.json();
+      setRecalcPreview(data);
+    } catch {
+      toast({ title: "Erreur lors du chargement de la prévisualisation", variant: "destructive" });
+      setRecalcOpen(false);
+    } finally {
+      setRecalcLoading(false);
+    }
+  };
+
+  const applyRecalc = async () => {
+    setRecalcApplying(true);
+    try {
+      const res = await apiRequest("POST", "/api/stock/recalculate-available/apply", {});
+      const data = await res.json();
+      toast({ title: `✅ Disponible recalculé pour ${data.applied} produit${data.applied !== 1 ? "s" : ""}` });
+      setRecalcOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/stats"] });
+    } catch {
+      toast({ title: "Erreur lors du recalcul", variant: "destructive" });
+    } finally {
+      setRecalcApplying(false);
+    }
+  };
+
   const handleLinkAll = async () => {
     setLinkAllLoading(true);
     setLinkAllResult(null);
@@ -1236,6 +1275,9 @@ export default function Inventory() {
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" data-testid="button-fix-historical-stock" onClick={openFixHistorical}>
             <Wrench className="w-4 h-4 mr-2" /> Corriger l'historique stock
+          </Button>
+          <Button variant="outline" data-testid="button-recalc-available" onClick={openRecalc}>
+            <Calculator className="w-4 h-4 mr-2" /> Recalculer Disponible
           </Button>
           <Button variant="outline" data-testid="button-link-all-historical" onClick={() => { setLinkAllResult(null); setLinkAllOpen(true); }}>
             <Link2 className="w-4 h-4 mr-2" /> Lier tout l'historique
@@ -2574,6 +2616,70 @@ export default function Inventory() {
       </Dialog>
 
       {/* ── Fix historical stock dialog ── */}
+      <Dialog open={recalcOpen} onOpenChange={(v) => { if (!recalcApplying) setRecalcOpen(v); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Calculator className="w-5 h-5 text-amber-600" />
+              Recalculer le stock Disponible
+            </DialogTitle>
+            <DialogDescription>
+              Formule : Disponible = Reçu − Livrées − En cours (mêmes données que le tableau).
+              {recalcLoading
+                ? " Chargement…"
+                : recalcPreview
+                  ? recalcPreview.changes.length === 0
+                    ? " Aucun écart détecté — tout est cohérent ✅"
+                    : ` ${recalcPreview.changes.length} produit${recalcPreview.changes.length !== 1 ? "s" : ""} à corriger sur ${recalcPreview.totalProducts}.`
+                  : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          {recalcLoading && (
+            <div className="flex justify-center py-6 text-muted-foreground text-sm">Analyse en cours…</div>
+          )}
+
+          {!recalcLoading && recalcPreview && recalcPreview.changes.length > 0 && (
+            <div className="max-h-72 overflow-y-auto border rounded-lg divide-y text-sm">
+              {recalcPreview.changes.map((c: any) => (
+                <div key={c.id} className="px-3 py-2 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{c.name}</div>
+                    <div className="text-xs text-muted-foreground">Reçu {c.recu} − Livrées {c.sortie} − En cours {c.enCours}</div>
+                  </div>
+                  <div className="text-sm whitespace-nowrap">
+                    <span className="text-muted-foreground line-through mr-2">{c.currentStock}</span>
+                    <span className={`font-semibold ${c.computedStock < 0 ? "text-red-600" : "text-emerald-600"}`}>{c.computedStock}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!recalcLoading && recalcPreview && recalcPreview.negatives?.length > 0 && (
+            <div className="text-xs text-red-600">
+              ⚠️ {recalcPreview.negatives.length} produit(s) auraient un stock négatif — signe de mouvements "Reçu" manquants (à réapprovisionner dans l'historique).
+            </div>
+          )}
+          {!recalcLoading && recalcPreview && recalcPreview.skippedVariants?.length > 0 && (
+            <div className="text-xs text-muted-foreground">
+              {recalcPreview.skippedVariants.length} produit(s) à variantes ignoré(s) (stock géré par variante).
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setRecalcOpen(false)} disabled={recalcApplying}>
+              Annuler
+            </Button>
+            {!recalcLoading && recalcPreview && recalcPreview.changes.length > 0 && (
+              <Button onClick={applyRecalc} disabled={recalcApplying} style={{ background: "#C5A059", color: "#fff" }} data-testid="button-apply-recalc">
+                {recalcApplying ? "Application…" : `Recalculer (${recalcPreview.changes.length} produit${recalcPreview.changes.length !== 1 ? "s" : ""})`}
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={fixHistoricalOpen} onOpenChange={(v) => { if (!fixApplying) setFixHistoricalOpen(v); }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
