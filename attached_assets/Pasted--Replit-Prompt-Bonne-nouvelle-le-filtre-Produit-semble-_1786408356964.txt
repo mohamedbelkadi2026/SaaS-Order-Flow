@@ -1,0 +1,28 @@
+# Replit Prompt — Bonne nouvelle : le filtre Produit semble corrigé (SKU dédupliqué). Reste à recalculer "Disponible"
+
+## Bonne nouvelle d'abord
+Après la correction du SKU dupliqué, les colonnes Reçu/Sortie(Livrées)/En cours de "الشريط اللاصق مطاطي القوي" sont maintenant cohérentes et crédibles : Reçu=20, Sortie=2, En cours=13. Ça correspond enfin à ce qu'on voit ailleurs (table "Produits Commandés" du Dashboard montrait Total=20 pour ce produit). Le fix du SKU semble avoir résolu le problème de fond.
+
+## Ce qui reste cassé : "Disponible" n'a pas été recalculé après le re-linking
+
+Avec Reçu=20, Sortie=2, En cours=13, "Disponible" DEVRAIT être **20 − 2 − 13 = 5**. Mais la colonne affiche **37**.
+
+C'est attendu : `products.stock` (la valeur brute utilisée pour "Disponible") reflète l'ancien état d'AVANT la migration de correction des liens produit — quand ce produit n'avait pas les mêmes commandes liées. La migration a corrigé `order_items.product_id`, mais n'a pas recalculé `products.stock` en conséquence pour refléter le nouvel ensemble réel de commandes liées à ce produit.
+
+## Fix demandé
+
+Recalculer `products.stock` (et `product_variants.stock` si variantes) pour TOUS les produits du store, en se basant sur la formule canonique déjà utilisée ailleurs dans l'app : `Disponible = Reçu (somme des mouvements 'restock') − Sortie (livrées) − En cours (expédiées/en transit)`, cohérente avec les colonnes déjà affichées correctement dans `/inventory`.
+
+Concrètement :
+1. Réutiliser (ou étendre) l'outil déjà existant "Réparer l'historique des stocks" / "Corriger l'historique stock" pour qu'il recalcule aussi `products.stock` à partir des mêmes données que celles utilisées pour afficher Reçu/Sortie/En cours dans le tableau (pas une formule différente).
+2. L'exécuter (au moins pour "الشريط اللاصق مطاطي القوي", idéalement pour tout le catalogue, puisque la migration de re-linking des SKU dupliqués a pu affecter plusieurs produits) et vérifier que Disponible = Reçu − Sortie − En cours pour chacun d'eux après coup.
+3. Si ce recalcul touche aussi `stock_movements` (writing manquant), s'assurer d'abord que la contrainte `stock_movements_type_check` accepte bien `'shipped'` (fix demandé juste avant) — sinon ce recalcul risque de re-planter sur le même problème.
+
+## Important : confirmer que ça reste automatique après ça
+Ce recalcul est un rattrapage PONCTUEL (one-shot), nécessaire uniquement parce que la migration de correction des SKU dupliqués a changé quelles commandes sont liées à quels produits, sans mettre à jour `products.stock` en conséquence. Confirme-moi explicitement que le mécanisme automatique de décrément du stock (à chaque transition de statut de commande, déjà validé fonctionnel précédemment) continuera de maintenir "Disponible" à jour tout seul APRÈS ce rattrapage — je ne veux pas avoir à cliquer sur un bouton de recalcul à chaque fois qu'un problème comme celui-ci pourrait se reproduire. Si ce n'est pas garanti, dis-le moi clairement plutôt que de laisser croire que c'est réglé pour de bon.
+
+## Testing checklist
+1. "الشريط اللاصق مطاطي القوي" : Disponible doit devenir 5 (20−2−13), pas 37.
+2. Vérifier 3-4 autres produits au hasard dans la liste (Balance de Poche, ماكينة الحلاقة, مظلة الشمس...) : Disponible doit toujours égaler Reçu − Sortie − En cours pour chacun.
+3. Vérifier que "Rupture de stock" (compteur en haut de `/inventory`) redevient cohérent après ce recalcul.
+4. Confirmer avec moi qu'aucune commande n'a été perdue dans le processus (le nombre total de commandes du store avant/après doit être identique).
