@@ -1,0 +1,27 @@
+Focus unique : filtre Produit qui remonte un autre produit. Je veux la preuve en direct AVANT tout nouveau fix.
+Rappel du problème (toujours actif aujourd'hui)
+
+Sur Suivi des Colis / Nouvelles, quand je filtre par un produit précis (ex: "الشريط اللاصق مطاطي القوي"), la liste me montre des commandes d'AUTRES produits complètement différents (مشد الجسم, ميزان الكتروني, حامل هاتف السيارة, المروحة الذكية...). Ça continue même sur des commandes créées AUJOURD'HUI, après plusieurs tentatives de fix (normStr arabe, garde-fous resolveProductId, correction du SKU dupliqué "0013").
+
+Ce que je veux maintenant — dans cet ordre exact, sans sauter d'étape
+Ajoute réellement le log de debug suivant à l'endroit où une commande YouCan est créée et son produit matché (server/routes.ts, webhook YouCan) :
+ts
+console.log('[DEBUG-MATCH]', {
+  orderNumber,
+  rawName,
+  sku,
+  skuMatches: storeProducts.filter(p => sku && p.sku === sku).map(p => ({ id: p.id, sku: p.sku, name: p.name })),
+  resolveProductIdResult: resolveProductId(rawName, storeProductsWithVariants),
+  finalMatchedProductId: matchedProduct?.id,
+  finalMatchedProductName: matchedProduct?.name,
+});
+Déploie ce changement en production.
+Attends (ou déclenche) une nouvelle commande réelle sur un produit qui pose problème.
+Colle-moi ici le résultat EXACT de ce console.log pour cette commande précise — pas un résumé, le JSON complet affiché dans les logs.
+Analyse ce résultat avec moi AVANT de proposer un fix : est-ce que sku reçu est bien unique maintenant ? Est-ce que resolveProductId a été appelé ? A-t-il retourné le bon produit ? Le matchedProduct final est-il correct ou pas, et à quelle étape ça part en erreur ?
+Ce que je ne veux PAS
+Pas de nouveau fix "en théorie ça devrait marcher" sans avoir vu ce log sur un cas réel.
+Pas de "c'est corrigé" sans une commande de test réelle passée après le déploiement pour le prouver.
+Une fois le vrai point de défaillance identifié avec le log
+
+On corrigera précisément CET endroit-là, puis on validera avec une nouvelle commande de test que le filtre Produit ne remonte plus que les bonnes commandes.
