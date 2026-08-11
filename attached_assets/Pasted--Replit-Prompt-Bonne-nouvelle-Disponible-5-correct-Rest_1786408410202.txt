@@ -1,0 +1,31 @@
+# Replit Prompt — Bonne nouvelle : Disponible = 5 correct ✅. Reste 2 petits fix sur le panneau Historique
+
+## Confirmation positive
+"الشريط اللاصق مطاطي القوي" affiche maintenant **Disponible = 5** dans `/inventory` (Reçu 20 − Livrées 2 − En cours 13). C'est exactement le résultat attendu, le recalcul a fonctionné.
+
+## Bug 1 — "Total sorti" dans le panneau Historique est faux (double comptage)
+
+Le panneau Historique affiche **Total sorti = -48**, alors que le vrai total des sorties (Livrées + En cours) est **-15** (2 + 13).
+
+Cause : la ligne d'ajustement créée par le recalcul —
+```
+Ajustement -32
+Recalcul Disponible (Reçu 20 – Livrées 2 – En cours 13)
+```
+— est une correction technique pour faire atterrir `products.stock` sur la bonne valeur, mais elle est ADDITIONNÉE aux vrais mouvements ("Expédition -1" × plusieurs, etc.) dans le calcul de "Total sorti", au lieu d'être traitée séparément. Résultat : -32 (ajustement) + -15 (vrais mouvements) + un léger écart ≈ -48.
+
+**Fix** : soit (a) exclure les lignes de type `adjustment` du calcul de "Total sorti" affiché en haut (ne compter que les vraies sorties : `delivered` + `shipped`/`Expédition`), et afficher l'ajustement séparément si besoin (ex: "Corrections : -32"), soit (b) si un ajustement de recalcul est nécessaire, qu'il soit le SEUL mouvement historique (regrouper/remplacer les anciens mouvements orphelins par cet ajustement plutôt que de l'ajouter en plus) — la première option (a) est plus simple et plus sûre.
+
+## Bug 2 (demande) — Afficher "combien il reste" dans le panneau Historique
+
+Ajouter, en plus de "Total reçu" et "Total sorti", une troisième valeur bien visible dans le panneau Historique (`Historique — {nom du produit}`) :
+```
+Disponible / Reste = Total reçu + Total sorti (net)
+```
+Elle doit être calculée avec EXACTEMENT la même formule que la colonne "Disponible" du tableau principal `/inventory`, pour qu'il n'y ait plus jamais d'écart entre les deux vues. Exemple attendu pour ce produit : Total reçu +20, Total sorti -15 (une fois le bug 1 corrigé) → Reste affiché = 5, identique à la colonne Disponible.
+
+## Testing checklist
+1. Historique de "الشريط اللاصق مطاطي القوي" → Total sorti doit devenir -15 (pas -48), et un nouveau champ "Reste"/"Disponible" doit afficher 5.
+2. Vérifier que 5 (dans le panneau) == 5 (dans le tableau `/inventory`) — toujours cohérent.
+3. Vérifier 2-3 autres produits pour confirmer que Total reçu + Total sorti = Disponible affiché dans le tableau, sans exception.
+4. Si des ajustements similaires existent sur d'autres produits (créés par le même recalcul), vérifier qu'ils ne faussent plus non plus leur "Total sorti" respectif.

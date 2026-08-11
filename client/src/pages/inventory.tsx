@@ -2303,22 +2303,39 @@ export default function Inventory() {
               {/* Summary totals */}
               {(() => {
                 const totalRecu = historyMovements.filter((m: any) => m.type === 'restock').reduce((s: number, m: any) => s + m.quantity, 0);
-                const totalSorti = Math.abs(historyMovements.filter((m: any) => m.quantity < 0).reduce((s: number, m: any) => s + m.quantity, 0));
+                // Vraies sorties uniquement (expéditions + livraisons) — les ajustements techniques sont affichés à part
+                const totalSorti = Math.abs(historyMovements.filter((m: any) => m.quantity < 0 && (m.type === 'shipped' || m.type === 'delivered')).reduce((s: number, m: any) => s + m.quantity, 0));
+                const corrections = historyMovements.filter((m: any) => m.type === 'adjustment').reduce((s: number, m: any) => s + m.quantity, 0);
+                // Même valeur que la colonne "Disponible" du tableau (products.stock / somme variantes)
+                const reste = historyProduct?.available ?? historyProduct?.stock ?? 0;
                 return (
-                  <div className="grid grid-cols-2 gap-3">
-                    <Card className="p-3 rounded-xl">
-                      <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
-                        <ArrowUpCircle className="w-3 h-3 text-emerald-600" /> Total reçu
+                  <>
+                    <div className="grid grid-cols-3 gap-3">
+                      <Card className="p-3 rounded-xl">
+                        <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                          <ArrowUpCircle className="w-3 h-3 text-emerald-600" /> Total reçu
+                        </div>
+                        <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400">+{totalRecu}</div>
+                      </Card>
+                      <Card className="p-3 rounded-xl">
+                        <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                          <ArrowDownCircle className="w-3 h-3 text-red-500" /> Total sorti
+                        </div>
+                        <div className="text-xl font-bold text-red-600 dark:text-red-400" data-testid="text-history-total-sorti">-{totalSorti}</div>
+                      </Card>
+                      <Card className="p-3 rounded-xl border-orange-300 dark:border-orange-700">
+                        <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                          <Package className="w-3 h-3 text-orange-500" /> Disponible
+                        </div>
+                        <div className="text-xl font-bold text-orange-600 dark:text-orange-400" data-testid="text-history-reste">{reste}</div>
+                      </Card>
+                    </div>
+                    {corrections !== 0 && (
+                      <div className="text-xs text-muted-foreground px-1">
+                        Corrections (ajustements techniques, hors "Total sorti") : {corrections > 0 ? `+${corrections}` : corrections}
                       </div>
-                      <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400">+{totalRecu}</div>
-                    </Card>
-                    <Card className="p-3 rounded-xl">
-                      <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
-                        <ArrowDownCircle className="w-3 h-3 text-red-500" /> Total sorti
-                      </div>
-                      <div className="text-xl font-bold text-red-600 dark:text-red-400">-{totalSorti}</div>
-                    </Card>
-                  </div>
+                    )}
+                  </>
                 );
               })()}
 
