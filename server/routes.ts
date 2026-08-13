@@ -5709,7 +5709,6 @@ export async function registerRoutes(
 
       const storeId = integration.storeId;
       const payload = req.body as any;
-      console.log('[FULL-PAYLOAD-DEBUG]', JSON.stringify(payload, null, 2));
       console.log("[YOUCAN-WEBHOOK] Payload parsed — ref:", payload.ref, "id:", payload.id);
       const orderRef = payload.ref || payload.id;
       if (!orderRef) return res.status(400).json({ message: "Missing order ref" });
@@ -5764,11 +5763,6 @@ export async function registerRoutes(
           });
           const fullOrder = await fullOrderResp.json() as any;
 
-          // ── TEMPORARY DEBUG — log full API order response to reveal variant structure ──
-          console.log('[YOUCAN-FULLORDER-DEBUG] orderId:', payload.id, 'ref:', payload.ref ?? payload.id);
-          console.log('[YOUCAN-FULLORDER-DEBUG] FULL_ORDER:', JSON.stringify(fullOrder, null, 2));
-          // ── END TEMPORARY DEBUG ────────────────────────────────────────────────────────
-
           const customer = fullOrder?.customer || {};
           const shippingAddr = fullOrder?.shipping?.address && !Array.isArray(fullOrder.shipping.address)
             ? fullOrder.shipping.address
@@ -5811,10 +5805,7 @@ export async function registerRoutes(
       const orderItemsToCreate: any[] = [];
       let orderProductCost = 0;
 
-      // ── TEMPORARY DEBUG — log FULL payload to reveal YouCan custom-field structure ──
-      console.log('[YOUCAN-PAYLOAD-DEBUG] orderRef:', payload.ref ?? payload.id);
-      console.log('[YOUCAN-PAYLOAD-DEBUG] FULL_PAYLOAD:', JSON.stringify(payload, null, 2));
-      // ── END TEMPORARY DEBUG ────────────────────────────────────────────────────────
+      console.log('[LINE-ITEM-RAW]', JSON.stringify(lineItems, null, 2));
 
       for (const v of lineItems) {
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
