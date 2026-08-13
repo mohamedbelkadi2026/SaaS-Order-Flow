@@ -1,0 +1,22 @@
+# Replit Prompt — Ce n'est pas encore le bon payload : je veux le variant CHOISI dans la commande, pas le catalogue de choix possibles
+
+## Ce que tu m'as montré (pas ce qu'il fallait)
+
+Le JSON collé est la définition du PRODUIT (variant_options) — la liste de TOUS les choix possibles configurés par le vendeur : couleurs (الأزرق, الأحمر, الأسود, الأبيض...) et tailles (S à 6XL), avec "has_variants": true, "variants_count": 45 (45 combinaisons possibles au total). C'est le catalogue des choix, probablement récupéré via un appel à l'API produit YouCan (comme le code fait déjà pour enrichir l'adresse). Ce n'est PAS ce que le client a réellement choisi pour la commande YC-011.
+
+## Ce qu'il me faut réellement
+
+Le payload de la commande elle-même (webhook order.create ou l'appel GET /orders/{id} déjà fait dans le code pour récupérer l'adresse complète), et plus précisément l'objet variant À L'INTÉRIEUR de la ligne d'article de CETTE commande (payload.variants[0].variant ou équivalent), pas la liste des options du produit.
+
+Ce variant de commande contient probablement soit :
+- Un variant_id qui référence une des 45 combinaisons — dans ce cas il faudra un appel API supplémentaire type GET /products/{id}/variants/{variant_id} pour obtenir le libellé humain ("الأحمر", "M") à partir de cet ID, OU
+- Directement les valeurs choisies sous une forme du genre variant.options: [{ name: "اختر اللون المناسب لك", value: "الأحمر" }, { name: "اختر القياس المناسب لك", value: "M" }], OU
+- Un champ variant.name/variant.title déjà formaté genre "الأحمر / M".
+
+## Action demandée
+
+1. Ajoute (ou récupère depuis les logs existants) le console.log sur le payload COMPLET de la commande YC-011 (celui de la ligne d'article, payload.variants[0] en entier, pas juste .variant.name) — colle-moi ce JSON précis.
+2. Si ce payload ne contient qu'un variant_id sans libellé lisible, ajoute l'appel API pour résoudre ce variant_id vers son libellé humain (couleur + taille), en utilisant variant_options (le JSON que tu m'as montré) pour faire la correspondance ID vers valeurs choisies.
+3. Une fois qu'on a le vrai libellé ("الأحمر" et "M" pour cette commande précise), on le stocke dans "Infos supplémentaires" comme prévu dans le prompt précédent.
+
+Ne me montre plus la définition du produit — je veux la commande précise, avec le variant réellement sélectionné par CE client.

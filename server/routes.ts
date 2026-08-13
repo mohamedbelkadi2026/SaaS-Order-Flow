@@ -5757,10 +5757,16 @@ export async function registerRoutes(
       const accessToken = await refreshYouCanToken(integration);
       if (accessToken && payload.id) {
         try {
-          const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping`, {
+          // include variants + items to capture chosen variant labels alongside address
+          const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping,variants,items`, {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
           const fullOrder = await fullOrderResp.json() as any;
+
+          // ── TEMPORARY DEBUG — log full API order response to reveal variant structure ──
+          console.log('[YOUCAN-FULLORDER-DEBUG] orderId:', payload.id, 'ref:', payload.ref ?? payload.id);
+          console.log('[YOUCAN-FULLORDER-DEBUG] FULL_ORDER:', JSON.stringify(fullOrder, null, 2));
+          // ── END TEMPORARY DEBUG ────────────────────────────────────────────────────────
 
           const customer = fullOrder?.customer || {};
           const shippingAddr = fullOrder?.shipping?.address && !Array.isArray(fullOrder.shipping.address)
