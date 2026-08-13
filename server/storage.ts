@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, carrierCityPricing,
+  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, waselexCities, carrierCityPricing,
   pushSubscriptions,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
@@ -21,7 +21,7 @@ import {
 import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, ilike, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
-import { matchCityId, normalizeCityKey } from "./services/city-aliases";
+import { matchCityId, normalizeCityKey, resolveCityAlias } from "./services/city-aliases";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -1681,6 +1681,33 @@ export class DatabaseStorage implements IStorage {
       (c.externalId || "").toLowerCase() === norm
     );
     return found?.externalId ?? null;
+  }
+
+  // ── Waselex city referential (global, seeded from official Excel) ────────
+  // Retourne { cityId, deliveryFee (centimes) } ou null si aucun match fiable.
+  // En cas de non-match, le caller envoie `city` (nom texte) en fallback —
+  // ne JAMAIS bloquer la commande sur la résolution de ville Waselex.
+  async resolveWaselexCity(cityName: string): Promise<{ cityId: number; name: string; deliveryFee: number } | null> {
+    if (!(cityName || "").trim()) return null;
+    const norm = (cityName || "").toLowerCase().trim()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const rows = await db.select().from(waselexCities).where(eq(waselexCities.nameNorm, norm));
+    if (rows.length === 1) {
+      return { cityId: rows[0].externalId, name: rows[0].name, deliveryFee: rows[0].deliveryFee };
+    }
+    // Match STRICT uniquement (clé normalisée + alias marocains connus) — pas de
+    // fuzzy/contains : avec 1480 villes, un faux positif expédierait le colis
+    // dans la mauvaise ville. Non résolu ⇒ le caller envoie le nom texte.
+    const key = normalizeCityKey(cityName);
+    if (!key) return null;
+    const aliasKey = resolveCityAlias(key);
+    const all = await db.select().from(waselexCities);
+    const exact = all.find(c =>
+      normalizeCityKey(c.name) === key || normalizeCityKey(c.name) === aliasKey ||
+      c.nameNorm === key || c.nameNorm === aliasKey
+    );
+    if (exact) return { cityId: exact.externalId, name: exact.name, deliveryFee: exact.deliveryFee };
+    return null;
   }
 
   // ── Per-city delivery pricing ─────────────────────────────────────────────

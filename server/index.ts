@@ -817,6 +817,75 @@ app.use((req, res, next) => {
   const autoVitipsSync = setInterval(() => runVitipsSync('interval'), 10 * 60 * 1000);
   intervals.push(autoVitipsSync);
 
+  // ── Auto Waselex status sync (polling — Waselex n'a pas de webhook) ────────
+  async function runWaselexSync(label: string) {
+    try {
+      const { storage: st } = await import('./storage');
+      const { trackWaselexShipments } = await import('./services/carrier-service');
+      const { db: dbInst } = await import('./db');
+      const { carrierAccounts: caTable } = await import('@shared/schema');
+      const { eq: eqFn } = await import('drizzle-orm');
+
+      const accounts = await dbInst.select().from(caTable)
+        .where(eqFn(caTable.carrierName, 'waselex'));
+
+      for (const account of accounts) {
+        const storeId = (account as any).storeId;
+        const apiKey  = (account as any).apiKey;
+        if (!apiKey) continue;
+        const allOrders = await st.getOrdersByStore(storeId);
+        const toSync = allOrders.filter((o: any) =>
+          o.shippingProvider === 'waselex' &&
+          o.trackNumber &&
+          !['delivered', 'refused', 'Retour Recu', 'returned', 'cancelled'].includes(o.status || '')
+        );
+        if (!toSync.length) continue;
+
+        console.log(`[WSLX-AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders (batch)`);
+        const { results, error } = await trackWaselexShipments(toSync.map((o: any) => o.trackNumber!), apiKey);
+        if (error === 'WASELEX_401') {
+          console.error(`[WSLX-AUTO-SYNC][${label}] store=${storeId}: clé API invalide — reconnectez Waselex.`);
+          continue;
+        }
+        for (const order of toSync) {
+          try {
+            const r = results.get(order.trackNumber!);
+            if (!r) continue;
+            if (r.rawStatus && r.rawStatus !== (order as any).commentStatus) {
+              await st.updateOrder(order.id, { commentStatus: r.statusLabel || r.rawStatus });
+            }
+            if (r.status && r.status !== order.status) {
+              await st.updateOrderStatus(order.id, r.status);
+              await st.createOrderFollowUpLog({
+                orderId:   order.id,
+                agentId:   null,
+                agentName: 'Waselex Auto-Sync',
+                note:      `📦 Statut mis à jour automatiquement: ${r.statusLabel || r.rawStatus} → ${r.status}`,
+              });
+              console.log(`[WSLX-AUTO-SYNC][${label}] Order #${(order as any).orderNumber} → ${r.rawStatus} (${r.status})`);
+              try {
+                const { broadcastToStore } = await import('./sse');
+                broadcastToStore(storeId, 'order_updated', {
+                  orderId: order.id,
+                  status:  r.status,
+                  commentStatus: r.statusLabel || r.rawStatus,
+                });
+              } catch {}
+            }
+          } catch (e: any) {
+            console.error(`[WSLX-AUTO-SYNC][${label}] Error for order ${(order as any).orderNumber}: ${e?.message}`);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[WSLX-AUTO-SYNC][${label}] Error:`, err?.message);
+    }
+  }
+  // Run once after 4 minutes on startup, then every 20 minutes (doc Waselex: 15-30 min)
+  setTimeout(() => runWaselexSync('initial'), 4 * 60 * 1000);
+  const autoWaselexSync = setInterval(() => runWaselexSync('interval'), 20 * 60 * 1000);
+  intervals.push(autoWaselexSync);
+
   // Ozon Express delivers status via WEBHOOK only — polling endpoints return auth errors.
   // No polling job registered; statuses update automatically via
   // POST /api/webhooks/shipping/ozonexpress/:storeId.

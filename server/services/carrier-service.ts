@@ -42,7 +42,11 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   livo:           "https://api.livo.ma/api/v1/orders",
   quicklivraison: "https://api.quicklivraison.ma/api/v1/orders",
   codinafrica:    "https://api.codinafrica.ma/api/v1/orders",
+  waselex:        "https://waselex.ma/api/vendor/v1/orders",
 };
+
+// ── Waselex API base (vendor v1) ─────────────────────────────────────────────
+export const WASELEX_API_BASE = "https://waselex.ma/api/vendor/v1";
 
 // ── Ameex tracking base URL ───────────────────────────────────────────────────
 const AMEEX_TRACKING_URL = "https://api.ameex.app/customer/Delivery/Parcels/Track";
@@ -337,6 +341,8 @@ export interface CarrierShipResult {
    * failed — and this message surfaced to the user.
    */
   warning?: string;
+  /** Waselex: delivery fee (in centimes) returned by the create-order API. */
+  deliveryFee?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -357,6 +363,19 @@ function sanitizePhone(raw: string): string {
   }
 
   return cleaned;
+}
+
+/**
+ * Waselex exige exactement 10 chiffres commençant par 0 (ex: 0612345678).
+ * Reformate +212XXXXXXXXX / 00212… / 212… vers 0XXXXXXXXX.
+ * Retourne null si le numéro ne peut pas être mis au format attendu.
+ */
+export function formatWaselexPhone(raw: string): string | null {
+  let cleaned = (raw || "").replace(/\D/g, "");
+  if (cleaned.startsWith("00212")) cleaned = "0" + cleaned.slice(5);
+  else if (cleaned.startsWith("212") && cleaned.length === 12) cleaned = "0" + cleaned.slice(3);
+  else if (cleaned.length === 9 && !cleaned.startsWith("0")) cleaned = "0" + cleaned; // 6XXXXXXXX → 06XXXXXXXX
+  return /^0\d{9}$/.test(cleaned) ? cleaned : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1119,6 +1138,93 @@ export async function shipOrderToCarrier(
   console.log(`${"═".repeat(70)}\n`);
 
   // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
+
+  // ── Waselex: X-Api-Key header, batch body { orders: [...] }, all-or-nothing ──
+  if (providerKey === 'waselex') {
+    if (!apiKey) {
+      return { success: false, error: "Clé API Waselex manquante. Configurez votre compte dans Intégrations → Transporteurs.", carrierMessage: "missing api key", httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    const wPhone = formatWaselexPhone(input.phone);
+    if (!wPhone) {
+      const errMsg = `Téléphone « ${input.phone} » invalide pour Waselex — 10 chiffres commençant par 0 requis (ex: 0612345678).`;
+      console.error(`[WSLX][#${input.orderNumber}] ❌ ${errMsg}`);
+      return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    const wOrder: Record<string, unknown> = {
+      client_name:    sanitizeArabicText(input.customerName).slice(0, 255),
+      client_phone:   wPhone,
+      client_address: sanitizeArabicText((input.address || "").trim() || input.city.trim()),
+      product_name:   (sanitizeArabicText(input.productName || "Produit") || "Produit").slice(0, 500),
+      price:          input.totalPrice > 0 ? +(input.totalPrice / 100).toFixed(2) : 0,
+      quantity:       input.quantity ?? 1,
+      can_open:       !!input.canOpen,
+      has_change:     false,
+      external_ref:   String(input.orderNumber || input.orderId).slice(0, 100),
+    };
+    // city_id (numérique, fiable) prioritaire ; sinon fallback nom exact
+    if (input.cityId && /^\d+$/.test(String(input.cityId))) {
+      wOrder.city_id = Number(input.cityId);
+    } else {
+      wOrder.city = input.city.trim();
+    }
+    if (input.note) wOrder.notes = String(input.note).slice(0, 1000);
+
+    const wUrl = `${WASELEX_API_BASE}/orders`;
+    console.log(`[WSLX][#${input.orderNumber}] POST ${wUrl} — payload: ${JSON.stringify(wOrder)}`);
+    try {
+      let wResp: any = null;
+      // 500 = erreur interne Waselex → un retry raisonnable ; autres codes = pas de retry
+      for (let attemptNo = 1; attemptNo <= 2; attemptNo++) {
+        wResp = await axios.post(wUrl, { orders: [wOrder] }, {
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Api-Key': apiKey },
+          timeout: TIMEOUT_MS,
+          httpsAgent: SSL_AGENT,
+          validateStatus: () => true,
+        });
+        if (wResp.status < 500 || attemptNo === 2) break;
+        console.warn(`[WSLX][#${input.orderNumber}] HTTP ${wResp.status} — retry ${attemptNo}/1 dans 3s…`);
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      const wData = wResp.data;
+      console.log(`[WSLX][#${input.orderNumber}] HTTP ${wResp.status}: ${JSON.stringify(wData).slice(0, 500)}`);
+
+      if (wResp.status === 401) {
+        const msg = "Clé API Waselex invalide ou compte non approuvé — reconnectez Waselex dans Intégrations → Transporteurs.";
+        return { success: false, error: msg, carrierMessage: msg, httpStatus: 401, rawResponse: wData, permanent: true };
+      }
+      if (wResp.status === 422) {
+        const errs = Array.isArray(wData?.errors) ? wData.errors.join(" | ") : (wData?.error || "Validation échouée côté Waselex");
+        console.error(`[WSLX][#${input.orderNumber}] ❌ 422: ${errs}`);
+        return { success: false, error: `Waselex: ${errs}`, carrierMessage: errs, httpStatus: 422, rawResponse: wData, permanent: true };
+      }
+      if (wResp.status >= 400) {
+        const msg = wData?.error || wData?.message || `HTTP ${wResp.status}`;
+        const permanent = wResp.status < 500; // 400/405 = bug, pas de retry ; 5xx déjà retenté
+        return { success: false, error: `Waselex: ${msg}${wResp.status >= 500 ? " — réessayez plus tard." : ""}`, carrierMessage: String(msg), httpStatus: wResp.status, rawResponse: wData, permanent };
+      }
+
+      const created = Array.isArray(wData?.orders) ? wData.orders[0] : null;
+      const trackingCode = created?.tracking_code || null;
+      const deliveryFeeDH = typeof created?.delivery_fee === 'number' ? created.delivery_fee : null;
+      if (!trackingCode) {
+        const warn = "Expédition acceptée par Waselex mais aucun tracking_code retourné. Vérifiez le portail Waselex.";
+        console.warn(`[WSLX][#${input.orderNumber}] ⚠️ ${warn}`);
+        return { success: true, trackingNumber: undefined, warning: warn, httpStatus: wResp.status, rawResponse: wData };
+      }
+      console.log(`[WSLX][#${input.orderNumber}] ✅ SUCCESS! tracking_code=${trackingCode} delivery_fee=${deliveryFeeDH ?? '?'} DH`);
+      return {
+        success: true,
+        trackingNumber: String(trackingCode),
+        httpStatus: wResp.status,
+        rawResponse: wData,
+        deliveryFee: deliveryFeeDH != null ? Math.round(deliveryFeeDH * 100) : undefined,
+      };
+    } catch (wErr: any) {
+      const msg = wErr?.message || "Erreur réseau Waselex";
+      console.error(`[WSLX][#${input.orderNumber}] ❌ Network error: ${msg}`);
+      return { success: false, error: `Waselex: ${msg}`, carrierMessage: msg };
+    }
+  }
 
   // ── Express Coursier: token embedded in URL path, JSON body with packages array ──
   if (providerKey === 'expresscoursier') {
@@ -3127,6 +3233,154 @@ export async function getVitipsCities(
   } catch (err: any) {
     console.error(`[VITIPS-CITIES] Error: ${err?.message}`);
     return [];
+  }
+}
+
+// ─── Waselex ─────────────────────────────────────────────────────────────────
+// Waselex n'expose AUCUN webhook — suivi par polling GET /orders/status
+// (même mécanisme que Vitipsexpress, mais en batch : ~100 codes par requête).
+
+export const WASELEX_STATUS_MAP: Record<string, string> = {
+  // ── Avant expédition physique — confirmé ──────────────────────────────────
+  'EN_ATTENTE_RAMASSAGE':    'confirme',
+  'EN_ATTENTE_PREPARATION':  'confirme',
+  'EN_PREPARATION':          'confirme',
+  'CONFIRME':                'confirme',
+  // ── Ramassé / en programme ────────────────────────────────────────────────
+  'MIS_EN_PROGRAMME':        'in_progress',
+  'PROGRAMME':               'in_progress',
+  'RAMASSE':                 'in_progress',
+  'RECU_PAR_LIVREUR':        'in_progress',
+  // ── En transit / en distribution ──────────────────────────────────────────
+  'EXPEDIER':                'transit',
+  'PRET_POUR_DISTRIBUTION':  'transit',
+  'EN_VOYAGE':               'transit',
+  'MISE_EN_DISTRIBUTION':    'transit',
+  'EN_COURS':                'transit',
+  'EN_LIVRAISON':            'transit',
+  'EN_COURS_DE_LIVRAISON':   'transit',
+  // ── Terminaux ─────────────────────────────────────────────────────────────
+  'LIVRE':                   'delivered',
+  'REFUSE':                  'refused',
+  // ── Injoignable ───────────────────────────────────────────────────────────
+  'NO_RESPONSE':             'unreachable',
+  'NO_RESPONSE_1_FOIS':      'unreachable',
+  'NO_RESPONSE_2_FOIS':      'unreachable',
+  'NO_RESPONSE_3_FOIS':      'unreachable',
+  'NO_RESPONSE_JOUR_1':      'unreachable',
+  'NO_RESPONSE_JOUR_2':      'unreachable',
+  'NO_RESPONSE_JOUR_3':      'unreachable',
+  'PAS_DE_REPONSE_JOUR_4':   'unreachable',
+  'BOITE_VOCALE':            'unreachable',
+  'NUMERO_ERRONE':           'unreachable',
+  'INJOIGNABLE':             'unreachable',
+  // À confirmer avec l'utilisateur si un statut interne plus spécifique existe
+  'HORS_ZONE':               'unreachable',
+  'FAUX_DESTINATION':        'unreachable',
+  'CHANGEMENT_ADRESSE':      'unreachable',
+  // ── Reporté ───────────────────────────────────────────────────────────────
+  'REPORTE':                 'confirme_reporte',
+  // ── Annulé ────────────────────────────────────────────────────────────────
+  'PAS_INTERESSE':           'cancelled',
+  'ANNULE':                  'cancelled',
+  'ANNULE_FACTURE':          'cancelled',
+  'MANQUE_DE_STOCK':         'cancelled',
+  'PAS_COMMANDER':           'cancelled',
+  // ── Retours ───────────────────────────────────────────────────────────────
+  'DEMANDE_DE_RETOUR':       'returned',
+  'RETOUR':                  'returned',
+  'RETOUR_EN_PREPARATION':   'returned',
+  'RETOUR_ENVOYE':           'returned',
+  'RETOUR_PRET':             'returned',
+  'RETOUR_RAMASSE':          'returned',
+  'RETOUR_RECU_PAR_AGENCE':  'returned',
+  'RETOUR_RECU_PAR_CLIENT':  'returned',
+  'RETOUR_RECU_STOCK':       'returned',
+  // Retour au point de départ, pas encore livré
+  'NON_RECU_PAR_LIVREUR':    'in_progress',
+  // À discuter avec l'utilisateur — in_progress par défaut en attendant
+  'CLIENT_INTERESSE':        'in_progress',
+  'RELANCE':                 'in_progress',
+  'DEMANDE_DE_SUIVI':        'in_progress',
+  'ECHANGE':                 'in_progress',
+};
+
+export function mapWaselexStatus(raw: string): string | null {
+  if (!raw) return null;
+  const direct = WASELEX_STATUS_MAP[raw];
+  if (direct) return direct;
+  // Normalisation : majuscules, accents retirés, espaces/tirets → underscore
+  const norm = raw.toUpperCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\s\-]+/g, '_');
+  return WASELEX_STATUS_MAP[norm] ?? null;
+}
+
+/**
+ * Suivi Waselex en batch — GET /orders/status?tracking_code=CODE1,CODE2,…
+ * Jusqu'à ~100 codes par requête. Retourne une map tracking_code → statut.
+ */
+export async function trackWaselexShipments(
+  trackingCodes: string[],
+  apiKey: string,
+): Promise<{ results: Map<string, { status: string | null; rawStatus: string; statusLabel: string | null; deliveryFee: number | null }>; error?: string }> {
+  const results = new Map<string, { status: string | null; rawStatus: string; statusLabel: string | null; deliveryFee: number | null }>();
+  if (!trackingCodes.length) return { results };
+  const BATCH = 100;
+  for (let i = 0; i < trackingCodes.length; i += BATCH) {
+    const batch = trackingCodes.slice(i, i + BATCH);
+    const url = `${WASELEX_API_BASE}/orders/status?tracking_code=${encodeURIComponent(batch.join(','))}&per_page=200`;
+    console.log(`[WSLX-TRACK] batch ${i / BATCH + 1} — ${batch.length} code(s) → GET /orders/status`);
+    try {
+      const resp = await axios.get(url, {
+        headers: { 'X-Api-Key': apiKey, 'Accept': 'application/json' },
+        timeout: 20000,
+        httpsAgent: SSL_AGENT,
+        validateStatus: () => true,
+      });
+      if (resp.status === 401) {
+        console.error(`[WSLX-TRACK] 401 — clé API invalide ou compte non approuvé`);
+        return { results, error: 'WASELEX_401' };
+      }
+      if (resp.status >= 400) {
+        console.error(`[WSLX-TRACK] HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 200)}`);
+        continue; // batch suivant — erreur transitoire probable
+      }
+      const list = Array.isArray(resp.data?.orders) ? resp.data.orders : [];
+      for (const o of list) {
+        const code = o?.tracking_code;
+        if (!code) continue;
+        const rawStatus = String(o.status || '');
+        results.set(String(code), {
+          status:      mapWaselexStatus(rawStatus),
+          rawStatus,
+          statusLabel: o.status_label || null,
+          deliveryFee: typeof o.delivery_fee === 'number' ? Math.round(o.delivery_fee * 100) : null,
+        });
+      }
+    } catch (err: any) {
+      console.error(`[WSLX-TRACK] Network error: ${err?.message}`);
+    }
+  }
+  return { results };
+}
+
+/**
+ * Test de connexion Waselex — valide la clé API via GET /orders/status?per_page=1.
+ */
+export async function testWaselexConnection(apiKey: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const resp = await axios.get(`${WASELEX_API_BASE}/orders/status?per_page=1`, {
+      headers: { 'X-Api-Key': (apiKey || '').trim(), 'Accept': 'application/json' },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+    if (resp.status === 401) return { ok: false, message: "Clé API Waselex invalide ou compte non approuvé." };
+    if (resp.status >= 400)  return { ok: false, message: `Waselex a répondu HTTP ${resp.status} — réessayez plus tard.` };
+    return { ok: true, message: "Connexion Waselex validée ✅" };
+  } catch (err: any) {
+    return { ok: false, message: `Erreur réseau Waselex: ${err?.message || err}` };
   }
 }
 

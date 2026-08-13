@@ -303,6 +303,21 @@ export const vitipsCities = pgTable("vitips_cities", {
 });
 export type VitipsCity = typeof vitipsCities.$inferSelect;
 
+// ─── Waselex City referential — global (1480 villes, city_id numérique) ──────
+// Contrairement aux autres transporteurs, Waselex fournit un référentiel FIXE
+// (Excel officiel) — table globale, pas par store. Seedée au boot depuis
+// server/seed-data/waselex-cities.ts.
+export const waselexCities = pgTable("waselex_cities", {
+  id:          serial("id").primaryKey(),
+  externalId:  integer("external_id").notNull().unique(), // city_id Waselex
+  name:        text("name").notNull(),
+  nameNorm:    text("name_norm").notNull(),                // lowercase + accents retirés
+  deliveryFee: integer("delivery_fee").notNull().default(0), // centimes
+  refusalFee:  integer("refusal_fee").notNull().default(0),  // centimes
+  createdAt:   timestamp("created_at").defaultNow(),
+});
+export type WaselexCity = typeof waselexCities.$inferSelect;
+
 // ─── Per-city delivery pricing (per carrier) ────────────────────────────────
 // Fills orders.shippingCost automatically for carriers that don't return a
 // real per-city cost via API (Express Coursier has no such endpoint — unlike

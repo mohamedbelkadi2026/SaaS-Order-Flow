@@ -254,6 +254,56 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: vitips_cities table verified/created.");
 
+    // ── 5b-quater. waselex_cities — référentiel global Waselex (Excel officiel) ──
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.waselex_cities (
+        id           SERIAL PRIMARY KEY,
+        external_id  INTEGER NOT NULL UNIQUE,
+        name         TEXT NOT NULL,
+        name_norm    TEXT NOT NULL,
+        delivery_fee INTEGER NOT NULL DEFAULT 0,
+        refusal_fee  INTEGER NOT NULL DEFAULT 0,
+        created_at   TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_waselex_cities_norm
+        ON public.waselex_cities (name_norm);
+    `);
+    // Seed depuis le fichier généré (Excel officiel) — idempotent : n'insère
+    // que si le nombre de lignes diffère du référentiel.
+    try {
+      const { WASELEX_CITIES_SEED } = await import("./seed-data/waselex-cities");
+      const { rows } = await client.query(`SELECT COUNT(*)::int AS n FROM public.waselex_cities`);
+      if (rows[0].n !== WASELEX_CITIES_SEED.length) {
+        const norm = (s: string) => s.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        await client.query("BEGIN");
+        await client.query(`DELETE FROM public.waselex_cities`);
+        const BATCH = 200;
+        for (let i = 0; i < WASELEX_CITIES_SEED.length; i += BATCH) {
+          const chunk = WASELEX_CITIES_SEED.slice(i, i + BATCH);
+          const values: string[] = [];
+          const params: unknown[] = [];
+          chunk.forEach(([cid, name, feeDH, refDH], j) => {
+            const base = j * 5;
+            values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`);
+            params.push(cid, name, norm(name), Math.round(feeDH * 100), Math.round(refDH * 100));
+          });
+          await client.query(
+            `INSERT INTO public.waselex_cities (external_id, name, name_norm, delivery_fee, refusal_fee) VALUES ${values.join(",")}`,
+            params,
+          );
+        }
+        await client.query("COMMIT");
+        console.log(`[DATABASE]: waselex_cities seeded — ${WASELEX_CITIES_SEED.length} villes.`);
+      } else {
+        console.log("[DATABASE]: waselex_cities table verified (seed up to date).");
+      }
+    } catch (seedErr: any) {
+      try { await client.query("ROLLBACK"); } catch {}
+      console.error(`[DATABASE]: waselex_cities seed failed (non-fatal): ${seedErr?.message}`);
+    }
+
     // ── 5c. orders: offer_name + ameex_product_id enrichment columns ─────────
     await client.query(`
       ALTER TABLE public.orders

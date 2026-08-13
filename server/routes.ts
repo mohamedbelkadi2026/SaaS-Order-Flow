@@ -1878,6 +1878,19 @@ export async function registerRoutes(
                   : {};
 
                 // For Vitipsexpress: resolve city name → abbr (e.g. "CASABLANCA" → "Casablanca")
+                // For Waselex: resolve city name → numeric city_id (référentiel global).
+                // Pas de blocage si non résolu — fallback envoi du nom texte `city`.
+                let waselexCityId: string | undefined;
+                if (provider.toLowerCase() === 'waselex') {
+                  const resolvedW = await storage.resolveWaselexCity(resolvedCity);
+                  if (resolvedW) {
+                    waselexCityId = String(resolvedW.cityId);
+                    console.log(`[WSLX-CITY] order=${order.id} city="${resolvedCity}" → city_id=${waselexCityId} ("${resolvedW.name}")`);
+                  } else {
+                    console.warn(`[WSLX-CITY] order=${order.id} city="${resolvedCity}" → non résolue, envoi du nom texte en fallback`);
+                  }
+                }
+
                 let vitipsCityAbbr: string | undefined;
                 if (provider.toLowerCase() === 'vitipsexpress') {
                   const resolved = await storage.getVitipsCityAbbr(storeId, resolvedCity);
@@ -1928,7 +1941,7 @@ export async function registerRoutes(
                   apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
                   apiSecret:        (orderCreds as any).apiSecret || '',
                   previousAttemptHadPlaceholder: isAmeexRetry,
-                  cityId:           ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr,
+                  cityId:           ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr ?? waselexCityId,
                   ecSettings,
                   ozonSettings,
                 });
@@ -2058,6 +2071,25 @@ export async function registerRoutes(
                       })
                       .catch(costErr => console.error('[VITIPS-COST] Failed to fetch city price:', costErr))
                   );
+                }
+                // Waselex : delivery_fee réel retourné par l'API à la création ;
+                // fallback sur le référentiel waselex_cities si absent.
+                if (provider.toLowerCase() === 'waselex') {
+                  const apiFee = (outcome.value as any).deliveryFee as number | undefined;
+                  if (apiFee != null) {
+                    console.log(`[WSLX-COST] Order #${ref} → shippingCost=${apiFee} centimes (delivery_fee API)`);
+                    allDbUpdates.push(storage.updateOrder(order.id, { shippingCost: apiFee }));
+                  } else {
+                    allDbUpdates.push(
+                      storage.resolveWaselexCity((order as any).customerCity || '')
+                        .then((cityRow) => {
+                          const price = cityRow?.deliveryFee ?? 3500;
+                          console.log(`[WSLX-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${price} (${cityRow ? 'référentiel villes' : 'défaut 35 DH'})`);
+                          return storage.updateOrder(order.id, { shippingCost: price });
+                        })
+                        .catch(costErr => console.error('[WSLX-COST] Failed to fetch city fee:', costErr))
+                    );
+                  }
                 }
                 allLogUpdates.push(storage.createIntegrationLog({
                   storeId, integrationId: null, provider,
@@ -11028,6 +11060,69 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // WASELEX ROUTES
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /** POST /api/shipping/waselex/test — valide une clé API avant sauvegarde (bouton test connexion) */
+  app.post("/api/shipping/waselex/test", requireAuth, async (req: any, res: any) => {
+    try {
+      const apiKey = String(req.body?.apiKey || "").trim();
+      if (!apiKey) return res.status(400).json({ ok: false, message: "Clé API manquante." });
+      const { testWaselexConnection } = await import("./services/carrier-service");
+      const result = await testWaselexConnection(apiKey);
+      res.status(result.ok ? 200 : 422).json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, message: err?.message || "Erreur test Waselex" });
+    }
+  });
+
+  /** POST /api/shipping/waselex/sync — sync manuelle des statuts Waselex (batch) */
+  app.post("/api/shipping/waselex/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "waselex");
+      const account = accounts[0];
+      if (!account) return res.status(400).json({ message: "Aucun compte Waselex configuré." });
+      const apiKey = (account as any).apiKey;
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const waselexOrders = allOrders.filter((o: any) =>
+        o.trackNumber &&
+        (o.shippingProvider || "").toLowerCase().trim() === "waselex" &&
+        !["delivered", "refused", "Retour Recu", "returned", "cancelled"].includes(o.status || "")
+      );
+      if (!waselexOrders.length) {
+        return res.json({ synced: 0, updated: 0, message: "Aucune commande Waselex à synchroniser." });
+      }
+      const { trackWaselexShipments } = await import("./services/carrier-service");
+      const { results, error } = await trackWaselexShipments(waselexOrders.map((o: any) => o.trackNumber!), apiKey);
+      if (error === 'WASELEX_401') {
+        return res.status(422).json({ message: "Clé API Waselex invalide ou compte non approuvé — reconnectez Waselex dans Intégrations." });
+      }
+      let updated = 0;
+      for (const order of waselexOrders) {
+        const r = results.get(order.trackNumber!);
+        if (!r) continue;
+        if (r.rawStatus && r.rawStatus !== (order as any).commentStatus) {
+          await storage.updateOrder(order.id, { commentStatus: r.statusLabel || r.rawStatus });
+        }
+        if (r.status && r.status !== order.status) {
+          await storage.updateOrderStatus(order.id, r.status);
+          await storage.createOrderFollowUpLog({
+            orderId: order.id, agentId: null, agentName: 'Waselex Sync',
+            note: `📦 Statut synchronisé: ${r.statusLabel || r.rawStatus} → ${r.status}`,
+          });
+          updated++;
+          console.log(`[WSLX-SYNC] ✅ #${(order as any).orderNumber}: ${order.status} → ${r.status} (${r.rawStatus})`);
+        }
+      }
+      res.json({ synced: waselexOrders.length, updated, message: `${updated} commande(s) mise(s) à jour sur ${waselexOrders.length} synchronisée(s).` });
+    } catch (err: any) {
+      console.error('[WSLX-SYNC] fatal', err?.message);
+      res.status(500).json({ message: err?.message || 'Sync Waselex failed' });
+    }
+  });
+
   /** POST /api/vitips/fix-raw-statuses — one-time fix for orders saved with raw French text as status */
   app.post('/api/vitips/fix-raw-statuses', requireAuth, requireActiveSubscription, async (req: any, res: any) => {
     const RAW_TO_PLATFORM: Record<string, string> = {
@@ -14731,6 +14826,19 @@ function ensureHeaders(sheet) {
         }
       }
 
+      // For Waselex: resolve city name → numeric city_id (référentiel global).
+      // Pas de blocage si non résolu — fallback envoi du nom texte `city`.
+      let singleWaselexCityId: string | undefined;
+      if (provider.toLowerCase() === 'waselex') {
+        const resolved = await storage.resolveWaselexCity(matchedCity);
+        if (resolved) {
+          singleWaselexCityId = String(resolved.cityId);
+          console.log(`[WSLX-CITY] order=${orderId} city="${matchedCity}" → city_id=${singleWaselexCityId} ("${resolved.name}")`);
+        } else {
+          console.warn(`[WSLX-CITY] order=${orderId} city="${matchedCity}" → non résolue, envoi du nom texte en fallback`);
+        }
+      }
+
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -14749,7 +14857,7 @@ function ensureHeaders(sheet) {
         digylogNetworkId: (creds as any).digylogNetworkId || 1,
         apiId:            (creds as any).apiSecret || (creds as any).settings?.apiId || '',
         apiSecret:        (creds as any).apiSecret || '',
-        cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr,
+        cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr ?? singleWaselexCityId,
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
       });
@@ -14815,6 +14923,8 @@ function ensureHeaders(sheet) {
         shippingProvider: provider,
         carrierName:      provider,
         status:           'Attente De Ramassage',
+        // Waselex retourne le vrai delivery_fee à la création — le stocker directement
+        ...((shipResult as any).deliveryFee != null ? { shippingCost: (shipResult as any).deliveryFee } : {}),
       } as any);
 
       await storage.createIntegrationLog({

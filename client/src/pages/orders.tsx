@@ -59,6 +59,7 @@ const CARRIER_LOGOS: Record<string, string> = {
   vitipsexpress: '/carriers/vitips.png',
   'vitips express': '/carriers/vitips.png',
   vitips: '/carriers/vitips.png',
+  waselex: '/carriers/waselex.png',
 };
 
 function getCarrierLogo(provider: string | null | undefined): string | null {

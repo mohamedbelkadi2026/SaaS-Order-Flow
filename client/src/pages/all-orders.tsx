@@ -78,6 +78,7 @@ const CARRIER_LOGOS: Record<string, string> = {
   quicklivraison: '/carriers/ql.svg',
   'quick livraison': '/carriers/ql.svg',
   ql: '/carriers/ql.svg',
+  waselex: '/carriers/waselex.png',
 };
 
 function getCarrierLogo(provider: string | null | undefined): string | null {

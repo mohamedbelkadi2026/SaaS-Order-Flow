@@ -48,6 +48,7 @@ const PROVIDERS = [
   { id: "oscario",        name: "Oscario",           cities: 390, logo: null                     },
   { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                             },
   { id: "expresscoursier", name: "Express Coursier", cities: 450, logo: "/carriers/expresscoursier.png" },
+  { id: "waselex",        name: "Waselex",           cities: 1480, logo: "/carriers/waselex.png", initials: "WX", color: "#D0121A" },
   { id: "vitipsexpress",  name: "Vitips Express",        cities: 200, logo: "https://vitipsexpress.com/template/images/logo.png", initials: "VE", color: "#FF6B00" },
   { id: "custom",         name: "➕ Autre transporteur", cities: 0, logo: null                         },
 ];
@@ -364,6 +365,14 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const mutation = useMutation({
     mutationFn: async () => {
       setSubmitError(null);
+      // Waselex : tester la clé API (GET /orders/status?per_page=1) AVANT de sauvegarder
+      if (providerId === "waselex" && apiKey.trim()) {
+        const testRes = await apiRequest("POST", "/api/shipping/waselex/test", { apiKey: apiKey.trim() });
+        const testData = await testRes.json().catch(() => ({}));
+        if (!testRes.ok || testData?.ok === false) {
+          throw new Error(testData?.message || "Clé API Waselex invalide — vérifiez votre clé (format wslx_...).");
+        }
+      }
       if (existingAccount) {
         const body: any = { storeName: resolvedStoreName, assignmentRule: rule };
         if (isAmeex) {
