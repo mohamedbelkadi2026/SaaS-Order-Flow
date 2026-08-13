@@ -1,0 +1,58 @@
+# Replit Prompt — Fix : la variante (couleur/taille) choisie sur YouCan n'apparaît pas dans la commande
+
+## Bug confirmé (code vérifié)
+
+Dans server/routes.ts, le webhook YouCan (~ligne 5744-5758), pour chaque ligne d'article de la commande :
+```ts
+const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
+const sku = v.variant?.sku || v.sku || "";
+let matchedProduct = storeProducts.find(p => sku && p.sku === sku);
+let resolvedVariantName: string | null = null;
+if (!matchedProduct) {
+  const resolved = resolveProductId(rawName, storeProductsWithVariants);
+  if (resolved.productId) {
+    matchedProduct = storeProducts.find(p => p.id === resolved.productId);
+    resolvedVariantName = resolved.variantName;
+  }
+}
+orderItemsToCreate.push({
+  productId: matchedProduct?.id ?? null,
+  rawProductName: rawName,
+  variantInfo: resolvedVariantName || v.variant?.sku || null,
+  ...
+});
+```
+
+Deux problèmes :
+1. Le code lit uniquement v.variant?.sku — il ne lit JAMAIS v.variant?.name (ni v.variant?.options), qui est le champ où YouCan envoie le libellé humain de la variante choisie par le client (ex: "Rouge", "Vert", "42 - Bleu"). Le SKU est un code interne, pas le nom de la couleur/taille.
+2. resolvedVariantName (la seule source qui pourrait donner un nom de variante lisible) n'est calculé QUE si le matching par SKU échoue (if (!matchedProduct)). Or dans la majorité des cas, le SKU matche directement dès la première ligne (storeProducts.find(p => sku && p.sku === sku)), donc resolveProductId() n'est jamais appelé, et variantInfo retombe sur v.variant?.sku — qui est souvent absent ou juste un code, pas "Rouge"/"Vert".
+
+C'est pour ça que la couleur choisie par le client sur YouCan n'apparaît jamais côté plateforme.
+
+## Fix demandé
+
+1. Vérifier dans un payload YouCan réel (ou leur doc API) le nom exact du champ qui contient le libellé de variante choisi — généralement v.variant?.name ou v.variant?.options (array de { name, value }, ex: [{ name: "Couleur", value: "Rouge" }]) ou v.variant?.title. Logguer un payload réel si besoin pour confirmer la structure exacte avant de coder en dur.
+
+2. Modifier la construction de variantInfo pour capturer ce champ EN PRIORITÉ, peu importe le chemin de matching produit emprunté :
+```ts
+const youcanVariantLabel =
+  v.variant?.name
+  || (Array.isArray(v.variant?.options) ? v.variant.options.map((o: any) => o.value || o.name).filter(Boolean).join(' / ') : null)
+  || v.variant?.title
+  || null;
+
+// ... après le matching produit (SKU ou resolveProductId) ...
+orderItemsToCreate.push({
+  productId: matchedProduct?.id ?? null,
+  rawProductName: rawName,
+  variantInfo: youcanVariantLabel || resolvedVariantName || v.variant?.sku || null,
+  ...
+});
+```
+3. S'assurer que variantInfo s'affiche bien dans l'UI là où les articles de la commande sont listés (Suivi des Colis, détail de commande, étiquette d'expédition si applicable) — vérifier que le composant d'affichage ne filtre pas ce champ s'il n'est pas déjà branché quelque part.
+
+## Testing checklist
+1. Passer une commande de test sur la boutique YouCan avec un produit à variantes (ex: choisir "Rouge") → vérifier que la commande créée côté plateforme affiche bien "Rouge" comme variante, pas juste le SKU ou rien.
+2. Refaire le test avec "Vert" sur le même produit → même vérification.
+3. Vérifier un produit sans variantes → ne doit rien afficher de cassé (variantInfo reste null proprement).
+4. Vérifier que ça fonctionne à la fois quand le matching se fait par SKU direct ET quand il passe par resolveProductId (les deux chemins doivent maintenant capturer le bon libellé).

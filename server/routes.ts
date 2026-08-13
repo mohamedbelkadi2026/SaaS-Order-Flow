@@ -5807,6 +5807,23 @@ export async function registerRoutes(
       for (const v of lineItems) {
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
         const sku = v.variant?.sku || v.sku || "";
+
+        // ── Capture the human-readable variant label sent by YouCan ──────────
+        // YouCan sends the chosen option (e.g. "Rouge", "42 - Bleu") in
+        // v.variant?.name, v.variant?.title, or v.variant?.options[].value.
+        // We extract this BEFORE product matching so it is available regardless
+        // of which matching path (SKU or resolveProductId) is taken.
+        const youcanVariantLabel: string | null =
+          v.variant?.name ||
+          v.variant?.title ||
+          (Array.isArray(v.variant?.options)
+            ? (v.variant.options as any[])
+                .map((o: any) => o.value || o.name)
+                .filter(Boolean)
+                .join(" / ") || null
+            : null) ||
+          null;
+
         // SKU match only when UNIQUE — ambiguous/duplicate SKUs fall through to resolveProductId().
         const skuMatchesYC = sku ? storeProducts.filter(p => p.sku === sku) : [];
         let matchedProduct = skuMatchesYC.length === 1 ? skuMatchesYC[0] : undefined;
@@ -5822,6 +5839,7 @@ export async function registerRoutes(
           orderNumber: payload.ref ?? payload.id,
           rawName,
           sku,
+          youcanVariantLabel,
           skuMatches: skuMatchesYC.map(p => ({ id: p.id, sku: p.sku, name: p.name })),
           resolveProductIdResult: resolveProductId(rawName, storeProductsWithVariants),
           finalMatchedProductId: matchedProduct?.id,
@@ -5830,7 +5848,8 @@ export async function registerRoutes(
         orderItemsToCreate.push({
           productId: matchedProduct?.id ?? null,
           rawProductName: rawName,
-          variantInfo: resolvedVariantName || v.variant?.sku || null,
+          // Priority: human-readable YouCan label > resolveProductId name > SKU code
+          variantInfo: youcanVariantLabel || resolvedVariantName || v.variant?.sku || null,
           quantity: v.quantity || 1,
           price: Math.round((v.price || 0) * 100),
           orderId: 0,
