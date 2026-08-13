@@ -7554,6 +7554,17 @@ function ensureHeaders(sheet) {
         const mkt = await storage.getMarketplaceProducts();
         storeProducts = [...storeProducts, ...mkt];
       }
+      // SÉCURITÉ : un productId ne peut référencer qu'un produit du store
+      // (ou un produit marketplace pour un Seller TajerDrop). Tout autre id
+      // est neutralisé (null) — le nom texte est conservé, mais aucun
+      // décrément de stock cross-tenant ne peut se produire.
+      const allowedProductIds = new Set((storeProducts as any[]).map((p: any) => p.id));
+      for (const item of data.items) {
+        if (item.productId && !allowedProductIds.has(item.productId)) {
+          console.warn(`[ORDERS-MANUAL] store=${storeId} productId=${item.productId} non autorisé — neutralisé (null)`);
+          item.productId = null;
+        }
+      }
       for (const item of data.items.filter(i => i.rawProductName)) {
         if (item.productId) {
           const prod = (storeProducts as any[]).find((p: any) => p.id === item.productId);

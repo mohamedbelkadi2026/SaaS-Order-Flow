@@ -522,6 +522,25 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
+
+  // Un produit marketplace TajerDrop appartient au store admin — quand il est
+  // attaché à une commande d'un AUTRE store (Seller), on ne renvoie qu'un
+  // sous-ensemble whitelisté (jamais SKU/référence/descriptions/settings/storeId).
+  private sanitizeOrderItemProduct(product: any, orderStoreId: number | null | undefined): any {
+    if (!product) return product;
+    if (product.storeId === orderStoreId) return product;
+    return {
+      id: product.id,
+      name: product.name,
+      imageUrl: product.imageUrl,
+      stock: product.stock,
+      costPrice: product.costPrice,
+      sellingPrice: product.sellingPrice,
+      hasVariants: product.hasVariants,
+      isMarketplaceProduct: product.isMarketplaceProduct,
+    };
+  }
+
   async decrementStockForOrder(orderId: number, storeId: number): Promise<void> {
     const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
     if (!items.length) return;
@@ -549,8 +568,11 @@ export class DatabaseStorage implements IStorage {
           await db.update(productVariants)
             .set({ stock: newStock })
             .where(eq(productVariants.id, matched.id));
+          // Attribuer le mouvement au store PROPRIÉTAIRE du produit (≠ store de
+          // la commande pour les produits marketplace TajerDrop).
+          const [ownerProd] = await db.select({ storeId: products.storeId }).from(products).where(eq(products.id, item.productId));
           await db.insert(stockMovements).values({
-            storeId,
+            storeId: ownerProd?.storeId ?? storeId,
             productId: item.productId,
             variantId: matched.id,
             type: 'shipped',
@@ -571,7 +593,8 @@ export class DatabaseStorage implements IStorage {
           .set({ stock: newStock })
           .where(eq(products.id, item.productId));
         await db.insert(stockMovements).values({
-          storeId,
+          // Store propriétaire du produit (≠ store de la commande pour marketplace)
+          storeId: product.storeId ?? storeId,
           productId: item.productId,
           type: 'shipped',
           quantity: -qty,
@@ -745,7 +768,9 @@ export class DatabaseStorage implements IStorage {
       const orderItemsList = itemsByOrder.get(order.id) || [];
       const itemsWithProducts = orderItemsList.map(item => ({
         ...item,
-        product: item.productId ? productById.get(item.productId) : undefined,
+        product: item.productId
+          ? this.sanitizeOrderItemProduct(productById.get(item.productId), order.storeId)
+          : undefined,
       }));
       const mid = (order as any).magasinId as number | null | undefined;
       const isYoucan = (order as any).source === 'youcan';
@@ -772,7 +797,7 @@ export class DatabaseStorage implements IStorage {
     
     const itemsWithProducts = await Promise.all(orderItemsList.map(async (item) => {
       const [product] = await db.select().from(products).where(eq(products.id, item.productId));
-      return { ...item, product };
+      return { ...item, product: this.sanitizeOrderItemProduct(product, order.storeId) };
     }));
     
     return {
@@ -1220,6 +1245,17 @@ export class DatabaseStorage implements IStorage {
 
       const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, id));
 
+      // Store propriétaire de chaque produit — les mouvements de stock doivent
+      // être attribués au store qui possède le produit (≠ store de la commande
+      // pour les produits marketplace TajerDrop).
+      const itemProductIds = items.map(i => i.productId).filter((x): x is number => x != null);
+      const ownerRows = itemProductIds.length
+        ? await tx.select({ id: products.id, storeId: products.storeId }).from(products).where(inArray(products.id, itemProductIds))
+        : [];
+      const productOwnerStore = new Map(ownerRows.map(r => [r.id, r.storeId]));
+      const stockStoreFor = (productId: number | null) =>
+        (productId != null ? productOwnerStore.get(productId) : undefined) ?? currentOrder.storeId!;
+
       // ── RULE 0: First-time confirm → subtract stock ─────────────────────
       // Triggers when transitioning INTO 'confirme' or 'confirme_reporte'
       // from a status that is NEITHER. Promotion confirme_reporte→confirme
@@ -1235,7 +1271,7 @@ export class DatabaseStorage implements IStorage {
             .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
             .where(eq(products.id, item.productId));
           await tx.insert(stockLogs).values({
-            storeId: currentOrder.storeId!,
+            storeId: stockStoreFor(item.productId),
             productId: item.productId,
             orderId: id,
             changeAmount: -qty,
@@ -1263,7 +1299,7 @@ export class DatabaseStorage implements IStorage {
               .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
               .where(eq(products.id, item.productId));
             await tx.insert(stockLogs).values({
-              storeId: currentOrder.storeId!,
+              storeId: stockStoreFor(item.productId),
               productId: item.productId,
               orderId: id,
               changeAmount: -qty,
@@ -1271,7 +1307,7 @@ export class DatabaseStorage implements IStorage {
             });
           }
           await tx.insert(stockMovements).values({
-            storeId: currentOrder.storeId!,
+            storeId: stockStoreFor(item.productId),
             productId: item.productId,
             type: 'shipped',
             quantity: -qty,
@@ -1305,7 +1341,7 @@ export class DatabaseStorage implements IStorage {
               .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
               .where(eq(products.id, item.productId));
             await tx.insert(stockLogs).values({
-              storeId: currentOrder.storeId!,
+              storeId: stockStoreFor(item.productId),
               productId: item.productId,
               orderId: id,
               changeAmount: -qty,
@@ -1313,7 +1349,7 @@ export class DatabaseStorage implements IStorage {
             });
           }
           await tx.insert(stockMovements).values({
-            storeId: currentOrder.storeId!,
+            storeId: stockStoreFor(item.productId),
             productId: item.productId,
             type: 'delivered',
             quantity: -qty,
@@ -1339,12 +1375,12 @@ export class DatabaseStorage implements IStorage {
             .set({ stock: sql`${products.stock} + ${qty}` })
             .where(eq(products.id, item.productId));
           await tx.insert(stockLogs).values({
-            storeId: currentOrder.storeId!, productId: item.productId, orderId: id,
+            storeId: stockStoreFor(item.productId), productId: item.productId, orderId: id,
             changeAmount: qty,
             reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
           });
           await tx.insert(stockMovements).values({
-            storeId: currentOrder.storeId!, productId: item.productId, type: 'returned', quantity: qty,
+            storeId: stockStoreFor(item.productId), productId: item.productId, type: 'returned', quantity: qty,
             orderId: id, userId: actorId ?? null,
             reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
           });
