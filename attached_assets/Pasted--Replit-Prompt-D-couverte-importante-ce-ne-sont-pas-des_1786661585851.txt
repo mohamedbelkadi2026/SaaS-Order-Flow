@@ -1,0 +1,30 @@
+# Replit Prompt — Découverte importante : ce ne sont pas des "variantes" mais des questions personnalisées YouCan
+
+## Nouvelle info clé
+
+En passant une commande de test réelle (YC-011, "test", Taroudant), la page de confirmation YouCan montre clairement :
+```
+اختر اللون المناسب لك : الأحمر   (Choisissez la couleur qui vous convient : Rouge)
+اختر القياس المناسب لك : M       (Choisissez la taille qui vous convient : M)
+```
+Ce format "Question : Réponse" correspond aux champs de formulaire personnalisés (custom fields / custom questions) que YouCan permet de configurer sur une fiche produit — PAS au système de variantes produit standard (variant.name/variant.sku) qu'on supposait dans les prompts précédents. C'est pour ça que rien de ce qu'on a essayé jusqu'ici n'a fonctionné : on cherchait au mauvais endroit dans le payload.
+
+Autre indice : la colonne "INFOS SUPPLÉMENTAIRES" existe déjà dans le tableau Suivi des Colis/Nouvelles (visible, actuellement vide "—" pour cette commande) — elle est probablement prévue exactement pour ce genre de données, mais rien ne l'alimente aujourd'hui.
+
+## Ce que je veux
+
+1. Retrouve le payload webhook brut reçu pour la commande YC-011 (test, Taroudant, agent khawla, 99.00 DH, créée le 13/08/26 23:50). Si besoin, garde/ajoute le console.log('[YOUCAN-PAYLOAD-DEBUG]', JSON.stringify(payload, null, 2)) sur le payload COMPLET de la commande (pas juste les line items cette fois — les custom fields sont probablement au niveau de la commande ou de la ligne d'article, mais dans un champ du type custom_fields, additional_fields, form_answers, questions, attributes, ou similaire).
+2. Colle-moi le JSON complet retrouvé pour cette commande précise, pour qu'on voie exactement où YouCan range "اختر اللون المناسب لك : الأحمر" et "اختر القياس المناسب لك : M".
+3. Une fois la structure confirmée, écrire le code qui extrait ces paires question/réponse et les stocke dans le champ "Infos supplémentaires" de la commande (celui déjà visible dans le tableau), au format lisible, par exemple :
+```
+اختر اللون المناسب لك: الأحمر | اختر القياس المناسب لك: M
+```
+4. Vérifier aussi si ce même mécanisme doit alimenter variantInfo (pour cohérence avec les tentatives précédentes) — à décider une fois qu'on voit la vraie structure : si c'est vraiment un "custom field" générique (pas spécifique à couleur/taille), "Infos supplémentaires" est probablement le bon endroit plutôt que "variante".
+
+## Ne pas deviner à nouveau
+Comme la dernière fois, ne pas coder une hypothèse sur le nom du champ sans l'avoir vue dans un vrai payload — colle-moi le JSON d'abord.
+
+## Testing checklist
+1. Après le fix, repasser une commande de test avec une couleur/taille différente (ex: Vert, L) → vérifier que "Infos supplémentaires" (et/ou variante) affiche bien "اختر اللون المناسب لك: أخضر | اختر القياس المناسب لك: L".
+2. Vérifier qu'une commande sans champs personnalisés (produit simple, sans couleur/taille) ne casse rien et laisse "Infos supplémentaires" vide proprement.
+3. Vérifier l'affichage sur Suivi des Colis ET dans le détail/modal d'édition de la commande.

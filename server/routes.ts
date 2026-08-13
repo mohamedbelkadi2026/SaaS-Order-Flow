@@ -5804,10 +5804,10 @@ export async function registerRoutes(
       const orderItemsToCreate: any[] = [];
       let orderProductCost = 0;
 
-      // ── TEMPORARY DEBUG — log raw line items to reveal YouCan variant structure ──
+      // ── TEMPORARY DEBUG — log FULL payload to reveal YouCan custom-field structure ──
       console.log('[YOUCAN-PAYLOAD-DEBUG] orderRef:', payload.ref ?? payload.id);
-      console.log('[YOUCAN-PAYLOAD-DEBUG] lineItems:', JSON.stringify(lineItems, null, 2));
-      // ── END TEMPORARY DEBUG ───────────────────────────────────────────────────────
+      console.log('[YOUCAN-PAYLOAD-DEBUG] FULL_PAYLOAD:', JSON.stringify(payload, null, 2));
+      // ── END TEMPORARY DEBUG ────────────────────────────────────────────────────────
 
       for (const v of lineItems) {
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
