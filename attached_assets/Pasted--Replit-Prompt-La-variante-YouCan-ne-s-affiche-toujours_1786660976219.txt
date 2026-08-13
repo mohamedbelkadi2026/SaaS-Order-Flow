@@ -1,0 +1,16 @@
+# Replit Prompt — La variante YouCan ne s'affiche toujours pas : montre-moi le payload réel de la commande YC-10309
+
+## Constat
+
+Après le fix précédent (censé capturer v.variant?.name / v.variant?.options en priorité), j'ai passé une commande de test réelle sur YouCan (YC-10309, "حقيبة كبيرة", client a choisi une couleur). Résultat : la couleur n'apparaît toujours nulle part (colonne PRODUIT affiche juste "حقيبة كبيرة", pas de variante).
+
+Note importante : ce produit n'existe PAS encore dans /inventory (pas de SKU côté plateforme) — ça n'a pas d'importance, le nom brut du produit s'affiche quand même (rawProductName), donc la variante devrait pouvoir s'afficher de la même façon, indépendamment du matching produit.
+
+## Ce que je veux — preuve avant nouveau fix
+
+1. Retrouve dans les logs serveur le payload webhook brut reçu pour la commande YC-10309 (ref YouCan correspondante). Si les logs ne le montrent pas déjà en clair, ajoute temporairement un console.log('[YOUCAN-PAYLOAD-DEBUG]', JSON.stringify(payload.variants || payload.items || payload.line_items, null, 2)) juste avant la boucle for (const v of lineItems) dans le webhook YouCan (server/routes.ts ~ligne 5740), et redéploie.
+2. Passe une nouvelle commande de test avec une couleur choisie, et colle-moi ici le JSON EXACT affiché par ce log — je veux voir la structure réelle de v.variant telle qu'envoyée par YouCan pour cette commande précise (est-ce que le nom de la couleur est dans v.variant.name, v.variant.options, v.variant.title, un autre champ, ou est-ce que YouCan ne l'envoie même pas du tout dans le payload webhook et qu'il faut aller le rechercher via un appel API supplémentaire comme c'est déjà fait pour l'adresse complète un peu plus haut dans le même fichier) ?
+3. Une fois qu'on voit la vraie structure, on corrige variantInfo pour lire le bon champ — pas de nouvelle hypothèse sans preuve.
+
+## Rappel
+Le fix précédent supposait v.variant?.name ou v.variant?.options sans avoir vérifié un payload réel au préalable — c'est probablement pour ça qu'il n'a rien changé. Cette fois, on vérifie d'abord.
