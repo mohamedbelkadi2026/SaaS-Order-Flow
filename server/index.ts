@@ -837,7 +837,7 @@ app.use((req, res, next) => {
         const toSync = allOrders.filter((o: any) =>
           o.shippingProvider === 'waselex' &&
           o.trackNumber &&
-          !['delivered', 'refused', 'Retour Recu', 'returned', 'cancelled'].includes(o.status || '')
+          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
         );
         if (!toSync.length) continue;
 

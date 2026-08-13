@@ -11089,7 +11089,7 @@ function ensureHeaders(sheet) {
       const waselexOrders = allOrders.filter((o: any) =>
         o.trackNumber &&
         (o.shippingProvider || "").toLowerCase().trim() === "waselex" &&
-        !["delivered", "refused", "Retour Recu", "returned", "cancelled"].includes(o.status || "")
+        !["delivered", "refused", "Retour Recu"].includes(o.status || "")
       );
       if (!waselexOrders.length) {
         return res.json({ synced: 0, updated: 0, message: "Aucune commande Waselex à synchroniser." });

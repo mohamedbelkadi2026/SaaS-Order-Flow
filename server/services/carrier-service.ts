@@ -1175,10 +1175,11 @@ export async function shipOrderToCarrier(
       let wResp: any = null;
       // 500 = erreur interne Waselex → un retry raisonnable ; autres codes = pas de retry
       for (let attemptNo = 1; attemptNo <= 2; attemptNo++) {
+        // Waselex : TLS standard (PAS de SSL_AGENT) — la clé API et les données
+        // client ne doivent jamais transiter avec la vérification de certificat désactivée.
         wResp = await axios.post(wUrl, { orders: [wOrder] }, {
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Api-Key': apiKey },
           timeout: TIMEOUT_MS,
-          httpsAgent: SSL_AGENT,
           validateStatus: () => true,
         });
         if (wResp.status < 500 || attemptNo === 2) break;
@@ -3241,11 +3242,14 @@ export async function getVitipsCities(
 // (même mécanisme que Vitipsexpress, mais en batch : ~100 codes par requête).
 
 export const WASELEX_STATUS_MAP: Record<string, string> = {
-  // ── Avant expédition physique — confirmé ──────────────────────────────────
-  'EN_ATTENTE_RAMASSAGE':    'confirme',
-  'EN_ATTENTE_PREPARATION':  'confirme',
-  'EN_PREPARATION':          'confirme',
-  'CONFIRME':                'confirme',
+  // ── Avant ramassage physique ──────────────────────────────────────────────
+  // IMPORTANT : jamais 'confirme' — l'app marque la commande 'Attente De
+  // Ramassage' à l'expédition, et un retour vers 'confirme' via updateOrderStatus
+  // effacerait le tracking/transporteur et re-déduirait le stock (reversal).
+  'EN_ATTENTE_RAMASSAGE':    'Attente De Ramassage',
+  'EN_ATTENTE_PREPARATION':  'Attente De Ramassage',
+  'EN_PREPARATION':          'Attente De Ramassage',
+  'CONFIRME':                'Attente De Ramassage',
   // ── Ramassé / en programme ────────────────────────────────────────────────
   'MIS_EN_PROGRAMME':        'in_progress',
   'PROGRAMME':               'in_progress',
@@ -3278,24 +3282,29 @@ export const WASELEX_STATUS_MAP: Record<string, string> = {
   'HORS_ZONE':               'unreachable',
   'FAUX_DESTINATION':        'unreachable',
   'CHANGEMENT_ADRESSE':      'unreachable',
-  // ── Reporté ───────────────────────────────────────────────────────────────
-  'REPORTE':                 'confirme_reporte',
-  // ── Annulé ────────────────────────────────────────────────────────────────
-  'PAS_INTERESSE':           'cancelled',
-  'ANNULE':                  'cancelled',
-  'ANNULE_FACTURE':          'cancelled',
-  'MANQUE_DE_STOCK':         'cancelled',
-  'PAS_COMMANDER':           'cancelled',
-  // ── Retours ───────────────────────────────────────────────────────────────
-  'DEMANDE_DE_RETOUR':       'returned',
-  'RETOUR':                  'returned',
-  'RETOUR_EN_PREPARATION':   'returned',
-  'RETOUR_ENVOYE':           'returned',
-  'RETOUR_PRET':             'returned',
-  'RETOUR_RAMASSE':          'returned',
-  'RETOUR_RECU_PAR_AGENCE':  'returned',
-  'RETOUR_RECU_PAR_CLIENT':  'returned',
-  'RETOUR_RECU_STOCK':       'returned',
+  // ── Reporté — même mapping que Vitips ('Reporté' → unreachable). PAS
+  // 'confirme_reporte' : ce statut CRM re-déduit le stock et attend une date
+  // planifiée — incorrect pour un colis déjà chez le transporteur.
+  'REPORTE':                 'unreachable',
+  // ── Annulé côté transporteur — même mapping que Vitips ('Annulé' → refused),
+  // qui restaure le stock d'une commande expédiée. 'cancelled' n'existe pas
+  // comme statut interne.
+  'PAS_INTERESSE':           'refused',
+  'ANNULE':                  'refused',
+  'ANNULE_FACTURE':          'refused',
+  'MANQUE_DE_STOCK':         'refused',
+  'PAS_COMMANDER':           'refused',
+  // ── Retours — mêmes statuts internes que Vitips : retour en route =
+  // 'En Cours De Retour', retour physiquement reçu = 'Retour Recu'.
+  'DEMANDE_DE_RETOUR':       'En Cours De Retour',
+  'RETOUR':                  'En Cours De Retour',
+  'RETOUR_EN_PREPARATION':   'En Cours De Retour',
+  'RETOUR_ENVOYE':           'En Cours De Retour',
+  'RETOUR_PRET':             'En Cours De Retour',
+  'RETOUR_RAMASSE':          'En Cours De Retour',
+  'RETOUR_RECU_PAR_AGENCE':  'Retour Recu',
+  'RETOUR_RECU_PAR_CLIENT':  'Retour Recu',
+  'RETOUR_RECU_STOCK':       'Retour Recu',
   // Retour au point de départ, pas encore livré
   'NON_RECU_PAR_LIVREUR':    'in_progress',
   // À discuter avec l'utilisateur — in_progress par défaut en attendant
@@ -3335,7 +3344,6 @@ export async function trackWaselexShipments(
       const resp = await axios.get(url, {
         headers: { 'X-Api-Key': apiKey, 'Accept': 'application/json' },
         timeout: 20000,
-        httpsAgent: SSL_AGENT,
         validateStatus: () => true,
       });
       if (resp.status === 401) {
@@ -3373,7 +3381,6 @@ export async function testWaselexConnection(apiKey: string): Promise<{ ok: boole
     const resp = await axios.get(`${WASELEX_API_BASE}/orders/status?per_page=1`, {
       headers: { 'X-Api-Key': (apiKey || '').trim(), 'Accept': 'application/json' },
       timeout: 15000,
-      httpsAgent: SSL_AGENT,
       validateStatus: () => true,
     });
     if (resp.status === 401) return { ok: false, message: "Clé API Waselex invalide ou compte non approuvé." };
