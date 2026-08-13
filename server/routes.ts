@@ -5709,6 +5709,7 @@ export async function registerRoutes(
 
       const storeId = integration.storeId;
       const payload = req.body as any;
+      console.log('[FULL-PAYLOAD-DEBUG]', JSON.stringify(payload, null, 2));
       console.log("[YOUCAN-WEBHOOK] Payload parsed — ref:", payload.ref, "id:", payload.id);
       const orderRef = payload.ref || payload.id;
       if (!orderRef) return res.status(400).json({ message: "Missing order ref" });
