@@ -1,0 +1,73 @@
+# TajerDrop — Plan technique par phases
+
+## Le modèle (validé ensemble)
+- Mode intégré dans la même plateforme (même code, même base de données) — pas un projet séparé.
+- Nouveau type de compte/store : "Seller TajerDrop" (dropshipper), en plus des stores classiques existants.
+- Le catalogue produit est centralisé et détenu par l'admin (vous) — un seul catalogue, partagé par tous les Sellers TajerDrop (pas de niveaux d'accès différenciés pour l'instant).
+- Chaque Seller confirme ses propres leads avec ses propres agents (réutilise les outils déjà existants : agents, statuts, commissions), mais sur des produits qui ne lui appartiennent pas.
+- Vous (admin) possédez le stock réel, gérez l'expédition (transporteurs déjà intégrés) et encaissez le COD.
+- Transparence totale des coûts pour le Seller : il voit le coût produit, les frais de livraison (35 DH), les frais d'emballage (6 DH) — il calcule lui-même sa marge en fixant son prix de vente client.
+- Un système de règlement (payout) calcule, pour chaque commande livrée, ce qui revient au Seller (prix de vente moins vos coûts) et suit ce que vous lui devez.
+
+## Pourquoi par phases
+C'est une fonctionnalité majeure (nouveau modèle économique), pas un bugfix. Livrer d'un coup un prompt "tout faire" mène à des angles morts et des bugs difficiles à isoler — même schéma que le reste de cette conversation : mieux vaut valider chaque brique avant de passer à la suivante.
+
+---
+
+## Phase 1 — Fondations : catalogue partagé + visibilité des coûts (ce prompt)
+- Nouveau champ sur products : isMarketplaceProduct (boolean) + ownerStoreId (le store admin qui possède réellement le produit/stock).
+- Nouveau rôle/type de store : storeType = 'tajerdrop_seller' (en plus du type classique existant).
+- Un Seller TajerDrop voit en lecture seule le catalogue marketplace (nom, prix de vente suggéré, coût produit, frais de livraison 35 DH, frais d'emballage 6 DH) — sans pouvoir éditer le produit ni voir/modifier le stock réel.
+- Le Seller peut créer des commandes sur ces produits marketplace exactement comme aujourd'hui (même formulaire), mais la commande référence le produit marketplace au lieu d'un produit qui lui appartient.
+- Le stock décrémenté à la livraison est celui du produit marketplace (propriété de l'admin), pas un stock fictif côté Seller.
+
+## Phase 2 — Règlement financier (payout)
+- Pour chaque commande TajerDrop livrée : calcul automatique marge_seller = prix_vente_client − (coût_produit + frais_livraison + frais_emballage).
+- Tableau de bord Seller : marge cumulée, montant dû, historique des règlements.
+- Tableau de bord Admin : vue globale de ce qui est dû à chaque Seller, marquer un règlement comme payé.
+
+## Phase 3 — Onboarding et landing page
+- Sur tajergrow.com : choix "SaaS classique" vs "Devenir Seller TajerDrop".
+- Flow d'inscription Seller TajerDrop : validation manuelle par l'admin avant accès au catalogue (éviter les comptes non sérieux).
+
+## Phase 4 — Affinage
+- Restrictions/permissions fines (masquer certains produits à certains Sellers si besoin plus tard, même si Phase 1 part sur un catalogue 100% partagé).
+- Statistiques comparatives entre Sellers (top performers), alertes de stock bas visibles aux Sellers concernés.
+
+---
+
+# Prompt Replit — Phase 1 uniquement
+
+## Objectif de cette phase
+Poser les fondations en base de données et en accès : un catalogue marketplace centralisé, visible en lecture (avec tous les coûts) par un nouveau type de compte "Seller TajerDrop", sans toucher au fonctionnement existant des stores classiques.
+
+## Ce qui est demandé
+
+### 1. Schéma
+- Ajouter à products : isMarketplaceProduct boolean default false, marketplaceOwnerStoreId integer references stores(id) (nullable — seulement rempli pour les produits marketplace).
+- Ajouter à stores : storeType text default 'standard' avec une contrainte CHECK incluant au moins 'standard' et 'tajerdrop_seller'.
+- Ne rien casser sur les stores existants (tous storeType = 'standard' par défaut, isMarketplaceProduct = false par défaut).
+
+### 2. Accès en lecture au catalogue marketplace
+- Nouvel endpoint GET /api/marketplace/products : retourne tous les produits où isMarketplaceProduct = true, avec pour chacun : nom, image, prix de vente suggéré, coût produit, frais de livraison (35 DH), frais d'emballage (6 DH), stock disponible (lecture seule, pas de détail sur l'historique de mouvement).
+- Accessible uniquement aux comptes storeType = 'tajerdrop_seller'.
+- Le Seller ne doit voir AUCUN autre champ interne (marge admin, fournisseur, etc.) — seulement les 4 valeurs listées.
+
+### 3. Création de commande sur un produit marketplace
+- Réutiliser le flux de création de commande existant, mais permettre de sélectionner un produit du catalogue marketplace en plus des produits propres au store.
+- La commande créée doit référencer marketplaceOwnerStoreId pour que le stock décrémenté à la livraison soit celui du store admin propriétaire, pas un stock fictif côté Seller (réutiliser exactement la logique de décrément déjà en place, decrementStockForOrder).
+
+### 4. UI minimale pour cette phase
+- Une page "Catalogue TajerDrop" (visible uniquement pour storeType = 'tajerdrop_seller') listant les produits marketplace avec les 4 coûts affichés clairement (produit / livraison 35 DH / emballage 6 DH / stock dispo).
+- Un bouton "Créer une commande" depuis cette page qui pré-remplit le formulaire de commande existant avec ce produit.
+
+## Ce qui n'est PAS dans cette phase
+- Pas de calcul de marge/payout automatique (Phase 2).
+- Pas de page d'inscription publique (Phase 3).
+- Pas de gestion d'accès différencié par Seller (catalogue 100% partagé pour l'instant, comme validé).
+
+## Testing checklist
+1. Créer un store de test avec storeType = 'tajerdrop_seller' → confirmer qu'il voit /api/marketplace/products avec les bons coûts, et rien d'autre.
+2. Confirmer qu'un store classique existant (storeType = 'standard') n'est affecté par aucun changement (comportement identique à avant).
+3. Créer une commande de test sur un produit marketplace depuis le compte Seller → vérifier que le stock décrémenté à la livraison est bien celui du store admin propriétaire.
+4. Vérifier qu'aucun champ interne (coût admin, marge, fournisseur) n'est exposé dans la réponse de /api/marketplace/products.

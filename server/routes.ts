@@ -1099,6 +1099,37 @@ export async function registerRoutes(
     res.json(store);
   });
 
+  // ─── TajerDrop Phase 1 — catalogue marketplace ────────────────────────────
+  // Frais fixes affichés au Seller (en centimes)
+  const TAJERDROP_DELIVERY_FEE = 3500; // 35 DH
+  const TAJERDROP_PACKAGING_FEE = 600; // 6 DH
+
+  /** GET /api/marketplace/products — catalogue partagé, lecture seule.
+   *  Réservé aux stores storeType = 'tajerdrop_seller'.
+   *  Ne renvoie QUE : nom, image, prix suggéré, coût produit, frais fixes,
+   *  stock dispo — aucun champ interne (fournisseur, marges admin, etc.). */
+  app.get("/api/marketplace/products", requireAuth, async (req: any, res: any) => {
+    try {
+      const store = await storage.getStore(req.user!.storeId!);
+      if (!store || (store as any).storeType !== 'tajerdrop_seller') {
+        return res.status(403).json({ message: "Réservé aux comptes Seller TajerDrop." });
+      }
+      const prods = await storage.getMarketplaceProducts();
+      res.json(prods.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        imageUrl: p.imageUrl,
+        suggestedPrice: p.sellingPrice,        // prix de vente suggéré (centimes)
+        productCost: p.costPrice,              // coût produit (centimes)
+        deliveryFee: TAJERDROP_DELIVERY_FEE,   // 35 DH
+        packagingFee: TAJERDROP_PACKAGING_FEE, // 6 DH
+        availableStock: p.stock,
+      })));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erreur catalogue marketplace" });
+    }
+  });
+
   app.get("/api/store/webhook-key", requireAuth, async (req, res) => {
     try {
       const key = await storage.getOrGenerateWebhookKey(req.user!.storeId!);
@@ -7512,7 +7543,17 @@ function ensureHeaders(sheet) {
 
       // Compute real COGS from linked products
       let computedProductCost = 0;
-      const storeProducts = await storage.getProductsByStore(storeId);
+      let storeProducts = await storage.getProductsByStore(storeId);
+      // TajerDrop Seller : peut aussi commander sur les produits du catalogue
+      // marketplace (propriété du store admin) — on les inclut pour le COGS
+      // et la validation. Le product_id référence directement le produit
+      // marketplace, donc decrementStockForOrder décrémente le stock admin.
+      const orderingStore = await storage.getStore(storeId);
+      const isTajerdropSeller = (orderingStore as any)?.storeType === 'tajerdrop_seller';
+      if (isTajerdropSeller) {
+        const mkt = await storage.getMarketplaceProducts();
+        storeProducts = [...storeProducts, ...mkt];
+      }
       for (const item of data.items.filter(i => i.rawProductName)) {
         if (item.productId) {
           const prod = (storeProducts as any[]).find((p: any) => p.id === item.productId);
@@ -7963,9 +8004,16 @@ function ensureHeaders(sheet) {
       let productCost = 0;
       const orderItemsToCreate: { productId: number; quantity: number; price: number; orderId: number }[] = [];
 
+      // TajerDrop Seller : autorisé à commander sur les produits marketplace
+      // (propriété du store admin) en plus de ses propres produits.
+      const orderingStore2 = await storage.getStore(storeId);
+      const isTajerdropSeller2 = (orderingStore2 as any)?.storeType === 'tajerdrop_seller';
+
       for (const item of data.items) {
         const product = await storage.getProduct(item.productId);
-        if (!product || product.storeId !== storeId) {
+        const isOwn = !!product && product.storeId === storeId;
+        const isMarketplace = !!product && (product as any).isMarketplaceProduct === true && !product.archivedAt;
+        if (!product || (!isOwn && !(isTajerdropSeller2 && isMarketplace))) {
           return res.status(400).json({ message: `Produit #${item.productId} introuvable` });
         }
         totalPrice += item.price * item.quantity;

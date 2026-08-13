@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
-import { useProducts, useCreateOrder } from "@/hooks/use-store-data";
+import { useQuery } from "@tanstack/react-query";
+import { useProducts, useCreateOrder, useStore } from "@/hooks/use-store-data";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,8 +28,52 @@ interface OrderLineItem {
 export default function NewOrder() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
-  const { data: products = [], isLoading: productsLoading } = useProducts();
+  const { data: ownProducts = [], isLoading: productsLoading } = useProducts();
   const createOrder = useCreateOrder();
+
+  // TajerDrop Seller : fusionner le catalogue marketplace avec les produits
+  // propres du store (le backend accepte les deux pour ce type de compte).
+  const { data: currentStore } = useStore();
+  const isTajerdropSeller = (currentStore as any)?.storeType === "tajerdrop_seller";
+  const { data: marketplaceProducts = [] } = useQuery<any[]>({
+    queryKey: ["/api/marketplace/products"],
+    enabled: isTajerdropSeller,
+  });
+  const products = useMemo(() => {
+    if (!isTajerdropSeller) return ownProducts as Product[];
+    const ownIds = new Set((ownProducts as Product[]).map((p) => p.id));
+    const mapped = (marketplaceProducts as any[])
+      .filter((p) => !ownIds.has(p.id))
+      .map((p) => ({
+        id: p.id,
+        name: `${p.name} (TajerDrop)`,
+        stock: p.availableStock,
+        costPrice: p.productCost,
+        sellingPrice: p.suggestedPrice,
+      })) as unknown as Product[];
+    return [...(ownProducts as Product[]), ...mapped];
+  }, [isTajerdropSeller, ownProducts, marketplaceProducts]);
+
+  // Pré-remplissage depuis "Créer une commande" du Catalogue TajerDrop (?productId=X)
+  const [prefillDone, setPrefillDone] = useState(false);
+  useEffect(() => {
+    if (prefillDone || productsLoading) return;
+    const params = new URLSearchParams(window.location.search);
+    const pid = parseInt(params.get("productId") || "0");
+    if (pid > 0) {
+      const product = (products as Product[]).find((p) => p.id === pid);
+      if (product) {
+        setItems((prev) =>
+          prev.some((i) => i.productId === pid)
+            ? prev
+            : [...prev, { productId: pid, quantity: 1, price: (product as any).sellingPrice || product.costPrice || 0 }]
+        );
+        setPrefillDone(true);
+      }
+    } else {
+      setPrefillDone(true);
+    }
+  }, [prefillDone, productsLoading, products]);
 
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");

@@ -57,7 +57,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useAuth } from "@/hooks/use-auth";
 import { useActiveStore } from "@/hooks/use-active-store";
 import { useToast } from "@/hooks/use-toast";
-import { useSubscription } from "@/hooks/use-store-data";
+import { useSubscription, useStore } from "@/hooks/use-store-data";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
 /* ─── Nav definitions ─────────────────────────────────────────── */
@@ -539,9 +539,21 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     toast({ title: "Déconnexion réussie", description: "À bientôt !" });
   };
 
-  const baseNav = user?.isSuperAdmin
+  const baseNavPre = user?.isSuperAdmin
     ? [...ADMIN_NAV, { name: "Super Admin", href: "/super-admin", icon: Shield }]
     : [...ADMIN_NAV];
+
+  // TajerDrop Seller : lien "Catalogue TajerDrop" visible uniquement pour
+  // les stores storeType = 'tajerdrop_seller'.
+  const { data: currentStore } = useStore();
+  const isTajerdropSeller = (currentStore as any)?.storeType === 'tajerdrop_seller';
+  const baseNav = isTajerdropSeller
+    ? [
+        ...baseNavPre.slice(0, 1),
+        { name: "Catalogue TajerDrop", href: "/marketplace", icon: Package },
+        ...baseNavPre.slice(1),
+      ]
+    : baseNavPre;
 
   const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add', '/orders/all'];
 

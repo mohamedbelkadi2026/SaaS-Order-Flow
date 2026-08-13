@@ -400,6 +400,32 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] ad_spend(_tracking).magasin_id ensured ✅ (single-magasin backfill applied)');
 
+    // ── TajerDrop Phase 1 — storeType + produits marketplace ─────────────────
+    await pool.query(`
+      ALTER TABLE public.stores
+        ADD COLUMN IF NOT EXISTS store_type TEXT DEFAULT 'standard';
+    `);
+    await pool.query(`
+      UPDATE public.stores SET store_type = 'standard' WHERE store_type IS NULL;
+    `);
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'stores_store_type_check'
+        ) THEN
+          ALTER TABLE public.stores
+            ADD CONSTRAINT stores_store_type_check
+            CHECK (store_type IN ('standard', 'tajerdrop_seller'));
+        END IF;
+      END $$;
+    `);
+    await pool.query(`
+      ALTER TABLE public.products
+        ADD COLUMN IF NOT EXISTS is_marketplace_product BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS marketplace_owner_store_id INTEGER REFERENCES public.stores(id);
+    `);
+    console.log('[Migration] TajerDrop Phase 1 — stores.store_type + products marketplace columns ensured ✅');
+
     // ── 6d. stores.distribution_epoch — reference window for percentage engine ─
     await pool.query(`
       ALTER TABLE public.stores

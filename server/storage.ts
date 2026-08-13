@@ -428,6 +428,12 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(products).where(eq(products.storeId, storeId));
   }
 
+  // ── TajerDrop Phase 1 : catalogue marketplace partagé ──────────────────────
+  async getMarketplaceProducts(): Promise<Product[]> {
+    return await db.select().from(products)
+      .where(and(eq(products.isMarketplaceProduct, true), isNull(products.archivedAt)));
+  }
+
   async getProduct(id: number): Promise<Product | undefined> {
     const [product] = await db.select().from(products).where(eq(products.id, id));
     return product;

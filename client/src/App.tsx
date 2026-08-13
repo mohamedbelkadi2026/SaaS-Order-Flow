@@ -38,6 +38,7 @@ import NewOrderAdd from "@/pages/new-order-add";
 import NewOrderImport from "@/pages/new-order-import";
 import Profitability from "@/pages/profitability";
 const Inventory = lazy(() => import("@/pages/inventory"));
+const MarketplaceCatalog = lazy(() => import("@/pages/marketplace-catalog"));
 import Team from "@/pages/team";
 import Clients from "@/pages/clients";
 import Billing from "@/pages/billing";
@@ -243,6 +244,7 @@ function ProtectedRoutes() {
               <Route path="/orders" component={Orders} />
               <Route path="/orders/:filter" component={Orders} />
               <Route path="/inventory" component={Inventory} />
+              <Route path="/marketplace" component={MarketplaceCatalog} />
               <Route path="/stock-history" component={StockHistory} />
               <Route path="/team" component={Team} />
               <Route path="/clients" component={Clients} />

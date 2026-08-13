@@ -7,6 +7,8 @@ export const stores = pgTable("stores", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   ownerId: integer("owner_id"),
+  // 'standard' (SaaS classique) | 'tajerdrop_seller' (dropshipper TajerDrop)
+  storeType: text("store_type").default("standard"),
   lastAssignedAgentId: integer("last_assigned_agent_id"),
   phone: text("phone"),
   website: text("website"),
@@ -94,6 +96,12 @@ export const products = pgTable("products", {
   imageUrl: text("image_url"),
   reference: text("reference"),
   hasVariants: integer("has_variants").default(0),
+  // ── TajerDrop marketplace (Phase 1) ──
+  // isMarketplaceProduct: produit du catalogue centralisé partagé avec les
+  // Sellers TajerDrop. marketplaceOwnerStoreId: le store admin qui possède
+  // réellement le produit/stock (nullable — rempli seulement pour marketplace).
+  isMarketplaceProduct: boolean("is_marketplace_product").default(false),
+  marketplaceOwnerStoreId: integer("marketplace_owner_store_id").references(() => stores.id),
   settings: jsonb("settings"),
   createdAt: timestamp("created_at").defaultNow(),
   archivedAt: timestamp("archived_at"),
