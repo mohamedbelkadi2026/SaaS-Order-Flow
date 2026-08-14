@@ -1,0 +1,22 @@
+# Replit Prompt — Revert : annuler les 2 derniers changements (variante dans product_name Waselex + fix shipping bloqué)
+
+Les 2 derniers changements appliqués (dans l'ordre) :
+1. Ajout de la variante (couleur/taille) dans le champ `product_name` envoyé au transporteur Waselex (format "{nom produit} - {variante}").
+2. Tentative de fix du problème "commande reste bloquée en Confirmé, l'expédition ne se déclenche plus" qui semblait causé par le changement n°1.
+
+Ces changements n'ont pas résolu le problème correctement / la situation reste instable. Je veux revenir au code tel qu'il était juste AVANT le changement n°1, sans perdre le reste du projet (notamment le fix de la variante YouCan, la Phase 1 TajerDrop, et tout ce qui a été fait avant ces 2 changements).
+
+## Ce qu'il faut faire
+
+1. Regarder l'historique Git (`git log --oneline -10`) et identifier les commits correspondant à ces 2 derniers changements (chercher les messages mentionnant "Waselex", "product_name", "variante", "shipping bloqué", ou se baser sur l'heure récente de la session en cours).
+2. Si Replit a un système de Checkpoints (panneau "History"/icône horloge dans l'interface) : utiliser "Restore this checkpoint" pour revenir au point juste avant le changement n°1 — c'est plus fiable qu'un revert Git manuel.
+3. Si c'est du Git classique : faire un `git revert` (pas un `git reset --hard`) sur les commits identifiés, du plus récent au plus ancien, pour garder l'historique.
+4. Après le revert, redéployer sur Railway.
+
+## Vérification après le revert
+1. Confirmer que le code de construction de `product_name` pour Waselex dans `server/services/carrier-service.ts` est revenu à sa version d'avant (sans le suffixe " - {variante}").
+2. Tester l'expédition d'une commande de test vers Waselex → confirmer que le statut passe bien à "Attente Ramassage" comme avant (le comportement qui fonctionnait avant ces 2 changements).
+3. Confirmer que le fix de la variante YouCan (Infos supplémentaires / TAILLE-VARIANT) fonctionne toujours normalement — ce fix-là ne doit PAS être touché par ce revert, seulement les 2 derniers changements liés à Waselex/shipping.
+4. Montre-moi une capture ou confirmation claire que la plateforme est revenue à un état stable avant qu'on retente quoi que ce soit sur ce sujet.
+
+⚠️ Ne pas toucher aux données déjà en base (commandes déjà expédiées ou modifiées) — le revert doit porter uniquement sur le CODE.

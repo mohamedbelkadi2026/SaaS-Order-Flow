@@ -1732,21 +1732,12 @@ export async function registerRoutes(
         // Returns null instead of the generic "Produit" fallback — callers that require
         // a real product name (e.g. Vitips) should fail-fast rather than sending "Produit".
         const getProductName = (order: any): string | null => {
-          const baseName = (() => {
-            if (order.rawProductName) return order.rawProductName;
-            if (!order.items || order.items.length === 0) return null;
-            const names = order.items
-              .map((it: any) => it.rawProductName || it.product?.name)
-              .filter(Boolean);
-            return names.length > 0 ? names.join(" + ") : null;
-          })();
-          // Append variant (colour/size) when available — carriers see "{produit} - {variante}"
-          // Defensive: only append when the raw value is a non-empty, non-placeholder string.
-          const _vRaw = order.variantDetails ?? order.items?.[0]?.variantInfo ?? null;
-          const rawVariant = (_vRaw && typeof _vRaw === 'string') ? _vRaw.trim() : '';
-          const isPlaceholder = /^(default(\s+title)?)/i.test(rawVariant);
-          const variantSuffix = rawVariant && !isPlaceholder ? ` - ${rawVariant}` : '';
-          return baseName ? `${baseName}${variantSuffix}` : null;
+          if (order.rawProductName) return order.rawProductName;
+          if (!order.items || order.items.length === 0) return null;
+          const names = order.items
+            .map((it: any) => it.rawProductName || it.product?.name)
+            .filter(Boolean);
+          return names.length > 0 ? names.join(" + ") : null;
         };
 
         // Resolve credentials per-order:
@@ -14909,19 +14900,11 @@ function ensureHeaders(sheet) {
       }
 
       // Resolve product name: rawProductName on order → first item name → fallback
-      // Append variant (colour/size) when available — carriers see "{produit} - {variante}"
-      const _baseProductName =
+      const productName =
         (order as any).rawProductName ||
         (order.items && order.items.length > 0
-          ? ((order.items[0] as any).rawProductName || (order.items[0] as any).product?.name || 'Produit')
+          ? ((order.items[0] as any).rawProductName || order.items[0].product?.name || 'Produit')
           : 'Produit');
-      const _vRaw = (order as any).variantDetails ?? (order.items?.[0] as any)?.variantInfo ?? null;
-      const _rawVariant = (_vRaw && typeof _vRaw === 'string') ? _vRaw.trim() : '';
-      const _isPlaceholder = /^(default(\s+title)?)/i.test(_rawVariant);
-      const productName = _rawVariant && !_isPlaceholder
-        ? `${_baseProductName} - ${_rawVariant}`
-        : _baseProductName;
-      console.log(`[SHIP-PRODUCT] order=${orderId} base="${_baseProductName}" variant="${_rawVariant}" final="${productName}"`);
 
       // ── Auto-match city against carrier's city list ─────────────
       const carrierCityList: string[] = getDefaultCitiesForProvider(provider);
