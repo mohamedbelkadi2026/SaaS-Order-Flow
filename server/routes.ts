@@ -1732,12 +1732,19 @@ export async function registerRoutes(
         // Returns null instead of the generic "Produit" fallback — callers that require
         // a real product name (e.g. Vitips) should fail-fast rather than sending "Produit".
         const getProductName = (order: any): string | null => {
-          if (order.rawProductName) return order.rawProductName;
-          if (!order.items || order.items.length === 0) return null;
-          const names = order.items
-            .map((it: any) => it.rawProductName || it.product?.name)
-            .filter(Boolean);
-          return names.length > 0 ? names.join(" + ") : null;
+          const baseName = (() => {
+            if (order.rawProductName) return order.rawProductName;
+            if (!order.items || order.items.length === 0) return null;
+            const names = order.items
+              .map((it: any) => it.rawProductName || it.product?.name)
+              .filter(Boolean);
+            return names.length > 0 ? names.join(" + ") : null;
+          })();
+          // Append variant (colour/size) when available — carriers see "{produit} - {variante}"
+          const rawVariant = ((order.variantDetails || order.items?.[0]?.variantInfo || '') as string).trim();
+          const isPlaceholder = /^(default(\s+title)?|Default)$/i.test(rawVariant);
+          const variantSuffix = rawVariant && !isPlaceholder ? ` - ${rawVariant}` : '';
+          return baseName ? `${baseName}${variantSuffix}` : null;
         };
 
         // Resolve credentials per-order:
@@ -14900,11 +14907,17 @@ function ensureHeaders(sheet) {
       }
 
       // Resolve product name: rawProductName on order → first item name → fallback
-      const productName =
+      // Append variant (colour/size) when available — carriers see "{produit} - {variante}"
+      const _baseProductName =
         (order as any).rawProductName ||
         (order.items && order.items.length > 0
-          ? ((order.items[0] as any).rawProductName || order.items[0].product?.name || 'Produit')
+          ? ((order.items[0] as any).rawProductName || (order.items[0] as any).product?.name || 'Produit')
           : 'Produit');
+      const _rawVariant = (((order as any).variantDetails || (order.items?.[0] as any)?.variantInfo || '') as string).trim();
+      const _isPlaceholder = /^(default(\s+title)?|Default)$/i.test(_rawVariant);
+      const productName = _rawVariant && !_isPlaceholder
+        ? `${_baseProductName} - ${_rawVariant}`
+        : _baseProductName;
 
       // ── Auto-match city against carrier's city list ─────────────
       const carrierCityList: string[] = getDefaultCitiesForProvider(provider);

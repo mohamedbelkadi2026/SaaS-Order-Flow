@@ -1,0 +1,32 @@
+# Replit Prompt — Inclure la variante (couleur/taille) dans le nom produit envoyé aux transporteurs (Waselex en premier)
+
+## Constat
+Quand une commande est envoyée à Waselex pour créer l'expédition, le champ "Produit" reçu par Waselex affiche seulement le nom du produit (ex: "حقيبة كبيرة + حقيبة صغيرة + مقلمة"), alors que dans notre app, la commande a bien une variante enregistrée ("TAILLE / VARIANT: غوز مع أسواد", visible dans le modal d'édition).
+
+## Ce que je veux
+Quand on envoie `product_name` à Waselex (et pareil pour tout futur transporteur avec un champ produit similaire — Ameex, Vitips, Ozon si applicable), le nom du produit doit inclure la variante quand elle existe, au format :
+```
+{nom du produit} - {variante}
+```
+Exemple attendu : `"حقيبة كبيرة + حقيبة صغيرة + مقلمة - غوز مع أسواد"`.
+
+## Fix à appliquer
+
+Dans le code qui construit le payload d'expédition Waselex (`server/services/carrier-service.ts`, la partie ajoutée pour Waselex suite au prompt d'intégration précédent — chercher où `product_name` est assigné dans ce payload), remplacer :
+```ts
+product_name: order.rawProductName || product?.name || "Produit",
+```
+par quelque chose comme :
+```ts
+const baseProductName = order.rawProductName || product?.name || "Produit";
+const variantSuffix = order.variantInfo ? ` - ${order.variantInfo}` : "";
+product_name: `${baseProductName}${variantSuffix}`,
+```
+(adapter les noms de variables exacts selon ce qui existe réellement dans le code — `order.variantInfo` est le même champ qu'on vient de corriger pour YouCan dans les prompts précédents).
+
+Vérifier aussi si d'autres transporteurs déjà intégrés (Ameex, Vitips, Ozon, Digylog) ont le même souci — s'ils envoient déjà `rawProductName` seul sans la variante, appliquer le même correctif partout où c'est pertinent, pour rester cohérent (chercher toutes les occurrences de construction de payload avec un champ "produit"/"product_name"/"designation" envoyé aux transporteurs).
+
+## Testing checklist
+1. Créer une commande de test avec une variante (couleur/taille) choisie → expédier vers Waselex → vérifier que le "Produit" reçu côté Waselex inclut bien "{nom} - {variante}".
+2. Commande sans variante → le nom du produit reste tel quel, sans " - " en trop à la fin.
+3. Vérifier la même chose pour au moins un autre transporteur déjà intégré (si le même souci existe).
