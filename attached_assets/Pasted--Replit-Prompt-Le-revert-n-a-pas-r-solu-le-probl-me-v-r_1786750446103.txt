@@ -1,0 +1,20 @@
+# Replit Prompt — Le revert n'a pas résolu le problème : vérifier qu'il a vraiment eu lieu, puis diagnostiquer avec des logs réels
+
+## Constat
+Après le revert demandé, le problème est IDENTIQUE : envoyer une commande vers Waselex reste bloqué, la commande ne passe pas à "Attente Ramassage", et il n'y a même pas d'erreur visible côté interface.
+
+Deux possibilités : soit le revert n'a pas vraiment annulé le changement du `product_name`, soit ce changement n'était pas la vraie cause du problème depuis le début.
+
+## Étape 1 — Vérifier que le revert a bien eu lieu
+Montre-moi le contenu ACTUEL du code qui construit `product_name` pour Waselex dans `server/services/carrier-service.ts` (les lignes exactes telles qu'elles existent maintenant). Je veux voir s'il contient encore `variantSuffix`/`order.variantInfo` ou s'il est bien revenu à la version simple d'avant (`order.rawProductName || product?.name || "Produit"`).
+
+## Étape 2 — Si le revert est confirmé fait, mais que le problème persiste
+C'est donc un bug indépendant du changement sur `product_name`. Il faut le diagnostiquer avec de vraies preuves, pas deviner :
+
+1. Sélectionne une commande de test et essaie de l'expédier vers Waselex toi-même (ou demande-moi de le faire à l'instant où tu es prêt à lire les logs).
+2. Regarde immédiatement les logs serveur (Railway) au moment de cette tentative — cherche toute ligne liée à Waselex (`[WASELEX]` ou équivalent), toute erreur HTTP (401/422/500) venant de l'appel à `https://waselex.ma/api/vendor/v1/orders`, ou toute exception JavaScript.
+3. Si aucun log n'apparaît du tout au moment du clic sur "Expédier" : ça veut dire que l'action ne déclenche même pas d'appel réseau côté serveur — vérifie côté frontend (Network tab du navigateur ou logs client) si la requête part bien du bouton "Expédier" vers le bon endpoint backend.
+4. Colle-moi ici tout ce que tu trouves : la requête envoyée à Waselex (payload complet), la réponse reçue (ou l'absence de réponse/timeout), et toute erreur serveur associée.
+
+## Ce que je ne veux pas
+Pas de nouveau code avant d'avoir vu ces logs et confirmé ensemble la vraie cause — on a déjà eu ce problème plusieurs fois dans cette conversation (deviner sans preuve ne marche pas).
