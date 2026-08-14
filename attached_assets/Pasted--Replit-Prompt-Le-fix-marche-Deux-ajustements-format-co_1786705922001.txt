@@ -1,0 +1,33 @@
+# Replit Prompt — Le fix marche. Deux ajustements : format compact + colonne "Infos supplémentaires"
+
+## Confirmation
+Le fix précédent fonctionne : la commande YC-023 affiche bien "اختر اللون المناسب لك: الأخضر | اختر القياس المناسب لك: XL" dans "TAILLE / VARIANT". Bravo, c'est la bonne donnée.
+
+## Ajustement 1 — Format plus compact
+Actuellement affiché : "اختر اللون المناسب لك: الأخضر | اختر القياس المناسب لك: XL" (répète la question en entier).
+Souhaité : juste les valeurs choisies, compact, du style "الأخضر / XL".
+
+Dans server/routes.ts, remplacer la construction de youcanVariantLabel par une version qui ne garde que les valeurs (déjà disponibles dans v.variant?.values, confirmé par le log [VARIANT-CONTENT] précédent : values= ["الأسود","M"]) :
+```ts
+const variationValues = Array.isArray(v.variant?.values) ? v.variant.values : null;
+let youcanVariantLabel: string | null = null;
+if (variationValues && variationValues.length > 0) {
+  youcanVariantLabel = variationValues.join(' / ');
+} else {
+  const variations = v.variant?.variations;
+  if (variations && typeof variations === 'object' && Object.keys(variations).length > 0) {
+    youcanVariantLabel = Object.values(variations).join(' / ');
+  }
+}
+```
+Résultat attendu pour ce test : "الأخضر / XL".
+
+## Ajustement 2 — Alimenter la colonne "Infos supplémentaires"
+Sur Suivi des Colis / Nouvelles, la colonne "Infos supplémentaires" reste vide ("—") même pour cette commande. Trouve le champ de la commande qui alimente cette colonne dans le tableau (probablement un champ existant sur orders ou order_items, à identifier dans le frontend client/src/pages/orders.tsx — chercher la colonne "INFOS SUPPLÉMENTAIRES" pour voir quel champ elle lit), et fais en sorte que youcanVariantLabel (ou variantInfo) y soit aussi reflété, en plus d'apparaître dans "TAILLE / VARIANT" du modal d'édition.
+
+Si "Infos supplémentaires" est prévu pour un usage différent (autre type de données), plutôt que de le détourner, dis-le moi et propose une alternative (ex: afficher variantInfo directement dans la colonne PRODUIT, sous le nom du produit, comme c'est déjà fait pour d'autres commandes avec variantes qu'on a vues plus tôt dans le projet).
+
+## Testing checklist
+1. Commande de test avec une autre couleur/taille → "TAILLE / VARIANT" affiche le format compact "Couleur / Taille".
+2. La colonne "Infos supplémentaires" (ou l'endroit finalement choisi) affiche la même info dans le tableau Suivi des Colis / Nouvelles, sans avoir à ouvrir le modal.
+3. Produit sans variante → reste vide proprement des deux côtés.

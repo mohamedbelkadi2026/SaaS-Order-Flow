@@ -5832,16 +5832,18 @@ export async function registerRoutes(
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
         const sku = v.variant?.sku || v.sku || "";
 
-        // ── Chosen variant label from v.variant.variations ────────────────────
-        // Confirmed by production log (YC-022):
-        //   variations = { "اختر اللون المناسب لك": "الأسود", "اختر القياس المناسب لك": "M" }
-        // Result: "اختر اللون المناسب لك: الأسود | اختر القياس المناسب لك: M"
+        // ── Chosen variant label — compact format (values only, e.g. "الأخضر / XL") ─
+        // v.variant.values: ["الأخضر","XL"] confirmed in production log.
+        // Fallback to Object.values(variations) if values array absent.
         let youcanVariantLabel: string | null = null;
-        const variations = v.variant?.variations;
-        if (variations && typeof variations === 'object' && Object.keys(variations).length > 0) {
-          youcanVariantLabel = Object.entries(variations)
-            .map(([question, answer]) => `${question}: ${answer}`)
-            .join(' | ');
+        const variationValues = Array.isArray(v.variant?.values) ? v.variant.values as any[] : null;
+        if (variationValues && variationValues.length > 0) {
+          youcanVariantLabel = variationValues.filter(Boolean).join(' / ');
+        } else {
+          const variations = v.variant?.variations;
+          if (variations && typeof variations === 'object' && Object.keys(variations).length > 0) {
+            youcanVariantLabel = (Object.values(variations) as any[]).filter(Boolean).join(' / ');
+          }
         }
 
         // SKU match only when UNIQUE — ambiguous/duplicate SKUs fall through to resolveProductId().
@@ -5869,6 +5871,8 @@ export async function registerRoutes(
 
       const rawProductName = orderItemsToCreate.map(i => i.rawProductName).join(" + ") || null;
       const rawQuantity = orderItemsToCreate.reduce((s, i) => s + i.quantity, 0) || null;
+      // Aggregate variant labels from all line items → feeds "Infos supplémentaires" column
+      const variantDetails = orderItemsToCreate.map(i => i.variantInfo).filter(Boolean).join(' | ') || null;
 
       const order = await storage.createOrder({
         storeId,
@@ -5886,6 +5890,7 @@ export async function registerRoutes(
         source: "youcan",
         rawProductName,
         rawQuantity,
+        variantDetails,
       } as any, orderItemsToCreate);
 
       await db.update(storeIntegrations)
