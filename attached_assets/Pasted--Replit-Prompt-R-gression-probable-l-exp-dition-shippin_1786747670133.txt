@@ -1,0 +1,22 @@
+# Replit Prompt — Régression probable : l'expédition (shipping) vers le transporteur ne fonctionne plus, commande reste bloquée en "Confirmé"
+
+## Constat
+Après le dernier fix (ajout de la variante dans `product_name` envoyé à Waselex), quand je sélectionne une commande et que j'essaie de l'envoyer au transporteur, rien ne se passe — la commande reste bloquée au statut "Confirmé", elle ne passe jamais à "Attente Ramassage"/expédiée.
+
+## Hypothèse principale à vérifier en premier
+Le dernier changement a modifié la construction de `product_name` pour inclure `order.variantInfo`. Si ce champ n'existe pas exactement sous ce nom sur l'objet `order` utilisé à cet endroit précis (peut-être que le champ s'appelle différemment selon où il est lu — `orderItem.variantInfo`, `items[0].variantInfo`, etc.), le code peut lever une erreur non gérée qui interrompt tout l'appel d'expédition silencieusement (ou avec une erreur visible seulement côté serveur).
+
+## Ce que je veux
+
+1. Vérifie les logs serveur (Railway) au moment où j'essaie d'expédier une commande — cherche une erreur JavaScript (`TypeError`, `Cannot read property...`, etc.) qui coïnciderait avec le clic sur "Expédier"/l'action d'envoi au transporteur. Colle-moi l'erreur exacte si tu en trouves une.
+2. Vérifie précisément le code modifié dans le dernier fix (`server/services/carrier-service.ts`, construction du `product_name` pour Waselex) : confirme que `order.variantInfo` (ou l'équivalent utilisé) est bien le bon nom de champ à CET endroit précis du code — il est possible qu'à cet endroit, la commande soit représentée par un objet différent de celui qui contient `variantInfo` normalement (par exemple `order.items[0].variantInfo` au lieu de `order.variantInfo` directement).
+3. Corrige en conséquence, avec une protection défensive (`order.variantInfo || order.items?.[0]?.variantInfo || null`) pour que ça ne casse plus rien même si la structure diffère.
+4. Teste toi-même l'envoi d'une commande de test vers Waselex après correction, pour confirmer que le statut passe bien à "Attente Ramassage" et que ça ne reste plus bloqué.
+
+## Important
+Si ce n'est PAS lié au dernier fix (variante), dis-le moi clairement avec la vraie cause trouvée dans les logs, plutôt que de deviner autre chose.
+
+## Testing checklist
+1. Commande de test avec variante → expédier vers Waselex → statut passe à "Attente Ramassage", pas d'erreur.
+2. Commande de test SANS variante → expédier vers Waselex → même vérification, aucune régression.
+3. Confirmer avec une capture des logs qu'aucune erreur ne survient plus au moment de l'expédition.

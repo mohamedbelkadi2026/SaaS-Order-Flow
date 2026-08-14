@@ -1741,8 +1741,10 @@ export async function registerRoutes(
             return names.length > 0 ? names.join(" + ") : null;
           })();
           // Append variant (colour/size) when available — carriers see "{produit} - {variante}"
-          const rawVariant = ((order.variantDetails || order.items?.[0]?.variantInfo || '') as string).trim();
-          const isPlaceholder = /^(default(\s+title)?|Default)$/i.test(rawVariant);
+          // Defensive: only append when the raw value is a non-empty, non-placeholder string.
+          const _vRaw = order.variantDetails ?? order.items?.[0]?.variantInfo ?? null;
+          const rawVariant = (_vRaw && typeof _vRaw === 'string') ? _vRaw.trim() : '';
+          const isPlaceholder = /^(default(\s+title)?)/i.test(rawVariant);
           const variantSuffix = rawVariant && !isPlaceholder ? ` - ${rawVariant}` : '';
           return baseName ? `${baseName}${variantSuffix}` : null;
         };
@@ -14913,11 +14915,13 @@ function ensureHeaders(sheet) {
         (order.items && order.items.length > 0
           ? ((order.items[0] as any).rawProductName || (order.items[0] as any).product?.name || 'Produit')
           : 'Produit');
-      const _rawVariant = (((order as any).variantDetails || (order.items?.[0] as any)?.variantInfo || '') as string).trim();
-      const _isPlaceholder = /^(default(\s+title)?|Default)$/i.test(_rawVariant);
+      const _vRaw = (order as any).variantDetails ?? (order.items?.[0] as any)?.variantInfo ?? null;
+      const _rawVariant = (_vRaw && typeof _vRaw === 'string') ? _vRaw.trim() : '';
+      const _isPlaceholder = /^(default(\s+title)?)/i.test(_rawVariant);
       const productName = _rawVariant && !_isPlaceholder
         ? `${_baseProductName} - ${_rawVariant}`
         : _baseProductName;
+      console.log(`[SHIP-PRODUCT] order=${orderId} base="${_baseProductName}" variant="${_rawVariant}" final="${productName}"`);
 
       // ── Auto-match city against carrier's city list ─────────────
       const carrierCityList: string[] = getDefaultCitiesForProvider(provider);
