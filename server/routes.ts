@@ -5854,7 +5854,13 @@ export async function registerRoutes(
         const youcanVariantLabel: string | null =
           sanitizeVariant(v.variant?.title || v.variant_title || null) || null;
         // Temporary check — log the raw values so we can confirm the field is correct
-        console.log('[V-KEYS]', Object.keys(v).join(','), '| variant-keys:', v.variant ? Object.keys(v.variant).join(',') : 'NO-VARIANT-OBJECT');
+        console.log(
+          '[VARIANT-CONTENT]',
+          'variations=', JSON.stringify(v.variant?.variations),
+          '| options=', JSON.stringify(v.variant?.options),
+          '| values=', JSON.stringify(v.variant?.values),
+          '| product.name=', v.variant?.product?.name
+        );
 
         // SKU match only when UNIQUE — ambiguous/duplicate SKUs fall through to resolveProductId().
         const skuMatchesYC = sku ? storeProducts.filter(p => p.sku === sku) : [];
