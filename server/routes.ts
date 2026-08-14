@@ -5848,21 +5848,13 @@ export async function registerRoutes(
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
         const sku = v.variant?.sku || v.sku || "";
 
-        // ── Capture the human-readable variant label sent by YouCan ──────────
-        // YouCan sends the chosen option (e.g. "Rouge", "42 - Bleu") in
-        // v.variant?.name, v.variant?.title, or v.variant?.options[].value.
-        // We extract this BEFORE product matching so it is available regardless
-        // of which matching path (SKU or resolveProductId) is taken.
+        // ── Capture the chosen variant label — same field as parseWebhookOrder() ─
+        // variant_title is the standard e-commerce field used by YouCan and Shopify.
+        // sanitizeVariant() is already validated for this on the Shopify path.
         const youcanVariantLabel: string | null =
-          v.variant?.name ||
-          v.variant?.title ||
-          (Array.isArray(v.variant?.options)
-            ? (v.variant.options as any[])
-                .map((o: any) => o.value || o.name)
-                .filter(Boolean)
-                .join(" / ") || null
-            : null) ||
-          null;
+          sanitizeVariant(v.variant?.title || v.variant_title || null) || null;
+        // Temporary check — log the raw values so we can confirm the field is correct
+        console.log('[VARIANT-TITLE-CHECK]', v.variant?.title, v.variant_title);
 
         // SKU match only when UNIQUE — ambiguous/duplicate SKUs fall through to resolveProductId().
         const skuMatchesYC = sku ? storeProducts.filter(p => p.sku === sku) : [];

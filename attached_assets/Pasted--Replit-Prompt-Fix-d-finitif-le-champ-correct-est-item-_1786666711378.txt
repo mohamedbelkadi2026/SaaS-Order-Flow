@@ -1,0 +1,43 @@
+# Replit Prompt — Fix définitif : le champ correct est item.variant_title, déjà utilisé ailleurs dans le code
+
+## Découverte (dans le code, pas une hypothèse)
+
+Le projet contient DEUX chemins de webhook YouCan différents :
+
+1. server/routes.ts, fonction parseWebhookOrder('youcan', payload) (~ligne 391) — utilisée par la route webhook générique/legacy (webhookSecret, ~ligne 5467). Elle contient déjà :
+```ts
+variantInfo: sanitizeVariant(item.variant_title),
+```
+C'est EXACTEMENT le même mécanisme que pour Shopify (~ligne 386, sanitizeVariant(item.variant_title)) — c'est pour ça que Shopify fonctionne : le champ variant_title existe bien dans les payloads YouCan/Shopify (structure e-commerce standard) et cette fonction le lit correctement.
+
+2. La route OAuth réellement utilisée en production (/api/webhooks/youcan/order/:webhookKey, ~ligne 5611, confirmée active par les logs [YOUCAN-WEBHOOK] Hit) — celle-ci NE PASSE PAS par parseWebhookOrder(). Elle a son propre parsing manuel (~ligne 5744) qui lit v.variant?.product?.name, v.variant?.sku, mais jamais v.variant?.title/variant_title. C'est cette route qui traite les vraies commandes, et c'est elle qui perd l'info de variante.
+
+## Fix demandé
+
+Dans le parsing manuel de la route OAuth (server/routes.ts, ~ligne 5744, dans la boucle for (const v of lineItems)), ajouter la lecture de v.variant?.title (et son fallback v.title si la structure diffère légèrement de celle utilisée par parseWebhookOrder), en réutilisant la fonction sanitizeVariant() déjà existante et déjà validée pour Shopify :
+
+```ts
+const youcanVariantLabel = sanitizeVariant(v.variant?.title || v.variant_title || null);
+```
+
+Puis dans la construction de orderItemsToCreate :
+```ts
+orderItemsToCreate.push({
+  productId: matchedProduct?.id ?? null,
+  rawProductName: rawName,
+  variantInfo: youcanVariantLabel || resolvedVariantName || v.variant?.sku || null,
+  ...
+});
+```
+
+## Vérification demandée avant de conclure
+Avant de me dire que c'est corrigé : ajoute un console.log temporaire juste sur v.variant?.title (une seule ligne, pas tout l'objet) pour la prochaine commande de test, façon :
+```ts
+console.log('[VARIANT-TITLE-CHECK]', v.variant?.title, v.variant_title);
+```
+et confirme avec une vraie commande de test que ce champ contient bien "الأحمر"/"M" (ou équivalent) avant de considérer le sujet clos.
+
+## Testing checklist
+1. Commande de test avec couleur + taille choisies sur YouCan → "Infos supplémentaires"/variante affiche bien le libellé exact choisi.
+2. Vérifier qu'un produit sans variante ne casse rien.
+3. Confirmer que ça fonctionne pour un produit déjà présent dans le catalogue interne ET pour un produit pas encore ajouté (comme le cas "حقيبة كبيرة" testé précédemment).
