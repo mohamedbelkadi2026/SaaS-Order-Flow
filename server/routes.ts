@@ -5828,39 +5828,21 @@ export async function registerRoutes(
       const orderItemsToCreate: any[] = [];
       let orderProductCost = 0;
 
-      // ── DEBUG: persist raw line items to DB so they're readable from the app ──
-      try {
-        await db.insert(integrationLogs).values({
-          storeId,
-          integrationId: integration.id,
-          provider: 'youcan',
-          action: 'debug_line_items',
-          status: 'debug',
-          message: `LINE-ITEM-RAW ref=${orderRef}`,
-          payload: JSON.stringify(lineItems),
-        });
-      } catch (dbgErr: any) {
-        console.error('[DEBUG-LOG-INSERT-FAILED]', dbgErr.message);
-      }
-      // ── END DEBUG ─────────────────────────────────────────────────────────────
-
       for (const v of lineItems) {
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
         const sku = v.variant?.sku || v.sku || "";
 
-        // ── Capture the chosen variant label — same field as parseWebhookOrder() ─
-        // variant_title is the standard e-commerce field used by YouCan and Shopify.
-        // sanitizeVariant() is already validated for this on the Shopify path.
-        const youcanVariantLabel: string | null =
-          sanitizeVariant(v.variant?.title || v.variant_title || null) || null;
-        // Temporary check — log the raw values so we can confirm the field is correct
-        console.log(
-          '[VARIANT-CONTENT]',
-          'variations=', JSON.stringify(v.variant?.variations),
-          '| options=', JSON.stringify(v.variant?.options),
-          '| values=', JSON.stringify(v.variant?.values),
-          '| product.name=', v.variant?.product?.name
-        );
+        // ── Chosen variant label from v.variant.variations ────────────────────
+        // Confirmed by production log (YC-022):
+        //   variations = { "اختر اللون المناسب لك": "الأسود", "اختر القياس المناسب لك": "M" }
+        // Result: "اختر اللون المناسب لك: الأسود | اختر القياس المناسب لك: M"
+        let youcanVariantLabel: string | null = null;
+        const variations = v.variant?.variations;
+        if (variations && typeof variations === 'object' && Object.keys(variations).length > 0) {
+          youcanVariantLabel = Object.entries(variations)
+            .map(([question, answer]) => `${question}: ${answer}`)
+            .join(' | ');
+        }
 
         // SKU match only when UNIQUE — ambiguous/duplicate SKUs fall through to resolveProductId().
         const skuMatchesYC = sku ? storeProducts.filter(p => p.sku === sku) : [];
@@ -5873,20 +5855,10 @@ export async function registerRoutes(
             resolvedVariantName = resolved.variantName;
           }
         }
-        console.log('[DEBUG-MATCH]', JSON.stringify({
-          orderNumber: payload.ref ?? payload.id,
-          rawName,
-          sku,
-          youcanVariantLabel,
-          skuMatches: skuMatchesYC.map(p => ({ id: p.id, sku: p.sku, name: p.name })),
-          resolveProductIdResult: resolveProductId(rawName, storeProductsWithVariants),
-          finalMatchedProductId: matchedProduct?.id,
-          finalMatchedProductName: matchedProduct?.name,
-        }));
         orderItemsToCreate.push({
           productId: matchedProduct?.id ?? null,
           rawProductName: rawName,
-          // Priority: human-readable YouCan label > resolveProductId name > SKU code
+          // Priority: confirmed YouCan variations label > resolveProductId name > SKU code
           variantInfo: youcanVariantLabel || resolvedVariantName || v.variant?.sku || null,
           quantity: v.quantity || 1,
           price: Math.round((v.price || 0) * 100),

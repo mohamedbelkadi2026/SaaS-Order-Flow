@@ -1,0 +1,49 @@
+# Replit Prompt — Fix DÉFINITIF confirmé par log réel : le champ est v.variant.variations
+
+## Preuve (log de production, commande YC-022)
+```
+[VARIANT-CONTENT] variations= {"اختر اللون المناسب لك":"الأسود","اختر القياس المناسب لك":"M"} | options= ["اختر اللون المناسب لك","اختر القياس المناسب لك"] | values= ["الأسود","M"] | product.name= تي شيرت رجالي جيد التهوية سريع الجفاف توب ناعم
+```
+
+v.variant.variations est un objet simple { "question": "réponse choisie" } — c'est exactement l'info qu'on cherche depuis le début. Plus besoin de deviner : c'est confirmé par un vrai payload de production.
+
+## Fix à appliquer maintenant
+
+Dans server/routes.ts, dans la boucle for (const v of lineItems) du webhook YouCan OAuth (/api/webhooks/youcan/order/:webhookKey), juste avant la construction de orderItemsToCreate :
+
+```ts
+const variations = v.variant?.variations;
+let youcanVariantLabel: string | null = null;
+if (variations && typeof variations === 'object' && Object.keys(variations).length > 0) {
+  youcanVariantLabel = Object.entries(variations)
+    .map(([question, answer]) => `${question}: ${answer}`)
+    .join(' | ');
+}
+```
+
+Puis dans orderItemsToCreate.push({...}) :
+```ts
+orderItemsToCreate.push({
+  productId: matchedProduct?.id ?? null,
+  rawProductName: rawName,
+  variantInfo: youcanVariantLabel || resolvedVariantName || v.variant?.sku || null,
+  ...
+});
+```
+
+Le résultat pour la commande testée doit être :
+```
+variantInfo: "اختر اللون المناسب لك: الأسود | اختر القياس المناسب لك: M"
+```
+
+## Affichage
+Vérifier que ce variantInfo s'affiche bien dans la colonne "PRODUIT" (sous le nom du produit, comme on l'a vu pour d'autres commandes avec variantes) et/ou dans "Infos supplémentaires" sur Suivi des Colis / Nouvelles, ainsi que dans le modal de détail de la commande.
+
+## Nettoyage
+Une fois validé, retire les logs de debug temporaires ([VARIANT-CONTENT], [V-KEYS], [DEBUG-MATCH] s'il n'est plus utile, etc.) pour ne pas polluer les logs de production — sauf s'il y en a un qu'on veut garder en permanence, à discuter.
+
+## Testing checklist
+1. Commande de test YC-022 (ou une nouvelle) avec couleur "الأسود" et taille "M" → vérifier que "اختر اللون المناسب لك: الأسود | اختر القياس المناسب لك: M" apparaît bien dans l'app (Suivi des Colis, détail commande).
+2. Refaire un test avec une autre couleur/taille → même vérification.
+3. Vérifier un produit sans variantes (v.variant absent ou variations vide) → variantInfo doit rester null proprement, pas d'erreur.
+4. Vérifier qu'un produit avec une seule variante (ex: juste une couleur, pas de taille) affiche bien "اختر اللون المناسب لك: X" seul, sans le séparateur " | " en trop.
