@@ -1,0 +1,38 @@
+# Replit Prompt — Phase 3 : Landing page + choix + inscription Seller TajerDrop
+
+## Contexte
+Phase 1 (fondations techniques : catalogue marketplace, storeType, coûts visibles) est en place. On passe maintenant à la Phase 3 : rendre TajerDrop visible et accessible depuis tajergrow.com, avec un flow d'inscription qui passe par une validation manuelle avant d'accéder au catalogue.
+
+## Ce qui est demandé
+
+### 1. Landing page — nouveau choix
+Sur la page d'accueil publique de tajergrow.com, à côté du call-to-action existant (essai gratuit SaaS classique), ajouter une deuxième option clairement visible : **"Devenir Seller TajerDrop"**, avec une courte accroche du type : *"Pas besoin de produit ni de stock — apportez vos leads, on s'occupe du reste"* (à reformuler si tu as une meilleure idée, mais garder l'esprit : aucune barrière à l'entrée produit/stock).
+
+Cliquer sur cette option mène vers un formulaire d'inscription dédié (`/tajerdrop/inscription` ou équivalent), séparé du flow d'inscription SaaS classique existant.
+
+### 2. Formulaire d'inscription Seller
+Champs : nom complet, téléphone, email, mot de passe, ville, et un champ optionnel "expérience en e-commerce/dropshipping" (texte libre ou choix : débutant / j'ai déjà vendu en ligne / j'ai une équipe de confirmation).
+
+À la soumission :
+- Créer un compte utilisateur + un store avec `storeType = 'tajerdrop_seller'` (réutiliser le schéma de la Phase 1).
+- Le compte est créé mais **désactivé/en attente** (`status = 'pending_validation'` ou champ équivalent sur `stores` ou `users` — vérifier ce qui existe déjà dans le schéma pour un état "en attente" et le réutiliser si possible, sinon en ajouter un minimal).
+- Le Seller ne peut PAS encore accéder au catalogue marketplace tant que son compte n'est pas validé.
+
+### 3. Validation côté Admin
+Nouvel écran admin (`/admin/tajerdrop/demandes` ou équivalent) listant les inscriptions Seller en attente, avec pour chacune : nom, téléphone, email, ville, date de demande, et boutons **Valider** / **Refuser**.
+- "Valider" passe le compte en actif, envoie une notification (email ou notification déjà existante dans l'app) au Seller pour l'informer qu'il peut se connecter.
+- "Refuser" marque la demande comme refusée (garder une trace, ne pas juste supprimer).
+
+### 4. Accès une fois validé
+Une fois validé, le Seller se connecte normalement (même système d'auth existant) et arrive sur son dashboard TajerDrop (catalogue marketplace de la Phase 1 + création de commandes), pas sur le dashboard SaaS classique.
+
+## Ce qui n'est PAS dans cette phase
+- Pas de calcul de marge/payout (Phase 2, à faire si pas déjà fait avant celle-ci — confirmer l'ordre avec moi si Phase 2 n'est pas encore faite).
+- Pas de personnalisation du catalogue par Seller (toujours 100% partagé).
+
+## Testing checklist
+1. Depuis tajergrow.com, cliquer sur "Devenir Seller TajerDrop" → arrive sur le formulaire dédié, pas le formulaire SaaS classique.
+2. Soumettre le formulaire → compte créé mais en attente, connexion refusée/bloquée avec message clair ("compte en attente de validation").
+3. Depuis l'admin, voir la demande dans la liste, cliquer "Valider" → le Seller peut maintenant se connecter et arrive sur le catalogue TajerDrop.
+4. Tester "Refuser" sur une autre demande → compte reste bloqué, statut "refusé" visible côté admin.
+5. Vérifier qu'un compte SaaS classique existant n'est affecté par aucun de ces changements.

@@ -63,6 +63,7 @@ import LpView from "@/pages/lp-view";
 import DeliveryStats from "@/pages/delivery-stats";
 import ImportHistory from "@/pages/import-history";
 const StockHistory = lazy(() => import("@/pages/stock-history"));
+import TajerDropInscription from "@/pages/tajerdrop-inscription";
 
 // ── Purely public paths — always rendered, no auth/verification check ─────────
 // Any path listed here is served directly from AppRouter before any auth logic.
@@ -74,6 +75,7 @@ const PUBLIC_PATHS: Record<string, React.ComponentType> = {
   "/privacy": PrivacyPage,
   "/blog": BlogPage,
   "/temoignages": TemoignagesPage,
+  "/tajerdrop/inscription": TajerDropInscription,
 };
 
 // ── Private routes that trigger the email-verification guard ──────────────────

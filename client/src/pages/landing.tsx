@@ -572,6 +572,15 @@ export default function LandingPage() {
               ) : (
                 // Not logged in → standard CTAs
                 <>
+                  <Link href="/tajerdrop/inscription">
+                    <button
+                      className="text-sm font-medium px-4 py-2 rounded-lg transition-all border"
+                      style={{ color: GOLD, borderColor: "rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.07)" }}
+                      data-testid="header-tajerdrop-button"
+                    >
+                      Devenir Seller
+                    </button>
+                  </Link>
                   <Link href="/login">
                     <button
                       className="text-sm font-medium px-4 py-2 rounded-lg transition-all hover:bg-white/10"
@@ -632,6 +641,11 @@ export default function LandingPage() {
                   <Link href="/register">
                     <button className="w-full py-2.5 rounded-lg text-sm font-bold text-white" style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})` }}>
                       Essai Gratuit
+                    </button>
+                  </Link>
+                  <Link href="/tajerdrop/inscription">
+                    <button className="w-full py-2.5 rounded-lg text-sm font-semibold border" style={{ color: GOLD, borderColor: "rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.07)" }} data-testid="mobile-tajerdrop-button">
+                      Devenir Seller TajerDrop
                     </button>
                   </Link>
                 </>
@@ -723,6 +737,31 @@ export default function LandingPage() {
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
+
+              {/* TajerDrop separator */}
+              <div className="flex items-center gap-3 pt-1">
+                <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.1)" }} />
+                <span className="text-white/30 text-xs">ou</span>
+                <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.1)" }} />
+              </div>
+
+              {/* TajerDrop Seller CTA */}
+              <Link href="/tajerdrop/inscription">
+                <div
+                  className="flex items-center gap-4 p-4 rounded-xl cursor-pointer transition-all hover:scale-[1.02]"
+                  style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.3)" }}
+                  data-testid="hero-tajerdrop-cta"
+                >
+                  <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: "rgba(197,160,89,0.15)" }}>
+                    <Package className="w-5 h-5" style={{ color: GOLD }} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-white text-sm">Devenir Seller TajerDrop</p>
+                    <p className="text-white/50 text-xs mt-0.5 leading-snug">Pas de stock, pas de produit — apportez vos leads, on s'occupe du reste</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 flex-shrink-0" style={{ color: GOLD }} />
+                </div>
+              </Link>
 
               {/* Social proof */}
               <div className="flex items-center gap-6">

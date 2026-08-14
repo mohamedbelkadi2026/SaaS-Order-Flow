@@ -125,6 +125,22 @@ export function setupAuth(app: Express) {
           // Suspended account: distinct message is OK here — the attacker
           // already proved they know a valid email + password pair.
           if (user.isActive === 0 && !user.isSuperAdmin) {
+            // TajerDrop sellers have a specific pending/rejected message
+            if (user.storeId) {
+              try {
+                const store = await storage.getStore(user.storeId);
+                if (store?.tajerdropStatus === 'pending') {
+                  return done(null, false, {
+                    message: "Votre compte Seller TajerDrop est en attente de validation. Vous serez notifié dès son activation.",
+                  });
+                }
+                if (store?.tajerdropStatus === 'rejected') {
+                  return done(null, false, {
+                    message: "Votre demande Seller TajerDrop a été refusée. Contactez-nous pour plus d'informations.",
+                  });
+                }
+              } catch { /* fall through to generic message */ }
+            }
             return done(null, false, {
               message: "Votre compte est suspendu. Veuillez contacter l'administration.",
             });
@@ -162,6 +178,72 @@ export function setupAuth(app: Express) {
     password:  passwordSchema,
     phone:     moroccanPhoneSchema.optional(),
     language:  z.enum(["fr", "ar", "en"]).optional(),
+  });
+
+  // ── TajerDrop Seller registration ──────────────────────────────────────────
+  // Separate from the standard SaaS signup: creates an account immediately but
+  // keeps it blocked (isActive=0, tajerdropStatus='pending') until a super admin
+  // validates it from the God Mode panel.  No email-verification step — the
+  // human review IS the gate.
+  const tajerdropSignupSchema = z.object({
+    fullName:   z.string().min(2, "Nom complet requis").max(80).trim(),
+    phone:      moroccanPhoneSchema,
+    email:      emailSchema,
+    password:   passwordSchema,
+    city:       z.string().min(1, "Ville requise").max(100).trim(),
+    experience: z.enum(["debutant", "vendu_en_ligne", "equipe_confirmation"]).optional(),
+  });
+
+  app.post("/api/auth/tajerdrop/register", async (req, res) => {
+    try {
+      const parsed = tajerdropSignupSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const firstError = parsed.error.errors[0]?.message || "Données invalides";
+        return res.status(400).json({ message: firstError, errors: parsed.error.flatten() });
+      }
+      const data = parsed.data;
+
+      const existingUser = await storage.getUserByEmail(data.email);
+      if (existingUser) {
+        return res.status(400).json({ message: "Cet email est déjà utilisé" });
+      }
+
+      const hashedPassword = await hashPassword(data.password);
+
+      // Create the store first (tajerdrop_seller type, pending validation)
+      const store = await storage.createStore({
+        name: `${data.fullName} — TajerDrop`,
+        storeType: "tajerdrop_seller",
+        tajerdropStatus: "pending",
+        tajerdropExperience: data.experience ?? null,
+        tajerdropCity: data.city,
+      } as any);
+
+      // Create user — isActive=0 blocks login until admin validates
+      const user = await storage.createUser({
+        username:        data.fullName,
+        email:           data.email,
+        phone:           data.phone || null,
+        password:        hashedPassword,
+        role:            "owner",
+        storeId:         store.id,
+        isEmailVerified: 1,   // no OTP step — admin review is the gate
+        isSuperAdmin:    0,
+        isActive:        0,   // locked until admin validates
+        preferredLanguage: "fr",
+      });
+
+      await storage.updateStore(store.id, { ownerId: user.id });
+
+      console.log(`[TAJERDROP-REGISTER] New seller application: ${data.email} (store #${store.id}, user #${user.id})`);
+      return res.status(201).json({
+        pendingValidation: true,
+        message: "Votre demande a bien été enregistrée. Vous serez contacté par email dès validation de votre compte.",
+      });
+    } catch (err: any) {
+      console.error("[TAJERDROP-REGISTER] Error:", err);
+      return res.status(500).json({ message: "Erreur lors de l'inscription" });
+    }
   });
 
   app.post("/api/auth/signup", async (req, res, next) => {

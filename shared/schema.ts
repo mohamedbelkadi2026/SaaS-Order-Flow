@@ -9,6 +9,11 @@ export const stores = pgTable("stores", {
   ownerId: integer("owner_id"),
   // 'standard' (SaaS classique) | 'tajerdrop_seller' (dropshipper TajerDrop)
   storeType: text("store_type").default("standard"),
+  // TajerDrop seller validation flow — null for standard stores
+  // 'pending' | 'validated' | 'rejected'
+  tajerdropStatus: text("tajerdrop_status"),
+  tajerdropExperience: text("tajerdrop_experience"),
+  tajerdropCity: text("tajerdrop_city"),
   lastAssignedAgentId: integer("last_assigned_agent_id"),
   phone: text("phone"),
   website: text("website"),

@@ -11,6 +11,7 @@ import {
   BarChart3, DollarSign, Activity, Eye, Package, Calendar,
   AlertCircle, Bell, MessageCircle, Phone, ChevronDown, ChevronUp,
   CreditCard, FileText, ExternalLink, Clock, Ban, MailCheck, MailWarning,
+  MapPin, Briefcase,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -367,7 +368,7 @@ export default function SuperAdminPage() {
   const [search, setSearch] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
   const [expandedStoreId, setExpandedStoreId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<"stores" | "payments" | "users">("stores");
+  const [activeTab, setActiveTab] = useState<"stores" | "payments" | "users" | "tajerdrop">("stores");
   const [verifyingUserId, setVerifyingUserId] = useState<number | null>(null);
   const [rejectNotes, setRejectNotes] = useState<Record<number, string>>({});
 
@@ -474,6 +475,37 @@ export default function SuperAdminPage() {
       setTimeout(() => { window.location.href = "/"; }, 600);
     },
     onError: () => toast({ title: "Erreur d'impersonation", description: "Impossible de se connecter en tant que cet utilisateur", variant: "destructive" }),
+  });
+
+  /* ── TajerDrop Sellers ──────────────────────────────────────────── */
+  type TajerDropSeller = {
+    storeId: number; storeName: string;
+    tajerdropStatus: string | null; tajerdropExperience: string | null; tajerdropCity: string | null;
+    storeCreatedAt: string | null;
+    userId: number; userName: string; userEmail: string | null; userPhone: string | null; isActive: number;
+  };
+  const { data: tajerdropSellers = [], isLoading: tajerdropLoading } = useQuery<TajerDropSeller[]>({
+    queryKey: ["/api/admin/tajerdrop/demandes"],
+    enabled: activeTab === "tajerdrop",
+  });
+  const pendingTajerDrop = tajerdropSellers.filter(s => s.tajerdropStatus === "pending").length;
+
+  const validateSellerMutation = useMutation({
+    mutationFn: (storeId: number) => apiRequest("POST", `/api/admin/tajerdrop/demandes/${storeId}/validate`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/tajerdrop/demandes"] });
+      toast({ title: "✓ Seller validé", description: "Le compte est maintenant actif." });
+    },
+    onError: () => toast({ title: "Erreur", variant: "destructive" }),
+  });
+
+  const rejectSellerMutation = useMutation({
+    mutationFn: (storeId: number) => apiRequest("POST", `/api/admin/tajerdrop/demandes/${storeId}/reject`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/tajerdrop/demandes"] });
+      toast({ title: "Demande refusée" });
+    },
+    onError: () => toast({ title: "Erreur", variant: "destructive" }),
   });
 
   /* ── Payments ───────────────────────────────────────────────────── */
@@ -607,11 +639,12 @@ export default function SuperAdminPage() {
         </section>
 
         {/* ── Tab Nav ──────────────────────────────────────────────── */}
-        <div className="flex items-center gap-2 border-b pb-4" style={{ borderColor: "rgba(197,160,89,0.15)" }}>
+        <div className="flex flex-wrap items-center gap-2 border-b pb-4" style={{ borderColor: "rgba(197,160,89,0.15)" }}>
           {[
-            { id: "stores" as const,   label: "Boutiques",           icon: Store,       count: filtered.length },
-            { id: "payments" as const, label: "Paiements à valider",  icon: CreditCard,  count: pendingCount,   alert: pendingCount > 0 },
-            { id: "users" as const,    label: "Vérification Email",   icon: MailCheck,   count: unverifiedCount, alert: unverifiedCount > 0 },
+            { id: "stores" as const,    label: "Boutiques",            icon: Store,       count: filtered.length },
+            { id: "payments" as const,  label: "Paiements à valider",   icon: CreditCard,  count: pendingCount,        alert: pendingCount > 0 },
+            { id: "users" as const,     label: "Vérification Email",    icon: MailCheck,   count: unverifiedCount,     alert: unverifiedCount > 0 },
+            { id: "tajerdrop" as const, label: "Sellers TajerDrop",     icon: Package,     count: pendingTajerDrop,    alert: pendingTajerDrop > 0 },
           ].map(tab => (
             <button
               key={tab.id}
@@ -1208,6 +1241,129 @@ export default function SuperAdminPage() {
             )}
           </section>
         )}
+
+        {/* ── TajerDrop Sellers ────────────────────────────────────── */}
+        {activeTab === "tajerdrop" && (
+          <section>
+            <div className="flex items-center gap-2 mb-4">
+              <Package className="w-4 h-4" style={{ color: GOLD }} />
+              <h2 className="text-white/80 text-sm font-semibold uppercase tracking-wider">Sellers TajerDrop</h2>
+              <span className="text-xs px-2 py-0.5 rounded-full text-white/60 border border-white/10" style={{ background: "rgba(255,255,255,0.05)" }}>
+                {tajerdropSellers.length}
+              </span>
+            </div>
+
+            {tajerdropLoading ? (
+              <div className="flex items-center justify-center py-16 text-white/40 gap-3">
+                <div className="w-5 h-5 rounded-full border-2 border-white/20 border-t-amber-400 animate-spin" />
+                Chargement...
+              </div>
+            ) : tajerdropSellers.length === 0 ? (
+              <div className="text-center py-16 text-white/30 text-sm">Aucune demande Seller pour le moment.</div>
+            ) : (
+              <div className="space-y-3">
+                {tajerdropSellers.map(seller => {
+                  const statusColors: Record<string, { bg: string; text: string; label: string }> = {
+                    pending:   { bg: "rgba(234,179,8,0.15)",  text: "#facc15", label: "En attente" },
+                    validated: { bg: "rgba(34,197,94,0.12)",  text: "#4ade80", label: "Validé" },
+                    rejected:  { bg: "rgba(239,68,68,0.12)",  text: "#f87171", label: "Refusé" },
+                  };
+                  const sc = statusColors[seller.tajerdropStatus ?? "pending"] ?? statusColors.pending;
+
+                  const EXPERIENCE_LABELS: Record<string, string> = {
+                    debutant: "Débutant",
+                    vendu_en_ligne: "Déjà vendu en ligne",
+                    equipe_confirmation: "Equipe de confirmation",
+                  };
+
+                  return (
+                    <div
+                      key={seller.storeId}
+                      className="rounded-2xl p-4 sm:p-5"
+                      style={{ background: NAVY2, border: "1px solid rgba(255,255,255,0.08)" }}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+                        {/* Identity */}
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-white font-bold text-sm">{seller.userName}</span>
+                            <span
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                              style={{ background: sc.bg, color: sc.text }}
+                            >
+                              {sc.label}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/50">
+                            {seller.userEmail && (
+                              <span className="flex items-center gap-1">
+                                <MailCheck className="w-3 h-3" />{seller.userEmail}
+                              </span>
+                            )}
+                            {seller.userPhone && (
+                              <span className="flex items-center gap-1">
+                                <Phone className="w-3 h-3" />{seller.userPhone}
+                              </span>
+                            )}
+                            {seller.tajerdropCity && (
+                              <span className="flex items-center gap-1">
+                                <MapPin className="w-3 h-3" />{seller.tajerdropCity}
+                              </span>
+                            )}
+                            {seller.tajerdropExperience && (
+                              <span className="flex items-center gap-1">
+                                <Briefcase className="w-3 h-3" />{EXPERIENCE_LABELS[seller.tajerdropExperience] ?? seller.tajerdropExperience}
+                              </span>
+                            )}
+                            {seller.storeCreatedAt && (
+                              <span className="flex items-center gap-1">
+                                <Calendar className="w-3 h-3" />
+                                {new Date(seller.storeCreatedAt).toLocaleDateString("fr-MA", { day: "2-digit", month: "short", year: "numeric" })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        {seller.tajerdropStatus === "pending" && (
+                          <div className="flex gap-2 flex-shrink-0">
+                            <button
+                              onClick={() => validateSellerMutation.mutate(seller.storeId)}
+                              disabled={validateSellerMutation.isPending}
+                              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-white text-xs font-bold transition-all hover:opacity-90 disabled:opacity-50"
+                              style={{ background: "rgba(34,197,94,0.2)", border: "1px solid rgba(34,197,94,0.4)" }}
+                              data-testid={`btn-validate-${seller.storeId}`}
+                            >
+                              <Check className="w-3.5 h-3.5 text-green-400" />
+                              Valider
+                            </button>
+                            <button
+                              onClick={() => rejectSellerMutation.mutate(seller.storeId)}
+                              disabled={rejectSellerMutation.isPending}
+                              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-white text-xs font-bold transition-all hover:opacity-90 disabled:opacity-50"
+                              style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.35)" }}
+                              data-testid={`btn-reject-${seller.storeId}`}
+                            >
+                              <X className="w-3.5 h-3.5 text-red-400" />
+                              Refuser
+                            </button>
+                          </div>
+                        )}
+                        {seller.tajerdropStatus === "validated" && (
+                          <span className="text-xs text-green-400/60 font-semibold flex-shrink-0 self-center">Compte actif ✓</span>
+                        )}
+                        {seller.tajerdropStatus === "rejected" && (
+                          <span className="text-xs text-red-400/60 font-semibold flex-shrink-0 self-center">Refusé</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
       </div>
 
       {/* ── Change Plan Modal ────────────────────────────────────────── */}

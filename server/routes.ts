@@ -14804,6 +14804,66 @@ function ensureHeaders(sheet) {
   });
 
   // ============================================================
+  // TAJERDROP SELLER VALIDATION (Super Admin)
+  // ============================================================
+
+  // List all TajerDrop seller registrations (any status)
+  app.get("/api/admin/tajerdrop/demandes", requireSuperAdmin, async (_req, res) => {
+    try {
+      const sellers = await db
+        .select({
+          storeId:              stores.id,
+          storeName:            stores.name,
+          tajerdropStatus:      (stores as any).tajerdropStatus,
+          tajerdropExperience:  (stores as any).tajerdropExperience,
+          tajerdropCity:        (stores as any).tajerdropCity,
+          storeCreatedAt:       stores.createdAt,
+          userId:               users.id,
+          userName:             users.username,
+          userEmail:            users.email,
+          userPhone:            users.phone,
+          isActive:             users.isActive,
+        })
+        .from(stores)
+        .innerJoin(users, eq(users.storeId, stores.id))
+        .where(eq((stores as any).storeType, "tajerdrop_seller"))
+        .orderBy(desc(stores.createdAt));
+      res.json(sellers);
+    } catch (err: any) {
+      console.error("[admin/tajerdrop/demandes] Error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Validate a TajerDrop seller — activates account + sets status = 'validated'
+  app.post("/api/admin/tajerdrop/demandes/:storeId/validate", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      await storage.updateStore(storeId, { tajerdropStatus: "validated" } as any);
+      // Activate the owner user so they can log in
+      await db.update(users).set({ isActive: 1 }).where(eq(users.storeId, storeId));
+      console.log(`[TAJERDROP-ADMIN] Store #${storeId} validated by ${(req.user as any)?.email}`);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[admin/tajerdrop/validate] Error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Reject a TajerDrop seller — keeps account blocked, sets status = 'rejected'
+  app.post("/api/admin/tajerdrop/demandes/:storeId/reject", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      await storage.updateStore(storeId, { tajerdropStatus: "rejected" } as any);
+      console.log(`[TAJERDROP-ADMIN] Store #${storeId} rejected by ${(req.user as any)?.email}`);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[admin/tajerdrop/reject] Error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ============================================================
   // SEND TO DELIVERY (SHIPPING)
   // ============================================================
   app.post("/api/orders/:id/ship", requireAuth, requireActiveSubscription, async (req, res) => {
