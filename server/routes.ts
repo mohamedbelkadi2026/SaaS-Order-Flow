@@ -2765,6 +2765,29 @@ export async function registerRoutes(
     }
   });
 
+  // ── DEBUG: last YouCan raw line items captured from production webhooks ──────
+  app.get("/api/debug/last-youcan-line-items", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const rows = await db.select().from(integrationLogs)
+        .where(and(
+          eq(integrationLogs.storeId, req.user!.storeId!),
+          eq(integrationLogs.provider, 'youcan'),
+          eq(integrationLogs.action, 'debug_line_items'),
+        ))
+        .orderBy(desc(integrationLogs.createdAt))
+        .limit(5);
+      res.json(rows.map(r => ({
+        id: r.id,
+        message: r.message,
+        createdAt: r.createdAt,
+        lineItems: (() => { try { return JSON.parse(r.payload ?? '[]'); } catch { return r.payload; } })(),
+      })));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+  // ── END DEBUG ──────────────────────────────────────────────────────────────
+
   app.post("/api/admin/shopify/cleanup-empty", requireAuth, requireAdmin, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
@@ -5805,7 +5828,21 @@ export async function registerRoutes(
       const orderItemsToCreate: any[] = [];
       let orderProductCost = 0;
 
-      console.log('[LINE-ITEM-RAW]', JSON.stringify(lineItems, null, 2));
+      // ── DEBUG: persist raw line items to DB so they're readable from the app ──
+      try {
+        await db.insert(integrationLogs).values({
+          storeId,
+          integrationId: integration.id,
+          provider: 'youcan',
+          action: 'debug_line_items',
+          status: 'debug',
+          message: `LINE-ITEM-RAW ref=${orderRef}`,
+          payload: JSON.stringify(lineItems),
+        });
+      } catch (dbgErr: any) {
+        console.error('[DEBUG-LOG-INSERT-FAILED]', dbgErr.message);
+      }
+      // ── END DEBUG ─────────────────────────────────────────────────────────────
 
       for (const v of lineItems) {
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";

@@ -1,0 +1,46 @@
+# Replit Prompt — Capturer le payload YouCan SANS avoir besoin d'accéder aux logs Railway
+
+## Problème
+Je n'ai pas l'habitude d'utiliser le dashboard Railway pour lire les logs, et je ne veux pas rediriger le webhook YouCan vers le Replit de dev (risque de rater de vraies commandes clients pendant ce temps). Je veux une solution où je peux voir le résultat directement depuis l'app elle-même, via une simple page/URL.
+
+## Ce qu'il faut faire
+
+### 1. Stocker le payload brut dans la base de données au lieu d'un simple console.log
+Dans le webhook YouCan (server/routes.ts), juste avant la boucle for (const v of lineItems), remplacer le console.log('[LINE-ITEM-RAW]', ...) par un enregistrement en base :
+```ts
+try {
+  await db.insert(integrationLogs).values({
+    storeId,
+    provider: 'youcan',
+    type: 'debug_line_items',
+    payload: JSON.stringify(lineItems),
+    createdAt: new Date(),
+  });
+} catch (e) {
+  console.error('[DEBUG-LOG-INSERT-FAILED]', e);
+}
+```
+(Utiliser la table integrationLogs déjà existante dans le projet si elle a les colonnes adaptées — sinon créer une table minimale debug_payloads avec juste id, label, payload (text), createdAt.)
+
+### 2. Créer un endpoint admin pour consulter ce log depuis le navigateur
+```ts
+app.get("/api/debug/last-youcan-line-items", requireAdmin, async (req, res) => {
+  const rows = await db.select().from(integrationLogs)
+    .where(eq(integrationLogs.type, 'debug_line_items'))
+    .orderBy(desc(integrationLogs.createdAt))
+    .limit(5);
+  res.json(rows);
+});
+```
+Accessible uniquement aux comptes admin connectés (pas besoin de clé secrète supplémentaire, la session admin suffit).
+
+### 3. Déployer ce changement, puis me donner l'URL exacte à ouvrir
+Une fois déployé sur production (Railway), donne-moi l'URL complète à visiter dans mon navigateur (ex: https://www.tajergrow.com/api/debug/last-youcan-line-items) pendant que je suis connecté en admin.
+
+## Ce que je ferai ensuite
+1. J'ouvrirai cette URL dans mon navigateur.
+2. Je passerai une commande de test sur YouCan avec une couleur et une taille choisies.
+3. Je rafraîchirai la page/URL et je copierai-collerai ici le JSON affiché (le plus récent des 5).
+
+## Une fois qu'on a vu le JSON
+On identifie le bon champ, on corrige variantInfo/"Infos supplémentaires" en conséquence, puis on peut retirer cet endpoint de debug (ou le laisser désactivé/protégé, à voir ensemble).
