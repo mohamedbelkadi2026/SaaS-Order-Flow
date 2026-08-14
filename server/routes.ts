@@ -5826,7 +5826,13 @@ export async function registerRoutes(
 
       const lineItems: any[] = payload.variants || payload.items || payload.line_items || [];
       const orderItemsToCreate: any[] = [];
+      // Collect ONLY the confirmed customer-chosen variant labels (color/size).
+      // These feed "Infos supplémentaires" exclusively — no SKU codes, no product names.
+      const confirmedVariantLabels: string[] = [];
       let orderProductCost = 0;
+
+      // Placeholders that signal "no real variant chosen" — filter them out of variantDetails.
+      const VARIANT_PLACEHOLDERS = new Set(['default', 'Default Title', 'null', 'undefined', '-', '']);
 
       for (const v of lineItems) {
         const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
@@ -5838,13 +5844,18 @@ export async function registerRoutes(
         let youcanVariantLabel: string | null = null;
         const variationValues = Array.isArray(v.variant?.values) ? v.variant.values as any[] : null;
         if (variationValues && variationValues.length > 0) {
-          youcanVariantLabel = variationValues.filter(Boolean).join(' / ');
+          const joined = variationValues.filter(Boolean).join(' / ');
+          if (!VARIANT_PLACEHOLDERS.has(joined)) youcanVariantLabel = joined;
         } else {
           const variations = v.variant?.variations;
           if (variations && typeof variations === 'object' && Object.keys(variations).length > 0) {
-            youcanVariantLabel = (Object.values(variations) as any[]).filter(Boolean).join(' / ');
+            const joined = (Object.values(variations) as any[]).filter(Boolean).join(' / ');
+            if (!VARIANT_PLACEHOLDERS.has(joined)) youcanVariantLabel = joined;
           }
         }
+
+        // Track confirmed labels separately — only real color/size choices go to variantDetails
+        if (youcanVariantLabel) confirmedVariantLabels.push(youcanVariantLabel);
 
         // SKU match only when UNIQUE — ambiguous/duplicate SKUs fall through to resolveProductId().
         const skuMatchesYC = sku ? storeProducts.filter(p => p.sku === sku) : [];
@@ -5871,8 +5882,8 @@ export async function registerRoutes(
 
       const rawProductName = orderItemsToCreate.map(i => i.rawProductName).join(" + ") || null;
       const rawQuantity = orderItemsToCreate.reduce((s, i) => s + i.quantity, 0) || null;
-      // Aggregate variant labels from all line items → feeds "Infos supplémentaires" column
-      const variantDetails = orderItemsToCreate.map(i => i.variantInfo).filter(Boolean).join(' | ') || null;
+      // Only confirmed color/size choices → "Infos supplémentaires" (never SKU codes or offer text)
+      const variantDetails = confirmedVariantLabels.join(' | ') || null;
 
       const order = await storage.createOrder({
         storeId,
