@@ -38,8 +38,15 @@ export default function TajerDropInscriptionPage() {
 
     if (!form.fullName.trim()) return setError("Le nom complet est requis.");
     if (!form.phone.trim()) return setError("Le téléphone est requis.");
+    // Moroccan phone: starts with +212 or 0, followed by 5/6/7, then 8 digits
+    if (!/^(\+212|0)[5-7][0-9]{8}$/.test(form.phone.trim())) {
+      return setError("Numéro de téléphone invalide. Format accepté : 06XXXXXXXX, 07XXXXXXXX, ou +212XXXXXXXXX");
+    }
     if (!form.email.trim()) return setError("L'email est requis.");
     if (form.password.length < 8) return setError("Le mot de passe doit contenir au moins 8 caractères.");
+    if (!/[A-Z]/.test(form.password)) return setError("Le mot de passe doit contenir au moins une lettre majuscule.");
+    if (!/[a-z]/.test(form.password)) return setError("Le mot de passe doit contenir au moins une lettre minuscule.");
+    if (!/[0-9]/.test(form.password)) return setError("Le mot de passe doit contenir au moins un chiffre.");
     if (!form.city.trim()) return setError("La ville est requise.");
 
     setLoading(true);
@@ -148,6 +155,14 @@ export default function TajerDropInscriptionPage() {
         {/* Form card */}
         <div className="rounded-2xl p-6 sm:p-8" style={{ background: NAVY2, border: "1px solid rgba(197,160,89,0.15)" }}>
           <form onSubmit={handleSubmit} className="space-y-5">
+
+            {/* Error — top of form so it's always visible without scrolling */}
+            {error && (
+              <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl" style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)" }}>
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <p className="text-red-300 text-sm leading-snug">{error}</p>
+              </div>
+            )}
 
             {/* Full name */}
             <div>
@@ -269,14 +284,6 @@ export default function TajerDropInscriptionPage() {
                 ))}
               </div>
             </div>
-
-            {/* Error */}
-            {error && (
-              <div className="flex items-center gap-2 px-4 py-3 rounded-xl" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)" }}>
-                <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
-                <p className="text-red-300 text-sm">{error}</p>
-              </div>
-            )}
 
             {/* Submit */}
             <button

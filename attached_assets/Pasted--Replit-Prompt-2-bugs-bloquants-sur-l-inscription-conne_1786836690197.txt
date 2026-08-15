@@ -1,0 +1,29 @@
+# Replit Prompt — 2 bugs bloquants sur l'inscription/connexion TajerDrop
+
+## Bug 1 — Le formulaire d'inscription ne fait rien de visible
+J'ai rempli le formulaire "Devenez Seller TajerDrop" (nom, téléphone, ville, email, mot de passe) et cliqué "Envoyer ma demande" — rien ne se passe visiblement (pas de message de confirmation, pas de redirection, je reste sur la même page).
+
+Vérifie :
+1. Est-ce que le clic déclenche bien un appel réseau vers le backend (vérifie les logs serveur au moment du clic) ?
+2. S'il y a une erreur (validation échouée, email déjà utilisé, erreur serveur), elle doit s'afficher clairement à l'écran — actuellement rien ne s'affiche, ce qui est un bug d'UX même si la vraie cause est ailleurs.
+3. Si l'appel réussit côté serveur mais que le compte est bien créé en base (vérifie directement en base si un store `storeType = 'tajerdrop_seller'` a été créé avec cet email), alors le bug est uniquement l'absence de message de confirmation après succès — à corriger (afficher "Votre demande a été envoyée, vous recevrez un email après validation").
+
+## Bug 2 — Se connecter avec un compte Seller TajerDrop mène au dashboard SaaS classique, pas à /tajerdrop/dashboard
+
+C'est exactement le problème qu'on avait anticipé dans la Partie A du prompt précédent — soit il n'a pas été implémenté, soit il ne fonctionne pas.
+
+Vérifie :
+1. Le compte utilisé pour se connecter a-t-il bien `storeType = 'tajerdrop_seller'` en base ? (Si le Bug 1 a empêché la création correcte du compte, ce Bug 2 pourrait juste être une conséquence — teste avec un compte dont tu es sûr à 100% qu'il a le bon storeType.)
+2. Dans la logique de connexion (`server/routes.ts`, endpoint de login), après authentification réussie, vérifie EXACTEMENT quelle redirection est renvoyée au frontend selon `storeType` — montre-moi le code de cette logique.
+3. Corrige pour que `storeType === 'tajerdrop_seller'` redirige systématiquement vers `/tajerdrop/dashboard`, jamais vers `/dashboard`.
+
+## Ce que je veux en retour
+1. Confirmation claire : le formulaire crée-t-il bien un compte en base avec le bon storeType ? (avec une requête SQL ou capture montrant le compte créé)
+2. Le code de redirection après login, tel qu'il existe actuellement.
+3. Une fois corrigé, teste toi-même : crée un compte Seller de test, connecte-toi avec, confirme que tu arrives bien sur /tajerdrop/dashboard et PAS sur le dashboard SaaS classique.
+
+## Testing checklist
+1. Remplir et soumettre le formulaire → message de confirmation clair affiché.
+2. Le compte créé a bien `storeType = 'tajerdrop_seller'` en base.
+3. Se connecter avec ce compte (après validation admin si le compte doit être validé avant connexion — sinon dis-moi si la validation manuelle bloque bien la connexion en attendant) → arrive sur /tajerdrop/dashboard, jamais /dashboard classique.
+4. Un compte SaaS classique existant continue d'arriver sur /dashboard normalement, sans régression.
