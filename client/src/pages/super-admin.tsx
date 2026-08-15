@@ -1245,12 +1245,22 @@ export default function SuperAdminPage() {
         {/* ── TajerDrop Sellers ────────────────────────────────────── */}
         {activeTab === "tajerdrop" && (
           <section>
-            <div className="flex items-center gap-2 mb-4">
-              <Package className="w-4 h-4" style={{ color: GOLD }} />
-              <h2 className="text-white/80 text-sm font-semibold uppercase tracking-wider">Sellers TajerDrop</h2>
-              <span className="text-xs px-2 py-0.5 rounded-full text-white/60 border border-white/10" style={{ background: "rgba(255,255,255,0.05)" }}>
-                {tajerdropSellers.length}
-              </span>
+            <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+              <div className="flex items-center gap-2">
+                <Package className="w-4 h-4" style={{ color: GOLD }} />
+                <h2 className="text-white/80 text-sm font-semibold uppercase tracking-wider">Sellers TajerDrop</h2>
+                <span className="text-xs px-2 py-0.5 rounded-full text-white/60 border border-white/10" style={{ background: "rgba(255,255,255,0.05)" }}>
+                  {tajerdropSellers.length}
+                </span>
+              </div>
+              <button
+                onClick={() => navigate("/admin/tajerdrop")}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-80"
+                style={{ background: GOLD, color: "#0f1e38" }}
+              >
+                <Package className="w-3.5 h-3.5" />
+                Gérer le catalogue produits
+              </button>
             </div>
 
             {tajerdropLoading ? (

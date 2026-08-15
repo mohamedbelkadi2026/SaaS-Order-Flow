@@ -142,6 +142,8 @@ export interface IStorage {
   deleteCsvProfitReport(id: number, storeId: number): Promise<void>;
   createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
   getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
+  getMarketplaceProductsAdmin(): Promise<Product[]>;
+  getMarketplaceProductsFull(): Promise<(Product & { variants: ProductVariant[] })[]>;
   getInventoryStats(storeId: number): Promise<any>;
   updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; isEmailVerified?: number; buyerCode?: string | null; password?: string }): Promise<User | undefined>;
   deleteUser(id: number): Promise<void>;
@@ -432,6 +434,30 @@ export class DatabaseStorage implements IStorage {
   async getMarketplaceProducts(): Promise<Product[]> {
     return await db.select().from(products)
       .where(and(eq(products.isMarketplaceProduct, true), isNull(products.archivedAt)));
+  }
+
+  /** Full product list for admin — includes inactive marketplace products */
+  async getMarketplaceProductsAdmin(): Promise<Product[]> {
+    return await db.select().from(products)
+      .where(and(eq(products.isMarketplaceProduct, true), isNull(products.archivedAt)))
+      .orderBy(desc(products.createdAt));
+  }
+
+  /** Active marketplace products with full public fields for sellers */
+  async getMarketplaceProductsFull(): Promise<(Product & { variants: ProductVariant[] })[]> {
+    const prods = await db.select().from(products)
+      .where(and(
+        eq(products.isMarketplaceProduct, true),
+        isNull(products.archivedAt),
+        eq((products as any).marketplaceActive, true),
+      ))
+      .orderBy(products.name);
+    return await Promise.all(prods.map(async p => {
+      const variants = p.hasVariants
+        ? await db.select().from(productVariants).where(eq(productVariants.productId, p.id))
+        : [];
+      return { ...p, variants };
+    }));
   }
 
   async getProduct(id: number): Promise<Product | undefined> {

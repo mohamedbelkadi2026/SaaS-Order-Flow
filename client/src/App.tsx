@@ -64,6 +64,40 @@ import DeliveryStats from "@/pages/delivery-stats";
 import ImportHistory from "@/pages/import-history";
 const StockHistory = lazy(() => import("@/pages/stock-history"));
 import TajerDropInscription from "@/pages/tajerdrop-inscription";
+import { TajerDropLayout } from "@/pages/tajerdrop/layout";
+const TajerDropDashboard  = lazy(() => import("@/pages/tajerdrop/dashboard"));
+const TajerDropCatalogue  = lazy(() => import("@/pages/tajerdrop/catalogue"));
+const TajerDropCommandes  = lazy(() => import("@/pages/tajerdrop/commandes"));
+const TajerDropProfil     = lazy(() => import("@/pages/tajerdrop/profil"));
+const AdminTajerDropProducts = lazy(() => import("@/pages/admin-tajerdrop-products"));
+
+// ── TajerDrop Seller App — completely separate from the SaaS experience ───────
+function TajerDropApp() {
+  const [location, navigate] = useLocation();
+
+  // Redirect root and any non-tajerdrop path to the dashboard
+  useEffect(() => {
+    if (!location.startsWith("/tajerdrop")) {
+      navigate("/tajerdrop/dashboard");
+    }
+  }, [location]);
+
+  if (!location.startsWith("/tajerdrop")) return <FullPageSpinner />;
+
+  return (
+    <TajerDropLayout>
+      <Suspense fallback={<FullPageSpinner />}>
+        <Switch key={location}>
+          <Route path="/tajerdrop/dashboard"  component={TajerDropDashboard} />
+          <Route path="/tajerdrop/catalogue"  component={TajerDropCatalogue} />
+          <Route path="/tajerdrop/commandes"  component={TajerDropCommandes} />
+          <Route path="/tajerdrop/profil"     component={TajerDropProfil} />
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
+    </TajerDropLayout>
+  );
+}
 
 // ── Purely public paths — always rendered, no auth/verification check ─────────
 // Any path listed here is served directly from AppRouter before any auth logic.
@@ -230,6 +264,11 @@ function ProtectedRoutes() {
   // Spinner while the needsVerification useEffect fires the redirect
   if (needsVerification) return <FullPageSpinner />;
 
+  // ── TajerDrop sellers → dedicated experience, no SaaS layout ────────────
+  if ((user as any).storeType === 'tajerdrop_seller') {
+    return <TajerDropApp />;
+  }
+
   // ── Verified user → full app ──────────────────────────────────────────────
   return (
     <ActiveStoreProvider>
@@ -287,6 +326,17 @@ function AppRouter() {
 
   // ── 1b. Public landing pages by slug (/lp/:slug) ───────────────────────────
   if (location.startsWith("/lp/") && location.length > 4) return <LpView />;
+
+  // ── 2b. Admin — Marketplace TajerDrop products ────────────────────────────
+  if (location === "/admin/tajerdrop") {
+    if (isLoading) return <FullPageSpinner />;
+    if (!user) return <AuthPage />;
+    return (
+      <Suspense fallback={<FullPageSpinner />}>
+        <AdminTajerDropProducts />
+      </Suspense>
+    );
+  }
 
   // ── 2. Super-admin panel ───────────────────────────────────────────────────
   if (location === "/super-admin") {

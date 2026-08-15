@@ -524,7 +524,7 @@ export function setupAuth(app: Express) {
     });
   });
 
-  app.get("/api/user", (req, res) => {
+  app.get("/api/user", async (req, res) => {
     if (!req.isAuthenticated()) {
       return res.status(401).json({ message: "Non authentifié" });
     }
@@ -533,8 +533,19 @@ export function setupAuth(app: Express) {
     }
     const { password: _, ...safeUser } = req.user!;
     const originalSuperAdminId = (req.session as any).originalSuperAdminId;
+
+    // Include storeType so the frontend can route TajerDrop sellers to their dedicated experience
+    let storeType = 'standard';
+    if (req.user!.storeId) {
+      try {
+        const store = await storage.getStore(req.user!.storeId);
+        storeType = (store as any)?.storeType || 'standard';
+      } catch { /* silent — storeType defaults to standard */ }
+    }
+
     res.json({
       ...safeUser,
+      storeType,
       isImpersonating: !!originalSuperAdminId,
       originalSuperAdminId: originalSuperAdminId || null,
     });

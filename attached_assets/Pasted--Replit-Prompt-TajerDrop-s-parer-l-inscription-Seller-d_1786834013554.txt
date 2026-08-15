@@ -1,0 +1,66 @@
+# Replit Prompt — TajerDrop : séparer l'inscription Seller du compte SaaS + construire le Dashboard Admin (gestion catalogue) et le Dashboard Seller (catalogue à parcourir)
+
+## Contexte
+Le formulaire d'inscription "Devenez Seller TajerDrop" est déjà en ligne et fonctionne visuellement. Il reste 3 choses à faire : (1) s'assurer que ce signup ne crée QUE un compte Seller TajerDrop, jamais un compte SaaS classique ; (2) construire le Dashboard Admin pour gérer le catalogue marketplace ; (3) construire le Dashboard Seller pour parcourir ce catalogue.
+
+---
+
+## Partie A — Fix : séparation stricte signup Seller vs signup SaaS
+
+Bug/risque actuel : vérifie que le endpoint appelé par le formulaire "Devenez Seller TajerDrop" crée bien un `store` avec `storeType = 'tajerdrop_seller'` (Phase 1) ET que le compte utilisateur résultant n'apparaît PAS et n'a PAS accès au dashboard SaaS classique.
+
+1. Vérifie/corrige la logique de connexion (`login`) : après authentification, si `user.store.storeType === 'tajerdrop_seller'`, rediriger systématiquement vers `/tajerdrop/dashboard` (jamais vers `/dashboard` classique), et inversement un compte `storeType = 'standard'` ne doit jamais accéder aux routes `/tajerdrop/*`.
+2. Vérifie que toutes les routes API existantes du SaaS classique (orders, inventory, profitability, etc.) refusent l'accès à un compte `tajerdrop_seller` sauf celles explicitement prévues pour lui (marketplace, ses propres commandes TajerDrop).
+3. Teste : crée un compte via le formulaire Seller → confirme qu'il n'apparaît NULLE PART dans les vues admin du SaaS classique (liste des stores clients, etc.) sauf dans un espace dédié "Sellers TajerDrop" si un tel espace existe déjà.
+
+---
+
+## Partie B — Dashboard Admin : gestion du catalogue TajerDrop
+
+Nouvel espace admin (`/admin/tajerdrop/produits` ou équivalent), accessible seulement à vous (compte admin principal), pour gérer les produits marketplace (ceux avec `isMarketplaceProduct = true`, Phase 1).
+
+### Liste des produits marketplace
+Tableau avec : image miniature, nom, catégorie, coût produit, prix de vente suggéré, stock disponible, statut (Actif/Inactif/Rupture), nombre de Sellers qui l'ont "ajouté" (si le concept d'ajout existe côté Seller, voir Partie C), actions (Modifier/Désactiver/Supprimer).
+
+### Formulaire Ajouter/Modifier un produit marketplace
+- Nom du produit
+- Description (texte riche ou simple, affiché au Seller)
+- Galerie d'images (upload multiple, réordonnable, une image "principale")
+- Catégorie (liste simple, réutilisable/gérable : ex Mode, Électronique, Maison, Beauté...)
+- Coût d'achat (prix que vous payez, PAS visible en marge cachée, transparent au Seller comme déjà décidé)
+- Prix de vente suggéré au client final
+- Frais de livraison (35 DH par défaut, modifiable par produit si besoin)
+- Frais d'emballage (6 DH par défaut, modifiable par produit si besoin)
+- Stock disponible
+- Variantes (couleur/taille) si applicable — réutiliser le même système de variantes déjà existant dans le catalogue produit standard du SaaS (products/variantes), pas en recréer un autre
+- Statut (Actif / Inactif — un produit Inactif n'apparaît plus dans le catalogue Seller mais reste consultable côté admin)
+
+---
+
+## Partie C — Dashboard Seller : parcourir le catalogue et créer des leads
+
+Nouvel espace Seller (`/tajerdrop/dashboard`, `/tajerdrop/catalogue`), avec un layout entièrement différent du SaaS classique (sidebar, couleurs, structure — comme discuté, "dashboard différent" = frontend séparé, même backend).
+
+### Page Catalogue (vue principale)
+- Grille de produits façon boutique (image, nom, prix de vente suggéré, coût total visible en un clic ou directement affiché : coût produit + livraison 35 DH + emballage 6 DH), filtrable par catégorie, recherche par nom.
+- Au clic sur un produit : page détail avec galerie d'images, description complète, tableau clair des coûts (Coût produit / Livraison / Emballage / Total), et un champ pour que le Seller voie sa marge en temps réel s'il indique son prix de vente prévu (calcul simple : prix de vente − total des coûts = marge estimée, juste informatif, pas encore lié à un vrai payout qui sera fait en Phase 2).
+- Bouton "Créer une commande" sur ce produit → ouvre le formulaire de commande déjà existant (client, téléphone, adresse, ville), pré-rempli avec ce produit — réutiliser le flux de création de commande déjà en place, adapté pour ce contexte marketplace (Phase 1 l'a déjà préparé côté backend).
+
+### Page "Mes commandes" (Seller)
+Liste des commandes créées par ce Seller sur les produits marketplace — réutiliser l'affichage Suivi des Colis existant, mais filtré strictement aux commandes de ce Seller, avec un statut de livraison qui reflète le même pipeline que le SaaS classique (confirmé → en cours → livré/refusé/annulé).
+
+### Page "Mon profil"/dashboard résumé
+Stats simples pour le Seller : nombre de leads créés, taux de confirmation, taux de livraison — mêmes types de métriques que le Dashboard SaaS classique mais scopées à lui seul, pas de données d'autres Sellers.
+
+---
+
+## Ce qui n'est toujours pas dans cette étape
+- Pas encore de calcul de marge réel/payout (Phase 2).
+- Pas encore de gestion fine des permissions par Seller sur le catalogue (toujours 100% partagé, comme validé).
+
+## Testing checklist
+1. Un Seller connecté ne voit AUCUNE trace du dashboard SaaS classique, et vice-versa.
+2. Ajouter un produit marketplace côté Admin (avec images, description, variantes) → il apparaît immédiatement et correctement dans le catalogue Seller.
+3. Désactiver un produit côté Admin → disparaît du catalogue Seller, reste visible côté Admin.
+4. Créer une commande depuis le catalogue Seller → la commande apparaît dans "Mes commandes" du Seller ET dans le pipeline de traitement standard (confirmation, expédition) côté équipe Admin, avec le bon produit/variante/coûts liés.
+5. Vérifier que le stock du produit marketplace (propriété admin) se décrémente correctement à la livraison, comme prévu en Phase 1.

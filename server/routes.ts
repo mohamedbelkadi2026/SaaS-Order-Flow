@@ -1099,34 +1099,104 @@ export async function registerRoutes(
     res.json(store);
   });
 
-  // ─── TajerDrop Phase 1 — catalogue marketplace ────────────────────────────
-  // Frais fixes affichés au Seller (en centimes)
-  const TAJERDROP_DELIVERY_FEE = 3500; // 35 DH
-  const TAJERDROP_PACKAGING_FEE = 600; // 6 DH
+  // ─── TajerDrop marketplace ─────────────────────────────────────────────────
+  // Frais fixes (centimes) — overrideable per-product
+  const TAJERDROP_DELIVERY_FEE_DEFAULT  = 3500; // 35 DH
+  const TAJERDROP_PACKAGING_FEE_DEFAULT = 600;  //  6 DH
 
-  /** GET /api/marketplace/products — catalogue partagé, lecture seule.
-   *  Réservé aux stores storeType = 'tajerdrop_seller'.
-   *  Ne renvoie QUE : nom, image, prix suggéré, coût produit, frais fixes,
-   *  stock dispo — aucun champ interne (fournisseur, marges admin, etc.). */
-  app.get("/api/marketplace/products", requireAuth, async (req: any, res: any) => {
-    try {
-      const store = await storage.getStore(req.user!.storeId!);
-      if (!store || (store as any).storeType !== 'tajerdrop_seller') {
+  const requireTajerDropSeller = (req: any, res: any, next: any) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+    // Allow super-admin to preview
+    if (req.user!.isSuperAdmin) return next();
+    if (!req.user!.storeId) return res.status(403).json({ message: "Réservé aux comptes Seller TajerDrop." });
+    // Async check — fetch store type
+    storage.getStore(req.user!.storeId).then((store: any) => {
+      if (!store || store.storeType !== 'tajerdrop_seller') {
         return res.status(403).json({ message: "Réservé aux comptes Seller TajerDrop." });
       }
-      const prods = await storage.getMarketplaceProducts();
+      next();
+    }).catch(() => res.status(500).json({ message: "Erreur serveur" }));
+  };
+
+  /** GET /api/marketplace/products — catalogue complet pour le Seller.
+   *  Inclut catégorie, description, variantes, frais par produit. */
+  app.get("/api/marketplace/products", requireTajerDropSeller, async (req: any, res: any) => {
+    try {
+      const prods = await storage.getMarketplaceProductsFull();
       res.json(prods.map((p: any) => ({
-        id: p.id,
-        name: p.name,
-        imageUrl: p.imageUrl,
-        suggestedPrice: p.sellingPrice,        // prix de vente suggéré (centimes)
-        productCost: p.costPrice,              // coût produit (centimes)
-        deliveryFee: TAJERDROP_DELIVERY_FEE,   // 35 DH
-        packagingFee: TAJERDROP_PACKAGING_FEE, // 6 DH
+        id:             p.id,
+        name:           p.name,
+        description:    p.description || null,
+        imageUrl:       p.imageUrl,
+        images:         (p.settings as any)?.images || [],
+        category:       p.marketplaceCategory || null,
+        suggestedPrice: p.sellingPrice,
+        productCost:    p.costPrice,
+        deliveryFee:    p.marketplaceDeliveryFee  ?? TAJERDROP_DELIVERY_FEE_DEFAULT,
+        packagingFee:   p.marketplacePackagingFee ?? TAJERDROP_PACKAGING_FEE_DEFAULT,
         availableStock: p.stock,
+        hasVariants:    p.hasVariants === 1,
+        variants:       (p.variants || []).map((v: any) => ({
+          id:    v.id,
+          name:  v.name,
+          sku:   v.sku,
+          stock: v.stock,
+          costPrice:    v.costPrice,
+          sellingPrice: v.sellingPrice,
+          imageUrl:     v.imageUrl,
+        })),
       })));
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Erreur catalogue marketplace" });
+    }
+  });
+
+  /** GET /api/marketplace/products/:id — détail produit + variantes */
+  app.get("/api/marketplace/products/:id", requireTajerDropSeller, async (req: any, res: any) => {
+    try {
+      const id = Number(req.params.id);
+      const p: any = await storage.getProduct(id);
+      if (!p || !p.isMarketplaceProduct) return res.status(404).json({ message: "Produit introuvable" });
+      const variants = p.hasVariants ? await storage.getVariantsByProduct(id) : [];
+      res.json({
+        id: p.id, name: p.name, description: p.description, imageUrl: p.imageUrl,
+        images: (p.settings as any)?.images || [],
+        category: p.marketplaceCategory,
+        suggestedPrice: p.sellingPrice, productCost: p.costPrice,
+        deliveryFee:  p.marketplaceDeliveryFee  ?? TAJERDROP_DELIVERY_FEE_DEFAULT,
+        packagingFee: p.marketplacePackagingFee ?? TAJERDROP_PACKAGING_FEE_DEFAULT,
+        availableStock: p.stock, hasVariants: p.hasVariants === 1, variants,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erreur produit" });
+    }
+  });
+
+  /** GET /api/marketplace/stats — statistiques du Seller connecté */
+  app.get("/api/marketplace/stats", requireTajerDropSeller, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const total    = allOrders.length;
+      const confirmed = allOrders.filter((o: any) =>
+        ['confirme', 'Attente De Ramassage', 'expédié', 'delivered', 'livré'].some(s =>
+          (o.status || '').toLowerCase().includes(s.toLowerCase())
+        )
+      ).length;
+      const delivered = allOrders.filter((o: any) =>
+        ['delivered', 'livré', 'Livré'].some(s => (o.status || '').includes(s))
+      ).length;
+      const refused = allOrders.filter((o: any) =>
+        ['refused', 'refusé', 'Refusé', 'annulé'].some(s => (o.status || '').toLowerCase().includes(s.toLowerCase()))
+      ).length;
+      res.json({
+        totalLeads: total,
+        confirmed, delivered, refused,
+        confirmationRate: total > 0 ? Math.round((confirmed / total) * 100) : 0,
+        deliveryRate:     confirmed > 0 ? Math.round((delivered / confirmed) * 100) : 0,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erreur stats" });
     }
   });
 
@@ -14859,6 +14929,110 @@ function ensureHeaders(sheet) {
       res.json({ success: true });
     } catch (err: any) {
       console.error("[admin/tajerdrop/reject] Error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── Admin: Marketplace product CRUD ──────────────────────────────────────
+  app.get("/api/admin/marketplace/products", requireSuperAdmin, async (_req, res) => {
+    try {
+      const prods = await storage.getMarketplaceProductsAdmin();
+      res.json(prods);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/admin/marketplace/products", requireSuperAdmin, async (req: any, res) => {
+    try {
+      const {
+        name, description, imageUrl, images, category,
+        costPrice, sellingPrice, deliveryFee, packagingFee,
+        stock, hasVariants, active, variants, storeId: ownerStoreId,
+      } = req.body;
+      if (!name) return res.status(400).json({ message: "name obligatoire" });
+      const adminStoreId = ownerStoreId || req.user!.storeId!;
+      const sku = `MP-${Date.now()}`;
+      const product = await storage.createProduct({
+        storeId: adminStoreId,
+        name: String(name).trim(),
+        sku,
+        description: description || null,
+        imageUrl: imageUrl || null,
+        costPrice:    Number(costPrice)    || 0,
+        sellingPrice: Number(sellingPrice) || 0,
+        stock:        Number(stock)        || 0,
+        hasVariants:  hasVariants ? 1 : 0,
+        isMarketplaceProduct: true,
+        marketplaceOwnerStoreId: adminStoreId,
+        marketplaceCategory:    category || null,
+        marketplaceDeliveryFee:  deliveryFee  != null ? Number(deliveryFee)  : null,
+        marketplacePackagingFee: packagingFee != null ? Number(packagingFee) : null,
+        marketplaceActive: active !== false,
+        settings: images?.length ? { images } : null,
+      } as any);
+      // Create variants if provided
+      if (hasVariants && Array.isArray(variants) && variants.length > 0) {
+        for (const v of variants) {
+          await db.insert(productVariants).values({
+            productId: product.id,
+            storeId: adminStoreId,
+            name: String(v.name || '').trim() || 'Variante',
+            sku: v.sku || `${sku}-var-${Date.now()}`,
+            costPrice:    Number(v.costPrice)    || 0,
+            sellingPrice: Number(v.sellingPrice) || 0,
+            stock:        Number(v.stock)        || 0,
+            imageUrl: v.imageUrl || null,
+          });
+        }
+      }
+      res.status(201).json(product);
+    } catch (err: any) {
+      console.error("[admin/marketplace/products POST]", err.message);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.put("/api/admin/marketplace/products/:id", requireSuperAdmin, async (req: any, res) => {
+    try {
+      const id = Number(req.params.id);
+      const {
+        name, description, imageUrl, images, category,
+        costPrice, sellingPrice, deliveryFee, packagingFee,
+        stock, active,
+      } = req.body;
+      const existing: any = await storage.getProduct(id);
+      if (!existing || !existing.isMarketplaceProduct) return res.status(404).json({ message: "Produit introuvable" });
+
+      const updated = await storage.updateProduct(id, {
+        ...(name        != null && { name: String(name).trim() }),
+        ...(description != null && { description }),
+        ...(imageUrl    != null && { imageUrl }),
+        ...(costPrice   != null && { costPrice:    Number(costPrice)    }),
+        ...(sellingPrice!= null && { sellingPrice: Number(sellingPrice) }),
+        ...(stock       != null && { stock:        Number(stock)        }),
+        ...(category    != null && { marketplaceCategory: category } as any),
+        ...(deliveryFee != null && { marketplaceDeliveryFee:  Number(deliveryFee)  } as any),
+        ...(packagingFee!= null && { marketplacePackagingFee: Number(packagingFee) } as any),
+        ...(active      != null && { marketplaceActive: Boolean(active) } as any),
+        ...(images      != null && { settings: { ...((existing.settings as any) || {}), images } }),
+      } as any);
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[admin/marketplace/products PUT]", err.message);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/admin/marketplace/products/:id", requireSuperAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const existing: any = await storage.getProduct(id);
+      if (!existing || !existing.isMarketplaceProduct) return res.status(404).json({ message: "Produit introuvable" });
+      // Soft-delete via archivedAt
+      await storage.updateProduct(id, { archivedAt: new Date() } as any);
+      res.json({ success: true });
+    } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
   });

@@ -107,6 +107,10 @@ export const products = pgTable("products", {
   // réellement le produit/stock (nullable — rempli seulement pour marketplace).
   isMarketplaceProduct: boolean("is_marketplace_product").default(false),
   marketplaceOwnerStoreId: integer("marketplace_owner_store_id").references(() => stores.id),
+  marketplaceCategory: text("marketplace_category"),
+  marketplaceDeliveryFee: integer("marketplace_delivery_fee"),   // centimes; NULL → platform default 3500
+  marketplacePackagingFee: integer("marketplace_packaging_fee"), // centimes; NULL → platform default 600
+  marketplaceActive: boolean("marketplace_active").default(true),
   settings: jsonb("settings"),
   createdAt: timestamp("created_at").defaultNow(),
   archivedAt: timestamp("archived_at"),
