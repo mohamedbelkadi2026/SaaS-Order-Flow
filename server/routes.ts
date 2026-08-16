@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -15561,6 +15561,26 @@ function ensureHeaders(sheet) {
             source: "synced",
             count: dbCities.length,
           });
+        }
+
+        // ── 1b. Sendit fallback: read from sendit_price_ref (seeded from Excel) ──
+        // sendit_districts is per-store and only populated after an API sync.
+        // sendit_price_ref is a global table (501 villes) always available.
+        if (provider === 'sendit') {
+          const priceRefRows = await db
+            .select({ name: senditPriceRef.name })
+            .from(senditPriceRef)
+            .orderBy(senditPriceRef.name);
+          if (priceRefRows.length > 0) {
+            const cities = priceRefRows.map(r => r.name);
+            return res.json({
+              provider,
+              cities,
+              isCarrierSpecific: true,
+              source: "excel",
+              count: cities.length,
+            });
+          }
         }
       } else {
         // No provider given — try to find the default active carrier account
