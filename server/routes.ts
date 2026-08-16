@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -4127,6 +4127,26 @@ export async function registerRoutes(
         await storage.upsertVitipsCities(storeId, vitipsMappings);
         console.log(`[VITIPS-CITIES-SYNC] ✅ Saved ${vitipsCityNames.length} cities (${vitipsMappings.length} with abbr) for account #${accountId}`);
         return res.json({ count: vitipsCityNames.length, cities: vitipsCityNames, syncedAt: new Date().toISOString() });
+      } else if (carrierKey === "sendit") {
+        // ── Sendit district sync ────────────────────────────────────────────────
+        // Uses token-based auth (POST /login); api_key = public_key, api_secret = secret_key
+        const publicKey = sanitize(acct.apiKey);
+        const secretKey = sanitize((acct as any).apiSecret || "");
+        if (!publicKey || !secretKey) {
+          return res.status(400).json({ message: "Public Key et Secret Key requis pour synchroniser les districts Sendit." });
+        }
+        const result = await syncSenditDistricts(storeId, publicKey, secretKey, accountId);
+        if (result.error) {
+          return res.status(502).json({ message: result.error });
+        }
+        // Refresh the generic carrier_cities count so the card displays the right number
+        const senditCityRows = await db.select({ name: senditDistricts.name })
+          .from(senditDistricts)
+          .where(eq(senditDistricts.storeId, storeId));
+        const senditCityNames = senditCityRows.map(r => r.name);
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, senditCityNames);
+        console.log(`[Sendit-SyncCities] ✅ ${result.count} districts synced for account #${accountId}`);
+        return res.json({ count: result.count, cities: senditCityNames, syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }

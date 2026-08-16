@@ -1,0 +1,26 @@
+# Replit Prompt — Fix : "Synchroniser les villes" échoue pour Sendit alors que l'API le supporte pleinement
+
+## Constat
+Cliquer sur "Synchroniser les villes" pour la connexion Sendit renvoie : "422: Synchronisation des villes non supportée pour sendit".
+
+Contrairement à Waselex (qui n'a aucun endpoint de liste de villes en direct, seulement un fichier Excel statique), Sendit A un vrai endpoint API pour ça, déjà documenté dans le prompt d'intégration précédent :
+```
+GET /districts (paginé, avec page et querystring)
+GET /districts/pickup-cities (villes de ramassage)
+```
+Donc cette synchronisation DOIT être implémentée comme pour les autres transporteurs déjà fonctionnels (Ozon Express 628 villes, Cathedis 520 villes, etc. — visibles sur la même page, donc le mécanisme générique de sync existe déjà et marche pour d'autres providers).
+
+## Fix demandé
+
+1. Trouve où le bouton générique "Synchroniser les villes" est branché côté backend (probablement un switch/if par providerKey qui gère chaque transporteur) — le cas 'sendit' n'a pas été implémenté ou renvoie l'erreur 422 par défaut faute d'implémentation.
+2. Implémente la synchronisation pour Sendit :
+   - Appeler GET /districts avec le token d'authentification (Bearer, obtenu via /login comme déjà fait pour la création de commandes).
+   - Paginer sur tous les résultats (utiliser last_page/next_page_url retournés par l'API jusqu'à épuisement).
+   - Upsert chaque ville dans la table sendit_districts déjà créée lors de l'intégration précédente (id externe, name, ville, arabic_name, price, delais, pickup_district).
+3. Une fois fait, le bouton doit se comporter comme pour Ozon Express/Cathedis : afficher le nombre de villes synchronisées (ex: "X villes") sur la carte du transporteur.
+
+## Testing checklist
+1. Cliquer sur "Synchroniser les villes" pour Sendit → succès, plus d'erreur 422.
+2. La carte Sendit affiche le bon nombre total de villes après synchronisation.
+3. Vérifier qu'une ville synchronisée est bien utilisable lors de la création d'une commande de test vers Sendit (résolution correcte vers district_id).
+4. Relancer une deuxième synchronisation → pas de doublons créés (upsert, pas insert brut).

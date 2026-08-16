@@ -2261,21 +2261,6 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         <ShieldCheck className="w-3.5 h-3.5 mr-1" /> Préférences
                       </Button>
                     )}
-                    {providerId === "sendit" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="border-blue-200 text-blue-700 hover:bg-blue-50 font-semibold"
-                        onClick={handleSenditDistrictsSync}
-                        disabled={senditDistrictsSyncPending}
-                        data-testid={`button-sendit-sync-districts-${acct.id}`}
-                      >
-                        {senditDistrictsSyncPending
-                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
-                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
-                        Synchroniser les villes
-                      </Button>
-                    )}
                     {providerId === "ameex" && (
                       <Button
                         size="sm"
