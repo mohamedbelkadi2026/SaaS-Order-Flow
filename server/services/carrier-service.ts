@@ -16,8 +16,8 @@
 
 import axios, { AxiosError } from "axios";
 import https from "https";
-import { db } from "../db";
-import { orderItems, vitipsCities, senditDistricts } from "@shared/schema";
+import { db, pool } from "../db";
+import { orderItems, vitipsCities, senditDistricts, senditPriceRef } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 
 // ── SSL agent — bypasses self-signed / expired certs (common in .ma APIs) ────
@@ -3560,6 +3560,30 @@ export async function resolveSenditDistrict(
 }
 
 /**
+ * Enrichit les lignes sendit_districts d'un store avec les données tarifaires
+ * de sendit_price_ref (table globale seedée depuis le fichier Excel officiel).
+ * Appelé automatiquement à la fin de syncSenditDistricts.
+ */
+async function applySenditPriceEnrichment(storeId: number): Promise<number> {
+  const result = await pool.query(
+    `UPDATE sendit_districts sd
+     SET price      = spr.price,
+         delais     = spr.delais,
+         refus_fee  = spr.refus_fee,
+         cancel_fee = spr.cancel_fee
+     FROM sendit_price_ref spr
+     WHERE sd.store_id = $1
+       AND sd.name_norm = spr.name_norm`,
+    [storeId],
+  );
+  const count = (result as any).rowCount ?? 0;
+  if (count > 0) {
+    console.log(`[SENDIT-SYNC] 💰 ${count} district(s) enriched with Excel pricing for store #${storeId}`);
+  }
+  return count;
+}
+
+/**
  * Synchronise les districts Sendit vers la table sendit_districts.
  * GET /districts?page=N (pagination) jusqu'à last_page.
  * Upsert : on vide d'abord les données du store, puis on réinsère.
@@ -3624,6 +3648,10 @@ export async function syncSenditDistricts(
     await db.insert(senditDistricts).values(rows.slice(i, i + 200));
   }
   console.log(`[SENDIT-SYNC] ✅ ${rows.length} districts enregistrés pour store #${storeId}`);
+
+  // Enrich inserted rows with pricing from the Excel reference table
+  await applySenditPriceEnrichment(storeId);
+
   return { count: rows.length };
 }
 

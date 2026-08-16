@@ -1,0 +1,33 @@
+# Replit Prompt — Importer les villes Sendit depuis le fichier Excel fourni (avec prix + délais + frais refus/annulation)
+
+## Contexte
+En complément (ou remplacement, si plus complet) de la synchronisation via GET /districts déjà demandée, voici un fichier Excel officiel avec les tarifs complets par ville : Villes_Sendit_Prix_Delais.xlsx (504 lignes).
+
+Colonnes du fichier :
+| Ville | Prix (DH) | Délais de livraison | Frais de refus | Frais d'annulation |
+|---|---|---|---|---|
+| Achakkar | 45 | 24h - 48h | 0 DH | 0 DH |
+| Afourar | 39 | 48h - 96h | 0 DH | 0 DH |
+| Agadir | 35 | 24h - 48h | 0 DH | 0 DH |
+| ... | | | | |
+
+## Ce qu'il faut faire
+
+1. Étendre la table `sendit_districts` (créée lors de l'intégration précédente) pour inclure, en plus des champs déjà prévus (id externe via GET /districts, name), deux nouvelles colonnes : `refus_fee` (decimal) et `cancel_fee` (decimal) — le prix et le délais existent déjà dans le schéma prévu (price, delais).
+
+2. Écrire un script d'import (`scripts/import-sendit-cities-excel.ts`, sur le modèle des scripts d'import déjà existants dans `scripts/`) qui lit ce fichier Excel (utiliser une lib déjà présente dans le projet si `xlsx`/`exceljs` est déjà une dépendance, sinon l'ajouter) et upsert chaque ligne dans `sendit_districts` :
+   - `name` = colonne "Ville"
+   - `price` = colonne "Prix (DH)"
+   - `delais` = colonne "Délais de livraison"
+   - `refus_fee` = colonne "Frais de refus" (parser le nombre, retirer " DH")
+   - `cancel_fee` = colonne "Frais d'annulation" (idem)
+
+3. Faire correspondre chaque ligne avec l'`id` externe Sendit (`district_id`) si possible, en croisant avec les résultats de `GET /districts` (matching par nom normalisé) — sinon, si le fichier Excel ne suffit pas à lui seul pour obtenir un `district_id` valide (nécessaire pour créer une commande), garder GET /districts comme SOURCE DE VÉRITÉ pour l'`id`, et utiliser ce fichier Excel uniquement pour enrichir les tarifs/délais/frais associés à chaque ville déjà synchronisée. Clarifier ce point avec moi si le matching pose problème (noms différents entre le fichier et l'API, ex: "Afsou ( nador )" pourrait ne pas matcher exactement le nom retourné par l'API).
+
+4. Une fois l'import fait, vérifier que "Agadir" (et les autres villes du fichier) sont bien présentes et cohérentes avec le prix affiché dans le fichier (35 DH pour Agadir) dans la table.
+
+## Testing checklist
+1. Lancer le script d'import → confirmer le nombre de lignes importées (proche de 504, moins les éventuels doublons/erreurs).
+2. Vérifier "Agadir" en base : price = 35, delais = "24h - 48h".
+3. Recherche "Agadir" dans le formulaire de commande (une fois le bug de recherche de la Partie précédente corrigé) → apparaît avec les bonnes infos.
+4. Vérifier qu'une commande de test vers une ville de ce fichier utilise bien le bon `district_id` pour l'appel API réel à Sendit (pas juste des données d'affichage déconnectées du vrai ID utilisé à la création).

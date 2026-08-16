@@ -330,9 +330,26 @@ export const senditDistricts = pgTable("sendit_districts", {
   name:       text("name").notNull(),           // display name (e.g. "Casablanca")
   nameNorm:   text("name_norm").notNull(),      // lowercase + accent-stripped for fuzzy match
   hub:        text("hub"),                      // hub/region if available
+  price:      integer("price"),                 // centimes (DH × 100); from Excel
+  delais:     text("delais"),                   // e.g. "24h - 48h"
+  refusFee:   integer("refus_fee"),             // centimes
+  cancelFee:  integer("cancel_fee"),            // centimes
   createdAt:  timestamp("created_at").defaultNow(),
 });
 export type SenditDistrict = typeof senditDistricts.$inferSelect;
+
+// Global Sendit price reference — seeded from official Excel (no store_id).
+// Used to enrich sendit_districts rows after each API sync.
+export const senditPriceRef = pgTable("sendit_price_ref", {
+  id:         serial("id").primaryKey(),
+  name:       text("name").notNull(),
+  nameNorm:   text("name_norm").notNull(),
+  price:      integer("price"),      // centimes
+  delais:     text("delais"),
+  refusFee:   integer("refus_fee"),  // centimes
+  cancelFee:  integer("cancel_fee"), // centimes
+});
+export type SenditPriceRef = typeof senditPriceRef.$inferSelect;
 
 // ─── Waselex City referential — global (1480 villes, city_id numérique) ──────
 // Contrairement aux autres transporteurs, Waselex fournit un référentiel FIXE
