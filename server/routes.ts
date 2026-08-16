@@ -15737,9 +15737,26 @@ function ensureHeaders(sheet) {
                 }
               })();
             }
-            const cities = dbCities.length > 0
-              ? dbCities
-              : getDefaultCitiesForProvider(acct.carrierName);
+            let cities: string[];
+            let source: string;
+            if (dbCities.length > 0) {
+              cities = dbCities;
+              source = "synced";
+            } else if (acct.carrierName.toLowerCase() === 'sendit') {
+              // Sendit fallback: use sendit_price_ref seeded from the official Excel
+              // (sendit_districts is per-store and requires an API sync first)
+              const priceRefRows = await db
+                .select({ name: senditPriceRef.name })
+                .from(senditPriceRef)
+                .orderBy(senditPriceRef.name);
+              cities = priceRefRows.length > 0
+                ? priceRefRows.map(r => r.name)
+                : getDefaultCitiesForProvider(acct.carrierName);
+              source = priceRefRows.length > 0 ? "excel" : "default";
+            } else {
+              cities = getDefaultCitiesForProvider(acct.carrierName);
+              source = "default";
+            }
             const logo = CARRIER_LOGOS_SERVER[acct.carrierName.toLowerCase()] ?? null;
             return {
               id: acct.id,
@@ -15750,7 +15767,7 @@ function ensureHeaders(sheet) {
               logo,
               deliveryFee: (acct as any).deliveryFee || 0,
               deliveryFeeDH: (((acct as any).deliveryFee || 0) / 100).toFixed(2),
-              source: dbCities.length > 0 ? "synced" : "default",
+              source,
               cityCount: cities.length,
             };
           })
