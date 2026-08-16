@@ -1,0 +1,118 @@
+# Replit Prompt — Intégration complète du transporteur Sendit (API + Webhook push, prêt à exécuter)
+
+## Objectif
+Ajouter Sendit comme nouveau transporteur, pleinement fonctionnel : authentification par token, création de colis, résolution des villes, ET réception en temps réel des mises à jour de statut via webhook (Sendit pousse les événements, contrairement à Waselex qui nécessite du polling — ici c'est plus simple et plus rapide). Suivre le pattern déjà utilisé pour les transporteurs existants (Ameex, Vitipsexpress, Ozonexpress, Waselex) dans server/services/carrier-service.ts.
+
+Le logo Sendit est fourni séparément (logo_sendit.png) — à utiliser comme icône du transporteur partout où les logos des autres apparaissent déjà.
+
+---
+
+## 1. Authentification
+
+- URL de base : https://app.sendit.ma/api/v1/
+- Connexion : POST /login avec body { "public_key": "...", "secret_key": "..." } → réponse { success, message, data: { token, name } }
+- Toutes les requêtes suivantes doivent inclure le header : Authorization: Bearer {token}
+- Le token n'a pas de durée d'expiration documentée précisément — gérer un cache de token par store (comme pour les autres providers) et re-login automatiquement en cas de réponse 401.
+- Limite : 1000 requêtes/heure — prévoir un compteur ou un throttling basique si le volume de commandes est élevé, avec log d'avertissement si on approche la limite.
+- Stocker public_key + secret_key par store dans carrier_accounts (comme pour les autres transporteurs), avec deux champs dédiés dans l'UI de connexion.
+
+## 2. Villes (districts)
+
+- GET /districts avec pagination (page) et recherche (querystring). Paramètre optionnel pickup-district (id de la ville de ramassage, défaut Casablanca = 46) — les frais et délais varient selon la ville de ramassage.
+- GET /districts/pickup-cities pour la liste des villes de ramassage disponibles.
+- Créer une table sendit_districts (même structure que vitips_cities/ameex_cities) et un script de seed qui importe la liste complète en paginant sur GET /districts (per_page selon la pagination retournée, boucler jusqu'à last_page).
+- Résolution ville → district_id au moment de la création d'une commande : matcher le nom de ville normalisé contre sendit_districts.name/ville, fallback sur correspondance partielle si pas de match exact.
+
+## 3. Création de colis — POST /deliveries
+
+### Mapping des champs (commande interne → Sendit)
+
+| Champ interne | Champ Sendit | Notes |
+|---|---|---|
+| ville de ramassage (config store, défaut Casablanca) | pickup_district_id | optionnel selon config par défaut |
+| ville résolue via sendit_districts | district_id | obligatoire |
+| customerName | name | |
+| montant COD total | amount | |
+| customerAddress | address | |
+| customerPhone | phone | |
+| notes internes | comment | optionnel |
+| orderNumber | reference | pour le lien retour |
+| — | allow_open | mapper si l'app a un équivalent "colis ouvrable" (1/0) |
+| — | allow_try | 1 par défaut (tentative de livraison), à confirmer |
+| — | products_from_stock | 0 par défaut sauf si on utilise la gestion de stock Sendit (voir point 6, hors scope initial) |
+| rawProductName / nom produit + variante | products | format à vérifier — dans l'exemple c'est une string, probablement "code:qty" comme pour /movements/in, ou une liste simple selon si products_from_stock=1. Si products_from_stock=0, envoyer le nom du produit en texte libre si le champ l'accepte, sinon laisser vide et mettre le détail produit uniquement dans "comment"/"reference" — à tester avec une commande réelle pour confirmer le format exact accepté quand products_from_stock=0. |
+| — | packaging_id | optionnel, laisser vide sauf si on gère les emballages Sendit (hors scope initial) |
+| — | option_exchange | 0 par défaut |
+
+### Réponse succès (200)
+Extraire `data.code` comme trackingNumber, `data.fee` comme frais de livraison, `data.labelUrl` comme lien étiquette d'expédition (à afficher/imprimer côté app, comme c'est probablement déjà fait pour d'autres transporteurs).
+
+### Erreurs spécifiques à gérer
+| Code | Signification |
+|---|---|
+| 250 | Champ produits incorrect — vérifier le format envoyé |
+| 251 | Produits référencés n'existent pas (si products_from_stock=1) |
+| 252 | Quantité insuffisante en stock Sendit (si products_from_stock=1) |
+| 403 | Non autorisé |
+| 422 | Données invalides — afficher le détail |
+| 500 | Erreur serveur Sendit |
+
+## 4. Suivi des statuts — Webhook PUSH (pas de polling nécessaire)
+
+C'est la grande différence avec Waselex/Vitips : Sendit envoie une requête POST vers notre URL dès qu'un événement se produit. Créer un nouvel endpoint, sur le modèle des webhooks YouCan/Shopify déjà existants (protection par clé dans l'URL comme /api/webhooks/youcan/order/:webhookKey) :
+
+```
+POST /api/webhooks/sendit/:webhookKey
+```
+
+### Vérification de signature (obligatoire, sécurité)
+Chaque requête contient un header `X-Sendit-Signature`, calculé en HMAC-SHA256 sur le corps brut (raw body, non parsé) de la requête, avec la clé secrète API (secret_key) comme clé de signature. Vérifier cette signature AVANT de traiter la requête (comparer avec crypto.createHmac('sha256', secretKey).update(rawBody).digest('hex') ou format équivalent — à confirmer le format exact hex/base64 en testant, documenté comme HMAC-SHA256 mais le guide ne précise pas l'encodage, donc prévoir un log en cas de mismatch pour ajuster si besoin). Rejeter (401) toute requête dont la signature ne correspond pas, comme déjà fait pour les webhooks YouCan (vérification de signature déjà présente dans le code, réutiliser le même pattern si possible pour la cohérence).
+
+### Payload reçu
+```json
+{
+  "event": "delivery.status.update",
+  "code": "DHF420101C",
+  "oldStatus": "UNREACHABLE",
+  "newStatus": "POSTPONED",
+  "lastActionAt": "2025-06-11 16:05:05",
+  "message": "Programmé par le client",
+  "proofImage": "https://app.sendit.ma/storage/deliveries/June2025/xxx.jpg",
+  "deliverBy": "2025-06-12",
+  "counterUnreachable": 1
+}
+```
+Utiliser `code` pour retrouver la commande interne correspondante (trackingNumber stocké à la création), et `newStatus` pour mettre à jour le statut interne.
+
+### Mapping des statuts Sendit → statuts internes
+
+| Statut Sendit | Statut interne |
+|---|---|
+| PENDING, TO_PREPARE | confirme |
+| NEW_DESTINATION | confirme (adresse en cours de correction) |
+| TO_PICKUP, PICKEDUP, WAREHOUSE | in_progress |
+| TRANSIT, DELIVERING | transit |
+| DISTRIBUTED | transit |
+| DELIVERED | delivered |
+| UNREACHABLE | unreachable |
+| POSTPONED | confirme_reporte |
+| CANCELED | cancelled |
+| REJECTED | refused |
+
+Utiliser aussi `message` (ex: "Programmé par le client") et `proofImage` s'ils existent déjà comme champs affichés pour d'autres transporteurs (note/commentaire de livraison, preuve de livraison) — sinon les stocker au minimum pour affichage futur, ne pas les perdre.
+
+Écrire une fonction `mapSenditStatus(status: string): string | null` sur le modèle de `mapVitipsStatus()`.
+
+## 5. UI
+
+1. Ajouter Sendit dans la liste des transporteurs disponibles à connecter, avec le logo fourni.
+2. Champs de connexion : public_key + secret_key (les deux nécessaires pour le login), avec bouton de test de connexion (appeler /login pour valider avant de sauvegarder).
+3. Lors de la connexion réussie, appeler automatiquement la création du webhook côté Sendit si leur API le permet (pas vu d'endpoint POST pour créer un webhook via API dans cette doc — la création se fait manuellement dans leur interface selon le guide fourni). Donc : afficher clairement à l'utilisateur l'URL de webhook à copier-coller manuellement dans le dashboard Sendit (Menu API → Intégration Webhook → Créer un webhook), avec l'URL déjà générée prête à copier (`https://www.tajergrow.com/api/webhooks/sendit/{webhookKey}`).
+
+## Testing checklist
+1. Login avec public_key/secret_key de test → token obtenu et mis en cache.
+2. Créer une commande de test → colis créé côté Sendit, trackingNumber + frais + labelUrl bien stockés côté app.
+3. Configurer manuellement le webhook dans l'interface Sendit (Menu API) avec l'URL générée → simuler ou attendre un changement de statut réel → vérifier que le webhook arrive, que la signature est validée, et que le statut interne se met à jour correctement.
+4. Tester une signature invalide (falsifiée) → doit être rejetée avec 401, pas de traitement.
+5. Vérifier la résolution d'au moins 5 villes différentes vers le bon district_id.
+6. Vérifier le rendu du logo Sendit dans l'UI.

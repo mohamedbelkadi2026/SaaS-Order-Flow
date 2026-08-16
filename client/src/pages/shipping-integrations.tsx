@@ -32,7 +32,7 @@ const PROVIDERS = [
   { id: "digylog",        name: "Digylog",          cities: 581, logo: "/carriers/digylog.svg"  },
   { id: "onessta",        name: "Onessta",           cities: 378, logo: "/carriers/onessta.svg"  },
   { id: "ozonexpress",    name: "Ozon Express",      cities: 628, logo: "/carriers/ozonexpress.png" },
-  { id: "sendit",         name: "Sendit",            cities: 500, logo: "/carriers/sendit.svg"   },
+  { id: "sendit",         name: "Sendit",            cities: 500, logo: "/carriers/sendit.png"   },
   { id: "ameex",          name: "Ameex",             cities: 420, logo: "/carriers/ameex.svg"    },
   { id: "cathedis",       name: "Cathedis",          cities: 520, logo: "/carriers/cathidis.svg" },
   { id: "speedex",        name: "Speedex",           cities: 439, logo: "/carriers/speedx.png"   },
@@ -208,6 +208,31 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [ameexApiId,     setAmeexApiId]     = useState<string>("");
   const [showAmeexKey,   setShowAmeexKey]   = useState(false);
 
+  // ── Sendit-specific fields ────────────────────────────────────────────────
+  const isSendit = providerId === "sendit";
+  const [senditSecretKey,  setSenditSecretKey]  = useState<string>("");
+  const [showSenditPub,    setShowSenditPub]    = useState(false);
+  const [showSenditSec,    setShowSenditSec]    = useState(false);
+  const [senditTestResult, setSenditTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [senditTesting,    setSenditTesting]    = useState(false);
+
+  const handleSenditTest = async () => {
+    setSenditTestResult(null);
+    setSenditTesting(true);
+    try {
+      const res = await apiRequest("POST", "/api/shipping/sendit/test", {
+        publicKey: apiKey.trim(),
+        secretKey: senditSecretKey.trim(),
+      });
+      const data = await res.json();
+      setSenditTestResult({ ok: data.ok ?? res.ok, message: data.message || (res.ok ? "OK" : "Erreur") });
+    } catch {
+      setSenditTestResult({ ok: false, message: "Erreur réseau" });
+    } finally {
+      setSenditTesting(false);
+    }
+  };
+
   // ── Express Coursier-specific fields ─────────────────────────────────────
   const isExpressCoursier = providerId === "expresscoursier";
   const [ecStoreId, setEcStoreId] = useState<string>(
@@ -351,12 +376,16 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   // Permanent webhook URL — no token needed for Ameex (Ameex posts to a plain URL;
   // safety comes from CODE-based order matching on the backend).
   const webhookUrl = resolvedStoreId
-    ? (providerId === "expresscoursier"
-        ? `${domain}/api/webhooks/shipping/expresscoursier/${resolvedStoreId}`
-        : `${domain}/api/webhooks/carrier/${resolvedStoreId}/${providerId}`)
-    : (providerId === "expresscoursier"
-        ? `${domain}/api/webhooks/shipping/expresscoursier/{STORE_ID}`
-        : `${domain}/api/webhooks/carrier/{STORE_ID}/${providerId}`);
+    ? (providerId === "sendit"
+        ? `${domain}/api/webhooks/sendit/${resolvedStoreId}`
+        : providerId === "expresscoursier"
+          ? `${domain}/api/webhooks/shipping/expresscoursier/${resolvedStoreId}`
+          : `${domain}/api/webhooks/carrier/${resolvedStoreId}/${providerId}`)
+    : (providerId === "sendit"
+        ? `${domain}/api/webhooks/sendit/{STORE_ID}`
+        : providerId === "expresscoursier"
+          ? `${domain}/api/webhooks/shipping/expresscoursier/{STORE_ID}`
+          : `${domain}/api/webhooks/carrier/{STORE_ID}/${providerId}`);
 
   /* Resolve display name for the selected store */
   const selectedStore = stores.find((s: any) => s.id?.toString() === selectedStoreId);
@@ -373,9 +402,23 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           throw new Error(testData?.message || "Clé API Waselex invalide — vérifiez votre clé (format wslx_...).");
         }
       }
+      // Sendit : tester public_key + secret_key AVANT de sauvegarder
+      if (providerId === "sendit" && apiKey.trim() && senditSecretKey.trim()) {
+        const testRes = await apiRequest("POST", "/api/shipping/sendit/test", {
+          publicKey: apiKey.trim(),
+          secretKey: senditSecretKey.trim(),
+        });
+        const testData = await testRes.json().catch(() => ({}));
+        if (!testRes.ok || testData?.ok === false) {
+          throw new Error(testData?.message || "Identifiants Sendit invalides — vérifiez votre public_key et secret_key.");
+        }
+      }
       if (existingAccount) {
         const body: any = { storeName: resolvedStoreName, assignmentRule: rule };
-        if (isAmeex) {
+        if (isSendit) {
+          if (apiKey.trim())            body.apiKey    = apiKey;
+          if (senditSecretKey.trim())   body.apiSecret = senditSecretKey;
+        } else if (isAmeex) {
           if (apiKey.trim())        body.apiKey          = apiKey;
           if (ameexApiId.trim())    body.apiSecret       = ameexApiId;
           body.carrierStoreName = ameexStoreName.trim() || null;
@@ -411,7 +454,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           assignmentRule: rule,
           isDefault: rule === "default" ? 1 : 0,
         };
-        if (isAmeex) {
+        if (isSendit) {
+          payload.apiSecret = senditSecretKey.trim() || undefined;
+          payload.storeName = resolvedStoreName;
+        } else if (isAmeex) {
           payload.apiSecret       = ameexApiId.trim() || undefined;
           payload.carrierStoreName = ameexStoreName.trim() || undefined;
           payload.storeName       = resolvedStoreName;
@@ -497,6 +543,15 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     } else if (isExpressCoursier) {
       if (!existingAccount && !apiKey.trim()) {
         setSubmitError("Le Token Express Coursier est requis.");
+        return;
+      }
+    } else if (isSendit) {
+      if (!existingAccount && !apiKey.trim()) {
+        setSubmitError("La Public Key Sendit est requise.");
+        return;
+      }
+      if (!existingAccount && !senditSecretKey.trim()) {
+        setSubmitError("La Secret Key Sendit est requise.");
         return;
       }
     } else if (isAmeex) {
@@ -1255,6 +1310,80 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 </label>
               </div>
             </>
+          ) : isSendit ? (
+            <>
+              {/* Sendit: Public Key + Secret Key */}
+              <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-[11px] text-blue-800 leading-relaxed">
+                🔑 Trouvez vos clés dans votre compte Sendit → <strong>Menu API</strong>. Vous aurez besoin des deux clés pour la connexion.
+              </div>
+
+              {/* Public Key */}
+              <div className="space-y-1.5">
+                <Label htmlFor="sendit_pub_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                  Public Key <span className="text-red-500">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="sendit_pub_create"
+                    data-testid="input-sendit-public-key"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type={showSenditPub ? "text" : "password"}
+                    placeholder="Votre Sendit Public Key..."
+                    value={apiKey}
+                    onChange={e => setApiKey(e.target.value)}
+                    className={`pr-8 h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                  <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowSenditPub(v => !v)}>
+                    {showSenditPub ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Secret Key */}
+              <div className="space-y-1.5">
+                <Label htmlFor="sendit_sec_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                  Secret Key <span className="text-red-500">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="sendit_sec_create"
+                    data-testid="input-sendit-secret-key"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type={showSenditSec ? "text" : "password"}
+                    placeholder="Votre Sendit Secret Key..."
+                    value={senditSecretKey}
+                    onChange={e => setSenditSecretKey(e.target.value)}
+                    className={`pr-8 h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!senditSecretKey.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                  <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowSenditSec(v => !v)}>
+                    {showSenditSec ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Test connexion */}
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={handleSenditTest}
+                  disabled={senditTesting || !apiKey.trim() || !senditSecretKey.trim()}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 transition-colors"
+                >
+                  {senditTesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
+                  Tester la connexion Sendit
+                </button>
+                {senditTestResult && (
+                  <div className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs font-medium ${senditTestResult.ok ? "bg-green-50 border border-green-200 text-green-700" : "bg-red-50 border border-red-200 text-red-700"}`}>
+                    {senditTestResult.ok ? <Check className="w-3.5 h-3.5 mt-0.5 shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />}
+                    {senditTestResult.message}
+                  </div>
+                )}
+              </div>
+            </>
           ) : isAmeex ? (
             <>
               {/* Store Name */}
@@ -1580,16 +1709,33 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
 
           {/* ── WebHook URL (permanent) ── */}
           <div className="space-y-1.5">
-            <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2">
-              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-              <p className="text-[11px] font-semibold text-amber-800 leading-snug">
-                ⚠️ Copiez cette URL dans vos paramètres {isAmeex ? "Ameex" : "API"} pour activer le tracking en temps réel.
-              </p>
-            </div>
-            <Label className="font-semibold text-sm flex items-center gap-1.5">
-              WebHook URL
-              <span className="text-[10px] font-normal px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Permanente</span>
-            </Label>
+            {isSendit ? (
+              <>
+                <div className="flex items-center gap-2 rounded-lg bg-indigo-50 border border-indigo-300 px-3 py-2">
+                  <AlertCircle className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <p className="text-[11px] font-semibold text-indigo-800 leading-snug">
+                    📋 Copiez cette URL dans votre dashboard Sendit → <strong>Menu API → Intégration Webhook → Créer un webhook</strong>.
+                  </p>
+                </div>
+                <Label className="font-semibold text-sm flex items-center gap-1.5">
+                  Webhook Sendit URL
+                  <span className="text-[10px] font-normal px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Permanente</span>
+                </Label>
+              </>
+            ) : (
+              <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <p className="text-[11px] font-semibold text-amber-800 leading-snug">
+                  ⚠️ Copiez cette URL dans vos paramètres {isAmeex ? "Ameex" : "API"} pour activer le tracking en temps réel.
+                </p>
+              </div>
+            )}
+            {!isSendit && (
+              <Label className="font-semibold text-sm flex items-center gap-1.5">
+                WebHook URL
+                <span className="text-[10px] font-normal px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Permanente</span>
+              </Label>
+            )}
             <div className="flex items-center gap-2 p-2.5 rounded-xl border-2 border-amber-200 bg-amber-50/40 overflow-hidden">
               <code className="flex-1 text-[10px] font-mono truncate min-w-0 text-foreground">
                 {webhookUrl}
@@ -1614,7 +1760,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               </button>
             </div>
             <p className="text-[10px] text-muted-foreground leading-relaxed">
-              Cette URL est <strong>permanente</strong> — elle ne change jamais. Collez-la dans les réglages webhook {isAmeex ? "Ameex" : "de votre transporteur"}.
+              {isSendit
+                ? <>Cette URL est <strong>permanente</strong>. Dans Sendit → Menu API → Webhook, collez cette URL et sélectionnez l'événement <strong>delivery.status.update</strong>.</>
+                : <>Cette URL est <strong>permanente</strong> — elle ne change jamais. Collez-la dans les réglages webhook {isAmeex ? "Ameex" : "de votre transporteur"}.</>
+              }
             </p>
           </div>
 
@@ -1978,6 +2127,13 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     errorTitle: "Erreur de synchronisation Vitipsexpress",
   });
 
+  const senditDistrictsSyncPending = syncingProvider === "sendit-districts";
+  const handleSenditDistrictsSync = () => syncCarrier("sendit-districts", {
+    endpoint: "/api/shipping/sendit/sync-districts",
+    successTitle: "✅ Districts Sendit synchronisés",
+    errorTitle: "Erreur de synchronisation Sendit",
+  });
+
   const ecSyncPending = syncingProvider === "expresscoursier";
   const handleEcSync = () => syncCarrier("expresscoursier", {
     successTitle: "✅ Statuts Express Coursier synchronisés",
@@ -2103,6 +2259,21 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         data-testid={`button-digylog-prefs-${acct.id}`}
                       >
                         <ShieldCheck className="w-3.5 h-3.5 mr-1" /> Préférences
+                      </Button>
+                    )}
+                    {providerId === "sendit" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-blue-200 text-blue-700 hover:bg-blue-50 font-semibold"
+                        onClick={handleSenditDistrictsSync}
+                        disabled={senditDistrictsSyncPending}
+                        data-testid={`button-sendit-sync-districts-${acct.id}`}
+                      >
+                        {senditDistrictsSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser les villes
                       </Button>
                     )}
                     {providerId === "ameex" && (

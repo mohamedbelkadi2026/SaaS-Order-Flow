@@ -320,6 +320,20 @@ export const vitipsCities = pgTable("vitips_cities", {
 });
 export type VitipsCity = typeof vitipsCities.$inferSelect;
 
+// ─── Sendit District Map — name → Sendit numeric district_id ─────────────────
+// Sendit's add-parcel API requires 'district_id' (numeric). This table caches
+// the district list fetched from GET /districts. Populated by sync-districts.
+export const senditDistricts = pgTable("sendit_districts", {
+  id:         serial("id").primaryKey(),
+  storeId:    integer("store_id").notNull(),
+  externalId: text("external_id").notNull(),   // district_id from Sendit
+  name:       text("name").notNull(),           // display name (e.g. "Casablanca")
+  nameNorm:   text("name_norm").notNull(),      // lowercase + accent-stripped for fuzzy match
+  hub:        text("hub"),                      // hub/region if available
+  createdAt:  timestamp("created_at").defaultNow(),
+});
+export type SenditDistrict = typeof senditDistricts.$inferSelect;
+
 // ─── Waselex City referential — global (1480 villes, city_id numérique) ──────
 // Contrairement aux autres transporteurs, Waselex fournit un référentiel FIXE
 // (Excel officiel) — table globale, pas par store. Seedée au boot depuis

@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText } from "./services/carrier-service";
+import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -289,7 +289,7 @@ const CARRIER_LOGOS_SERVER: Record<string, string> = {
   ozoneexpress: '/carriers/ozonexpress.png',
   'ozone express': '/carriers/ozonexpress.png',
   ozon: '/carriers/ozonexpress.png',
-  sendit: '/carriers/sendit.svg',
+  sendit: '/carriers/sendit.png',
   ameex: '/carriers/ameex.svg',
   cathedis: '/carriers/cathidis.svg',
   cathidis: '/carriers/cathidis.svg',
@@ -5765,6 +5765,125 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Sendit delivery-status webhook — PUSH par Sendit à chaque changement ────
+  // URL: POST /api/webhooks/sendit/:storeId
+  // Auth: X-Sendit-Signature = HMAC-SHA256(rawBody, secret_key) hex
+  app.post("/api/webhooks/sendit/:storeId", async (req: any, res: any) => {
+    const storeIdParam = req.params.storeId;
+    const storeId = Number(storeIdParam);
+    if (!storeId || isNaN(storeId)) {
+      console.warn("[SENDIT-WEBHOOK] Invalid storeId — rejected");
+      return res.status(400).json({ message: "Invalid store ID" });
+    }
+    try {
+
+      // 2. Récupérer le compte Sendit du store (pour lire le secret_key)
+      const senditAccounts = await storage.getCarrierAccounts(storeId, "sendit");
+      const senditAccount = senditAccounts[0];
+
+      // 3. Vérifier la signature HMAC-SHA256
+      const rawBody = (req as any).webhookRawBody as Buffer | undefined;
+      const signature = (req.headers["x-sendit-signature"] as string | undefined)?.toLowerCase();
+
+      if (signature) {
+        if (!rawBody) {
+          console.warn("[SENDIT-WEBHOOK] No raw body captured — rejecting");
+          return res.status(401).json({ message: "Invalid signature" });
+        }
+        if (!senditAccount?.apiSecret) {
+          console.warn("[SENDIT-WEBHOOK] No secret_key configured — cannot verify signature");
+          return res.status(401).json({ message: "Sendit secret_key not configured" });
+        }
+        const expected = createHmac("sha256", senditAccount.apiSecret).update(rawBody).digest("hex");
+        const match = expected === signature || `sha256=${expected}` === signature;
+        if (!match) {
+          console.warn(`[SENDIT-WEBHOOK] Invalid signature — expected=${expected.slice(0, 12)}… received=${signature.slice(0, 12)}… — rejecting`);
+          return res.status(401).json({ message: "Invalid signature" });
+        }
+        console.log("[SENDIT-WEBHOOK] Signature verified OK");
+      } else {
+        console.warn("[SENDIT-WEBHOOK] No X-Sendit-Signature — proceeding (no secret configured or test ping)");
+      }
+
+      // 4. Parser le payload
+      const payload = req.body as {
+        event?: string;
+        code?: string;
+        newStatus?: string;
+        oldStatus?: string;
+        lastActionAt?: string;
+        message?: string;
+        proofImage?: string;
+        deliverBy?: string;
+        counterUnreachable?: number;
+      };
+
+      console.log(`[SENDIT-WEBHOOK] Store #${storeId} — event=${payload.event} code=${payload.code} newStatus=${payload.newStatus}`);
+
+      if (!payload.code) {
+        return res.status(400).json({ message: "Missing tracking code" });
+      }
+
+      // 5. Mapper le statut
+      const newInternalStatus = payload.newStatus ? mapSenditStatus(payload.newStatus) : null;
+
+      // 6. Trouver la commande par trackNumber
+      const trackingCode = String(payload.code);
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const order = allOrders.find((o: any) => String(o.trackNumber || '') === trackingCode);
+
+      if (!order) {
+        console.warn(`[SENDIT-WEBHOOK] No order found for tracking code "${trackingCode}" in store #${storeId}`);
+        storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'sendit',
+          action: 'webhook_received', status: 'warn',
+          message: `Tracking code "${trackingCode}" not matched to any order`,
+          payload: JSON.stringify(payload).slice(0, 1000),
+        }).catch(() => {}); // fire-and-forget — FK may fail for unknown stores (test pings)
+        return res.json({ received: true, matched: false });
+      }
+
+      // 7. Mettre à jour le statut si mappé et différent
+      const updates: Record<string, any> = {};
+      if (newInternalStatus && newInternalStatus !== order.status) {
+        updates.status = newInternalStatus;
+      }
+      // Stocker le message et la preuve de livraison si présents
+      if (payload.message) {
+        updates.comment = [
+          (order as any).comment || '',
+          `[Sendit ${payload.newStatus}] ${payload.message}`,
+        ].filter(Boolean).join('\n').slice(0, 2000);
+      }
+      if (payload.proofImage) {
+        updates.labelLink = payload.proofImage;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await storage.updateOrder(order.id, updates as any);
+        console.log(`[SENDIT-WEBHOOK] ✅ Order #${(order as any).orderNumber} — ${payload.oldStatus} → ${payload.newStatus} (internal: ${newInternalStatus})`);
+        // Notif push si livré ou refusé
+        if (['delivered', 'refused'].includes(newInternalStatus || '')) {
+          notifyStatusUpdate(storeId, order.id, newInternalStatus!).catch(() => {});
+        }
+      } else {
+        console.log(`[SENDIT-WEBHOOK] Order #${(order as any).orderNumber} — status "${newInternalStatus}" unchanged, skipping update`);
+      }
+
+      storage.createIntegrationLog({
+        storeId, integrationId: null, provider: 'sendit',
+        action: 'webhook_received', status: 'success',
+        message: `${payload.code}: ${payload.oldStatus} → ${payload.newStatus}${newInternalStatus ? ` (→ ${newInternalStatus})` : ''}`,
+        payload: JSON.stringify(payload).slice(0, 1000),
+      }).catch(() => {}); // fire-and-forget
+
+      res.json({ received: true, matched: true, status: newInternalStatus });
+    } catch (err: any) {
+      console.error("[SENDIT-WEBHOOK] Error:", err?.message, err?.stack?.split('\n')[1]);
+      res.status(500).json({ message: "Webhook processing failed" });
+    }
+  });
+
   // ─── YouCan OAuth webhook — order.create (signed with YOUCAN_CLIENT_SECRET) ──
   app.post("/api/webhooks/youcan/order/:webhookKey", async (req: any, res: any) => {
     try {
@@ -11237,6 +11356,47 @@ function ensureHeaders(sheet) {
   // ──────────────────────────────────────────────────────────────────────────
   // WASELEX ROUTES
   // ──────────────────────────────────────────────────────────────────────────
+
+  /** POST /api/shipping/sendit/test — valide public_key + secret_key Sendit avant sauvegarde */
+  app.post("/api/shipping/sendit/test", requireAuth, async (req: any, res: any) => {
+    try {
+      const publicKey = String(req.body?.publicKey || "").trim();
+      const secretKey = String(req.body?.secretKey || "").trim();
+      if (!publicKey || !secretKey) {
+        return res.status(400).json({ ok: false, message: "Public key et secret key requis." });
+      }
+      const result = await testSenditConnection(publicKey, secretKey);
+      res.status(result.ok ? 200 : 422).json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, message: err?.message || "Erreur test Sendit" });
+    }
+  });
+
+  /** POST /api/shipping/sendit/sync-districts — importe les districts Sendit pour le store */
+  app.post("/api/shipping/sendit/sync-districts", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    try {
+      const storeId   = req.user!.storeId!;
+      const accountId = req.body?.accountId ? Number(req.body.accountId) : undefined;
+      // Récupère les clés depuis le compte carrier ou depuis le body (first-connect flow)
+      let publicKey = String(req.body?.publicKey || "").trim();
+      let secretKey = String(req.body?.secretKey || "").trim();
+      if (!publicKey || !secretKey) {
+        const accounts = await storage.getCarrierAccounts(storeId, "sendit");
+        const acct = accountId ? accounts.find((a: any) => a.id === accountId) : accounts[0];
+        if (!acct) return res.status(400).json({ message: "Aucun compte Sendit configuré." });
+        publicKey = (acct as any).apiKey  || '';
+        secretKey = (acct as any).apiSecret || '';
+      }
+      if (!publicKey || !secretKey) {
+        return res.status(400).json({ message: "Public key et secret key manquants." });
+      }
+      const result = await syncSenditDistricts(storeId, publicKey, secretKey, accountId);
+      if (result.error) return res.status(422).json({ message: result.error });
+      res.json({ synced: result.count, message: `${result.count} districts Sendit importés avec succès.` });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erreur sync districts Sendit" });
+    }
+  });
 
   /** POST /api/shipping/waselex/test — valide une clé API avant sauvegarde (bouton test connexion) */
   app.post("/api/shipping/waselex/test", requireAuth, async (req: any, res: any) => {

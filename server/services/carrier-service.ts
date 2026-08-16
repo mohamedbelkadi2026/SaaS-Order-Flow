@@ -17,7 +17,7 @@
 import axios, { AxiosError } from "axios";
 import https from "https";
 import { db } from "../db";
-import { orderItems, vitipsCities } from "@shared/schema";
+import { orderItems, vitipsCities, senditDistricts } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 
 // ── SSL agent — bypasses self-signed / expired certs (common in .ma APIs) ────
@@ -1138,6 +1138,25 @@ export async function shipOrderToCarrier(
   console.log(`${"═".repeat(70)}\n`);
 
   // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
+
+  // ── Sendit: token-based auth, dedicated createSenditParcel() handler ──────
+  if (providerKey === 'sendit') {
+    const pubKey = (creds as any).apiKey || '';
+    const secKey = (creds as any).apiSecret || '';
+    const accId  = (creds as any).id ? Number((creds as any).id) : undefined;
+    const settings = (creds as any).settings || {};
+    if (!pubKey || !secKey) {
+      return { success: false, error: "Public key et secret key Sendit requis. Vérifiez vos identifiants dans Intégrations → Transporteurs.", carrierMessage: "missing credentials", httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    const { trackingNumber, deliveryFee, labelUrl, error } = await createSenditParcel(
+      input,
+      { id: accId, apiKey: pubKey, apiSecret: secKey, settings },
+    );
+    if (error) {
+      return { success: false, error, carrierMessage: error, httpStatus: 0, rawResponse: null };
+    }
+    return { success: true, trackingNumber: trackingNumber!, labelUrl: labelUrl ?? undefined, deliveryFee: deliveryFee ?? undefined };
+  }
 
   // ── Waselex: X-Api-Key header, batch body { orders: [...] }, all-or-nothing ──
   if (providerKey === 'waselex') {
@@ -3388,6 +3407,328 @@ export async function testWaselexConnection(apiKey: string): Promise<{ ok: boole
     return { ok: true, message: "Connexion Waselex validée ✅" };
   } catch (err: any) {
     return { ok: false, message: `Erreur réseau Waselex: ${err?.message || err}` };
+  }
+}
+
+// ─── Sendit ───────────────────────────────────────────────────────────────────
+// Sendit est un transporteur marocain full-webhook : il PUSH les mises à jour
+// de statut vers notre URL dès qu'un événement se produit (pas de polling).
+// Auth : POST /login → Bearer token (mis en cache par accountId, TTL 12h).
+
+export const SENDIT_API_BASE = "https://app.sendit.ma/api/v1";
+
+// Casablanca = district 46 (ville de ramassage par défaut Sendit)
+export const SENDIT_DEFAULT_PICKUP_DISTRICT_ID = 46;
+
+// Token cache — clé = accountId (carrier_accounts.id), valeur = { token, expiry }
+const SENDIT_TOKEN_CACHE = new Map<number, { token: string; expiry: number }>();
+
+/**
+ * Authentification Sendit.
+ * POST /login { public_key, secret_key } → { data: { token } }
+ * Le token n'a pas de durée d'expiration documentée — on le cache 12h et on
+ * force le relogin en cas de 401.
+ */
+export async function loginSendit(
+  publicKey: string,
+  secretKey: string,
+  accountId?: number,
+): Promise<{ token: string; error?: string }> {
+  // Cache hit
+  if (accountId !== undefined) {
+    const cached = SENDIT_TOKEN_CACHE.get(accountId);
+    if (cached && cached.expiry > Date.now()) {
+      return { token: cached.token };
+    }
+  }
+  try {
+    const resp = await axios.post(
+      `${SENDIT_API_BASE}/login`,
+      { public_key: publicKey.trim(), secret_key: secretKey.trim() },
+      { headers: { Accept: "application/json" }, timeout: 15000, httpsAgent: SSL_AGENT, validateStatus: () => true },
+    );
+    const body = resp.data;
+    console.log(`[SENDIT-LOGIN] HTTP ${resp.status}: ${JSON.stringify(body).slice(0, 200)}`);
+    if (resp.status >= 400 || !body?.data?.token) {
+      const msg = body?.message || `HTTP ${resp.status}`;
+      return { token: "", error: `Sendit login échoué: ${msg}` };
+    }
+    const token: string = body.data.token;
+    if (accountId !== undefined) {
+      SENDIT_TOKEN_CACHE.set(accountId, { token, expiry: Date.now() + 12 * 60 * 60 * 1000 });
+    }
+    return { token };
+  } catch (err: any) {
+    return { token: "", error: `Erreur réseau Sendit login: ${err?.message}` };
+  }
+}
+
+/** Invalide le cache de token Sendit pour un compte (ex: après un 401). */
+export function invalidateSenditToken(accountId: number) {
+  SENDIT_TOKEN_CACHE.delete(accountId);
+}
+
+// ── Mapping statuts Sendit → statuts internes ─────────────────────────────────
+export const SENDIT_STATUS_MAP: Record<string, string> = {
+  // Avant ramassage
+  PENDING:          'confirme',
+  TO_PREPARE:       'confirme',
+  NEW_DESTINATION:  'confirme',   // adresse en cours de correction
+  // Ramassé / en entrepôt
+  TO_PICKUP:        'in_progress',
+  PICKEDUP:         'in_progress',
+  WAREHOUSE:        'in_progress',
+  // En transit
+  TRANSIT:          'transit',
+  DELIVERING:       'transit',
+  DISTRIBUTED:      'transit',
+  // Terminal positif
+  DELIVERED:        'delivered',
+  // Injoignable
+  UNREACHABLE:      'unreachable',
+  // Reporté
+  POSTPONED:        'confirme_reporte',
+  // Terminal négatif
+  CANCELED:         'cancelled',
+  REJECTED:         'refused',
+};
+
+export function mapSenditStatus(raw: string): string | null {
+  if (!raw) return null;
+  // Exact match
+  const direct = SENDIT_STATUS_MAP[raw];
+  if (direct) return direct;
+  // Uppercase + sans accents
+  const norm = raw.toUpperCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\s\-]+/g, '_');
+  return SENDIT_STATUS_MAP[norm] ?? null;
+}
+
+/**
+ * Résolution ville → district_id Sendit.
+ * Cherche dans sendit_districts du store ; fallback sur correspondance partielle.
+ * Retourne le district_id (string) ou null si introuvable.
+ */
+export async function resolveSenditDistrict(
+  storeId: number,
+  cityName: string,
+): Promise<string | null> {
+  if (!cityName) return null;
+  const norm = cityName.toLowerCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  const rows = await db.select().from(senditDistricts).where(eq(senditDistricts.storeId, storeId));
+  if (!rows.length) return null;
+
+  // 1. Exact match (normalisé)
+  const exact = rows.find(r => r.nameNorm === norm);
+  if (exact) return exact.externalId;
+
+  // 2. Partial match — city contient le district ou vice-versa
+  const partial = rows.find(r =>
+    r.nameNorm.includes(norm) || norm.includes(r.nameNorm),
+  );
+  if (partial) {
+    console.log(`[SENDIT-CITY] Partial match: "${cityName}" → "${partial.name}" (id=${partial.externalId})`);
+    return partial.externalId;
+  }
+
+  console.warn(`[SENDIT-CITY] No match for "${cityName}" in ${rows.length} districts`);
+  return null;
+}
+
+/**
+ * Synchronise les districts Sendit vers la table sendit_districts.
+ * GET /districts?page=N (pagination) jusqu'à last_page.
+ * Upsert : on vide d'abord les données du store, puis on réinsère.
+ */
+export async function syncSenditDistricts(
+  storeId: number,
+  publicKey: string,
+  secretKey: string,
+  accountId?: number,
+): Promise<{ count: number; error?: string }> {
+  const { token, error: loginErr } = await loginSendit(publicKey, secretKey, accountId);
+  if (loginErr) return { count: 0, error: loginErr };
+
+  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+  const all: Array<{ id: number; name: string; hub?: string }> = [];
+  let page = 1;
+  let lastPage = 1;
+
+  try {
+    do {
+      const resp = await axios.get(`${SENDIT_API_BASE}/districts`, {
+        params: { page, per_page: 200 },
+        headers,
+        timeout: 20000,
+        httpsAgent: SSL_AGENT,
+        validateStatus: () => true,
+      });
+      if (resp.status === 401) {
+        if (accountId !== undefined) invalidateSenditToken(accountId);
+        return { count: 0, error: 'Token Sendit invalide (401) lors de la sync districts' };
+      }
+      if (resp.status >= 400) {
+        return { count: 0, error: `Sendit /districts HTTP ${resp.status}` };
+      }
+      const data = resp.data?.data ?? resp.data;
+      const districts = Array.isArray(data?.data) ? data.data
+        : Array.isArray(data) ? data : [];
+      lastPage = data?.last_page ?? data?.meta?.last_page ?? 1;
+      for (const d of districts) {
+        if (d?.id && d?.name) all.push({ id: Number(d.id), name: String(d.name), hub: d.hub || d.region || undefined });
+      }
+      console.log(`[SENDIT-SYNC] Page ${page}/${lastPage} — ${districts.length} districts`);
+      page++;
+    } while (page <= lastPage);
+  } catch (err: any) {
+    return { count: 0, error: `Erreur réseau sync districts Sendit: ${err?.message}` };
+  }
+
+  if (!all.length) return { count: 0, error: 'Aucun district retourné par Sendit' };
+
+  // Supprimer l'ancienne data, réinsérer
+  await db.delete(senditDistricts).where(eq(senditDistricts.storeId, storeId));
+  const rows = all.map(d => ({
+    storeId,
+    externalId: String(d.id),
+    name:       d.name,
+    nameNorm:   d.name.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''),
+    hub:        d.hub ?? null,
+  }));
+  // Batch insert par 200
+  for (let i = 0; i < rows.length; i += 200) {
+    await db.insert(senditDistricts).values(rows.slice(i, i + 200));
+  }
+  console.log(`[SENDIT-SYNC] ✅ ${rows.length} districts enregistrés pour store #${storeId}`);
+  return { count: rows.length };
+}
+
+/**
+ * Création d'un colis Sendit.
+ * POST /deliveries
+ * Retourne { trackingNumber, deliveryFee, labelUrl } en cas de succès.
+ */
+export async function createSenditParcel(
+  input: CarrierShipInput,
+  account: { id?: number; apiKey: string; apiSecret: string; settings?: any },
+): Promise<{ trackingNumber: string | null; deliveryFee: number | null; labelUrl: string | null; error?: string }> {
+  const publicKey  = (account.apiKey  || '').trim();
+  const secretKey  = (account.apiSecret || '').trim();
+  if (!publicKey || !secretKey) {
+    return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: 'Public key et secret key Sendit requis' };
+  }
+
+  // 1. Auth
+  const { token, error: loginErr } = await loginSendit(publicKey, secretKey, account.id);
+  if (loginErr) return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: loginErr };
+
+  // 2. Résoudre le district
+  const districtId = input.storeId
+    ? await resolveSenditDistrict(input.storeId, input.city)
+    : null;
+  if (!districtId) {
+    console.warn(`[SENDIT-SHIP] Ville "${input.city}" non résolue — commande bloquée`);
+    return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: `Ville "${input.city}" introuvable dans les districts Sendit. Synchronisez d'abord les villes.` };
+  }
+
+  const amountDH  = input.totalPrice > 0 ? +(input.totalPrice / 100).toFixed(2) : 0;
+  const phone     = sanitizePhone(input.phone);
+  const comment   = [input.note, input.productName].filter(Boolean).join(' | ').slice(0, 250) || undefined;
+
+  const payload: Record<string, unknown> = {
+    district_id:         Number(districtId),
+    name:                sanitizeArabicText(input.customerName),
+    amount:              amountDH,
+    address:             sanitizeArabicText(input.address || input.city),
+    phone,
+    reference:           input.orderNumber,
+    allow_open:          0,
+    allow_try:           1,
+    products_from_stock: 0,
+    option_exchange:     0,
+  };
+  if (comment) payload.comment = comment;
+  // Ville de ramassage par défaut (Casablanca = 46) — configurable via settings
+  const pickupDistrictId = account.settings?.senditPickupDistrictId ?? SENDIT_DEFAULT_PICKUP_DISTRICT_ID;
+  if (pickupDistrictId) payload.pickup_district_id = Number(pickupDistrictId);
+
+  console.log(`[SENDIT-SHIP] Order ${input.orderNumber} — payload: ${JSON.stringify(payload)}`);
+
+  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' };
+
+  const doRequest = async (tok: string) =>
+    axios.post(`${SENDIT_API_BASE}/deliveries`, payload, {
+      headers: { ...headers, Authorization: `Bearer ${tok}` },
+      timeout: 20000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+  let resp = await doRequest(token);
+
+  // Re-login si 401
+  if (resp.status === 401 && account.id !== undefined) {
+    console.warn(`[SENDIT-SHIP] 401 — re-login...`);
+    invalidateSenditToken(account.id);
+    const { token: newTok, error: relErr } = await loginSendit(publicKey, secretKey, account.id);
+    if (relErr) return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: relErr };
+    resp = await doRequest(newTok);
+  }
+
+  const body = resp.data;
+  console.log(`[SENDIT-SHIP] Order ${input.orderNumber} → HTTP ${resp.status}: ${JSON.stringify(body).slice(0, 400)}`);
+
+  if (resp.status >= 400 || !body?.data?.code) {
+    // Erreurs spécifiques Sendit
+    const SENDIT_ERROR_CODES: Record<number, string> = {
+      250: 'Format produits invalide',
+      251: 'Produits référencés inexistants (products_from_stock=1)',
+      252: 'Quantité insuffisante en stock Sendit',
+      403: 'Non autorisé',
+      422: 'Données invalides',
+      500: 'Erreur serveur Sendit',
+    };
+    const code = body?.code ?? resp.status;
+    const known = SENDIT_ERROR_CODES[Number(code)];
+    const detail = body?.message || body?.errors ? `${body.message || ''} ${JSON.stringify(body.errors || '')}`.trim() : `HTTP ${resp.status}`;
+    const errMsg = known ? `${known}: ${detail}` : detail;
+    return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: `Sendit: ${errMsg}` };
+  }
+
+  const d = body.data;
+  const trackingNumber = String(d.code);
+  const deliveryFee    = d.fee != null ? Math.round(Number(d.fee) * 100) : null;
+  const labelUrl       = d.labelUrl || d.label_url || null;
+
+  console.log(`[SENDIT-SHIP] ✅ Order ${input.orderNumber} → tracking=${trackingNumber} fee=${deliveryFee} label=${labelUrl}`);
+  return { trackingNumber, deliveryFee, labelUrl };
+}
+
+/**
+ * Test de connexion Sendit — POST /login et vérifie le token reçu.
+ */
+export async function testSenditConnection(
+  publicKey: string,
+  secretKey: string,
+): Promise<{ ok: boolean; message: string; name?: string }> {
+  try {
+    const resp = await axios.post(
+      `${SENDIT_API_BASE}/login`,
+      { public_key: publicKey.trim(), secret_key: secretKey.trim() },
+      { headers: { Accept: 'application/json' }, timeout: 15000, httpsAgent: SSL_AGENT, validateStatus: () => true },
+    );
+    const body = resp.data;
+    if (resp.status >= 400 || !body?.data?.token) {
+      const msg = body?.message || `HTTP ${resp.status}`;
+      return { ok: false, message: `Identifiants Sendit invalides: ${msg}` };
+    }
+    const name = body.data?.name || 'Compte Sendit';
+    return { ok: true, message: `Connexion Sendit validée ✅ (${name})`, name };
+  } catch (err: any) {
+    return { ok: false, message: `Erreur réseau Sendit: ${err?.message || err}` };
   }
 }
 
