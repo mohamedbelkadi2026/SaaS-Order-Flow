@@ -3521,16 +3521,37 @@ export async function resolveSenditDistrict(
   const rows = await db.select().from(senditDistricts).where(eq(senditDistricts.storeId, storeId));
   if (!rows.length) return null;
 
-  // 1. Exact match (normalisé)
+  const hubNorm = (s: string | null) =>
+    (s || '').toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // 0. Hub exact match — user picked a major city name ("Agadir") from the
+  //    carrier_cities dropdown which stores hub names, not raw district names.
+  const byHub = rows.find(r => hubNorm(r.hub) === norm);
+  if (byHub) {
+    console.log(`[SENDIT-CITY] Hub match: "${cityName}" → "${byHub.name}" (id=${byHub.externalId})`);
+    return byHub.externalId;
+  }
+
+  // 1. Exact match on district name (normalised)
   const exact = rows.find(r => r.nameNorm === norm);
   if (exact) return exact.externalId;
 
-  // 2. Partial match — city contient le district ou vice-versa
+  // 2. Hub partial match — e.g. city = "Grand Casablanca" matches hub = "Casablanca"
+  const hubPartial = rows.find(r => {
+    const h = hubNorm(r.hub);
+    return h && (h.includes(norm) || norm.includes(h));
+  });
+  if (hubPartial) {
+    console.log(`[SENDIT-CITY] Hub partial match: "${cityName}" → "${hubPartial.name}" hub="${hubPartial.hub}" (id=${hubPartial.externalId})`);
+    return hubPartial.externalId;
+  }
+
+  // 3. District name partial match
   const partial = rows.find(r =>
     r.nameNorm.includes(norm) || norm.includes(r.nameNorm),
   );
   if (partial) {
-    console.log(`[SENDIT-CITY] Partial match: "${cityName}" → "${partial.name}" (id=${partial.externalId})`);
+    console.log(`[SENDIT-CITY] Name partial match: "${cityName}" → "${partial.name}" (id=${partial.externalId})`);
     return partial.externalId;
   }
 

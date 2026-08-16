@@ -2127,13 +2127,6 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     errorTitle: "Erreur de synchronisation Vitipsexpress",
   });
 
-  const senditDistrictsSyncPending = syncingProvider === "sendit-districts";
-  const handleSenditDistrictsSync = () => syncCarrier("sendit-districts", {
-    endpoint: "/api/shipping/sendit/sync-districts",
-    successTitle: "✅ Districts Sendit synchronisés",
-    errorTitle: "Erreur de synchronisation Sendit",
-  });
-
   const ecSyncPending = syncingProvider === "expresscoursier";
   const handleEcSync = () => syncCarrier("expresscoursier", {
     successTitle: "✅ Statuts Express Coursier synchronisés",

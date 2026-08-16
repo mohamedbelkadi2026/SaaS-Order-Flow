@@ -1,0 +1,22 @@
+# Replit Prompt — 2 bugs UI Sendit : recherche de ville cassée + bouton "Synchroniser les villes" en double
+
+## Bug 1 — La recherche de ville dans le formulaire de commande ne filtre pas correctement
+
+Dans le champ "VILLE (SENDIT)" du formulaire de commande, taper "Agadir" affiche une liste de petites localités random (Ahejarr Ennehal, Melloussa, Imi Ouaddar, Mirleft, Ain Lahcen, Belyounech, Azla, Khlalfa, Kariat Ba Mohamed, Sebt Ben Sassi, Sidi Zouine, Chrifia, Sidi Bou Othmane...) qui n'ont AUCUN rapport avec "Agadir". Le filtre de recherche ne fonctionne pas — soit il ne filtre pas du tout (affiche juste une portion de la liste complète non filtrée), soit il filtre sur le mauvais champ.
+
+Vérifie :
+1. Le composant `<Select>`/dropdown "VILLE (SENDIT)" — comment est construit son filtre de recherche côté frontend ? Est-ce qu'il filtre bien sur le texte tapé contre `name`/`ville` de chaque ville de `sendit_districts`, insensible à la casse ?
+2. Vérifie que la table `sendit_districts` contient bien une entrée "Agadir" après la synchronisation (`SELECT * FROM sendit_districts WHERE name ILIKE '%agadir%' OR ville ILIKE '%agadir%';`) — si elle n'existe pas du tout après sync, c'est un problème côté import (vérifier que /districts renvoie bien "Agadir" et que le script d'import ne l'a pas perdu/mal mappé).
+3. Corrige le filtre de recherche pour qu'il matche réellement le texte tapé contre le nom de la ville, et teste avec "Agadir", "Casablanca", "Rabat" pour confirmer.
+
+## Bug 2 — Bouton "Synchroniser les villes" affiché en double
+
+Sur la carte Credentials — Sendit, le bouton "Synchroniser les villes" apparaît DEUX FOIS (une fois dans la ligne d'actions principale à côté de "Modifier"/"Supprimer", une autre fois juste en dessous dans une ligne séparée). Il ne doit y en avoir qu'un seul.
+
+Trouve où ce bouton est rendu en double dans le composant (probablement un composant de carte de statut de connexion rendu deux fois, ou un bouton dupliqué par erreur dans le JSX), et retire le doublon pour n'en garder qu'un.
+
+## Testing checklist
+1. Rechercher "Agadir" dans le champ ville d'une commande Sendit → affiche bien Agadir (et ses quartiers/districts si Sendit les liste séparément), pas des villages sans rapport.
+2. Rechercher 2-3 autres villes connues (Casablanca, Marrakech, Rabat) → résultats corrects.
+3. Un seul bouton "Synchroniser les villes" visible sur la carte Sendit.
+4. Vérifier que le clic sur ce bouton unique fonctionne toujours normalement (pas cassé par la suppression du doublon).

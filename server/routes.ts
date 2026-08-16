@@ -4140,13 +4140,22 @@ export async function registerRoutes(
           return res.status(502).json({ message: result.error });
         }
         // Refresh the generic carrier_cities count so the card displays the right number
-        const senditCityRows = await db.select({ name: senditDistricts.name })
+        // Use unique HUB names (major cities) as the display list so the user
+        // can search "Agadir", "Casablanca", etc. instead of raw sub-district names.
+        // resolveSenditDistrict() will later find the correct district_id from hub.
+        const senditDistrictRows = await db.select({ name: senditDistricts.name, hub: senditDistricts.hub })
           .from(senditDistricts)
           .where(eq(senditDistricts.storeId, storeId));
-        const senditCityNames = senditCityRows.map(r => r.name);
+
+        const hubSet = new Set<string>();
+        for (const row of senditDistrictRows) {
+          // Prefer hub (e.g. "Agadir"); fall back to raw district name if hub is absent
+          hubSet.add((row.hub && row.hub.trim()) ? row.hub.trim() : row.name.trim());
+        }
+        const senditCityNames = Array.from(hubSet).sort();
         await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, senditCityNames);
-        console.log(`[Sendit-SyncCities] ✅ ${result.count} districts synced for account #${accountId}`);
-        return res.json({ count: result.count, cities: senditCityNames, syncedAt: new Date().toISOString() });
+        console.log(`[Sendit-SyncCities] ✅ ${result.count} districts → ${senditCityNames.length} unique cities for account #${accountId}`);
+        return res.json({ count: senditCityNames.length, cities: senditCityNames, syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }
