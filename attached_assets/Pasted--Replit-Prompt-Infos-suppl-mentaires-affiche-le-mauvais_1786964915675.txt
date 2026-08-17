@@ -1,0 +1,18 @@
+# Replit Prompt — "Infos supplémentaires" affiche le mauvais contenu : des textes promotionnels, pas la variante (couleur/taille)
+
+## Constat
+La colonne "Infos supplémentaires" affiche maintenant du texte promotionnel/offre (ex: "قطعة واحدة: 100 درهم... التوصيل: 10 دراهم", "default", "كتب: 4 10 + درهم...") pour presque toutes les commandes — ce n'est PAS la variante couleur/taille qu'on vient de corriger. C'est visiblement un autre champ (probablement une description d'offre/upsell scrapée depuis YouCan, ou un champ notes/tags existant) qui alimentait déjà cette colonne avant notre fix, et notre changement ne l'a pas remplacé — ou alors les deux se sont mélangés dans le même champ.
+
+## Ce que je veux
+
+La colonne "Infos supplémentaires" doit afficher UNIQUEMENT la variante (couleur/taille) choisie par le client quand elle existe — le résultat de youcanVariantLabel (format compact "الأخضر / XL") qu'on vient de corriger. Rien d'autre.
+
+1. Identifie quel champ alimente ACTUELLEMENT la colonne "Infos supplémentaires" dans client/src/pages/orders.tsx (celui qui affiche "قطعة واحدة: 100 درهم...", "default", etc.) — montre-moi le nom exact du champ et d'où vient cette donnée (probablement scrapée depuis une note/description de commande YouCan, à ne pas confondre avec la variante).
+2. Ne supprime pas cette donnée existante si elle sert à autre chose ailleurs (garde-la disponible si besoin), mais NE L'affiche PAS dans la colonne "Infos supplémentaires" — remplace ce que cette colonne affiche par variantInfo/youcanVariantLabel (couleur/taille) uniquement.
+3. Si une commande n'a pas de variante choisie (produit simple), la colonne doit rester vide ("—"), pas afficher le texte promotionnel par défaut.
+4. Si tu penses que cette info promotionnelle est utile ailleurs (ex: dans le détail de la commande, un champ Notes/Offre), dis-le moi et propose où la déplacer plutôt que de la perdre — mais elle ne doit plus apparaître dans "Infos supplémentaires" du tableau.
+
+## Testing checklist
+1. Commande avec variante choisie (couleur+taille) → "Infos supplémentaires" affiche SEULEMENT "الأخضر / XL" (ou équivalent), rien d'autre.
+2. Commande sans variante → "Infos supplémentaires" affiche "—", pas de texte promotionnel.
+3. Vérifier que le texte promotionnel qui s'affichait avant (s'il a une utilité) reste accessible ailleurs si nécessaire, pas juste supprimé silencieusement.

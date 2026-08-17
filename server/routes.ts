@@ -347,6 +347,28 @@ function sanitizeVariant(raw: any): string {
   return s;
 }
 
+/**
+ * Returns true ONLY for strings that look like a genuine customer-chosen
+ * product option (colour, size, material, …).
+ *
+ * Rejects:
+ *  - Arabic/French promo offer text ("قطعة واحدة: 100 درهم", "التوصيل: 10 دراهم")
+ *  - Anything longer than 60 characters (offer descriptions are always long)
+ *  - Strings that contain price markers (درهم / دراهم / DH / MAD)
+ *
+ * Used in webhook paths that only have access to `item.variant_title` (not
+ * `v.variant.values`), to stop promotional upsell text leaking into the
+ * "Infos supplémentaires" column.
+ */
+function isRealVariantLabel(s: string): boolean {
+  if (!s) return false;
+  if (s.length > 60) return false;                               // offer text is always long
+  if (/درهم|دراهم/u.test(s)) return false;                      // Arabic price unit
+  if (/\bDH\b|\bMAD\b/i.test(s)) return false;                  // French/English price unit
+  if (/\d+\s*[+:،,]\s*\d+/.test(s)) return false;              // "100 + 10" style upsell math
+  return true;
+}
+
 /** Strip lone hyphens/dashes left by stores that use "-" as a placeholder last name */
 function cleanName(raw: string): string {
   return raw
@@ -5712,7 +5734,12 @@ export async function registerRoutes(
             return v ? `${li.title} - ${v}` : li.title;
           }).filter(Boolean).join(' + ')
         : null;
-      const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
+      // Only write genuine color/size labels to variantDetails — filter out YouCan
+      // promotional/offer text (e.g. "قطعة واحدة: 100 درهم") that leaks via variant_title.
+      const variantDetails = parsed.lineItems
+        .map((li: any) => (li.variantInfo || '').trim())
+        .filter(v => isRealVariantLabel(v))
+        .join(' | ') || null;
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
       const mediaBuyer = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
@@ -6229,7 +6256,12 @@ export async function registerRoutes(
             return v ? `${li.title} - ${v}` : li.title;
           }).filter(Boolean).join(' + ')
         : null;
-      const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
+      // Only write genuine color/size labels to variantDetails — filter out YouCan
+      // promotional/offer text (e.g. "قطعة واحدة: 100 درهم") that leaks via variant_title.
+      const variantDetails = parsed.lineItems
+        .map((li: any) => (li.variantInfo || '').trim())
+        .filter(v => isRealVariantLabel(v))
+        .join(' | ') || null;
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
       const mediaBuyerToken = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
