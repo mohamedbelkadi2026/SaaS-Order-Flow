@@ -3601,11 +3601,13 @@ export async function syncSenditDistricts(
   const all: Array<{ id: number; name: string; hub?: string }> = [];
   let page = 1;
   let lastPage = 1;
+  let nextPageUrl: string | null = null;
 
   try {
     do {
       const resp = await axios.get(`${SENDIT_API_BASE}/districts`, {
-        params: { page, per_page: 200 },
+        // Sendit API caps at 100 per page regardless of per_page value
+        params: { page, per_page: 100 },
         headers,
         timeout: 20000,
         httpsAgent: SSL_AGENT,
@@ -3618,16 +3620,31 @@ export async function syncSenditDistricts(
       if (resp.status >= 400) {
         return { count: 0, error: `Sendit /districts HTTP ${resp.status}` };
       }
-      const data = resp.data?.data ?? resp.data;
-      const districts = Array.isArray(data?.data) ? data.data
-        : Array.isArray(data) ? data : [];
-      lastPage = data?.last_page ?? data?.meta?.last_page ?? 1;
+
+      // Sendit may return:
+      //   { data: [...], last_page: N, next_page_url: "..." }          (flat Laravel paginator)
+      //   { data: { data: [...], last_page: N, next_page_url: "..." } } (nested)
+      const rawData = resp.data;
+      // Determine where pagination metadata lives
+      const pagMeta = (rawData?.data != null && !Array.isArray(rawData.data) && rawData.data?.last_page != null)
+        ? rawData.data   // nested: { data: { data:[...], last_page:N } }
+        : rawData;       // flat:   { data:[...], last_page:N }
+
+      lastPage    = pagMeta?.last_page    ?? pagMeta?.meta?.last_page    ?? 1;
+      nextPageUrl = pagMeta?.next_page_url ?? null;
+
+      // Extract the district array
+      const inner = rawData?.data ?? rawData;
+      const districts: any[] = Array.isArray(inner?.data) ? inner.data
+        : Array.isArray(inner) ? inner : [];
+
       for (const d of districts) {
         if (d?.id && d?.name) all.push({ id: Number(d.id), name: String(d.name), hub: d.hub || d.region || undefined });
       }
-      console.log(`[SENDIT-SYNC] Page ${page}/${lastPage} — ${districts.length} districts`);
+      console.log(`[SENDIT-SYNC] Page ${page}/${lastPage}${nextPageUrl ? ' (has next)' : ''} — ${districts.length} districts (total: ${all.length})`);
       page++;
-    } while (page <= lastPage);
+      // Stop when we've passed the last page AND there is no next_page_url
+    } while (page <= lastPage || nextPageUrl !== null);
   } catch (err: any) {
     return { count: 0, error: `Erreur réseau sync districts Sendit: ${err?.message}` };
   }

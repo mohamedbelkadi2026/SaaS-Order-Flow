@@ -1,0 +1,44 @@
+# Replit Prompt — 2 bugs confirmés par les logs : sync API limité à 100 villes (pagination cassée) + prix par ville absent de la réponse
+
+## Preuve (logs)
+```
+[SENDIT-SYNC] Page 1/1 — 100 districts
+[SENDIT-SYNC] ✅ 100 districts enregistrés pour store #1
+```
+La synchronisation via l'API réelle Sendit (GET /districts) ne récupère que 100 villes en une seule page ("Page 1/1"), alors que le fichier Excel officiel fourni par Sendit contient 504 villes. Soit la pagination s'arrête trop tôt (mauvaise lecture de `last_page`/`next_page_url` dans la réponse), soit le paramètre de taille de page envoyé limite à 100 sans continuer sur les pages suivantes.
+
+Autre problème : la réponse de `/api/carriers/cities?provider=sendit` ne contient que `"cities": ["Achakkar", "Afsou...", ...]` — une liste de noms sans prix associé, alors que je veux voir/utiliser le prix de livraison par ville (comme dans le fichier Excel : Agadir = 35 DH, etc.).
+
+## Fix 1 — Corriger la pagination de la synchronisation API Sendit
+
+Dans le code qui appelle GET /districts pour synchroniser (`[SENDIT-SYNC]`), vérifie la structure réelle de la réponse paginée (elle suit le même format que les autres endpoints Sendit : `total`, `per_page`, `current_page`, `last_page`, `next_page_url`). Corrige la boucle pour :
+1. Lire correctement `last_page` (ou boucler tant que `next_page_url` n'est pas null).
+2. Continuer à appeler `page=2`, `page=3`, etc. jusqu'à couvrir TOUTES les villes (proche de 504, pas juste 100).
+3. Logguer clairement le nombre total de pages ET le nombre total de villes récupérées à la fin (`[SENDIT-SYNC] ✅ X/Y districts sur Z pages`).
+
+## Fix 2 — Inclure le prix de livraison (et idéalement délais) dans la réponse `/api/carriers/cities`
+
+Modifie l'endpoint `/api/carriers/cities?provider=sendit` pour que chaque ville de la réponse inclue son prix, pas juste son nom :
+```json
+{
+  "provider": "sendit",
+  "cities": [
+    { "name": "Agadir", "price": 35, "delais": "24h - 48h" },
+    { "name": "Achakkar", "price": 45, "delais": "24h - 48h" }
+  ],
+  "source": "...",
+  "count": ...
+}
+```
+Utilise les données déjà enrichies via la migration `2026_08_16_sendit_price_enrichment.sql` (table `sendit_price_ref` ou colonnes ajoutées sur `sendit_districts`) pour cette jointure prix/délais.
+
+Attention à la priorité des sources : actuellement le code semble donner priorité aux données "synced" (via API, limitées à 100 avant le fix pagination) sur les données "excel" (504 lignes avec prix). Une fois la pagination corrigée (Fix 1), les deux sources devraient converger vers le même nombre de villes — mais assure-toi que peu importe la source utilisée pour l'`id`/`district_id` (nécessaire pour créer une commande), le PRIX affiché vient bien de l'enrichissement Excel/`sendit_price_ref` qui est la donnée tarifaire officielle la plus complète.
+
+## Fix 3 — Adapter le frontend pour afficher le prix
+Dans le dropdown "VILLE (SENDIT)" du formulaire de commande, afficher le prix à côté du nom de chaque ville (ex: "Agadir — 35 DH"), et utiliser ce prix pour pré-remplir automatiquement le champ "FRAIS DE LIVRAISON" quand une ville est sélectionnée.
+
+## Testing checklist
+1. Resynchroniser → confirmer dans les logs que le total de villes récupérées est proche de 504 (pas 100), sur plusieurs pages.
+2. `GET /api/carriers/cities?provider=sendit` → chaque ville a bien un `price` non nul.
+3. Sélectionner "Agadir" dans le formulaire de commande → le champ "FRAIS DE LIVRAISON" se remplit automatiquement à 35 DH.
+4. Vérifier 2-3 autres villes au hasard contre le fichier Excel fourni pour confirmer la cohérence des prix.

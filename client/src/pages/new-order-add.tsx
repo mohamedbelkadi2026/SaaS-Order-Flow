@@ -95,7 +95,9 @@ export default function NewOrderAdd() {
 
   // ── Carrier city lists ─────────────────────────────────────────────
   const { data: allCarriers = [], isLoading: citiesLoading } = useQuery<{
-    id: number; provider: string; isActive: number; cities: string[]; logo: string | null; source: string; magasinId: number | null;
+    id: number; provider: string; isActive: number; cities: string[];
+    citiesDetailed?: Array<{ name: string; price: number | null; delais: string | null }>;
+    logo: string | null; source: string; magasinId: number | null;
   }[]>({
     queryKey: selectedMagasinId
       ? ["/api/carriers/cities/all", selectedMagasinId]
@@ -124,6 +126,20 @@ export default function NewOrderAdd() {
     const list = activeCarrier.cities as string[];
     return list && list.length > 0 ? list : MOROCCAN_CITIES;
   }, [activeCarrier]);
+
+  // Build price lookup map from citiesDetailed (Sendit only, name → DH)
+  const cityPriceMap = useMemo<Record<string, number | null>>(() => {
+    const detailed = (activeCarrier as any)?.citiesDetailed as Array<{ name: string; price: number | null }> | undefined;
+    if (!detailed?.length) return {};
+    const m: Record<string, number | null> = {};
+    for (const c of detailed) m[c.name] = c.price;
+    return m;
+  }, [activeCarrier]);
+
+  // Price for the currently-selected city (DH)
+  const selectedCityPrice = customerCity && cityPriceMap[customerCity] != null
+    ? cityPriceMap[customerCity]
+    : null;
 
   const activeCarrierLogo: string | null = (activeCarrier as any)?.logo ?? null;
   const isCarrierSpecific = !!activeCarrier && activeCities !== MOROCCAN_CITIES && activeCities.length > 0;
@@ -325,16 +341,22 @@ export default function NewOrderAdd() {
                 value={customerCity}
                 onChange={setCustomerCity}
                 cities={activeCities}
+                priceMap={Object.keys(cityPriceMap).length > 0 ? cityPriceMap : undefined}
                 isCarrierSpecific={isCarrierSpecific}
                 carrierLogo={activeCarrierLogo}
                 isLoading={citiesLoading}
                 data-testid="select-city"
               />
-              {(activeCarrier as any)?.deliveryFee > 0 && (
+              {/* Per-city delivery fee from Excel (overrides flat carrier fee when available) */}
+              {selectedCityPrice != null ? (
+                <p className="mt-1 text-[11px] text-emerald-700 font-medium" data-testid="text-delivery-fee">
+                  Frais livraison : <span className="font-semibold">{selectedCityPrice % 1 === 0 ? selectedCityPrice : selectedCityPrice.toFixed(2)} DH</span>
+                </p>
+              ) : (activeCarrier as any)?.deliveryFee > 0 ? (
                 <p className="mt-1 text-[11px] text-gray-500" data-testid="text-delivery-fee">
                   Frais livraison : <span className="font-semibold text-gray-700">{((activeCarrier as any).deliveryFee / 100).toFixed(2)} DH</span>
                 </p>
-              )}
+              ) : null}
             </div>
             <div>
               <Label className="text-xs mb-1.5 block">Status</Label>

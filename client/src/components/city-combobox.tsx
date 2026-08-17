@@ -6,6 +6,8 @@ interface CityComboboxProps {
   value: string;
   onChange: (city: string) => void;
   cities: string[];
+  /** Optional price map: city name → price in DH (null = no price data) */
+  priceMap?: Record<string, number | null>;
   isCarrierSpecific?: boolean;
   carrierLogo?: string | null;
   disabled?: boolean;
@@ -25,6 +27,7 @@ export function CityCombobox({
   value,
   onChange,
   cities,
+  priceMap,
   isCarrierSpecific = false,
   carrierLogo,
   disabled = false,
@@ -152,7 +155,9 @@ export function CityCombobox({
                 Aucune ville trouvée
               </div>
             ) : (
-              filtered.map(city => (
+              filtered.map(city => {
+                const cityPrice = priceMap?.[city] ?? null;
+                return (
                 <button
                   key={city}
                   type="button"
@@ -177,12 +182,19 @@ export function CityCombobox({
                     />
                   )}
                   <span className="flex-1">{city}</span>
+                  {/* Per-city price badge */}
+                  {cityPrice != null && (
+                    <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded shrink-0">
+                      {cityPrice % 1 === 0 ? cityPrice : cityPrice.toFixed(2)} DH
+                    </span>
+                  )}
                   {/* Checkmark on the right when logo is shown */}
                   {carrierLogo && value === city && (
                     <Check className="w-3.5 h-3.5 text-primary shrink-0" />
                   )}
                 </button>
-              ))
+                );
+              })
             )}
           </div>
         </div>

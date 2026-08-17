@@ -15554,6 +15554,26 @@ function ensureHeaders(sheet) {
       if (provider) {
         const dbCities = await storage.getCarrierCities(storeId, provider);
         if (dbCities.length > 0) {
+          // For Sendit: enrich synced city list with price/delais from the Excel reference
+          if (provider === 'sendit') {
+            const priceRefRows = await db
+              .select({ name: senditPriceRef.name, price: senditPriceRef.price, delais: senditPriceRef.delais })
+              .from(senditPriceRef)
+              .orderBy(senditPriceRef.name);
+            const citiesDetailed = priceRefRows.map(r => ({
+              name: r.name,
+              price: r.price != null ? r.price / 100 : null,
+              delais: r.delais,
+            }));
+            return res.json({
+              provider,
+              cities: dbCities,
+              citiesDetailed,
+              isCarrierSpecific: true,
+              source: "synced",
+              count: dbCities.length,
+            });
+          }
           return res.json({
             provider,
             cities: dbCities,
@@ -15563,19 +15583,27 @@ function ensureHeaders(sheet) {
           });
         }
 
-        // ── 1b. Sendit fallback: read from sendit_price_ref (seeded from Excel) ──
-        // sendit_districts is per-store and only populated after an API sync.
-        // sendit_price_ref is a global table (501 villes) always available.
+        // ── 1b. Sendit: enrich with price data from sendit_price_ref ────────────
+        // For synced data: add citiesDetailed (with price/delais from Excel reference).
+        // For no-sync fallback: return all 501 Excel cities as cities + citiesDetailed.
         if (provider === 'sendit') {
           const priceRefRows = await db
-            .select({ name: senditPriceRef.name })
+            .select({ name: senditPriceRef.name, price: senditPriceRef.price, delais: senditPriceRef.delais })
             .from(senditPriceRef)
             .orderBy(senditPriceRef.name);
+          const citiesDetailed = priceRefRows.map(r => ({
+            name: r.name,
+            price: r.price != null ? r.price / 100 : null,   // centimes → DH
+            delais: r.delais,
+          }));
+          // If carrier_cities was already populated (source="synced" returned above),
+          // we get here only when carrier_cities is empty → use Excel as source
           if (priceRefRows.length > 0) {
             const cities = priceRefRows.map(r => r.name);
             return res.json({
               provider,
               cities,
+              citiesDetailed,
               isCarrierSpecific: true,
               source: "excel",
               count: cities.length,
@@ -15739,24 +15767,37 @@ function ensureHeaders(sheet) {
             }
             let cities: string[];
             let source: string;
-            if (dbCities.length > 0) {
-              cities = dbCities;
-              source = "synced";
-            } else if (acct.carrierName.toLowerCase() === 'sendit') {
-              // Sendit fallback: use sendit_price_ref seeded from the official Excel
-              // (sendit_districts is per-store and requires an API sync first)
+            let citiesDetailed: Array<{ name: string; price: number | null; delais: string | null }> | undefined;
+
+            if (acct.carrierName.toLowerCase() === 'sendit') {
+              // Always enrich Sendit with price/delais from the Excel reference table
               const priceRefRows = await db
-                .select({ name: senditPriceRef.name })
+                .select({ name: senditPriceRef.name, price: senditPriceRef.price, delais: senditPriceRef.delais })
                 .from(senditPriceRef)
                 .orderBy(senditPriceRef.name);
-              cities = priceRefRows.length > 0
-                ? priceRefRows.map(r => r.name)
-                : getDefaultCitiesForProvider(acct.carrierName);
-              source = priceRefRows.length > 0 ? "excel" : "default";
+              citiesDetailed = priceRefRows.map(r => ({
+                name: r.name,
+                price: r.price != null ? r.price / 100 : null,  // centimes → DH
+                delais: r.delais,
+              }));
+              if (dbCities.length > 0) {
+                cities = dbCities;
+                source = "synced";
+              } else if (priceRefRows.length > 0) {
+                cities = priceRefRows.map(r => r.name);
+                source = "excel";
+              } else {
+                cities = getDefaultCitiesForProvider(acct.carrierName);
+                source = "default";
+              }
+            } else if (dbCities.length > 0) {
+              cities = dbCities;
+              source = "synced";
             } else {
               cities = getDefaultCitiesForProvider(acct.carrierName);
               source = "default";
             }
+
             const logo = CARRIER_LOGOS_SERVER[acct.carrierName.toLowerCase()] ?? null;
             return {
               id: acct.id,
@@ -15764,6 +15805,7 @@ function ensureHeaders(sheet) {
               magasinId: (acct as any).magasinId ?? null,
               isActive: acct.isActive,
               cities,
+              ...(citiesDetailed ? { citiesDetailed } : {}),
               logo,
               deliveryFee: (acct as any).deliveryFee || 0,
               deliveryFeeDH: (((acct as any).deliveryFee || 0) / 100).toFixed(2),
