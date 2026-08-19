@@ -1,0 +1,28 @@
+# Replit Prompt — Ajouter un bouton dans /inventory pour lancer la purge des Ajustements en un clic
+
+## Demande
+Au lieu de devoir taper des URL manuellement, ajoute un bouton dans la barre d'outils de `/inventory` (à côté de "Nettoyage intelligent", "Réparer l'historique des stocks") : **"Nettoyer les ajustements"** (ou nom similaire clair), réservé aux admins.
+
+## Comportement du bouton (utilise l'endpoint déjà demandé `POST /api/admin/purge-stock-adjustments`)
+
+1. **Clic 1** : appelle l'endpoint en mode aperçu (`dryRun=true`) et affiche une modale avec :
+   - Nombre total de mouvements "Ajustement" trouvés.
+   - Nombre de produits concernés.
+   - Un tableau : Produit | Store | Disponible actuel | Nouveau Disponible calculé (après nettoyage).
+   - Mise en évidence (couleur rouge/orange) de tout produit qui aurait un Disponible négatif après recalcul — pour que je le vois immédiatement.
+   - Un bouton "Confirmer et appliquer" et un bouton "Annuler".
+
+2. **Clic sur "Confirmer et appliquer"** : appelle l'endpoint en mode réel (`dryRun=false`), qui fait le backup, supprime les "Ajustement", recalcule le stock. Affiche ensuite un résumé de succès avec le nombre de produits corrigés.
+
+3. Après application, rafraîchit automatiquement le tableau `/inventory` pour montrer les nouvelles valeurs de Disponible sans avoir à recharger la page manuellement.
+
+## Sécurité
+- Bouton visible et actionnable uniquement pour les comptes admin.
+- Le mode "aperçu" ne doit jamais rien modifier en base — uniquement lecture.
+- Le bouton doit être désactivé (avec message "Traitement en cours...") pendant l'exécution pour éviter un double-clic qui lancerait la purge deux fois.
+
+## Testing checklist
+1. Clic sur "Nettoyer les ajustements" → modale d'aperçu s'affiche avec les bons chiffres (pistolet 2b, ميزان الكتروني, المروحة الذكية visibles dans la liste avec leurs valeurs actuelles).
+2. Annuler → rien n'est modifié en base, modale se ferme.
+3. Confirmer → purge appliquée, tableau `/inventory` mis à jour automatiquement, plus aucun Disponible négatif visible (sauf signalement explicite si un vrai problème de fond existe).
+4. Revérifier après quelques jours que le bouton n'a pas besoin d'être recliqué (aucune nouvelle pollution ne doit apparaître toute seule).
