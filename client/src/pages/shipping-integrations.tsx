@@ -2101,7 +2101,17 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
       qc.invalidateQueries({ queryKey: ["/api/agents/my-stats"] });
       qc.invalidateQueries({ queryKey: ["/api/orders"] });
     } catch (e: any) {
-      const isOzonAuthError = provider === "ozonexpress" && /cl[eé] api|api key/i.test(String(e?.message || ""));
+      const errorMessage = String(e?.message || "");
+      const isOzonAccountMismatch = provider === "ozonexpress" && /aucun compte ozon express configuré/i.test(errorMessage);
+      if (isOzonAccountMismatch) {
+        toast({
+          title: "❌ Connexion Ozon Express refusée",
+          description: "Aucun compte configuré n’a reconnu ce colis. Vérifiez le Customer ID et le compte ayant créé l’envoi.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const isOzonAuthError = provider === "ozonexpress" && /cl[eé] api|api key/i.test(errorMessage);
       if (isOzonAuthError) {
         toast({
           title: "❌ Clé API Ozon Express invalide",

@@ -2537,6 +2537,7 @@ export async function registerRoutes(
                   allDbUpdates.push(
                     storage.updateOrder(order.id, {
                       shippingProvider: provider,
+                      carrierId:        (orderCreds as any).id ?? null,
                       carrierName:      provider,
                       status:           'Attente De Ramassage',
                     } as any)
@@ -2563,6 +2564,7 @@ export async function registerRoutes(
                   allDbUpdates.push(
                     storage.updateOrder(order.id, {
                       shippingProvider: provider,
+                      carrierId:        (orderCreds as any).id ?? null,
                       carrierName:      provider,
                       status:           'Attente De Ramassage',
                     } as any)
@@ -2592,6 +2594,7 @@ export async function registerRoutes(
                     trackNumber:      trackingNumber,
                     labelLink:        labelUrl ?? null,
                     shippingProvider: provider,
+                    carrierId:        (orderCreds as any).id ?? null,
                     carrierName:      provider,
                     status:           'Attente De Ramassage',
                   } as any)
@@ -13829,8 +13832,15 @@ function ensureHeaders(sheet) {
 
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     let updated = 0;
+    let attempted = 0;
     const errors: Array<{ orderId: number; message: string }> = [];
     const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
+    // Shipping chooses an account by city when several Ozon accounts exist.
+    // Keep all active accounts here so historical orders without carrierId can
+    // still be checked against their originating Ozon account.
+    const activeOzonAccounts = p === 'ozonexpress'
+      ? (await storage.getCarrierAccounts(storeId, 'ozonexpress')).filter((a: any) => a.isActive !== 0)
+      : [];
     // EC has no tracking pull API — status arrives via webhook, replayed from integration_logs.
     // Refresh the EC status name table before each sync so commentStatus uses current labels.
     if (p === 'expresscoursier') {
@@ -13865,6 +13875,7 @@ function ensureHeaders(sheet) {
 
     for (const order of candidates) {
       try {
+        attempted++;
         let result: { status: string | null; rawStatus: string | null; error?: string };
 
         if (p === 'ozonexpress') {
@@ -13872,100 +13883,108 @@ function ensureHeaders(sheet) {
           // Ozon's working add-parcel endpoint authenticates with both credentials
           // in the URL path and multipart form data. The tracking API follows the
           // same convention; using an Authorization header returns CHECK_API.ERROR.
-          const ozonApiKey     = (account.apiKey || '').toString().trim();
-          const ozonCustomerId =
-            account?.settings?.ozonExpressCustomerId ??
-            account?.ozonSettings?.ozonExpressCustomerId ??
-            (account as any)?.customerId ?? '';
           const ozonTrackNum   = order.trackNumber!;
           const axios2         = (await import('axios')).default;
           const { default: FormData } = await import('form-data');
-          const requestBody = new FormData();
-          requestBody.append('tracking-number', ozonTrackNum);
-          const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/${encodeURIComponent(ozonApiKey)}/parcels/tracking`;
 
           let ozonRawResponse: any = null;
           let ozonRawStatus: string | null = null;
-          let ozonApiKeyInvalid = false;
+          let allAccountsRejected = true;
+          let ozonRequestError: string | undefined;
 
-          // ── Diagnostic: log request details (key never printed) ─────────────────
-          const maskedKey = ozonApiKey
-            ? ozonApiKey.slice(0, 4) + '…' + ozonApiKey.slice(-4)
-            : '(empty)';
-          console.log(
-            `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
-            `platform_status="${order.status}" ` +
-            `endpoint=https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/[API_KEY]/parcels/tracking ` +
-            `customer_id="${ozonCustomerId || '(empty)'}" key_preview="${maskedKey}" ` +
-            `auth=url_path multipart_fields=${JSON.stringify({ 'tracking-number': ozonTrackNum })}`
-          );
+          const storedCarrierId = Number((order as any).carrierId);
+          const preferredAccount = storedCarrierId
+            ? activeOzonAccounts.find((a: any) => a.id === storedCarrierId)
+            : undefined;
+          const accountCandidates = preferredAccount
+            ? [preferredAccount, ...activeOzonAccounts.filter((a: any) => a.id !== preferredAccount.id)]
+            : (activeOzonAccounts.length ? activeOzonAccounts : [account]);
 
-          try {
-            const resp = await axios2.post(ozonUrl, requestBody, {
-              headers: { ...requestBody.getHeaders(), Accept: 'application/json' },
-              timeout: 15000,
-              validateStatus: () => true,
-            });
-            // ── Diagnostic: full raw response (truncated at 1000 chars) ────────────
-            const rawJson = JSON.stringify(resp.data);
+          for (const ozonAccount of accountCandidates) {
+            const ozonApiKey = (ozonAccount?.apiKey || '').toString().trim();
+            const ozonCustomerId =
+              ozonAccount?.settings?.ozonExpressCustomerId ??
+              ozonAccount?.ozonSettings?.ozonExpressCustomerId ??
+              ozonAccount?.customerId ?? '';
+            const requestBody = new FormData();
+            requestBody.append('tracking-number', ozonTrackNum);
+            const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/${encodeURIComponent(ozonApiKey)}/parcels/tracking`;
             console.log(
               `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
-              `HTTP ${resp.status} raw_response=${rawJson.slice(0, 1000)}`
+              `account_id=${ozonAccount?.id ?? 'legacy'} platform_status="${order.status}" ` +
+              `endpoint=https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/[API_KEY]/parcels/tracking ` +
+              `customer_id="${ozonCustomerId || '(empty)'}" api_key_present=${ozonApiKey ? 'yes' : 'no'} ` +
+              `auth=url_path multipart_fields=${JSON.stringify({ 'tracking-number': ozonTrackNum })}`
             );
 
-            if (resp.status < 400 && resp.data) {
+            try {
+              const resp = await axios2.post(ozonUrl, requestBody, {
+                headers: { ...requestBody.getHeaders(), Accept: 'application/json' },
+                timeout: 15000,
+                validateStatus: () => true,
+              });
+              const rawJson = JSON.stringify(resp.data);
+              console.log(
+                `[OZON-DIAG] order=#${(order as any).orderNumber} account_id=${ozonAccount?.id ?? 'legacy'} ` +
+                `HTTP ${resp.status} raw_response=${rawJson.slice(0, 1000)}`
+              );
+
               const d = resp.data;
-              if (d?.CHECK_API?.RESULT === 'ERROR') {
-                ozonApiKeyInvalid = true;
-                console.log(`[OZON-DIAG] order=#${(order as any).orderNumber} ⚠️ CHECK_API.RESULT=ERROR — clé API invalide`);
-              } else {
-                const t = d['TRACKING'] || d['PARCEL-TRACKING'] || d['PARCEL-INFO'] || d;
-                ozonRawStatus =
-                  t?.['LAST-TRANSITION']?.['STATUT'] ?? t?.['LAST-TRANSITION']?.['STATUS'] ??
-                  (Array.isArray(t?.['TRANSITIONS']) && t['TRANSITIONS'].length ? t['TRANSITIONS'][t['TRANSITIONS'].length-1]?.['STATUT'] : null) ??
-                  (Array.isArray(t?.['TRACKING']) && t['TRACKING'].length ? t['TRACKING'][t['TRACKING'].length-1]?.['STATUT'] : null) ??
-                  t?.['STATUT'] ?? t?.['STATUS'] ?? t?.['INFOS']?.['STATUT'] ?? null;
-                ozonRawResponse = d;
-                // ── Diagnostic: mapping result and update decision ──────────────────
-                const diagMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
-                const diagWouldUpdate = diagMapped && diagMapped !== order.status;
-                console.log(
-                  `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
-                  `raw_status="${ozonRawStatus ?? 'null'}" mapped="${diagMapped ?? 'null'}" ` +
-                  `platform="${order.status}" ` +
-                  `decision=${diagWouldUpdate ? 'UPDATE → ' + diagMapped : (diagMapped === null ? 'SKIP (null mapping — unknown code)' : 'SKIP (same status)')}`
-                );
+              const rejected = !ozonApiKey || !ozonCustomerId ||
+                d?.CHECK_API?.RESULT === 'ERROR' || resp.status === 401 || resp.status === 403;
+              if (rejected) {
+                console.log(`[OZON-DIAG] order=#${(order as any).orderNumber} account_id=${ozonAccount?.id ?? 'legacy'} rejected — trying another configured Ozon account if available`);
+                continue;
               }
-            } else {
+
+              allAccountsRejected = false;
+              if (resp.status >= 400 || !d) {
+                ozonRequestError = `Ozon HTTP ${resp.status}`;
+                break;
+              }
+
+              const t = d['TRACKING'] || d['PARCEL-TRACKING'] || d['PARCEL-INFO'] || d;
+              ozonRawStatus =
+                t?.['LAST-TRANSITION']?.['STATUT'] ?? t?.['LAST-TRANSITION']?.['STATUS'] ??
+                (Array.isArray(t?.['TRANSITIONS']) && t['TRANSITIONS'].length ? t['TRANSITIONS'][t['TRANSITIONS'].length - 1]?.['STATUT'] : null) ??
+                (Array.isArray(t?.['TRACKING']) && t['TRACKING'].length ? t['TRACKING'][t['TRACKING'].length - 1]?.['STATUT'] : null) ??
+                t?.['STATUT'] ?? t?.['STATUS'] ?? t?.['INFOS']?.['STATUT'] ?? null;
+              ozonRawResponse = d;
+              const diagMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
               console.log(
                 `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
-                `HTTP ${resp.status} — skipped (non-2xx or empty body)`
+                `raw_status="${ozonRawStatus ?? 'null'}" mapped="${diagMapped ?? 'null'}" platform="${order.status}"`
               );
+              break;
+            } catch (ozonErr: any) {
+              allAccountsRejected = false;
+              ozonRequestError = ozonErr?.message || 'Ozon network error';
+              console.log(
+                `[OZON-DIAG] order=#${(order as any).orderNumber} account_id=${ozonAccount?.id ?? 'legacy'} network_error="${ozonRequestError}"`
+              );
+              break;
             }
-          } catch (ozonErr: any) {
-            console.log(`[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} network_error="${ozonErr?.message}"`);
           }
 
-          if (ozonApiKeyInvalid) {
-            const logMsg = `❌ Clé API OzonExpress invalide — vérifiez vos paramètres. (Please verify your API Key)`;
-            console.error(`[OZON-SYNC] ❌ Invalid API Key for store ${storeId} — stopping sync.`);
+          if (allAccountsRejected) {
+            const logMsg = `❌ Aucun compte Ozon Express configuré n'a accepté la demande de tracking. Vérifiez le Customer ID et la clé API du compte ayant créé le colis.`;
+            console.error(`[OZON-SYNC] ❌ No configured Ozon account accepted tracking for store ${storeId} — stopping sync.`);
             await storage.createIntegrationLog({
               storeId, integrationId: null, provider: 'ozonexpress',
               action: 'carrier_sync', status: 'fail', message: logMsg,
             });
-            // Return immediately with a typed flag — the HTTP layer converts this to a 400.
             return {
-              synced: candidates.length,
+              synced: attempted,
               updated: 0,
               details: [],
               errors: [],
               apiKeyInvalid: true,
-              message: `❌ Clé API Ozon Express invalide — reconnectez votre compte dans les paramètres transporteur.`,
+              message: logMsg,
             };
           }
 
           const ozonMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
-          result = { status: ozonMapped, rawStatus: ozonRawStatus, error: ozonRawResponse ? undefined : 'Ozon: no tracking response' };
+          result = { status: ozonMapped, rawStatus: ozonRawStatus, error: ozonRawResponse ? undefined : (ozonRequestError || 'Ozon: no tracking response') };
         } else if (p === 'expresscoursier') {
           // ── Replay most recent stored EC webhook event ─────────────────────────
           // Searches BOTH payload (new format) and message (old orphan format where
@@ -14088,7 +14107,7 @@ function ensureHeaders(sheet) {
       };
     }
 
-    return { synced: candidates.length, updated, details, errors };
+    return { synced: attempted, updated, details, errors };
   }
 
   /**
@@ -16496,6 +16515,7 @@ function ensureHeaders(sheet) {
         console.warn(`[SHIPPING-LOG]: ⚠️ Order #${order.orderNumber} accepted by ${provider} without tracking — ${shipResult.warning}`);
         await storage.updateOrder(orderId, {
           shippingProvider: provider,
+          carrierId:        (creds as any).id ?? null,
           carrierName:      provider,
           status:           'Attente De Ramassage',
         } as any);
@@ -16528,6 +16548,7 @@ function ensureHeaders(sheet) {
         trackNumber:      trackingNumber,
         labelLink:        labelUrl ?? null,
         shippingProvider: provider,
+        carrierId:        (creds as any).id ?? null,
         carrierName:      provider,
         status:           'Attente De Ramassage',
         // Waselex retourne le vrai delivery_fee à la création — le stocker directement
