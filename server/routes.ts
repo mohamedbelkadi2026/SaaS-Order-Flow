@@ -10402,6 +10402,10 @@ function ensureHeaders(sheet) {
   }
 
   app.get("/api/stock/fix-historical-shipments/preview", requireAuth, async (req, res) => {
+    return res.status(410).json({
+      message: "Cette correction historique est désactivée : elle peut modifier le stock sans preuve suffisante.",
+    });
+    /*
     try {
       const storeId = req.user!.storeId!;
       const pending = await getHistoricalPendingOrders(storeId);
@@ -10410,9 +10414,14 @@ function ensureHeaders(sheet) {
       console.error('[FIX-HISTORICAL] Preview error:', err);
       res.status(500).json({ message: 'Erreur lors de la prévisualisation.' });
     }
+    */
   });
 
   app.post("/api/stock/fix-historical-shipments/apply", requireAuth, async (req, res) => {
+    return res.status(410).json({
+      message: "Cette correction historique est désactivée pour empêcher des déductions de stock non vérifiées.",
+    });
+    /*
     try {
       const storeId = req.user!.storeId!;
       const { orderIds } = z.object({ orderIds: z.array(z.number()).optional() }).parse(req.body);
@@ -10445,6 +10454,7 @@ function ensureHeaders(sheet) {
       console.error('[FIX-HISTORICAL] Apply error:', err);
       res.status(500).json({ message: 'Erreur lors de la correction.' });
     }
+    */
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -10551,6 +10561,10 @@ function ensureHeaders(sheet) {
   }
 
   app.get("/api/stock/recalculate-available/preview", requireAuth, requireAdmin, async (req, res) => {
+    return res.status(410).json({
+      message: "Le recalcul disponible est désactivé jusqu'à validation complète de sa formule.",
+    });
+    /*
     try {
       const storeId = req.user!.storeId!;
       const result = await computeAvailableRecalc(storeId);
@@ -10559,9 +10573,14 @@ function ensureHeaders(sheet) {
       console.error('[RECALC-STOCK] Preview error:', err);
       res.status(500).json({ message: 'Erreur lors de la prévisualisation du recalcul.' });
     }
+    */
   });
 
   app.post("/api/stock/recalculate-available/apply", requireAuth, requireAdmin, async (req, res) => {
+    return res.status(410).json({
+      message: "Le recalcul disponible est désactivé : il ne doit plus créer de corrections automatiques.",
+    });
+    /*
     try {
       const storeId = req.user!.storeId!;
       const { changes, skippedVariants, negatives } = await computeAvailableRecalc(storeId);
@@ -10620,6 +10639,7 @@ function ensureHeaders(sheet) {
       console.error('[RECALC-STOCK] Apply error:', err);
       res.status(500).json({ message: 'Erreur lors du recalcul.' });
     }
+    */
   });
 
   // ─────────────────────────────────────────────────────────────────────────

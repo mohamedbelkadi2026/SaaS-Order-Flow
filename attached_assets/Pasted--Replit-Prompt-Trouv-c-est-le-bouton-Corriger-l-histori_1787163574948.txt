@@ -1,0 +1,24 @@
+# Replit Prompt — Trouvé : c'est le bouton "Corriger l'historique stock" qui crée les Ajustements incohérents
+
+## Preuve directe
+J'ai cliqué sur le bouton **"Corriger l'historique stock"** (visible dans la barre d'outils de `/inventory`, à côté de "Recalculer Disponible", "Lier tout l'historique", "Importer des produits"). Immédiatement après (même minute, 19 août 17:30), un mouvement est apparu sur "pistolet 2b" :
+```
+Ajustement -80
+Correction historique — recalcul basé sur le grand livre
+```
+Sans aucune commande ni raison réelle pour justifier ce -80. C'est exactement le même mécanisme qui a pollué "ميزان الكتروني" (+20) et d'autres produits précédemment — je sais maintenant avec certitude que c'est CE bouton précis qui le déclenche.
+
+## Ce que je veux
+
+1. Trouve le code exact derrière le bouton "Corriger l'historique stock" (probablement un endpoint du type `/api/products/fix-stock-history` ou similaire, différent de "Recalculer Disponible" et de "Réparer l'historique des stocks").
+2. Montre-moi la formule/logique qu'il utilise pour calculer ce "Reçu"/ce delta de correction — c'est cette formule qui est fausse (comme déjà vu, elle ne compte pas correctement tous les vrais mouvements du grand livre).
+3. **Désactive ce bouton complètement** (retire-le de l'UI ou désactive-le côté backend) tant que sa logique n'est pas 100% fiable et idempotente. Je ne veux plus qu'il soit cliquable par erreur et créer de nouveaux ajustements fantômes.
+4. Une fois désactivé, supprime le mouvement "-80" qu'il vient de créer sur "pistolet 2b" (avec le même processus de backup avant suppression que précédemment), et recalcule le vrai Disponible de ce produit à partir des seuls mouvements réels (Entrée, Expédition, Livraison, Retour).
+
+## Contexte important
+Bonne nouvelle en parallèle : l'ajustement "+104, Édition manuelle du stock (172 → 276)" juste après montre maintenant clairement l'auteur ("Par soufiane imil · similouane@gmail.com") — le champ de traçabilité qu'on a demandé fonctionne bien. Le problème n'est donc plus "on ne sait pas qui édite le stock" (résolu), mais bien ce bouton "Corriger l'historique stock" spécifique qui reste défectueux et doit être neutralisé.
+
+## Testing checklist
+1. Le bouton "Corriger l'historique stock" n'est plus cliquable (ou a été retiré) tant qu'il n'a pas été fiabilisé.
+2. Le mouvement "-80" sur "pistolet 2b" est supprimé, stock recalculé correctement à partir du grand livre réel.
+3. Vérifier qu'aucun autre bouton restant dans la barre d'outils `/inventory` ("Réparer l'historique des stocks", "Lier tout l'historique") ne souffre du même problème — teste-les un par un sur un produit de test et vérifie qu'ils ne créent pas d'ajustements incohérents.

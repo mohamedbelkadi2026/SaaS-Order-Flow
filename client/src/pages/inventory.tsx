@@ -1286,14 +1286,6 @@ export default function Inventory() {
           <p className="text-muted-foreground mt-1">Gestion complète des produits et niveaux de stock.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" data-testid="button-fix-historical-stock" onClick={openFixHistorical}>
-            <Wrench className="w-4 h-4 mr-2" /> Corriger l'historique stock
-          </Button>
-          {user?.role === "owner" && (
-            <Button variant="outline" data-testid="button-recalc-available" onClick={openRecalc}>
-              <Calculator className="w-4 h-4 mr-2" /> Recalculer Disponible
-            </Button>
-          )}
           <Button variant="outline" data-testid="button-link-all-historical" onClick={() => { setLinkAllResult(null); setLinkAllOpen(true); }}>
             <Link2 className="w-4 h-4 mr-2" /> Lier tout l'historique
           </Button>
