@@ -13671,9 +13671,11 @@ function ensureHeaders(sheet) {
 
     inFlightSyncs.add(lockKey);
     try {
-      // Ozon Express: pull API is dead — the sync button backfills delivery fees instead
       if (p === 'ozonexpress') {
-        return await backfillOzonFees(storeId, account);
+        // Ozon exposes a live tracking endpoint. Use the same per-order polling
+        // loop as the other carriers so the manual button and the 10-minute
+        // background job actually apply mapped statuses, not just delivery fees.
+        return await runSyncLoop(p, storeId, account, options);
       }
       return await runSyncLoop(p, storeId, account, options);
     } finally {
@@ -13786,28 +13788,6 @@ function ensureHeaders(sheet) {
 
     if (candidates.length === 0) {
       return { synced: 0, updated: 0, details: [], errors: [], message: `Aucune commande ${p} à synchroniser.` };
-    }
-
-    // ── Ozon Express: skip sync if API key was previously marked invalid ────────
-    if (p === 'ozonexpress') {
-      const lastFail = await db.select().from(integrationLogs)
-        .where(and(
-          eq(integrationLogs.storeId, storeId),
-          eq(integrationLogs.provider, 'ozonexpress'),
-          eq(integrationLogs.action, 'carrier_sync'),
-          eq(integrationLogs.status, 'fail'),
-        ))
-        .orderBy(desc(integrationLogs.createdAt))
-        .limit(1);
-
-      if (lastFail[0]?.message?.includes('invalide')) {
-        const failTime = new Date((lastFail[0] as any).createdAt).getTime();
-        if (Date.now() - failTime < 60 * 60 * 1000) {
-          console.warn(`[OZON-SYNC] Skipping store ${storeId} — API key marked invalid. Fix key in carrier settings.`);
-          return { synced: 0, updated: 0, details: [], errors: [],
-            message: '❌ Clé API OzonExpress invalide — vérifiez vos paramètres carrier.' };
-        }
-      }
     }
 
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -13968,15 +13948,18 @@ function ensureHeaders(sheet) {
           }
         } else {
           // Terminal status protection: never downgrade delivered/refused/retourné
-          const SYNC_TERMINAL = new Set(['delivered', 'refused', 'retourné']);
+          const SYNC_TERMINAL = new Set(['delivered', 'refused', 'retourné', 'Retour Recu']);
           const syncWouldDowngrade = SYNC_TERMINAL.has(order.status || '') && !SYNC_TERMINAL.has(result.status || '');
           if (result.status && result.status !== order.status && !syncWouldDowngrade) {
             await storage.updateOrderStatus(order.id, result.status);
             notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, result.status);
-            // EC replay: store the French status name in commentStatus (not raw code)
-            if (p === 'expresscoursier' && result.rawStatus) {
-              const ecName = getEcStatusName(result.rawStatus);
-              await storage.updateOrder(order.id, { commentStatus: ecName });
+            // Keep the carrier's raw label/code for traceability without
+            // replacing the canonical internal order status.
+            if ((p === 'expresscoursier' || p === 'ozonexpress') && result.rawStatus) {
+              const carrierStatusLabel = p === 'expresscoursier'
+                ? getEcStatusName(result.rawStatus)
+                : result.rawStatus;
+              await storage.updateOrder(order.id, { commentStatus: carrierStatusLabel });
             }
             await storage.createOrderFollowUpLog({
               orderId:   order.id,
@@ -19575,8 +19558,8 @@ function sendToAPI(data) {
       for (const sid of storeIds) {
         try {
           const r = await syncCarrierOrdersInternal(sid, 'ozonexpress');
-          if ((r as any).statusUpdated || (r as any).feeUpdated) {
-            console.log(`[OZON-AUTO-POLL] storeId=${sid} — ${r.synced} checked, ${(r as any).statusUpdated} statuts, ${(r as any).feeUpdated} frais`);
+          if (r.updated) {
+            console.log(`[OZON-AUTO-POLL] storeId=${sid} — ${r.synced} checked, ${r.updated} statuts`);
           }
         } catch (e: any) {
           console.log(`[OZON-AUTO-POLL] storeId=${sid} failed: ${e?.message}`);

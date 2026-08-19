@@ -1,0 +1,17 @@
+# Replit Prompt — Le bouton "Synchroniser Ozon Express" ne met pas à jour le statut des commandes
+
+## Bug
+J'ai des commandes bloquées à "Attente Ramassage" sur la plateforme, alors que côté Ozon Express (leur interface), ces mêmes commandes ont déjà un statut différent (probablement plus avancé — ramassé, en transit, livré, etc.). J'ai cliqué sur le bouton "Synchroniser Ozon Express", mais le statut des commandes sur la plateforme ne se met pas à jour.
+
+## Ce que je veux vérifier et corriger
+
+1. Trouve le code exact derrière le bouton "Synchroniser Ozon Express" (`server/routes.ts` ou `server/services/carrier-service.ts`) — que fait-il réellement au clic ? Appelle-t-il bien l'API de suivi/statut d'Ozon Express (tracking) pour chaque commande "Ozon Express" active sur la plateforme ?
+2. Vérifie s'il existe un vrai mapping des statuts Ozon Express → statuts internes de la plateforme (nouveau/confirme/in_progress/transit/delivered/refused/cancelled/etc., sur le modèle de `mapVitipsStatus()` déjà utilisé pour Vitips). Si ce mapping n'existe pas ou est incomplet pour Ozon Express, c'est probablement la cause : le statut est peut-être bien récupéré depuis Ozon Express mais jamais traduit/appliqué faute de mapping.
+3. Vérifie si le bouton appelle réellement l'API à chaque clic (pas de cache, pas de simulation) — teste-le toi-même sur une commande de test si possible et montre-moi la requête envoyée à Ozon Express et la réponse reçue.
+4. Une fois la vraie cause identifiée (bouton qui ne fait rien / mapping de statut manquant / mauvais endpoint appelé / erreur silencieuse), corrige-la.
+
+## Testing checklist
+1. Prendre une commande de test dont le statut a changé côté Ozon Express (pas encore reflété sur la plateforme) → cliquer "Synchroniser Ozon Express" → le statut de la commande se met à jour correctement sur la plateforme, avec le bon statut interne mappé.
+2. Vérifier que ça fonctionne pour plusieurs statuts différents (ramassé, en transit, livré, refusé, retourné) — pas seulement un cas.
+3. Vérifier qu'aucune commande n'est faussement marquée "livrée" ou "annulée" par erreur de mapping.
+4. Si un job de synchronisation automatique périodique existe déjà pour Ozon Express (comme pour Vitips), vérifie qu'il tourne bien aussi et pas seulement le bouton manuel.
