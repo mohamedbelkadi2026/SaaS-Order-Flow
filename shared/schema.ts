@@ -820,6 +820,33 @@ export const stockMovements = pgTable("stock_movements", {
   createdAt:  timestamp("created_at").defaultNow().notNull(),
 });
 
+// Immutable records created by the admin-only adjustment purge. They make a
+// deliberate bulk cleanup auditable and restorable without retaining
+// adjustment rows in the active stock ledger.
+export const stockAdjustmentPurgeRuns = pgTable("stock_adjustment_purge_runs", {
+  id:              serial("id").primaryKey(),
+  executedByUserId: integer("executed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  movementsDeleted: integer("movements_deleted").notNull().default(0),
+  productsAffected: integer("products_affected").notNull().default(0),
+  createdAt:       timestamp("created_at").defaultNow().notNull(),
+});
+
+export const stockAdjustmentPurgeBackups = pgTable("stock_adjustment_purge_backups", {
+  id:                 serial("id").primaryKey(),
+  purgeRunId:         integer("purge_run_id").notNull().references(() => stockAdjustmentPurgeRuns.id, { onDelete: 'cascade' }),
+  originalMovementId: integer("original_movement_id").notNull(),
+  storeId:            integer("store_id").notNull(),
+  productId:          integer("product_id").notNull(),
+  variantId:          integer("variant_id"),
+  type:               text("type").notNull(),
+  quantity:           integer("quantity").notNull(),
+  reason:             text("reason"),
+  orderId:            integer("order_id"),
+  userId:             integer("user_id"),
+  originalCreatedAt:  timestamp("original_created_at").notNull(),
+  backedUpAt:         timestamp("backed_up_at").defaultNow().notNull(),
+});
+
 export const insertStockMovementSchema = createInsertSchema(stockMovements).omit({ id: true, createdAt: true });
 export type StockMovement = typeof stockMovements.$inferSelect;
 export type InsertStockMovement = z.infer<typeof insertStockMovementSchema>;

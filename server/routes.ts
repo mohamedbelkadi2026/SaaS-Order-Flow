@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -9469,13 +9469,16 @@ function ensureHeaders(sheet) {
       if (typeof updateData.stock === 'number' && updateData.stock !== product.stock) {
         const delta = updateData.stock - product.stock;
         const manualReason = data.manualStockReason?.trim();
+        if (!manualReason) {
+          return res.status(400).json({ message: "La raison est obligatoire pour modifier manuellement le stock." });
+        }
         await db.insert(stockMovements).values({
           storeId: product.storeId!,
           productId: product.id,
           type: 'adjustment',
           quantity: delta,
           userId: req.user!.id,
-          reason: `Édition manuelle du stock (${product.stock} → ${updateData.stock})${manualReason ? ` — ${manualReason}` : ''}`,
+          reason: `Édition manuelle du stock (${product.stock} → ${updateData.stock}) — ${manualReason}`,
         });
       }
 
@@ -10400,6 +10403,223 @@ function ensureHeaders(sheet) {
       })),
     }));
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /api/admin/purge-stock-adjustments
+  //
+  // Admin-only, two-phase cleanup of historical adjustment movements:
+  // - dryRun=true is read-only and returns the exact before/after report.
+  // - dryRun=false takes an advisory transaction lock, snapshots every
+  //   adjustment row, deletes only those rows, then recalculates stock from
+  //   physical ledger events.
+  // ─────────────────────────────────────────────────────────────────────────
+  const PHYSICAL_STOCK_MOVEMENT_TYPES = ['restock', 'shipped', 'delivered', 'returned'];
+  const requireStockAdjustmentPurgeAdmin = (req: any, res: any, next: any) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+    if (!['owner', 'admin'].includes(req.user.role) && !req.user.isSuperAdmin) {
+      return res.status(403).json({ message: "Accès administrateur requis" });
+    }
+    return next();
+  };
+
+  async function getAdjustmentPurgePreview(runner: any = db) {
+    const adjustments = await runner.select({
+      id: stockMovements.id,
+      storeId: stockMovements.storeId,
+      productId: stockMovements.productId,
+      variantId: stockMovements.variantId,
+      type: stockMovements.type,
+      quantity: stockMovements.quantity,
+      reason: stockMovements.reason,
+      orderId: stockMovements.orderId,
+      userId: stockMovements.userId,
+      createdAt: stockMovements.createdAt,
+    }).from(stockMovements)
+      .where(eq(stockMovements.type, 'adjustment'));
+
+    if (adjustments.length === 0) {
+      return { adjustments, adjustmentCount: 0, productCount: 0, negativeCount: 0, rows: [] as any[] };
+    }
+
+    const affectedProductIds = [...new Set(adjustments.map((movement: any) => movement.productId))];
+    const [affectedProducts, affectedVariants, physicalLedger] = await Promise.all([
+      runner.select({
+        id: products.id,
+        storeId: products.storeId,
+        name: products.name,
+        stock: products.stock,
+        hasVariants: products.hasVariants,
+        storeName: stores.name,
+      }).from(products)
+        .innerJoin(stores, eq(products.storeId, stores.id))
+        .where(inArray(products.id, affectedProductIds)),
+      runner.select({
+        id: productVariants.id,
+        productId: productVariants.productId,
+        storeId: productVariants.storeId,
+        name: productVariants.name,
+        stock: productVariants.stock,
+      }).from(productVariants)
+        .where(inArray(productVariants.productId, affectedProductIds)),
+      runner.select({
+        productId: stockMovements.productId,
+        variantId: stockMovements.variantId,
+        quantity: stockMovements.quantity,
+      }).from(stockMovements)
+        .where(and(
+          inArray(stockMovements.productId, affectedProductIds),
+          inArray(stockMovements.type, PHYSICAL_STOCK_MOVEMENT_TYPES),
+        )),
+    ]);
+
+    const directStockByProduct = new Map<number, number>();
+    const stockByVariant = new Map<number, number>();
+    for (const movement of physicalLedger) {
+      if (movement.variantId) {
+        stockByVariant.set(
+          movement.variantId,
+          (stockByVariant.get(movement.variantId) || 0) + movement.quantity,
+        );
+      } else {
+        directStockByProduct.set(
+          movement.productId,
+          (directStockByProduct.get(movement.productId) || 0) + movement.quantity,
+        );
+      }
+    }
+
+    const variantsByProduct = new Map<number, any[]>();
+    for (const variant of affectedVariants) {
+      if (!variantsByProduct.has(variant.productId)) variantsByProduct.set(variant.productId, []);
+      variantsByProduct.get(variant.productId)!.push(variant);
+    }
+
+    const rows = affectedProducts.map((product: any) => {
+      const variants = variantsByProduct.get(product.id) || [];
+      const newBaseStock = directStockByProduct.get(product.id) || 0;
+      const variantChanges = variants.map((variant: any) => ({
+        id: variant.id,
+        name: variant.name,
+        currentStock: variant.stock,
+        newStock: stockByVariant.get(variant.id) || 0,
+      }));
+      const currentStock = product.stock + variants.reduce((total: number, variant: any) => total + variant.stock, 0);
+      const computedStock = newBaseStock + variantChanges.reduce((total: number, variant: any) => total + variant.newStock, 0);
+
+      return {
+        productId: product.id,
+        storeId: product.storeId,
+        name: product.name,
+        storeName: product.storeName,
+        currentStock,
+        computedStock,
+        newBaseStock,
+        adjustmentCount: adjustments.filter((movement: any) => movement.productId === product.id).length,
+        variantChanges,
+      };
+    }).sort((a: any, b: any) => (
+      a.storeName.localeCompare(b.storeName, 'fr') || a.name.localeCompare(b.name, 'fr')
+    ));
+
+    return {
+      adjustments,
+      adjustmentCount: adjustments.length,
+      productCount: rows.length,
+      negativeCount: rows.filter((row: any) => row.computedStock < 0).length,
+      rows,
+    };
+  }
+
+  app.post("/api/admin/purge-stock-adjustments", requireAuth, requireStockAdjustmentPurgeAdmin, async (req: any, res: any) => {
+    try {
+      const { dryRun } = z.object({ dryRun: z.boolean().default(true) }).parse(req.body ?? {});
+
+      if (dryRun) {
+        const preview = await getAdjustmentPurgePreview();
+        return res.json({
+          dryRun: true,
+          adjustmentCount: preview.adjustmentCount,
+          productCount: preview.productCount,
+          negativeCount: preview.negativeCount,
+          rows: preview.rows,
+        });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        // Serializes concurrent applies across all app instances. The UI disables
+        // its button too, but server-side protection is the source of truth.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(5820192026)`);
+        const preview = await getAdjustmentPurgePreview(tx);
+
+        if (preview.adjustmentCount === 0) {
+          return {
+            adjustmentCount: 0,
+            productCount: 0,
+            negativeCount: 0,
+            rows: [],
+            backupRunId: null as number | null,
+          };
+        }
+
+        const [run] = await tx.insert(stockAdjustmentPurgeRuns).values({
+          executedByUserId: req.user!.id,
+        }).returning({ id: stockAdjustmentPurgeRuns.id });
+
+        const backupRows = preview.adjustments.map((movement: any) => ({
+          purgeRunId: run.id,
+          originalMovementId: movement.id,
+          storeId: movement.storeId,
+          productId: movement.productId,
+          variantId: movement.variantId,
+          type: movement.type,
+          quantity: movement.quantity,
+          reason: movement.reason,
+          orderId: movement.orderId,
+          userId: movement.userId,
+          originalCreatedAt: movement.createdAt,
+        }));
+        for (let index = 0; index < backupRows.length; index += 500) {
+          await tx.insert(stockAdjustmentPurgeBackups).values(backupRows.slice(index, index + 500));
+        }
+
+        await tx.delete(stockMovements).where(eq(stockMovements.type, 'adjustment'));
+
+        for (const row of preview.rows) {
+          await tx.update(products).set({ stock: row.newBaseStock })
+            .where(and(eq(products.id, row.productId), eq(products.storeId, row.storeId)));
+          for (const variant of row.variantChanges) {
+            await tx.update(productVariants).set({ stock: variant.newStock })
+              .where(and(eq(productVariants.id, variant.id), eq(productVariants.productId, row.productId)));
+          }
+        }
+
+        await tx.update(stockAdjustmentPurgeRuns).set({
+          movementsDeleted: preview.adjustmentCount,
+          productsAffected: preview.productCount,
+        }).where(eq(stockAdjustmentPurgeRuns.id, run.id));
+
+        return {
+          adjustmentCount: preview.adjustmentCount,
+          productCount: preview.productCount,
+          negativeCount: preview.negativeCount,
+          rows: preview.rows,
+          backupRunId: run.id,
+        };
+      });
+
+      res.json({
+        dryRun: false,
+        ...result,
+        message: result.adjustmentCount === 0
+          ? "Aucun ajustement à supprimer."
+          : `${result.adjustmentCount} ajustement(s) sauvegardé(s) puis supprimé(s).`,
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      console.error("[PURGE-STOCK-ADJUSTMENTS]", err);
+      res.status(500).json({ message: "La purge des ajustements a échoué. Aucune suppression partielle n'a été conservée." });
+    }
+  });
 
   app.get("/api/stock/fix-historical-shipments/preview", requireAuth, async (req, res) => {
     return res.status(410).json({

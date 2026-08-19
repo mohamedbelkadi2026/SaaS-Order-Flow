@@ -630,6 +630,55 @@ export default function Inventory() {
   const [cleanupType, setCleanupType] = useState<"no_orders" | "duplicates" | "archived">("no_orders");
   const [cleanupSelectedIds, setCleanupSelectedIds] = useState<Set<number>>(new Set());
 
+  // Admin-only purge of historical adjustment movements. The server is the
+  // authority for access control; this check only controls visibility.
+  const [adjustmentPurgeOpen, setAdjustmentPurgeOpen] = useState(false);
+  const [adjustmentPurgePreview, setAdjustmentPurgePreview] = useState<any | null>(null);
+  const [adjustmentPurgeLoading, setAdjustmentPurgeLoading] = useState(false);
+  const [adjustmentPurgeApplying, setAdjustmentPurgeApplying] = useState(false);
+  const [adjustmentPurgeResult, setAdjustmentPurgeResult] = useState<any | null>(null);
+
+  const openAdjustmentPurge = async () => {
+    setAdjustmentPurgePreview(null);
+    setAdjustmentPurgeResult(null);
+    setAdjustmentPurgeOpen(true);
+    setAdjustmentPurgeLoading(true);
+    try {
+      const response = await apiRequest("POST", "/api/admin/purge-stock-adjustments", { dryRun: true });
+      setAdjustmentPurgePreview(await response.json());
+    } catch (error: any) {
+      toast({ title: "Aperçu indisponible", description: error.message, variant: "destructive" });
+      setAdjustmentPurgeOpen(false);
+    } finally {
+      setAdjustmentPurgeLoading(false);
+    }
+  };
+
+  const applyAdjustmentPurge = async () => {
+    setAdjustmentPurgeApplying(true);
+    try {
+      const response = await apiRequest("POST", "/api/admin/purge-stock-adjustments", { dryRun: false });
+      const result = await response.json();
+      setAdjustmentPurgeResult(result);
+      setAdjustmentPurgePreview(result);
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/profitability"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/stats"] });
+      refetchStats();
+      toast({
+        title: "Nettoyage terminé",
+        description: result.adjustmentCount === 0
+          ? "Aucun ajustement à supprimer."
+          : `${result.adjustmentCount} ajustement(s) supprimé(s), backup #${result.backupRunId} créé.`,
+      });
+    } catch (error: any) {
+      toast({ title: "Nettoyage annulé", description: error.message, variant: "destructive" });
+    } finally {
+      setAdjustmentPurgeApplying(false);
+    }
+  };
+
   // Insights side-sheet
   const [insightsProductId, setInsightsProductId] = useState<number | null>(null);
 
@@ -1032,6 +1081,14 @@ export default function Inventory() {
     const isManualStockChange = !hasVariants &&
       editedStock !== undefined &&
       editedStock !== Number(editingProduct.stock);
+    if (isManualStockChange && !manualStockReason.trim()) {
+      toast({
+        title: "Motif requis",
+        description: "Indiquez la raison de la modification manuelle du stock.",
+        variant: "destructive",
+      });
+      return;
+    }
     try {
       // Image is stored as base64 in form.imageUrl — no separate upload step needed
       const imageChanged = (form.imageUrl || null) !== (editingProduct.imageUrl || null);
@@ -1060,7 +1117,7 @@ export default function Inventory() {
         coutLivraison: parseFloat(form.coutLivraison) || 0,
         coutConfirmation: parseFloat(form.coutConfirmation) || 0,
       };
-      if (isManualStockChange && manualStockReason.trim()) {
+      if (isManualStockChange) {
         updatePayload.manualStockReason = manualStockReason.trim();
       }
       if (imageChanged) updatePayload.imageUrl = form.imageUrl || null;
@@ -1339,6 +1396,22 @@ export default function Inventory() {
         >
           <Filter className="w-4 h-4" /> Nettoyage intelligent
         </Button>
+        {(user?.role === "owner" || user?.role === "admin" || user?.isSuperAdmin) && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2 border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/30"
+            onClick={openAdjustmentPurge}
+            disabled={adjustmentPurgeLoading || adjustmentPurgeApplying}
+            data-testid="button-purge-stock-adjustments"
+          >
+            {adjustmentPurgeLoading || adjustmentPurgeApplying ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Traitement en cours...</>
+            ) : (
+              <><ShieldAlert className="w-4 h-4" /> Nettoyer les ajustements</>
+            )}
+          </Button>
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -1834,7 +1907,7 @@ export default function Inventory() {
             </div>
             {!hasVariants && (
               <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-800 dark:bg-amber-950/20">
-                <Label htmlFor="manual-stock-reason">Raison de la modification du stock <span className="text-muted-foreground">(facultatif)</span></Label>
+                <Label htmlFor="manual-stock-reason">Raison de la modification du stock <span className="text-red-600">*</span></Label>
                 <Textarea
                   id="manual-stock-reason"
                   data-testid="input-manual-stock-reason"
@@ -1843,7 +1916,7 @@ export default function Inventory() {
                   placeholder="Ex. recomptage physique, perte constatée, correction d’inventaire…"
                   rows={2}
                 />
-                <p className="text-xs text-muted-foreground">Si le champ reste vide, un motif par défaut sera enregistré. Votre nom et votre e-mail seront toujours associés au mouvement.</p>
+                <p className="text-xs text-muted-foreground">Obligatoire uniquement si le stock change. Votre nom et votre e-mail seront associés au mouvement.</p>
               </div>
             )}
             <div className="space-y-2">
@@ -2622,6 +2695,119 @@ export default function Inventory() {
           ) : (
             <p className="text-sm text-muted-foreground">Aucune variante à compléter — tout est déjà renseigné.</p>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={adjustmentPurgeOpen}
+        onOpenChange={(open) => {
+          if (!adjustmentPurgeApplying) setAdjustmentPurgeOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldAlert className="w-5 h-5 text-red-600" />
+              Nettoyer les ajustements de stock
+            </DialogTitle>
+            <DialogDescription>
+              {adjustmentPurgeResult
+                ? adjustmentPurgeResult.message
+                : "Aperçu uniquement : aucune donnée ne sera modifiée avant votre confirmation."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {adjustmentPurgeLoading && (
+            <div className="flex justify-center py-10 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin mr-2" /> Calcul de l’aperçu…
+            </div>
+          )}
+
+          {!adjustmentPurgeLoading && adjustmentPurgePreview && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                <div className="rounded-lg border p-3">
+                  <div className="text-muted-foreground text-xs">Ajustements trouvés</div>
+                  <div className="text-xl font-bold">{adjustmentPurgePreview.adjustmentCount}</div>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <div className="text-muted-foreground text-xs">Produits concernés</div>
+                  <div className="text-xl font-bold">{adjustmentPurgePreview.productCount}</div>
+                </div>
+                <div className={`rounded-lg border p-3 ${adjustmentPurgePreview.negativeCount > 0 ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/30" : ""}`}>
+                  <div className="text-muted-foreground text-xs">Stocks négatifs après nettoyage</div>
+                  <div className={`text-xl font-bold ${adjustmentPurgePreview.negativeCount > 0 ? "text-red-700 dark:text-red-300" : ""}`}>
+                    {adjustmentPurgePreview.negativeCount}
+                  </div>
+                </div>
+              </div>
+
+              {adjustmentPurgePreview.rows.length > 0 ? (
+                <div className="border rounded-lg overflow-auto flex-1 min-h-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Produit</TableHead>
+                        <TableHead>Store</TableHead>
+                        <TableHead className="text-right">Disponible actuel</TableHead>
+                        <TableHead className="text-right">Nouveau Disponible</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {adjustmentPurgePreview.rows.map((row: any) => (
+                        <TableRow
+                          key={`${row.storeId}-${row.productId}`}
+                          className={row.computedStock < 0 ? "bg-red-50 dark:bg-red-950/30" : ""}
+                        >
+                          <TableCell>
+                            <div className="font-medium">{row.name}</div>
+                            {row.variantChanges?.length > 0 && (
+                              <div className="text-xs text-muted-foreground">
+                                {row.variantChanges.length} variante{row.variantChanges.length > 1 ? "s" : ""} recalculée{row.variantChanges.length > 1 ? "s" : ""}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">{row.storeName}</TableCell>
+                          <TableCell className="text-right text-muted-foreground line-through">{row.currentStock}</TableCell>
+                          <TableCell className={`text-right font-bold ${row.computedStock < 0 ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>
+                            {row.computedStock}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                  Aucun ajustement à nettoyer.
+                </div>
+              )}
+            </>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => setAdjustmentPurgeOpen(false)}
+              disabled={adjustmentPurgeApplying}
+            >
+              {adjustmentPurgeResult ? "Fermer" : "Annuler"}
+            </Button>
+            {!adjustmentPurgeResult && !adjustmentPurgeLoading && adjustmentPurgePreview?.adjustmentCount > 0 && (
+              <Button
+                variant="destructive"
+                onClick={applyAdjustmentPurge}
+                disabled={adjustmentPurgeApplying}
+                data-testid="button-apply-purge-stock-adjustments"
+              >
+                {adjustmentPurgeApplying ? (
+                  <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Traitement en cours...</>
+                ) : (
+                  "Confirmer et appliquer"
+                )}
+              </Button>
+            )}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
