@@ -1,0 +1,25 @@
+# Replit Prompt — "Synchroniser Ozon Express" dit "0 mise à jour" alors que les statuts diffèrent réellement
+
+## Constat
+J'ai cliqué "Synchroniser Ozon Express" → toast : "✅ Statuts Ozon Express synchronisés — 45 commande(s) vérifiées, 0 mise(s) à jour." Le processus tourne bien (45 commandes traitées), mais il conclut à tort qu'aucune n'a besoin d'être mise à jour, alors que je vois des différences réelles entre la plateforme et l'interface Ozon Express.
+
+## Ce que je veux, avec preuve — pas de nouveau fix sans avoir vu les vraies données
+
+1. Prends UNE commande précise dont je sais que le statut diffère (une commande "Attente Ramassage" sur la plateforme qui a un statut plus avancé chez Ozon Express).
+2. Ajoute un log temporaire dans la fonction de sync Ozon Express qui affiche, pour cette commande précise :
+   - Le statut actuel stocké côté plateforme.
+   - La requête EXACTE envoyée à l'API Ozon Express (endpoint, paramètres).
+   - La réponse BRUTE reçue d'Ozon Express (le JSON complet, pas juste le statut extrait).
+   - Le résultat du mapping (quel statut interne ça donne une fois traduit).
+   - La comparaison finale : pourquoi a-t-il été décidé qu'aucune mise à jour n'était nécessaire ?
+3. Redéploie, relance la synchronisation, et colle-moi ce log complet pour cette commande.
+
+## Hypothèses à vérifier en particulier
+- L'appel à l'API Ozon Express échoue-t-il silencieusement (erreur réseau/auth/format) et le code traite-t-il une erreur comme "pas de changement" au lieu de la signaler ?
+- Le mapping statut Ozon Express → statut interne retourne-t-il toujours la même valeur que le statut actuel par erreur (bug dans la fonction de mapping elle-même) ?
+- La comparaison se fait-elle sur le bon champ (peut-être compare-t-il deux champs qui ne représentent pas la même chose) ?
+
+## Testing checklist
+1. Le log montre clairement la vraie réponse Ozon Express pour la commande de test, avec le vrai statut actuel côté Ozon.
+2. Une fois la cause identifiée et corrigée, relancer la sync → le nombre de "mises à jour" doit refléter la réalité (pas 0 si des différences existent vraiment).
+3. Vérifier que le statut de cette commande de test se met bien à jour sur la plateforme après correction.

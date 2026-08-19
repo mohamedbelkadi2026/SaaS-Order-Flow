@@ -13773,11 +13773,37 @@ function ensureHeaders(sheet) {
     const { trackByCarrier } = await import("./services/carrier-service");
 
     const allOrders = await storage.getOrdersByStore(storeId);
-    let candidates = allOrders.filter((o: any) =>
-      (o.shippingProvider || '').toLowerCase() === p &&
-      o.trackNumber &&
-      !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
-    );
+
+    // OZON: match on shippingProvider OR carrierName OR TG-* tracking number
+    // (orders created before carrierName was populated only have shippingProvider;
+    //  others may have it only in carrierName; some are identified by TG- prefix).
+    // Terminal statuses that should never be polled again are extended for Ozon
+    // to include 'retourné' and 'annule' (in addition to the universal three).
+    const OZON_TERMINAL = new Set(['delivered', 'refused', 'Retour Recu', 'retourné', 'annule']);
+    const GENERIC_TERMINAL = new Set(['delivered', 'refused', 'Retour Recu']);
+
+    let candidates = allOrders.filter((o: any) => {
+      if (!o.trackNumber) return false;
+      const provider = (o.shippingProvider || '').toLowerCase();
+      const carrier  = (o.carrierName || '').toLowerCase();
+      const track    = (o.trackNumber || '').toString();
+      const isOzon   = p === 'ozonexpress';
+
+      const matchesCarrier = isOzon
+        ? (provider === 'ozonexpress' || carrier === 'ozonexpress' || track.startsWith('TG-'))
+        : provider === p;
+      if (!matchesCarrier) return false;
+
+      const terminal = isOzon ? OZON_TERMINAL : GENERIC_TERMINAL;
+      return !terminal.has(o.status || '');
+    });
+
+    if (p === 'ozonexpress') {
+      console.log(`[OZON-SYNC-CANDIDATES] storeId=${storeId} total_orders=${allOrders.length} candidates=${candidates.length}`);
+      for (const o of candidates.slice(0, 5)) {
+        console.log(`[OZON-SYNC-CANDIDATES] sample: #${(o as any).orderNumber} trackNumber=${o.trackNumber} status=${o.status} shippingProvider=${(o as any).shippingProvider} carrierName=${(o as any).carrierName}`);
+      }
+    }
     if (options?.magasinId) {
       candidates = candidates.filter((o: any) => o.magasinId === Number(options.magasinId));
     }
@@ -13846,6 +13872,17 @@ function ensureHeaders(sheet) {
           let ozonRawStatus: string | null = null;
           let ozonApiKeyInvalid = false;
 
+          // ── Diagnostic: log request details (key masked) ────────────────────────
+          const maskedKey = ozonApiKey
+            ? ozonApiKey.slice(0, 4) + '…' + ozonApiKey.slice(-4)
+            : '(empty)';
+          console.log(
+            `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
+            `platform_status="${order.status}" endpoint=${ozonUrl} ` +
+            `customer_id="${ozonCustomerId || '(empty)'}" key_preview="${maskedKey}" ` +
+            `body=${JSON.stringify({ parcels: [ozonTrackNum] })}`
+          );
+
           try {
             const resp = await axios2.post(ozonUrl, { parcels: [ozonTrackNum] }, {
               headers: {
@@ -13855,12 +13892,18 @@ function ensureHeaders(sheet) {
               timeout: 15000,
               validateStatus: () => true,
             });
-            console.log(`[OZON-TRACK] ${ozonTrackNum} HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 500)}`);
+            // ── Diagnostic: full raw response (truncated at 1000 chars) ────────────
+            const rawJson = JSON.stringify(resp.data);
+            console.log(
+              `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
+              `HTTP ${resp.status} raw_response=${rawJson.slice(0, 1000)}`
+            );
 
             if (resp.status < 400 && resp.data) {
               const d = resp.data;
               if (d?.CHECK_API?.RESULT === 'ERROR') {
                 ozonApiKeyInvalid = true;
+                console.log(`[OZON-DIAG] order=#${(order as any).orderNumber} ⚠️ CHECK_API.RESULT=ERROR — clé API invalide`);
               } else {
                 const t = d['TRACKING'] || d['PARCEL-TRACKING'] || d['PARCEL-INFO'] || d;
                 ozonRawStatus =
@@ -13869,10 +13912,24 @@ function ensureHeaders(sheet) {
                   (Array.isArray(t?.['TRACKING']) && t['TRACKING'].length ? t['TRACKING'][t['TRACKING'].length-1]?.['STATUT'] : null) ??
                   t?.['STATUT'] ?? t?.['STATUS'] ?? t?.['INFOS']?.['STATUT'] ?? null;
                 ozonRawResponse = d;
+                // ── Diagnostic: mapping result and update decision ──────────────────
+                const diagMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
+                const diagWouldUpdate = diagMapped && diagMapped !== order.status;
+                console.log(
+                  `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
+                  `raw_status="${ozonRawStatus ?? 'null'}" mapped="${diagMapped ?? 'null'}" ` +
+                  `platform="${order.status}" ` +
+                  `decision=${diagWouldUpdate ? 'UPDATE → ' + diagMapped : (diagMapped === null ? 'SKIP (null mapping — unknown code)' : 'SKIP (same status)')}`
+                );
               }
+            } else {
+              console.log(
+                `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
+                `HTTP ${resp.status} — skipped (non-2xx or empty body)`
+              );
             }
           } catch (ozonErr: any) {
-            console.log(`[OZON-TRACK] ${ozonTrackNum} error: ${ozonErr?.message}`);
+            console.log(`[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} network_error="${ozonErr?.message}"`);
           }
 
           if (ozonApiKeyInvalid) {
