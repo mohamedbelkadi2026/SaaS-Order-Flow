@@ -1,0 +1,19 @@
+# Replit Prompt — Tout a été testé en DEV mais rien n'est déployé en production
+
+## Constat (dans ton propre message)
+Tu as écrit : "Les données temporaires de test ont été supprimées. La base de développement revient à : 0 boutique, 0 utilisateur..." — ça confirme que tout le travail (nouvelle sidebar, Mon Stock, Demandes d'offres, Factures, espace Admin /admin/tajerdrop/operations) a été fait et testé UNIQUEMENT sur la base de DÉVELOPPEMENT (l'environnement Replit), pas sur la production (Railway/tajergrow.com).
+
+Quand je me connecte sur tajergrow.com avec mon compte Seller, je vois toujours l'ancienne sidebar basique (Tableau de bord / Catalogue / Mes commandes / Mon profil / Déconnexion) — pas la nouvelle (Performance produits / Analytics / Mon stock / Expéditions / Commandes / Factures / Demandes d'offres / Intégrations / Profil).
+
+## Ce que je veux
+
+1. Confirme : est-ce que le code de cette refonte a été commité et pushé sur la branche déployée sur Railway ? Donne-moi le dernier commit hash et son message.
+2. Confirme la date/heure du dernier déploiement RÉUSSI sur Railway, et si elle est bien APRÈS ce commit.
+3. Si le code n'a jamais été poussé vers Railway : fais-le maintenant (git push / redeploy), en incluant les migrations `offer_requests` et `seller_invoices` qui doivent aussi s'appliquer sur la base de PRODUCTION (pas juste dev) au démarrage.
+4. Une fois déployé, vérifie toi-même sur l'URL de production réelle (https://www.tajergrow.com, pas un aperçu Replit) que la nouvelle sidebar Seller apparaît bien après connexion.
+5. Confirme-moi que les migrations ont bien tourné sur la base de production (chercher dans les logs de démarrage Railway les lignes `[MIGRATE] ✓ ..._offer_requests...` et `..._seller_invoices...`).
+
+## Je testerai ensuite moi-même
+Une fois que tu me confirmes le déploiement effectif en production avec preuve (logs Railway), je me reconnecterai sur tajergrow.com pour vérifier moi-même que la nouvelle interface apparaît.
+
+## Ne me dis pas "c'est fait" sans avoir confirmé que ça tourne sur la vraie base de production, pas juste testé et remis à zéro en dev.
