@@ -1,0 +1,27 @@
+# Replit Prompt — Bug récurrent : "Total sorti" exclut des mouvements réels (classés "correction"), rendant Historique incohérent avec Disponible
+
+## Bug confirmé (produit "pistolet 2b", chez un utilisateur/store précis)
+```
+Total reçu: +300
+Total sorti: -24
+Disponible: 252
+```
+Incohérence : 300 − 24 = 276, PAS 252. L'écart de 24 correspond exactement à la section "Corrections (ajustements techniques, hors 'Total sorti')" qui liste 10 mouvements de type "Expédition" bien réels, avec de vrais numéros de commande (#19192, #19195, #19218, #19200, #19207, #19219, #19204, #19206, #19209, #19205 — tous horodatés 19 août 2026 16:51).
+
+Ces mouvements SONT bien pris en compte dans le calcul de Disponible (300 − 24 − 24 = 252 correspond), mais sont exclus de l'affichage "Total sorti" à tort, car catégorisés comme "correction technique" alors que ce sont des expéditions normales sur de vraies commandes.
+
+## Ce qu'il faut corriger
+
+1. Trouve, dans le code qui calcule "Total sorti" pour le panneau Historique (`server/routes.ts` ou `server/storage.ts`, la fonction qui sert le endpoint stock-movements/historique), quelle condition classe ces mouvements comme "correction technique" / les exclut du total affiché — probablement un filtre sur un champ `type`/`category`/`isCorrection` ou une detection basée sur le texte de la raison ("Expédition commande #...").
+2. Ces 10 mouvements ont un `type` = "shipped"/"Expédition" avec un vrai `orderId` associé — ils ne devraient PAS être traités différemment des autres mouvements "Expédition" déjà comptés correctement dans le "Total sorti" affiché ailleurs (comme on l'a vérifié sur d'autres produits dans ce projet). Identifie pourquoi CES 10 précisément sont traités à part — probablement liés à un batch/migration/backfill exécuté à 16:51 le 19 août qui les a insérés avec un marqueur différent des mouvements "normaux".
+3. Corrige la logique d'affichage de "Total sorti" pour qu'elle somme TOUS les mouvements négatifs réels (peu importe s'ils viennent d'un backfill ou d'une expédition en temps réel), de sorte que : **Total reçu + Total sorti = Disponible**, toujours, sans exception, pour tous les produits et tous les stores.
+4. Vérifie si ce problème touche uniquement ce store précis (peut-être lié à une migration/backfill exécutée spécifiquement pour lui) ou s'il existe potentiellement sur d'autres stores avec des mouvements similaires — fais une requête pour identifier tous les produits où `total_reçu + total_sorti != disponible_actuel` sur l'ensemble de la base, et donne-moi la liste.
+
+## Important — ça doit rester automatique
+Comme déjà établi précédemment dans ce projet : le calcul de stock doit continuer à se mettre à jour automatiquement à chaque nouvelle entrée de stock et à chaque expédition de commande — ce fix ne doit pas introduire de bouton manuel de recalcul récurrent, juste corriger la logique d'affichage/agrégation pour qu'elle soit juste en continu.
+
+## Testing checklist
+1. Historique de "pistolet 2b" → Total sorti devient -48 (24+24), Disponible reste 252, et 300 − 48 = 252 ✅.
+2. Requête globale : combien d'autres produits/stores ont la même incohérence Total reçu + Total sorti ≠ Disponible ? Corriger tous ceux identifiés.
+3. Créer une nouvelle commande de test et l'expédier → le mouvement apparaît normalement dans "Total sorti" (pas dans une section "Corrections" séparée), et Disponible reste cohérent automatiquement.
+4. Confirmer qu'aucune régression n'apparaît sur les produits déjà vérifiés comme corrects précédemment dans ce projet.
