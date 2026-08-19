@@ -1,0 +1,19 @@
+# Replit Prompt — Vérifier : une commande passant "Expédition" puis "Livraison" décrémente-t-elle le stock une seule fois ou deux fois ?
+
+## Question précise
+Quand une commande passe au statut "Expédition"/"en cours" (mouvement -1 créé), puis PLUS TARD passe au statut "Livrée" (est-ce qu'un DEUXIÈME mouvement -1 est créé pour la même commande) ?
+
+Le bon comportement attendu : **une seule décrémentation totale par commande**, peu importe combien de fois son statut change. Soit :
+- On décrémente à l'expédition, et le passage à "livré" ne doit PAS créer un second mouvement de stock (juste mettre à jour le statut de la commande elle-même) — seulement éventuellement une ligne d'audit à quantité 0 si on veut tracer le changement de statut sans impact stock.
+- Soit on décrémente uniquement à la livraison, et l'expédition seule ne décrémente rien.
+- Dans tous les cas, PAS de double décrément (-1 puis -1 encore = -2 pour une seule commande).
+
+## Ce que je veux comme preuve
+
+1. Prends une commande précise qui est passée par "Expédition" puis "Livrée" — par exemple #18771 (Expédition commande #18771, 18 août 22:25) — vérifie si elle apparaît AUSSI comme "Livraison -1 #18771" plus tard dans l'historique de "ميزان الكتروني". Si oui, c'est un double décrément à corriger. Si non/si un seul mouvement existe pour cette commande, c'est correct.
+2. Montre-moi le code exact (`server/storage.ts`, la logique de transition de statut / `decrementStockForOrder`) qui gère ça — en particulier la vérification qui devrait empêcher un deuxième décrément si la commande a déjà été décomptée à l'expédition.
+3. Si un bug de double décrément est confirmé : corrige-le, et vérifie combien de commandes ont été affectées (decrémentées deux fois) — ça expliquerait une partie de l'écart qu'on voit déjà entre "Sortie (69) + En cours (26) = 95" et "Total sorti affiché (-128)" sur "ميزان الكتروني", un écart de 33 non expliqué.
+
+## Testing checklist
+1. Créer une commande de test, la faire passer par confirme → expédié → livré → vérifier dans son Historique produit qu'un SEUL mouvement de -1 (ou -quantité) existe au total pour cette commande, pas deux.
+2. Si un bug était présent, vérifier après correction que "Total sorti" redevient cohérent avec Sortie + En cours pour "ميزان الكتروني" et les autres produits.

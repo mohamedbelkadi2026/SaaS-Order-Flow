@@ -47,7 +47,7 @@ export interface IStorage {
   createProduct(product: InsertProduct): Promise<Product>;
   getOrCreateProductByName(storeId: number, opts: { name: string; sku?: string | null; sellingPrice?: number }): Promise<Product>;
   updateProductStock(id: number, stockDelta: number): Promise<Product | undefined>;
-  decrementStockForOrder(orderId: number, storeId: number): Promise<void>;
+  decrementStockForOrder(orderId: number, storeId: number, movementType?: 'shipped' | 'delivered'): Promise<void>;
   
   getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]>;
   getOrdersSince(storeId: number, since: Date): Promise<Order[]>;
@@ -567,68 +567,102 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async decrementStockForOrder(orderId: number, storeId: number): Promise<void> {
-    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
-    if (!items.length) return;
+  async decrementStockForOrder(
+    orderId: number,
+    storeId: number,
+    movementType: 'shipped' | 'delivered' = 'shipped',
+  ): Promise<void> {
+    await db.transaction(async (tx) => {
+      // Serialize all direct shipping/import retries for one order. A carrier
+      // response can be retried, but stock may only leave once.
+      await tx.execute(sql`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`);
+      const [existingOutboundMovement] = await tx.select({ id: stockMovements.id })
+        .from(stockMovements)
+        .where(and(
+          eq(stockMovements.orderId, orderId),
+          inArray(stockMovements.type, ['shipped', 'delivered']),
+        ))
+        .limit(1);
+      if (existingOutboundMovement) {
+        console.info(`[STOCK-DECREMENT] Order #${orderId} already has an outbound movement — skipped`);
+        return;
+      }
 
-    for (const item of items) {
-      if (!item.productId) continue;
-      const qty = item.quantity || 1;
+      const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+      if (!items.length) return;
+      const actionLabel = movementType === 'delivered' ? 'Livraison' : 'Expédition';
 
-      // Try to match a variant first (by variantInfo name or SKU)
-      const variants = await db.select().from(productVariants)
-        .where(eq(productVariants.productId, item.productId));
+      for (const item of items) {
+        if (!item.productId) continue;
+        const qty = item.quantity || 1;
 
-      let variantMatched = false;
-      if (variants.length > 0 && item.variantInfo) {
-        const variantName = (item.variantInfo || '').trim();
-        const matched = variants.find(v =>
-          v.name === variantName ||
-          v.sku === item.sku ||
-          v.name?.includes(variantName) ||
-          variantName.includes(v.name || '')
-        );
-        if (matched) {
-          const newStock = Math.max(0, (matched.stock || 0) - qty);
-          console.log(`[STOCK-DECREMENT] Order #${orderId} → variant "${matched.name}" (id=${matched.id}): stock ${matched.stock} → ${newStock}`);
-          await db.update(productVariants)
+        // Try to match a variant first (by variantInfo name or SKU)
+        const variants = await tx.select().from(productVariants)
+          .where(eq(productVariants.productId, item.productId));
+
+        let variantMatched = false;
+        if (variants.length > 0 && item.variantInfo) {
+          const variantName = (item.variantInfo || '').trim();
+          const matched = variants.find(v =>
+            v.name === variantName ||
+            v.sku === item.sku ||
+            v.name?.includes(variantName) ||
+            variantName.includes(v.name || '')
+          );
+          if (matched) {
+            const newStock = Math.max(0, (matched.stock || 0) - qty);
+            console.log(`[STOCK-DECREMENT] Order #${orderId} → variant "${matched.name}" (id=${matched.id}): stock ${matched.stock} → ${newStock}`);
+            await tx.update(productVariants)
+              .set({ stock: newStock })
+              .where(eq(productVariants.id, matched.id));
+            const [ownerProd] = await tx.select({ storeId: products.storeId }).from(products).where(eq(products.id, item.productId));
+            const movementStoreId = ownerProd?.storeId ?? storeId;
+            await tx.insert(stockLogs).values({
+              storeId: movementStoreId,
+              productId: item.productId,
+              orderId,
+              changeAmount: -qty,
+              reason: `${actionLabel} commande #${orderId} (variant: ${matched.name})`,
+            });
+            await tx.insert(stockMovements).values({
+              storeId: movementStoreId,
+              productId: item.productId,
+              variantId: matched.id,
+              type: movementType,
+              quantity: -qty,
+              reason: `${actionLabel} commande #${orderId} (variant: ${matched.name})`,
+              orderId,
+            });
+            variantMatched = true;
+          }
+        }
+
+        if (!variantMatched) {
+          const [product] = await tx.select().from(products).where(eq(products.id, item.productId));
+          if (!product) continue;
+          const newStock = Math.max(0, (product.stock || 0) - qty);
+          console.log(`[STOCK-DECREMENT] Order #${orderId} → product "${product.name}" (id=${product.id}): stock ${product.stock} → ${newStock}`);
+          await tx.update(products)
             .set({ stock: newStock })
-            .where(eq(productVariants.id, matched.id));
-          // Attribuer le mouvement au store PROPRIÉTAIRE du produit (≠ store de
-          // la commande pour les produits marketplace TajerDrop).
-          const [ownerProd] = await db.select({ storeId: products.storeId }).from(products).where(eq(products.id, item.productId));
-          await db.insert(stockMovements).values({
-            storeId: ownerProd?.storeId ?? storeId,
+            .where(eq(products.id, item.productId));
+          await tx.insert(stockLogs).values({
+            storeId: product.storeId ?? storeId,
             productId: item.productId,
-            variantId: matched.id,
-            type: 'shipped',
+            orderId,
+            changeAmount: -qty,
+            reason: `${actionLabel} commande #${orderId}`,
+          });
+          await tx.insert(stockMovements).values({
+            storeId: product.storeId ?? storeId,
+            productId: item.productId,
+            type: movementType,
             quantity: -qty,
-            reason: `Expédition commande #${orderId} (variant: ${matched.name})`,
+            reason: `${actionLabel} commande #${orderId}`,
             orderId,
           });
-          variantMatched = true;
         }
       }
-
-      if (!variantMatched) {
-        const [product] = await db.select().from(products).where(eq(products.id, item.productId));
-        if (!product) continue;
-        const newStock = Math.max(0, (product.stock || 0) - qty);
-        console.log(`[STOCK-DECREMENT] Order #${orderId} → product "${product.name}" (id=${product.id}): stock ${product.stock} → ${newStock}`);
-        await db.update(products)
-          .set({ stock: newStock })
-          .where(eq(products.id, item.productId));
-        await db.insert(stockMovements).values({
-          // Store propriétaire du produit (≠ store de la commande pour marketplace)
-          storeId: product.storeId ?? storeId,
-          productId: item.productId,
-          type: 'shipped',
-          quantity: -qty,
-          reason: `Expédition commande #${orderId}`,
-          orderId,
-        });
-      }
-    }
+    });
   }
 
   // Lightweight fetch of recent orders for duplicate detection during import.
@@ -1282,14 +1316,24 @@ export class DatabaseStorage implements IStorage {
       const stockStoreFor = (productId: number | null) =>
         (productId != null ? productOwnerStore.get(productId) : undefined) ?? currentOrder.storeId!;
 
-      // ── RULE 0: First-time confirm → subtract stock ─────────────────────
-      // Triggers when transitioning INTO 'confirme' or 'confirme_reporte'
-      // from a status that is NEITHER. Promotion confirme_reporte→confirme
-      // does NOT re-deduct (stock was already taken when entering reporte).
-      if (this.CONFIRMED_FOR_STOCK.has(status) && !this.CONFIRMED_FOR_STOCK.has(prevStatus)) {
-        const reason = status === 'confirme_reporte'
-          ? `Commande #${id} confirmée (reportée)`
-          : `Commande #${id} confirmée`;
+      // One order can have only one physical outbound movement. Status changes
+      // after that movement are tracked on the order itself, not as another
+      // negative ledger row.
+      let hasOutboundMovement = Boolean((await tx.select({ id: stockMovements.id })
+        .from(stockMovements)
+        .where(and(
+          eq(stockMovements.orderId, id),
+          inArray(stockMovements.type, ['shipped', 'delivered']),
+        ))
+        .limit(1))[0]);
+
+      // ── RULE 0.5: First-time shipped transition → one physical departure ──
+      // Confirmation reserves no physical stock. The first carrier/shipping
+      // transition subtracts it and writes the single negative ledger row.
+      const isFirstShippedTransition = SHIPPED_STATUS_SET.has(status) &&
+        status !== 'delivered' &&
+        !SHIPPED_STATUS_SET.has(prevStatus ?? '');
+      if (isFirstShippedTransition && !hasOutboundMovement) {
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
@@ -1301,37 +1345,8 @@ export class DatabaseStorage implements IStorage {
             productId: item.productId,
             orderId: id,
             changeAmount: -qty,
-            reason,
+            reason: `Commande #${id} expédiée`,
           });
-        }
-      }
-
-      // ── RULE 0.5: First-time shipped transition → write stock_movements ───
-      // Covers every transition INTO a shipped/in-transit status that is NOT
-      // 'delivered' (RULE 1 handles that), and only the FIRST such transition
-      // (shipped→shipped carrier updates don't re-fire).
-      // Physical stock is only decremented if RULE 0 didn't already do it
-      // (i.e., if prev status was NOT in CONFIRMED_FOR_STOCK).
-      const isFirstShippedTransition = SHIPPED_STATUS_SET.has(status) &&
-        status !== 'delivered' &&
-        !SHIPPED_STATUS_SET.has(prevStatus ?? '');
-      if (isFirstShippedTransition) {
-        const skipStockDeductionShip = this.CONFIRMED_FOR_STOCK.has(prevStatus ?? '');
-        for (const item of items) {
-          if (!item.productId) continue;
-          const qty = Number(item.quantity);
-          if (!skipStockDeductionShip) {
-            await tx.update(products)
-              .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
-              .where(eq(products.id, item.productId));
-            await tx.insert(stockLogs).values({
-              storeId: stockStoreFor(item.productId),
-              productId: item.productId,
-              orderId: id,
-              changeAmount: -qty,
-              reason: `Commande #${id} expédiée`,
-            });
-          }
           await tx.insert(stockMovements).values({
             storeId: stockStoreFor(item.productId),
             productId: item.productId,
@@ -1339,41 +1354,30 @@ export class DatabaseStorage implements IStorage {
             quantity: -qty,
             orderId: id,
             userId: actorId ?? null,
-            reason: skipStockDeductionShip
-              ? `Commande #${id} expédiée (stock déjà déduit à la confirmation)`
-              : `Commande #${id} expédiée`,
+            reason: `Commande #${id} expédiée`,
           });
         }
+        hasOutboundMovement = true;
       }
 
       // ── RULE 1: First-time delivery ────────────────────────────────────
-      // The ledger MUST log every transition into 'delivered', regardless of
-      // what the prev status was — that's the whole point of "sortie" in the
-      // insights view (units actually shipped to customers).
-      // Physical stock subtraction is conditional: if the prev status was
-      // already stock-deducting (RULE 0 ran on confirme or RULE 0.5 ran on
-      // expédié), we skip the subtraction but still write the ledger row so
-      // the audit trail is accurate.
-      if (status === 'delivered' && prevStatus !== 'delivered') {
-        // Skip deduction if: came from confirme (RULE 0) OR from any shipped
-        // status (RULE 0.5 handled it, or RULE 0 ran before the ship step).
-        const skipStockDeduction = this.CONFIRMED_FOR_STOCK.has(prevStatus ?? '') ||
-          (SHIPPED_STATUS_SET.has(prevStatus ?? '') && prevStatus !== 'delivered');
+      // A direct transition to delivered (without a recorded shipment) creates
+      // the one physical movement. After shipping, delivered creates no second
+      // negative row.
+      if (status === 'delivered' && prevStatus !== 'delivered' && !hasOutboundMovement) {
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
-          if (!skipStockDeduction) {
-            await tx.update(products)
-              .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
-              .where(eq(products.id, item.productId));
-            await tx.insert(stockLogs).values({
-              storeId: stockStoreFor(item.productId),
-              productId: item.productId,
-              orderId: id,
-              changeAmount: -qty,
-              reason: `Commande #${id} livrée`,
-            });
-          }
+          await tx.update(products)
+            .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
+            .where(eq(products.id, item.productId));
+          await tx.insert(stockLogs).values({
+            storeId: stockStoreFor(item.productId),
+            productId: item.productId,
+            orderId: id,
+            changeAmount: -qty,
+            reason: `Commande #${id} livrée`,
+          });
           await tx.insert(stockMovements).values({
             storeId: stockStoreFor(item.productId),
             productId: item.productId,
@@ -1381,11 +1385,10 @@ export class DatabaseStorage implements IStorage {
             quantity: -qty,
             orderId: id,
             userId: actorId ?? null,
-            reason: skipStockDeduction
-              ? `Commande #${id} livrée (stock déjà déduit à la confirmation)`
-              : `Commande #${id} livrée`,
+            reason: `Commande #${id} livrée`,
           });
         }
+        hasOutboundMovement = true;
       }
 
       // ── RULE 2a: Refus/Annulation → restauration AUTOMATIQUE ─────────────
@@ -1393,7 +1396,19 @@ export class DatabaseStorage implements IStorage {
       // physiquement (annulation/refus administratif) → pas de scan requis,
       // le stock est restauré immédiatement comme avant.
       const AUTO_RESTORE_STATUSES = new Set(['refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']);
-      if ((prevStatus === 'delivered' || this.CONFIRMED_FOR_STOCK.has(prevStatus)) && AUTO_RESTORE_STATUSES.has(status)) {
+      const [existingReturnMovement] = await tx.select({ id: stockMovements.id })
+        .from(stockMovements)
+        .where(and(
+          eq(stockMovements.orderId, id),
+          eq(stockMovements.type, 'returned'),
+        ))
+        .limit(1);
+      if (
+        hasOutboundMovement &&
+        !existingReturnMovement &&
+        prevStatus !== status &&
+        AUTO_RESTORE_STATUSES.has(status)
+      ) {
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);

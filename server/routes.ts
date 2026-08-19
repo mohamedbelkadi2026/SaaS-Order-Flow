@@ -8700,11 +8700,16 @@ function ensureHeaders(sheet) {
             variantInfo: importVariantInfo || '',
           }] as any : []);
 
-          // If the imported order already has an advanced status (delivered/shipped),
-          // decrement stock immediately — no status transition will ever fire for it.
+          // Imported advanced orders bypass status transitions, so record exactly
+          // one physical movement. Delivered imports use a delivered row; every
+          // other shipped state uses a shipped row.
           if (productId && SHIPPED_STATUS_SET.has(status)) {
             try {
-              await storage.decrementStockForOrder(createdOrder.id, storeId);
+              await storage.decrementStockForOrder(
+                createdOrder.id,
+                storeId,
+                status === 'delivered' ? 'delivered' : 'shipped',
+              );
             } catch (stockErr) {
               console.warn(`[ImportBulk] stock decrement failed for order ${createdOrder.id}:`, stockErr);
             }
