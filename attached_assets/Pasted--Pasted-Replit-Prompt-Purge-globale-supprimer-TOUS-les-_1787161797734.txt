@@ -1,0 +1,31 @@
+
+Pasted--Replit-Prompt-Purge-globale-supprimer-TOUS-les-mouveme_1787160952214.txt
+# Replit Prompt — Purge globale : supprimer TOUS les mouvements "Ajustement" (+/-) sur TOUS les produits, tous stores
+
+## Contexte
+On a confirmé que le mécanisme "Correction historique — recalcul basé sur le grand livre" a créé des ajustements fantômes sur plusieurs produits/stores, en plus d'anciennes éditions manuelles non documentées (avant l'ajout du champ "raison obligatoire"). Je veux tout nettoyer d'un coup : supprimer TOUS les mouvements de type "Ajustement" (positifs ET négatifs) existants actuellement dans `stock_movements`, sur tous les produits, tous les stores, sans exception.
+
+## Ce qu'il faut faire, dans l'ordre strict
+
+### 1. Backup complet AVANT toute suppression
+Exporte (fichier CSV/JSON, ou table de sauvegarde `stock_movements_backup_20260819`) TOUTES les lignes `stock_movements` où `type = 'adjustment'` (ou l'équivalent exact utilisé en base), avec toutes leurs colonnes, AVANT de rien supprimer. Donne-moi le nombre total de lignes sauvegardées et confirme que le backup est bien accessible/restaurable si besoin.
+
+### 2. Suppression
+Supprime toutes ces lignes "Ajustement" de `stock_movements`.
+
+### 3. Recalcul de `products.stock` pour CHAQUE produit affecté
+Pour chaque produit ayant eu au moins un "Ajustement" supprimé, recalcule son `products.stock` (et `product_variants.stock` si variantes) UNIQUEMENT à partir des mouvements réels restants : Entrée (restock) − Livraison − Expédition/En cours + Retour. C'est la nouvelle valeur de référence, propre, basée uniquement sur des événements réels.
+
+### 4. Rapport final
+Donne-moi un tableau : pour chaque produit affecté, `nom produit | store | ancien Disponible (avant purge) | nouveau Disponible (après purge, recalculé)`. Je veux voir clairement l'avant/après pour comprendre l'ampleur du changement avant de considérer que c'est bon.
+
+## Garde-fous
+- Ne PAS toucher aux mouvements réels (Entrée, Livraison, Expédition, Retour) — uniquement le type "Ajustement".
+- Le mécanisme automatique de "Correction historique" doit rester désactivé (déjà demandé dans le prompt précédent) — sinon cette purge sera de nouveau polluée dans quelques heures/jours.
+- Après cette purge, toute future édition manuelle de stock doit continuer à passer par le champ "raison obligatoire" déjà en place (bonne pratique conservée), et sera donc traçable — ce n'est QUE l'historique existant, non documenté et généré par des bugs, qu'on nettoie ici.
+
+## Testing checklist
+1. Confirmer le nombre de lignes "Ajustement" supprimées et le backup créé.
+2. Vérifier 3-4 produits au hasard (dont "pistolet 2b filtage" et "ميزان الكتروني" déjà identifiés) : Total reçu + Total sorti = Disponible, historique propre (plus que Entrée/Livraison/Expédition/Retour).
+3. Confirmer qu'aucune nouvelle ligne "Ajustement"/"Correction historique" n'apparaît après la purge sans action manuelle explicite avec raison.
+4. Vérifier que les totaux globaux de l'inventaire (Quantité totale, Stock Réel Coûtant/Vente, Marge Potentielle affichés en bas de `/inventory`) sont recalculés en cohérence avec les nouvelles valeurs.
