@@ -19,6 +19,7 @@ import https from "https";
 import { db, pool } from "../db";
 import { orderItems, vitipsCities, senditDistricts, senditPriceRef } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
+import { normalizeCityKey, resolveCityAlias } from "./city-aliases";
 
 // ── SSL agent — bypasses self-signed / expired certs (common in .ma APIs) ────
 const SSL_AGENT = new https.Agent({ rejectUnauthorized: false });
@@ -3507,52 +3508,50 @@ export function mapSenditStatus(raw: string): string | null {
 
 /**
  * Résolution ville → district_id Sendit.
- * Cherche dans sendit_districts du store ; fallback sur correspondance partielle.
- * Retourne le district_id (string) ou null si introuvable.
+ * Accepte seulement le nom exact normalisé d'un district, ou un hub qui
+ * identifie un unique district. Ne jamais choisir arbitrairement le premier
+ * quartier d'une ville lorsque plusieurs districts partagent le même hub.
  */
 export async function resolveSenditDistrict(
   storeId: number,
   cityName: string,
 ): Promise<string | null> {
   if (!cityName) return null;
-  const norm = cityName.toLowerCase().trim()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const norm = resolveCityAlias(normalizeCityKey(cityName));
 
   const rows = await db.select().from(senditDistricts).where(eq(senditDistricts.storeId, storeId));
   if (!rows.length) return null;
 
-  const hubNorm = (s: string | null) =>
-    (s || '').toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const uniqueId = (matches: typeof rows) => {
+    const ids = Array.from(new Set(matches.map(row => row.externalId)));
+    return ids.length === 1 ? ids[0] : null;
+  };
 
-  // 0. Hub exact match — user picked a major city name ("Agadir") from the
-  //    carrier_cities dropdown which stores hub names, not raw district names.
-  const byHub = rows.find(r => hubNorm(r.hub) === norm);
-  if (byHub) {
-    console.log(`[SENDIT-CITY] Hub match: "${cityName}" → "${byHub.name}" (id=${byHub.externalId})`);
-    return byHub.externalId;
-  }
-
-  // 1. Exact match on district name (normalised)
-  const exact = rows.find(r => r.nameNorm === norm);
-  if (exact) return exact.externalId;
-
-  // 2. Hub partial match — e.g. city = "Grand Casablanca" matches hub = "Casablanca"
-  const hubPartial = rows.find(r => {
-    const h = hubNorm(r.hub);
-    return h && (h.includes(norm) || norm.includes(h));
-  });
-  if (hubPartial) {
-    console.log(`[SENDIT-CITY] Hub partial match: "${cityName}" → "${hubPartial.name}" hub="${hubPartial.hub}" (id=${hubPartial.externalId})`);
-    return hubPartial.externalId;
-  }
-
-  // 3. District name partial match
-  const partial = rows.find(r =>
-    r.nameNorm.includes(norm) || norm.includes(r.nameNorm),
+  // 1. Exact normalized district name. This is always safe because it preserves
+  // the selected neighbourhood rather than collapsing it into a hub.
+  const byDistrict = rows.filter(row =>
+    resolveCityAlias(normalizeCityKey(row.nameNorm)) === norm,
   );
-  if (partial) {
-    console.log(`[SENDIT-CITY] Name partial match: "${cityName}" → "${partial.name}" (id=${partial.externalId})`);
-    return partial.externalId;
+  const districtId = uniqueId(byDistrict);
+  if (districtId) return districtId;
+  if (byDistrict.length > 0) {
+    console.warn(`[SENDIT-CITY] Ambiguous exact district "${cityName}" — shipment blocked`);
+    return null;
+  }
+
+  // 2. A hub such as "Casablanca" is only valid if Sendit exposes exactly one
+  // district for it. Multiple rows would make any implicit choice unsafe.
+  const byHub = rows.filter(row =>
+    resolveCityAlias(normalizeCityKey(row.hub || "")) === norm,
+  );
+  const hubId = uniqueId(byHub);
+  if (hubId) {
+    console.log(`[SENDIT-CITY] Unique hub match: "${cityName}" → "${byHub[0].name}" (id=${hubId})`);
+    return hubId;
+  }
+  if (byHub.length > 0) {
+    console.warn(`[SENDIT-CITY] Ambiguous hub "${cityName}" (${byHub.length} districts) — shipment blocked`);
+    return null;
   }
 
   console.warn(`[SENDIT-CITY] No match for "${cityName}" in ${rows.length} districts`);

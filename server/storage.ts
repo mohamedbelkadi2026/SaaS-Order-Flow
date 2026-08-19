@@ -1644,25 +1644,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAmeexCityId(storeId: number, cityName: string): Promise<string | null> {
-    const norm = (s: string) => s
-      .toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const key = norm(cityName);
-    if (!key) return null;
-
-    // 1. Exact normalized match
-    const [exact] = await db.select().from(ameexCities)
-      .where(and(eq(ameexCities.storeId, storeId), eq(ameexCities.nameNorm, key)))
-      .limit(1);
-    if (exact) return exact.externalId;
-
-    // 2. Fuzzy: normalized name contains the key (handles trailing/leading words)
-    const fuzzy = await db.select().from(ameexCities)
-      .where(and(eq(ameexCities.storeId, storeId), like(ameexCities.nameNorm, `%${key}%`)))
-      .limit(1);
-    return fuzzy[0]?.externalId ?? null;
+    if (!(cityName || "").trim()) return null;
+    const cities = await db.select().from(ameexCities)
+      .where(eq(ameexCities.storeId, storeId));
+    return matchCityId(cities, cityName);
   }
 
   // ── Express Coursier city ID mapping (name → numeric ID) ─────────────────
@@ -1714,13 +1699,10 @@ export class DatabaseStorage implements IStorage {
 
   async resolveOzonExpressCityId(storeId: number, cityName: string): Promise<string | null> {
     if (!(cityName || "").trim()) return null;
-    // Fetch the full synced city list once and match in-memory — mirrors
-    // resolveExpressCoursierCityId's alias/token/startsWith matching so both
-    // carriers benefit from the same Arabic↔Latin + fuzzy handling.
+    // Never use a partial match here: Ozon city IDs can designate distinct
+    // neighbourhoods inside the same metropolitan area.
     const cities = await db.select().from(ozonExpressCities)
       .where(eq(ozonExpressCities.storeId, storeId));
-    // Not found → matchCityId returns null. The caller MUST fail fast — never
-    // send the city name, which Ozon Express rejects.
     return matchCityId(cities, cityName);
   }
 
@@ -1740,19 +1722,7 @@ export class DatabaseStorage implements IStorage {
     if (!(cityName || "").trim()) return null;
     const cities = await db.select().from(vitipsCities)
       .where(eq(vitipsCities.storeId, storeId));
-
-    // Primary: alias-aware match (accent-insensitive, handles common variants)
-    const matched = matchCityId(cities, cityName);
-    if (matched) return matched;
-
-    // Fallback: direct case-insensitive match on nameNorm, name, or externalId
-    const norm = cityName.toLowerCase().trim();
-    const found = cities.find(c =>
-      c.nameNorm === norm ||
-      (c.name || "").toLowerCase() === norm ||
-      (c.externalId || "").toLowerCase() === norm
-    );
-    return found?.externalId ?? null;
+    return matchCityId(cities, cityName);
   }
 
   // ── Waselex city referential (global, seeded from official Excel) ────────

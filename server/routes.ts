@@ -270,7 +270,12 @@ const CITY_ALIASES_SERVER: Record<string, string> = {
 };
 
 function normCity(s: string): string {
-  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
+  return s
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.,;:!?'"()\[\]{}\/\\_\-–—]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getDefaultCitiesForProvider(provider: string): string[] {
@@ -312,7 +317,7 @@ const CARRIER_LOGOS_SERVER: Record<string, string> = {
   vitips: '/carriers/vitips.png',
 };
 
-/** Auto-match a raw city name against a carrier's city list. Returns best match or null. */
+/** Match a raw city only when the normalized name or an explicit alias is exact. */
 function autoMatchCity(raw: string, cities: string[]): string | null {
   if (!raw || !cities.length) return null;
   const rawN = normCity(raw);
@@ -323,18 +328,6 @@ function autoMatchCity(raw: string, cities: string[]): string | null {
   if (alias) {
     const am = cities.find(c => normCity(c) === normCity(alias));
     if (am) return am;
-  }
-  if (rawN.length >= 3) {
-    const sw = cities.find(c => normCity(c).startsWith(rawN));
-    if (sw) return sw;
-    const rs = cities.find(c => rawN.startsWith(normCity(c)) && normCity(c).length >= 3);
-    if (rs) return rs;
-  }
-  if (rawN.length >= 4) {
-    const inc = cities.find(c => normCity(c).includes(rawN));
-    if (inc) return inc;
-    const inc2 = cities.find(c => rawN.includes(normCity(c)) && normCity(c).length >= 4);
-    if (inc2) return inc2;
   }
   return null;
 }
@@ -2469,14 +2462,18 @@ export async function registerRoutes(
                 let vitipsCityAbbr: string | undefined;
                 if (provider.toLowerCase() === 'vitipsexpress') {
                   const resolved = await storage.getVitipsCityAbbr(storeId, resolvedCity);
-                  // Always set vitipsCityAbbr: use the resolved abbr if found, else fall back to
-                  // the raw city name so the shipment is never blocked by a missing mapping.
-                  vitipsCityAbbr = resolved || resolvedCity;
-                  if (resolved) {
-                    console.log(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → abbr="${vitipsCityAbbr}"`);
-                  } else {
-                    console.warn(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → no abbr found, sending city name directly`);
+                  if (!resolved) {
+                    return {
+                      success:        false,
+                      error:          `Ville « ${resolvedCity} » non synchronisée pour Vitips. Vérifiez la ville exacte ou synchronisez les villes dans Paramètres → Transporteurs, puis réessayez.`,
+                      carrierMessage: 'City not found in vitips_cities',
+                      httpStatus:     0,
+                      rawResponse:    null,
+                      permanent:      true,
+                    };
                   }
+                  vitipsCityAbbr = resolved;
+                  console.log(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → abbr="${vitipsCityAbbr}"`);
 
                   // Fail-fast: Vitips rejects shipments with a generic product name.
                   // If no real product name can be resolved, surface a clear error immediately.
@@ -16352,12 +16349,13 @@ function ensureHeaders(sheet) {
       let singleVitipsCityAbbr: string | undefined;
       if (provider.toLowerCase() === 'vitipsexpress') {
         const resolved = await storage.getVitipsCityAbbr(storeId, matchedCity);
-        if (resolved) {
-          singleVitipsCityAbbr = resolved;
-          console.log(`[VITIPS-CITY] order=${orderId} city="${matchedCity}" → abbr="${singleVitipsCityAbbr}"`);
-        } else {
-          console.warn(`[VITIPS-CITY] order=${orderId} city="${matchedCity}" → no abbr found, sending name directly`);
+        if (!resolved) {
+          return res.status(422).json({
+            message: `Ville « ${matchedCity} » non synchronisée pour Vitips. Vérifiez la ville exacte ou synchronisez les villes dans Paramètres → Transporteurs, puis réessayez.`,
+          });
         }
+        singleVitipsCityAbbr = resolved;
+        console.log(`[VITIPS-CITY] order=${orderId} city="${matchedCity}" → abbr="${singleVitipsCityAbbr}"`);
       }
 
       // For Waselex: resolve city name → numeric city_id (référentiel global).

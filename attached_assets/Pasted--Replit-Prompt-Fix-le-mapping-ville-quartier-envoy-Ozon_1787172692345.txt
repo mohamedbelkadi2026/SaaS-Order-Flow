@@ -1,0 +1,22 @@
+# Replit Prompt — Fix : le mapping ville/quartier envoyé à Ozon Express ne correspond pas à ce qui est sélectionné sur la plateforme
+
+## Bug confirmé (commande TG-10420, Mohamed Jamal)
+Sur la plateforme, la commande a été créée avec la ville **"Casablanca – Lissasfa"** (visible dans le tableau des commandes, colonne VILLE).
+
+Côté Ozon Express (leur interface "Colis pour ramassage"), cette même commande (code TG-10420, même destinataire "Mohamed Jamal") apparaît avec la ville **"Casablanca – Sidi Maarouf"** — un quartier complètement différent de Casablanca.
+
+Le client va donc être livré au mauvais endroit puisque le transporteur reçoit un quartier différent de celui réellement choisi. Le client dit avoir remarqué ce problème sur PLUSIEURS villes/quartiers, pas seulement celui-ci — il faut traiter ça comme un problème systémique de mapping, pas un cas isolé.
+
+## Ce qu'il faut vérifier et corriger
+
+1. Trouve, dans le code d'intégration Ozon Express (`server/services/carrier-service.ts` ou équivalent), la table/le mécanisme qui associe chaque ville/quartier de la plateforme à un `district_id` (ou équivalent) chez Ozon Express.
+2. Pour la commande TG-10420 : quel `district_id` a été envoyé à Ozon Express au moment de la création du colis ? Est-ce que cet ID correspond réellement à "Casablanca – Sidi Maarouf" dans le référentiel de villes Ozon Express stocké en base (`ozon_express_cities` ou table similaire) ? Si oui, le bug est en amont : le mapping "Casablanca – Lissasfa" (plateforme) → mauvais ID Ozon a eu lieu au moment de la résolution de la ville, pas au moment de l'envoi.
+3. Vérifie comment la résolution ville → district_id fonctionne pour Ozon Express : correspondance par nom exact, par similarité floue, par index de liste (risque si les deux listes ne sont pas alignées dans le même ordre), ou autre méthode ? Une correspondance approximative/floue mal calibrée expliquerait que des quartiers voisins ou similaires soient confondus entre eux.
+4. Fais un audit complet : compare CHAQUE ville/quartier utilisé sur la plateforme avec le `district_id` Ozon Express qui lui est actuellement associé en base, et liste tous les cas où le nom réel du district Ozon Express (`ozon_express_cities.name`) ne correspond pas exactement au nom attendu côté plateforme. Donne-moi cette liste complète des mismatches avant toute correction en masse.
+5. Corrige le mapping pour que la résolution soit fiable : correspondance stricte sur le nom normalisé (insensible à la casse/accents, mais PAS de correspondance floue/partielle qui pourrait confondre deux quartiers différents de la même ville) entre la ville choisie sur la plateforme et le `district_id` réel d'Ozon Express.
+
+## Testing checklist
+1. Créer une commande de test avec "Casablanca – Lissasfa" → vérifier côté Ozon Express (ou dans le payload envoyé, si test réel impossible) que le district reçu est bien "Casablanca – Lissasfa", pas un autre quartier.
+2. Refaire le test avec 5-6 autres villes/quartiers différents pris au hasard dans la liste plateforme → vérifier chacun.
+3. Repasser en revue la commande TG-10420 existante : peut-elle encore être corrigée côté Ozon Express (contact support Ozon si nécessaire) ou faut-il la recréer avec le bon quartier ?
+4. Vérifier si ce même type de mapping approximatif existe pour d'autres transporteurs déjà intégrés (Ameex, Vitips, Waselex, Sendit) — corriger partout où le même risque existe.

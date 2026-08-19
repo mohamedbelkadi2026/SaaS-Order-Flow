@@ -15,7 +15,7 @@ export function normalizeCityKey(raw: string): string {
   s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // strip Latin accents
   // Strip common punctuation (keeps Latin/Arabic letters, digits, spaces —
   // avoids the \p{L} unicode-property regex, which needs an ES2018+ target).
-  s = s.replace(/[.,;:!?'"()\[\]{}\/\\_\-]+/g, " ");
+  s = s.replace(/[.,;:!?'"()\[\]{}\/\\_\-–—]+/g, " ");
   s = s.replace(/\s+/g, " ").trim();
   return s;
 }
@@ -244,12 +244,14 @@ export interface CityRow {
 const isNumericId = (id: string) => /^\d+$/.test(id);
 
 /**
- * Match a free-text city name against a carrier's synced city list.
- * Tries, in order: exact match, substring/"contains" fuzzy match,
- * token-based match (handles word order / extra words), startsWith match.
- * Tries both the raw normalized key and its alias-resolved canonical form.
- * Returns the numeric external ID, or null if genuinely unresolvable —
- * callers MUST fail fast on null rather than sending a city name to the API.
+ * Match a city name against a carrier's synced city list without guessing.
+ * It accepts only a normalized exact match (case, accents, whitespace and
+ * punctuation are ignored) or an explicit known alias. Substring, token and
+ * prefix matching are deliberately forbidden: "Casablanca - Lissasfa" must
+ * never silently resolve to another Casablanca neighbourhood.
+ *
+ * Returns a numeric external ID only when exactly one distinct ID matches.
+ * Callers must fail fast on null rather than sending a different locality.
  */
 export function matchCityId(cities: CityRow[], rawCityName: string): string | null {
   const key = normalizeCityKey(rawCityName);
@@ -257,36 +259,17 @@ export function matchCityId(cities: CityRow[], rawCityName: string): string | nu
   const aliasKey = resolveCityAlias(key);
   const candidates = Array.from(new Set([key, aliasKey]));
 
-  // 1. Exact normalized match
+  // A synced name_norm may have been saved by older sync code that did not
+  // strip punctuation. Normalize it again at read time for backward-compatible
+  // strict comparison.
   for (const cand of candidates) {
-    const exact = cities.find(c => c.nameNorm === cand);
-    if (exact && isNumericId(exact.externalId)) return exact.externalId;
-  }
-
-  // 2. Contains fuzzy — either direction (handles trailing/leading extra words)
-  for (const cand of candidates) {
-    const contains = cities.find(c => c.nameNorm.includes(cand) || cand.includes(c.nameNorm));
-    if (contains && isNumericId(contains.externalId)) return contains.externalId;
-  }
-
-  // 3. Token-based — all significant tokens (len > 1) of one side appear in the other
-  for (const cand of candidates) {
-    const keyTokens = cityTokens(cand).filter(t => t.length > 1);
-    if (keyTokens.length === 0) continue;
-    const tokenMatch = cities.find(c => {
-      const cityTokensArr = cityTokens(c.nameNorm).filter(t => t.length > 1);
-      if (cityTokensArr.length === 0) return false;
-      const allKeyTokensInCity = keyTokens.every(t => cityTokensArr.some(ct => ct.includes(t) || t.includes(ct)));
-      const allCityTokensInKey = cityTokensArr.every(ct => keyTokens.some(t => t.includes(ct) || ct.includes(t)));
-      return allKeyTokensInCity || allCityTokensInKey;
-    });
-    if (tokenMatch && isNumericId(tokenMatch.externalId)) return tokenMatch.externalId;
-  }
-
-  // 4. startsWith — either direction
-  for (const cand of candidates) {
-    const starts = cities.find(c => c.nameNorm.startsWith(cand) || cand.startsWith(c.nameNorm));
-    if (starts && isNumericId(starts.externalId)) return starts.externalId;
+    const ids = Array.from(new Set(
+      cities
+        .filter(c => normalizeCityKey(c.nameNorm) === cand && isNumericId(c.externalId))
+        .map(c => c.externalId),
+    ));
+    if (ids.length === 1) return ids[0];
+    if (ids.length > 1) return null;
   }
 
   return null;
