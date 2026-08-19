@@ -1,0 +1,32 @@
+# Replit Prompt — Restaurer uniquement les "Ajustement" antérieurs au 19 août 2026 faits par de vraies personnes (pas le bug "Correction historique")
+
+## Ce que je veux
+Depuis le backup créé lors de la purge globale, je veux restaurer SÉLECTIVEMENT les mouvements "Ajustement" qui remplissent TOUTES ces conditions :
+1. Datés STRICTEMENT AVANT le 19 août 2026 (donc le 18 août ou avant).
+2. Dont la raison NE contient PAS "Correction historique" ni "recalcul basé sur le grand livre" (donc pas générés par le job bugué qu'on a arrêté).
+
+Autrement dit : je veux récupérer les ajustements manuels humains d'avant le début de cette série de bugs (le 19 août), et laisser supprimés tous les ajustements du 19 août et tous ceux liés au mécanisme automatique bugué, peu importe leur date.
+
+## Requête à exécuter (adapter selon le vrai schéma de la table backup)
+```sql
+SELECT *
+FROM stock_movements_backup_20260819
+WHERE type = 'adjustment'
+  AND created_at < '2026-08-19 00:00:00'
+  AND reason NOT ILIKE '%Correction historique%'
+  AND reason NOT ILIKE '%recalcul basé sur le grand livre%';
+```
+
+## Étapes
+1. Exécute cette requête et montre-moi d'abord la liste complète du résultat (produit, store, quantité, raison, auteur, date) — je veux voir AVANT toute restauration.
+2. Une fois que j'ai validé la liste, réinsère ces lignes dans `stock_movements` (en gardant leurs valeurs d'origine : type, quantité, raison, auteur, date de création d'origine — pas la date d'aujourd'hui).
+3. Recalcule `products.stock` pour chaque produit concerné en tenant compte de ces mouvements restaurés en plus des mouvements réels déjà en place (Entrée/Livraison/Expédition/Retour).
+4. Donne-moi un récapitulatif : produit | ancien Disponible (juste après la purge) | nouveau Disponible (après restauration sélective).
+
+## Important
+Ne restaure RIEN sans me montrer la liste complète d'abord (étape 1). Je veux valider avant toute réinsertion en base.
+
+## Testing checklist
+1. Vérifier qu'aucun mouvement daté du 19 août ou contenant "Correction historique" n'a été restauré.
+2. Vérifier que les mouvements restaurés ont bien leur raison et auteur d'origine visibles dans l'Historique.
+3. Confirmer que Total reçu + Total sorti = Disponible reste vrai après cette restauration sélective, pour tous les produits concernés.
