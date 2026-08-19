@@ -1,0 +1,28 @@
+# Replit Prompt — Ajouter un bouton dans /inventory pour restaurer les ajustements humains d'avant le 19 août 2026
+
+## Demande
+Au lieu de devoir appeler des URL manuellement, ajoute un bouton dans la barre d'outils de `/inventory` (à côté des autres boutons admin) : **"Restaurer les ajustements légitimes"**, réservé aux admins.
+
+## Comportement (réutilise les endpoints déjà demandés)
+
+1. **Clic 1** : appelle `GET /api/admin/eligible-adjustment-restores` (lecture seule) et affiche une modale avec :
+   - Nombre total d'ajustements éligibles trouvés (datés avant le 19 août 2026, raison ≠ "Correction historique"/"recalcul basé sur le grand livre").
+   - Un tableau : Produit | Store | Quantité | Raison | Auteur | Date.
+   - Boutons "Confirmer et restaurer" / "Annuler".
+   - Si la liste est vide, afficher clairement "Aucun ajustement éligible trouvé" plutôt qu'une modale vide.
+
+2. **Clic sur "Confirmer et restaurer"** : appelle `POST /api/admin/restore-eligible-adjustments`, qui réinsère ces mouvements et recalcule le stock des produits concernés. Affiche ensuite un résumé : produit | ancien Disponible | nouveau Disponible.
+
+3. Rafraîchit automatiquement le tableau `/inventory` après restauration.
+
+## Sécurité
+- Visible et actionnable uniquement pour les comptes admin.
+- Le clic 1 (aperçu) ne modifie jamais rien.
+- Bouton désactivé pendant le traitement pour éviter un double-clic (double restauration).
+- Si le bouton a déjà été utilisé une fois et que tout a été restauré, un deuxième clic doit afficher "Aucun ajustement éligible trouvé" (pas de doublons créés en re-cliquant).
+
+## Testing checklist
+1. Clic → modale d'aperçu avec la vraie liste (produit, store, quantité, raison, auteur, date).
+2. Confirmer → mouvements restaurés, stock recalculé, tableau `/inventory` à jour.
+3. Recliquer une deuxième fois → "Aucun ajustement éligible trouvé" (pas de restauration en double).
+4. Vérifier qu'aucun mouvement du 19 août ou lié à "Correction historique" n'apparaît dans les résultats restaurés.
