@@ -1032,14 +1032,6 @@ export default function Inventory() {
     const isManualStockChange = !hasVariants &&
       editedStock !== undefined &&
       editedStock !== Number(editingProduct.stock);
-    if (isManualStockChange && manualStockReason.trim().length < 3) {
-      toast({
-        title: "Raison obligatoire",
-        description: "Expliquez pourquoi le stock est modifié afin de conserver une trace d'audit.",
-        variant: "destructive",
-      });
-      return;
-    }
     try {
       // Image is stored as base64 in form.imageUrl — no separate upload step needed
       const imageChanged = (form.imageUrl || null) !== (editingProduct.imageUrl || null);
@@ -1068,7 +1060,9 @@ export default function Inventory() {
         coutLivraison: parseFloat(form.coutLivraison) || 0,
         coutConfirmation: parseFloat(form.coutConfirmation) || 0,
       };
-      if (isManualStockChange) updatePayload.manualStockReason = manualStockReason.trim();
+      if (isManualStockChange && manualStockReason.trim()) {
+        updatePayload.manualStockReason = manualStockReason.trim();
+      }
       if (imageChanged) updatePayload.imageUrl = form.imageUrl || null;
       if (hasVariants) {
         updatePayload.hasVariants = 1;
@@ -1846,9 +1840,9 @@ export default function Inventory() {
                 <Input data-testid="input-edit-product-stock" type="number" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} />
               </div>
             </div>
-            {!hasVariants && form.stock.trim() !== "" && Number(form.stock) !== Number(editingProduct?.stock) && (
+            {!hasVariants && (
               <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-800 dark:bg-amber-950/20">
-                <Label htmlFor="manual-stock-reason">Raison de la modification du stock <span className="text-red-600">*</span></Label>
+                <Label htmlFor="manual-stock-reason">Raison de la modification du stock <span className="text-muted-foreground">(facultatif)</span></Label>
                 <Textarea
                   id="manual-stock-reason"
                   data-testid="input-manual-stock-reason"
@@ -1857,7 +1851,7 @@ export default function Inventory() {
                   placeholder="Ex. recomptage physique, perte constatée, correction d’inventaire…"
                   rows={2}
                 />
-                <p className="text-xs text-muted-foreground">Votre nom et votre e-mail seront enregistrés avec ce mouvement.</p>
+                <p className="text-xs text-muted-foreground">Si le champ reste vide, un motif par défaut sera enregistré. Votre nom et votre e-mail seront toujours associés au mouvement.</p>
               </div>
             )}
             <div className="space-y-2">
