@@ -1,0 +1,40 @@
+# Replit Prompt — Root cause confirmée : "Recalculer Disponible" cliqué plusieurs fois crée une cascade d'ajustements faux et incohérents
+
+## Preuve (produit "urine medical", même store que le cas précédent "pistolet 2b")
+
+Historique chronologique observé :
+1. 17 août 01:47 — Ajustement +400 (édition manuelle 0→400)
+2. 17 août ~01:4x — Entrée +18 "Initial backfill - pre-ledger inventory"
+3. 18 août 20:12 — Ajustement -3 (édition manuelle 400→397)
+4. 19 août 14:33 — Ajustement **-406** "Recalcul Disponible (**Reçu 0** – Livrées 0 – En cours 9)" ← Reçu calculé à 0 alors qu'il y a clairement +400 et +18 de reçu réel juste avant. Le calcul de "Reçu" utilisé par ce recalcul est FAUX à la base.
+5. 19 août 14:34 — 9 mouvements "Expédition" réels (#19113, #19111, #19112, #19108, #19109, #19105, #19106, #19107, #19110)
+6. 19 août 14:37 — Ajustement +388 (édition manuelle 0→388)
+7. 19 août 16:50 — Ajustement **-380** "Recalcul Disponible (Reçu 18 – Livrées 0 – En cours 10)" ← re-clic du même bouton, nouveau calcul incohérent avec le précédent
+8. 19 août 16:50 — Ajustement +278 (édition manuelle 8→286)
+9. 19 août 16:51 — Expédition #19191
+
+Résultat final affiché : Total reçu +18, Total sorti -10, Disponible 285, avec +277 de "corrections" fourre-tout qui ne veulent plus rien dire.
+
+**Conclusion : chaque clic sur "Recalculer Disponible" (ou l'équivalent automatique déclenché après certaines actions) calcule un nouvel ajustement basé sur une lecture PARTIELLE ou FAUSSE du grand livre de stock (le "Reçu" utilisé dans la formule ignore des mouvements réels d'Entrée), et écrit un nouvel "Ajustement" qui empile la confusion au lieu de la corriger. Plus on clique, plus c'est faux.**
+
+## Fix demandé — définitif, pas un nouveau patch approximatif
+
+### 1. Corriger la formule utilisée par "Recalculer Disponible"
+Le calcul de "Reçu" dans cette fonction doit sommer TOUS les mouvements de type `Entrée`/`restock` réels du produit (pas juste un sous-ensemble ou une valeur par défaut à 0). Actuellement il calcule visiblement "Reçu 0" et "Reçu 18" à deux moments différents pour le même produit sans qu'aucune vraie entrée de stock n'ait eu lieu entre les deux — trouve pourquoi cette lecture est incohérente (requête mal filtrée, mauvaise portée de dates, mauvais store/produit, etc.).
+
+### 2. Rendre l'opération idempotente
+Recalculer deux fois de suite (sans qu'aucune commande ou entrée de stock n'ait changé entre-temps) doit produire EXACTEMENT le même résultat, pas un nouvel ajustement qui s'empile. Le bon comportement : calculer le disponible réel = somme de tous les mouvements réels (Entrée − Livrées − En cours), comparer avec `products.stock` actuel, et SEULEMENT SI différent, écrire UN SEUL ajustement égal à la différence exacte — jamais un ajustement s'il n'y a pas d'écart.
+
+### 3. Retirer ou verrouiller le bouton manuel "Recalculer Disponible" pour le grand public
+Comme déjà demandé précédemment dans ce projet : ce genre de recalcul ne doit pas être un bouton cliquable librement et répétitivement par un utilisateur normal — soit le retirer de l'UI standard (garder seulement un accès admin/technique avec confirmation explicite "cette action est sensible"), soit le rendre complètement automatique et fiable pour qu'il n'y ait jamais besoin de le déclencher manuellement.
+
+### 4. Nettoyage des données déjà polluées
+Pour TOUS les produits ayant subi ce genre de cascade d'ajustements incohérents (requête à faire : produits avec plusieurs entrées "Ajustement" de type "Recalcul Disponible" dans un intervalle rapproché) :
+- Calculer la VRAIE valeur de Disponible à partir du grand livre complet et fiable (toutes les vraies Entrée + toutes les vraies Expédition/Livraison avec référence de commande réelle, en ignorant/collapsant la chaîne d'anciens "Ajustement" bruités).
+- Remplacer toute la chaîne d'ajustements incohérents par UNE SEULE ligne d'ajustement de correction finale, clairement libellée (ex: "Correction historique — nettoyage cascade recalculs"), pour que l'historique redevienne lisible et que Total reçu + Total sorti = Disponible.
+
+## Testing checklist
+1. Pour "urine medical" et "pistolet 2b" : après nettoyage, Total reçu + Total sorti = Disponible exactement, historique propre et compréhensible.
+2. Cliquer sur le recalcul (si le bouton reste accessible en admin) deux fois de suite sans rien changer entre-temps → aucun nouvel ajustement créé la deuxième fois (0 écart détecté).
+3. Vérifier qu'aucun autre produit du store (ou d'autres stores) n'a la même pollution en cascade — lister-les tous et les corriger de la même façon.
+4. Une nouvelle commande expédiée après ce nettoyage se reflète normalement dans Total sorti, sans passer par un "Ajustement".

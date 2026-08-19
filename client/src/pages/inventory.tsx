@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2, Calculator } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 
 interface VariantForm {
   name: string;
@@ -600,6 +601,7 @@ function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void })
 
 export default function Inventory() {
   const { data: inventoryData, isLoading: statsLoading, refetch: refetchStats } = useInventoryStats();
+  const { user } = useAuth();
   const createProduct = useCreateProduct();
   const updateProduct = useUpdateProduct();
   const deleteProduct = useDeleteProduct();
@@ -981,6 +983,7 @@ export default function Inventory() {
   };
 
   const applyRecalc = async () => {
+    if (!window.confirm("Cette action technique peut modifier le stock disponible et nettoyer les anciens recalculs. Continuer ?")) return;
     setRecalcApplying(true);
     try {
       const res = await apiRequest("POST", "/api/stock/recalculate-available/apply", {});
@@ -1276,9 +1279,11 @@ export default function Inventory() {
           <Button variant="outline" data-testid="button-fix-historical-stock" onClick={openFixHistorical}>
             <Wrench className="w-4 h-4 mr-2" /> Corriger l'historique stock
           </Button>
-          <Button variant="outline" data-testid="button-recalc-available" onClick={openRecalc}>
-            <Calculator className="w-4 h-4 mr-2" /> Recalculer Disponible
-          </Button>
+          {user?.role === "owner" && (
+            <Button variant="outline" data-testid="button-recalc-available" onClick={openRecalc}>
+              <Calculator className="w-4 h-4 mr-2" /> Recalculer Disponible
+            </Button>
+          )}
           <Button variant="outline" data-testid="button-link-all-historical" onClick={() => { setLinkAllResult(null); setLinkAllOpen(true); }}>
             <Link2 className="w-4 h-4 mr-2" /> Lier tout l'historique
           </Button>
@@ -2302,10 +2307,17 @@ export default function Inventory() {
             <div className="mt-4 space-y-4">
               {/* Summary totals */}
               {(() => {
-                const totalRecu = historyMovements.filter((m: any) => m.type === 'restock').reduce((s: number, m: any) => s + m.quantity, 0);
-                // Vraies sorties uniquement (expéditions + livraisons) — les ajustements techniques sont affichés à part
-                const totalSorti = Math.abs(historyMovements.filter((m: any) => m.quantity < 0 && (m.type === 'shipped' || m.type === 'delivered')).reduce((s: number, m: any) => s + m.quantity, 0));
-                const corrections = historyMovements.filter((m: any) => m.type === 'adjustment').reduce((s: number, m: any) => s + m.quantity, 0);
+                 const isRecalcAdjustment = (m: any) =>
+                   m.type === 'adjustment' &&
+                   (() => {
+                     const reason = String(m.reason || '').trim().toLocaleLowerCase('fr-FR');
+                     return reason.startsWith('recalcul disponible') ||
+                       reason.startsWith('correction historique — recalcul');
+                   })();
+                 const realMovements = historyMovements.filter((m: any) => !isRecalcAdjustment(m));
+                 const totalRecu = realMovements.filter((m: any) => m.quantity > 0).reduce((s: number, m: any) => s + m.quantity, 0);
+                 const totalSorti = Math.abs(realMovements.filter((m: any) => m.quantity < 0).reduce((s: number, m: any) => s + m.quantity, 0));
+                 const corrections = realMovements.filter((m: any) => m.type === 'adjustment').reduce((s: number, m: any) => s + m.quantity, 0);
                 // Même valeur que la colonne "Disponible" du tableau (products.stock / somme variantes)
                 const reste = historyProduct?.available ?? historyProduct?.stock ?? 0;
                 return (
@@ -2332,7 +2344,7 @@ export default function Inventory() {
                     </div>
                     {corrections !== 0 && (
                       <div className="text-xs text-muted-foreground px-1">
-                        Corrections (ajustements techniques, hors "Total sorti") : {corrections > 0 ? `+${corrections}` : corrections}
+                         Ajustements manuels inclus dans les totaux : {corrections > 0 ? `+${corrections}` : corrections}
                       </div>
                     )}
                   </>
@@ -2350,7 +2362,8 @@ export default function Inventory() {
                     adjustment: { label: "Ajustement", cls: "bg-purple-100 text-purple-700 border border-purple-400" },
                     manual:     { label: "Manuel",     cls: "bg-slate-100 text-slate-600 border border-slate-400" },
                   };
-                  const tc = typeMap[m.type] ?? { label: m.type, cls: "bg-gray-100 text-gray-600 border border-gray-300" };
+                   const displayType = m.type === 'adjustment' && m.orderId && m.quantity < 0 ? 'shipped' : m.type;
+                   const tc = typeMap[displayType] ?? { label: m.type, cls: "bg-gray-100 text-gray-600 border border-gray-300" };
                   const d = new Date(m.createdAt);
                   const dateStr = d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }) +
                     " " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
@@ -2641,7 +2654,7 @@ export default function Inventory() {
               Recalculer le stock Disponible
             </DialogTitle>
             <DialogDescription>
-              Formule : Disponible = Reçu − Livrées − En cours (mêmes données que le tableau).
+               Formule : Disponible = toutes les entrées positives − toutes les sorties négatives.
               {recalcLoading
                 ? " Chargement…"
                 : recalcPreview

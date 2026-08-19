@@ -10449,21 +10449,24 @@ function ensureHeaders(sheet) {
   // GET  /api/stock/recalculate-available/preview
   // POST /api/stock/recalculate-available/apply
   //
-  // Recalcule products.stock ("Disponible") selon la formule CANONIQUE déjà
-  // utilisée par /inventory (getInventoryStats) :
-  //   Disponible = Reçu (Σ mouvements 'restock')
-  //              − Sortie (Σ articles des commandes livrées)
-  //              − En cours (Σ articles des commandes expédiées/en transit)
-  // Nécessaire après le re-linking des order_items (SKU dupliqués corrigés) :
-  // le stock brut reflétait l'ANCIEN ensemble de commandes liées.
+  // Recalcule products.stock ("Disponible") à partir du grand livre complet :
+  //   Disponible = somme des entrées positives − somme des sorties négatives.
+  // Les ajustements générés par une ancienne exécution de ce recalcul sont
+  // volontairement exclus : ils ne représentent pas un mouvement physique et
+  // leur accumulation était la cause des cascades incohérentes.
   // Les produits à variantes sont ignorés (le stock affiché = Σ variantes,
-  // et les order_items ne portent pas de variantId fiable) et signalés.
+  // et les mouvements historiques ne portent pas toujours un variantId fiable).
   // ─────────────────────────────────────────────────────────────────────────
-  const RECALC_DELIVERED_STATUSES = ['delivered', 'Livré', 'livré'];
-  const RECALC_TRANSIT_STATUSES = [
-    'in_progress', 'expédié', 'Attente De Ramassage',
-    'transit', 'unreachable', 'En Cours De Retour', 'refused', 'Retour Recu',
-  ];
+  const normalizedRecalcReason = (reason: string | null) =>
+    (reason || '').trim().toLocaleLowerCase('fr-FR');
+  const isLegacyRecalcAdjustment = (movement: { type: string; reason: string | null }) =>
+    movement.type === 'adjustment' &&
+    normalizedRecalcReason(movement.reason).startsWith('recalcul disponible');
+  const isHistoricalRecalcCorrection = (movement: { type: string; reason: string | null }) =>
+    movement.type === 'adjustment' &&
+    normalizedRecalcReason(movement.reason).startsWith('correction historique — recalcul');
+  const isRecalcAdjustment = (movement: { type: string; reason: string | null }) =>
+    isLegacyRecalcAdjustment(movement) || isHistoricalRecalcCorrection(movement);
 
   async function computeAvailableRecalc(storeId: number) {
     const allProducts = await db.select().from(products)
@@ -10472,47 +10475,73 @@ function ensureHeaders(sheet) {
       .from(productVariants).where(eq(productVariants.storeId, storeId));
     const variantProductIds = new Set(allVariants.map(v => v.productId));
 
-    const restockRows = await db.select({
-        productId: stockMovements.productId,
-        qty: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)`,
-      })
-      .from(stockMovements)
-      .where(and(eq(stockMovements.storeId, storeId), eq(stockMovements.type, 'restock')))
-      .groupBy(stockMovements.productId);
-    const recuByProduct = new Map(restockRows.map(r => [r.productId, Number(r.qty)]));
+    const ledger = await db.select({
+      productId: stockMovements.productId,
+      type: stockMovements.type,
+      quantity: stockMovements.quantity,
+      reason: stockMovements.reason,
+      createdAt: stockMovements.createdAt,
+    }).from(stockMovements).where(eq(stockMovements.storeId, storeId));
 
-    const sumItemsByStatus = async (statuses: string[]) => {
-      const rows = await db.select({
-          productId: orderItems.productId,
-          qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)`,
-        })
-        .from(orderItems)
-        .innerJoin(orders, eq(orderItems.orderId, orders.id))
-        .where(and(
-          eq(orders.storeId, storeId),
-          inArray(orders.status, statuses),
-          sql`${orderItems.productId} IS NOT NULL`,
-        ))
-        .groupBy(orderItems.productId);
-      return new Map(rows.map(r => [r.productId as number, Number(r.qty)]));
-    };
-    const sortieByProduct = await sumItemsByStatus(RECALC_DELIVERED_STATUSES);
-    const enCoursByProduct = await sumItemsByStatus(RECALC_TRANSIT_STATUSES);
+    const legacyRecalcByProduct = new Map<number, number>();
+    for (const movement of ledger) {
+      if (!isLegacyRecalcAdjustment(movement)) continue;
+      legacyRecalcByProduct.set(
+        movement.productId,
+        (legacyRecalcByProduct.get(movement.productId) || 0) + 1,
+      );
+    }
+
+    const ledgerByProduct = new Map<number, {
+      recu: number;
+      sortie: number;
+      cleanupAdjustmentCount: number;
+    }>();
+    for (const movement of ledger) {
+      const current = ledgerByProduct.get(movement.productId) || {
+        recu: 0,
+        sortie: 0,
+        cleanupAdjustmentCount: 0,
+      };
+      if (isRecalcAdjustment(movement)) {
+        // A final correction is already canonical on its own. It needs to be
+        // replaced only when it coexists with legacy generated recalculations.
+        if (
+          isLegacyRecalcAdjustment(movement) ||
+          (isHistoricalRecalcCorrection(movement) && legacyRecalcByProduct.has(movement.productId))
+        ) {
+          current.cleanupAdjustmentCount++;
+        }
+      } else if (movement.quantity > 0) {
+        current.recu += movement.quantity;
+      } else if (movement.quantity < 0) {
+        current.sortie += Math.abs(movement.quantity);
+      }
+      ledgerByProduct.set(movement.productId, current);
+    }
 
     const rows = allProducts.map(p => {
-      const recu = recuByProduct.get(p.id) || 0;
-      const sortie = sortieByProduct.get(p.id) || 0;
-      const enCours = enCoursByProduct.get(p.id) || 0;
+      const totals = ledgerByProduct.get(p.id) || {
+        recu: 0,
+        sortie: 0,
+        cleanupAdjustmentCount: 0,
+      };
       return {
         id: p.id, name: p.name, sku: p.sku,
-        recu, sortie, enCours,
+        recu: totals.recu,
+        sortie: totals.sortie,
+        cleanupAdjustmentCount: totals.cleanupAdjustmentCount,
+        legacyRecalcCount: legacyRecalcByProduct.get(p.id) || 0,
         currentStock: p.stock,
-        computedStock: recu - sortie - enCours,
+        computedStock: totals.recu - totals.sortie,
         hasVariants: variantProductIds.has(p.id),
       };
     });
     return {
-      changes: rows.filter(r => !r.hasVariants && r.computedStock !== r.currentStock),
+      changes: rows.filter(r =>
+        !r.hasVariants &&
+        (r.computedStock !== r.currentStock || r.cleanupAdjustmentCount > 0)
+      ),
       skippedVariants: rows.filter(r => r.hasVariants).map(r => ({ id: r.id, name: r.name })),
       negatives: rows.filter(r => !r.hasVariants && r.computedStock < 0).map(r => ({ id: r.id, name: r.name, computedStock: r.computedStock })),
       totalProducts: rows.length,
@@ -10535,32 +10564,56 @@ function ensureHeaders(sheet) {
       const storeId = req.user!.storeId!;
       const { changes, skippedVariants, negatives } = await computeAvailableRecalc(storeId);
       let applied = 0;
+      let cleaned = 0;
       const errors: string[] = [];
       for (const c of changes) {
         try {
-          // Conditionné sur la valeur lue (concurrence-safe) : si le stock a
-          // bougé entre preview et apply, la ligne est simplement re-calculée
-          // à la prochaine exécution.
-          const updated = await db.update(products)
-            .set({ stock: c.computedStock })
-            .where(and(eq(products.id, c.id), eq(products.storeId, storeId), eq(products.stock, c.currentStock)))
-            .returning({ id: products.id });
-          if (updated.length === 0) { errors.push(`${c.name}: stock modifié entre-temps, ignoré`); continue; }
-          // Trace d'audit dans le ledger (type 'adjustment' accepté par la contrainte).
-          await db.insert(stockMovements).values({
-            storeId, productId: c.id,
-            type: 'adjustment',
-            quantity: c.computedStock - c.currentStock,
-            reason: `Recalcul Disponible (Reçu ${c.recu} − Livrées ${c.sortie} − En cours ${c.enCours})`,
-            userId: req.user!.id,
+          await db.transaction(async (tx) => {
+            // Conditionné sur la valeur lue (concurrence-safe) : si le stock a
+            // bougé entre preview et apply, ne supprime ni ne remplace son audit.
+            const updated = c.computedStock === c.currentStock
+              ? [{ id: c.id }]
+              : await tx.update(products)
+                .set({ stock: c.computedStock })
+                .where(and(eq(products.id, c.id), eq(products.storeId, storeId), eq(products.stock, c.currentStock)))
+                .returning({ id: products.id });
+            if (updated.length === 0) throw new Error('stock modifié entre-temps, ignoré');
+
+            // Supprime la cascade historique avant d'écrire au maximum une
+            // correction d'audit finale pour l'écart courant.
+            const cleanupCondition = c.legacyRecalcCount > 0
+              ? sql`(
+                  LOWER(TRIM(COALESCE(${stockMovements.reason}, ''))) LIKE 'recalcul disponible%'
+                  OR LOWER(TRIM(COALESCE(${stockMovements.reason}, ''))) LIKE 'correction historique — recalcul%'
+                )`
+              : sql`LOWER(TRIM(COALESCE(${stockMovements.reason}, ''))) LIKE 'recalcul disponible%'`;
+            const removed = await tx.delete(stockMovements)
+              .where(and(
+                eq(stockMovements.storeId, storeId),
+                eq(stockMovements.productId, c.id),
+                eq(stockMovements.type, 'adjustment'),
+                cleanupCondition,
+              ))
+              .returning({ id: stockMovements.id });
+
+            if (c.computedStock !== c.currentStock) {
+              await tx.insert(stockMovements).values({
+                storeId, productId: c.id,
+                type: 'adjustment',
+                quantity: c.computedStock - c.currentStock,
+                reason: 'Correction historique — recalcul basé sur le grand livre',
+                userId: req.user!.id,
+              });
+            }
+            cleaned += removed.length;
+            applied++;
           });
-          applied++;
           console.log(`[RECALC-STOCK] ✅ ${c.name} (#${c.id}): ${c.currentStock} → ${c.computedStock}`);
         } catch (err: any) {
           errors.push(`${c.name}: ${err?.message || String(err)}`);
         }
       }
-      res.json({ applied, total: changes.length, skippedVariants, negatives, errors });
+      res.json({ applied, cleaned, total: changes.length, skippedVariants, negatives, errors });
     } catch (err) {
       console.error('[RECALC-STOCK] Apply error:', err);
       res.status(500).json({ message: 'Erreur lors du recalcul.' });
