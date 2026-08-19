@@ -744,6 +744,7 @@ export default function Inventory() {
   const [importOpen, setImportOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
+  const [manualStockReason, setManualStockReason] = useState("");
   const [hasVariants, setHasVariants] = useState(false);
   const [variants, setVariants] = useState<VariantForm[]>([]);
 
@@ -795,6 +796,7 @@ export default function Inventory() {
 
   const resetForm = () => {
     setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "", coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "" });
+    setManualStockReason("");
     setHasVariants(false);
     setVariants([]);
     clearFile();
@@ -1026,6 +1028,18 @@ export default function Inventory() {
 
   const handleEdit = async () => {
     if (!editingProduct) return;
+    const editedStock = form.stock.trim() === "" ? undefined : parseInt(form.stock, 10);
+    const isManualStockChange = !hasVariants &&
+      editedStock !== undefined &&
+      editedStock !== Number(editingProduct.stock);
+    if (isManualStockChange && manualStockReason.trim().length < 3) {
+      toast({
+        title: "Raison obligatoire",
+        description: "Expliquez pourquoi le stock est modifié afin de conserver une trace d'audit.",
+        variant: "destructive",
+      });
+      return;
+    }
     try {
       // Image is stored as base64 in form.imageUrl — no separate upload step needed
       const imageChanged = (form.imageUrl || null) !== (editingProduct.imageUrl || null);
@@ -1041,7 +1055,7 @@ export default function Inventory() {
         id: editingProduct.id,
         name: form.name || undefined,
         sku: form.sku || undefined,
-        stock: form.stock ? parseInt(form.stock) : undefined,
+        stock: editedStock,
         costPrice: form.costPrice ? Math.round(parseFloat(form.costPrice) * 100) : undefined,
         sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : undefined,
         description: form.description || null,
@@ -1054,6 +1068,7 @@ export default function Inventory() {
         coutLivraison: parseFloat(form.coutLivraison) || 0,
         coutConfirmation: parseFloat(form.coutConfirmation) || 0,
       };
+      if (isManualStockChange) updatePayload.manualStockReason = manualStockReason.trim();
       if (imageChanged) updatePayload.imageUrl = form.imageUrl || null;
       if (hasVariants) {
         updatePayload.hasVariants = 1;
@@ -1189,6 +1204,7 @@ export default function Inventory() {
 
   const openEdit = async (product: any) => {
     setEditingProduct(product);
+    setManualStockReason("");
     // Parse AI features from JSON array back to comma-separated string for display
     let aiFeaturesDisplay = "";
     if (product.aiFeatures) {
@@ -1830,6 +1846,20 @@ export default function Inventory() {
                 <Input data-testid="input-edit-product-stock" type="number" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} />
               </div>
             </div>
+            {!hasVariants && form.stock.trim() !== "" && Number(form.stock) !== Number(editingProduct?.stock) && (
+              <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-800 dark:bg-amber-950/20">
+                <Label htmlFor="manual-stock-reason">Raison de la modification du stock <span className="text-red-600">*</span></Label>
+                <Textarea
+                  id="manual-stock-reason"
+                  data-testid="input-manual-stock-reason"
+                  value={manualStockReason}
+                  onChange={(e) => setManualStockReason(e.target.value)}
+                  placeholder="Ex. recomptage physique, perte constatée, correction d’inventaire…"
+                  rows={2}
+                />
+                <p className="text-xs text-muted-foreground">Votre nom et votre e-mail seront enregistrés avec ce mouvement.</p>
+              </div>
+            )}
             <div className="space-y-2">
               <Label className="text-xs font-medium">📦 Frais d'emballage (DH / commande)</Label>
               <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} data-testid="input-edit-cout-emballage" />
@@ -2381,6 +2411,11 @@ export default function Inventory() {
                         </div>
                         {m.reason && (
                           <div className="text-xs text-muted-foreground mt-1 truncate">{m.reason}</div>
+                        )}
+                        {(m.performedByName || m.performedByEmail) && (
+                          <div className="text-[10px] text-muted-foreground mt-1">
+                            Par {m.performedByName || "Utilisateur"}{m.performedByEmail ? ` · ${m.performedByEmail}` : ""}
+                          </div>
                         )}
                       </div>
                       <div className="text-[10px] text-muted-foreground whitespace-nowrap shrink-0 mt-0.5">{dateStr}</div>

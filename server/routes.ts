@@ -9415,6 +9415,7 @@ function ensureHeaders(sheet) {
         name: z.string().optional(),
         sku: z.string().optional(),
         stock: z.number().optional(),
+        manualStockReason: z.string().trim().min(3, "Indiquez la raison de cette modification de stock (3 caractères minimum).").max(500).optional(),
         costPrice: z.number().optional(),
         sellingPrice: z.number().optional(),
         description: z.string().nullable().optional(),
@@ -9466,6 +9467,9 @@ function ensureHeaders(sheet) {
       // should use POST /restock instead), record an 'adjustment' ledger row
       // for the delta so the audit trail is never silently broken.
       if (typeof updateData.stock === 'number' && updateData.stock !== product.stock) {
+        if (!data.manualStockReason) {
+          return res.status(400).json({ message: "Une raison est obligatoire pour modifier le stock manuellement." });
+        }
         const delta = updateData.stock - product.stock;
         await db.insert(stockMovements).values({
           storeId: product.storeId!,
@@ -9473,7 +9477,7 @@ function ensureHeaders(sheet) {
           type: 'adjustment',
           quantity: delta,
           userId: req.user!.id,
-          reason: `Édition manuelle du stock (${product.stock} → ${updateData.stock})`,
+          reason: `Édition manuelle du stock (${product.stock} → ${updateData.stock}) — ${data.manualStockReason}`,
         });
       }
 

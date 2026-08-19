@@ -1439,12 +1439,16 @@ export class DatabaseStorage implements IStorage {
         quantity:    stockMovements.quantity,
         reason:      stockMovements.reason,
         orderId:     stockMovements.orderId,
+      userId:      stockMovements.userId,
         createdAt:   stockMovements.createdAt,
         productName: products.name,
         productSku:  products.sku,
+      performedByName: users.username,
+      performedByEmail: users.email,
       })
       .from(stockMovements)
       .leftJoin(products, eq(stockMovements.productId, products.id))
+    .leftJoin(users, eq(stockMovements.userId, users.id))
       .where(and(...conds))
       .orderBy(desc(stockMovements.createdAt))
       .limit(500);
