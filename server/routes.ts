@@ -5884,11 +5884,21 @@ export async function registerRoutes(
           message: `Ozon webhook: orderId=${tracking} status=${statusCode}` });
 
         if (!tracking) return res.json({ success: true, matched: false });
-        const ozonOrder = await storage.getOrderByTrackingNumber(storeId, tracking);
+
+        // Ozon sends `orderId` which may be their internal ref (e.g. "OZE_ma1252")
+        // rather than the TG-* tracking number stored on our side. Try trackNumber
+        // first (case-insensitive), then fall back to an exact orderNumber match.
+        // Do not guess or cross-match stores: an Ozon reference alone is not enough
+        // evidence to update another merchant's order.
+        let ozonOrder = await storage.getOrderByTrackingNumber(storeId, tracking);
+        if (!ozonOrder) {
+          // Try matching by orderNumber (Ozon may echo the orderId we submitted)
+          ozonOrder = await storage.getOrderByNumber(storeId, tracking);
+        }
         if (!ozonOrder) {
           await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
             action: "webhook_no_match", status: "ok",
-            message: `⚠️ Ozon: aucune commande pour orderId=${tracking} — statut: "${statusCode}"` });
+            message: `⚠️ Ozon: aucune commande pour orderId="${tracking}" (ni trackNumber ni orderNumber) — statut: "${statusCode}"` });
           return res.json({ success: true, matched: false });
         }
         const mapped = mapOzonStatus(statusCode);
@@ -13768,6 +13778,7 @@ function ensureHeaders(sheet) {
     details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }>;
     errors: Array<{ orderId: number; message: string }>;
     message?: string;
+    apiKeyInvalid?: boolean;
   }> {
 
     const { trackByCarrier } = await import("./services/carrier-service");
@@ -13857,7 +13868,10 @@ function ensureHeaders(sheet) {
         let result: { status: string | null; rawStatus: string | null; error?: string };
 
         if (p === 'ozonexpress') {
-          // ── Ozon tracking: API key in Authorization header, NOT in URL ──────────
+          // ── Ozon tracking ──────────────────────────────────────────────────────
+          // Ozon's working add-parcel endpoint authenticates with both credentials
+          // in the URL path and multipart form data. The tracking API follows the
+          // same convention; using an Authorization header returns CHECK_API.ERROR.
           const ozonApiKey     = (account.apiKey || '').toString().trim();
           const ozonCustomerId =
             account?.settings?.ozonExpressCustomerId ??
@@ -13865,30 +13879,30 @@ function ensureHeaders(sheet) {
             (account as any)?.customerId ?? '';
           const ozonTrackNum   = order.trackNumber!;
           const axios2         = (await import('axios')).default;
-
-          const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/parcels/tracking`;
+          const { default: FormData } = await import('form-data');
+          const requestBody = new FormData();
+          requestBody.append('tracking-number', ozonTrackNum);
+          const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/${encodeURIComponent(ozonApiKey)}/parcels/tracking`;
 
           let ozonRawResponse: any = null;
           let ozonRawStatus: string | null = null;
           let ozonApiKeyInvalid = false;
 
-          // ── Diagnostic: log request details (key masked) ────────────────────────
+          // ── Diagnostic: log request details (key never printed) ─────────────────
           const maskedKey = ozonApiKey
             ? ozonApiKey.slice(0, 4) + '…' + ozonApiKey.slice(-4)
             : '(empty)';
           console.log(
             `[OZON-DIAG] order=#${(order as any).orderNumber} tracking=${ozonTrackNum} ` +
-            `platform_status="${order.status}" endpoint=${ozonUrl} ` +
+            `platform_status="${order.status}" ` +
+            `endpoint=https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/[API_KEY]/parcels/tracking ` +
             `customer_id="${ozonCustomerId || '(empty)'}" key_preview="${maskedKey}" ` +
-            `body=${JSON.stringify({ parcels: [ozonTrackNum] })}`
+            `auth=url_path multipart_fields=${JSON.stringify({ 'tracking-number': ozonTrackNum })}`
           );
 
           try {
-            const resp = await axios2.post(ozonUrl, { parcels: [ozonTrackNum] }, {
-              headers: {
-                'Authorization': ozonApiKey,
-                'Content-Type': 'application/json',
-              },
+            const resp = await axios2.post(ozonUrl, requestBody, {
+              headers: { ...requestBody.getHeaders(), Accept: 'application/json' },
               timeout: 15000,
               validateStatus: () => true,
             });
@@ -13939,7 +13953,15 @@ function ensureHeaders(sheet) {
               storeId, integrationId: null, provider: 'ozonexpress',
               action: 'carrier_sync', status: 'fail', message: logMsg,
             });
-            break;
+            // Return immediately with a typed flag — the HTTP layer converts this to a 400.
+            return {
+              synced: candidates.length,
+              updated: 0,
+              details: [],
+              errors: [],
+              apiKeyInvalid: true,
+              message: `❌ Clé API Ozon Express invalide — reconnectez votre compte dans les paramètres transporteur.`,
+            };
           }
 
           const ozonMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
@@ -14114,6 +14136,14 @@ function ensureHeaders(sheet) {
       const result = await syncCarrierOrdersInternal(storeId, provider, { since, magasinId });
       if (result.accountMissing) {
         return res.status(400).json({ message: result.message });
+      }
+      // Invalid API key → real HTTP 400 so the frontend can show a destructive toast
+      // instead of the misleading "0 updates" success message.
+      if ((result as any).apiKeyInvalid) {
+        return res.status(400).json({
+          apiKeyInvalid: true,
+          message: (result as any).message || `❌ Clé API ${provider} invalide — reconnectez votre compte dans les paramètres.`,
+        });
       }
       // skipped (concurrent sync) and "no candidates" both return 200 — they're not errors.
       res.json(result);

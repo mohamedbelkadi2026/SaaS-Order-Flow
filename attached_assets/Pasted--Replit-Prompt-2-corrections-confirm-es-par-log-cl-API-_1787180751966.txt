@@ -1,0 +1,25 @@
+# Replit Prompt — 2 corrections confirmées par log : clé API Ozon Express invalide + message de succès trompeur en cas d'erreur
+
+## Cause racine confirmée (log réel)
+```
+[OZON-DIAG] raw_response={"CHECK_API":{"RESULT":"ERROR","MESSAGE":"Please verify your API Key"}}
+[OZON-SYNC] ❌ Invalid API Key for store 77 — stopping sync.
+[CARRIER-SYNC] provider=ozonexpress storeId=77 checked=45 updated=0 errors=0 ecNoTrackApi=0
+```
+La clé API Ozon Express connectée (customer_id 12082, clé commençant par "65c1…3616") est invalide/expirée. C'est pour ça que la synchronisation échoue systématiquement et silencieusement.
+
+## Fix 1 — Corriger le message affiché à l'utilisateur (bug UX confirmé)
+Le toast affiché est actuellement "✅ Statuts Ozon Express synchronisés — 45 commande(s) vérifiées, 0 mise(s) à jour" — un message de SUCCÈS trompeur, alors que la synchronisation a en réalité échoué dès la première commande à cause d'une clé API invalide (`checked=45` mais en fait la boucle s'est arrêtée au premier échec, pas vraiment vérifié les 45).
+
+Corrige pour que ce cas remonte une vraie erreur au frontend : "❌ Clé API Ozon Express invalide — reconnectez votre compte" (le message existe déjà côté log `integration-logs`, il faut juste le faire remonter correctement dans le toast affiché à l'utilisateur au lieu du message de succès générique).
+
+## Fix 2 — Je dois régénérer/vérifier ma clé API Ozon Express
+De mon côté, je dois aller sur mon compte Ozon Express, vérifier/régénérer la clé API (`customer_id` 12082), et la remettre à jour dans les paramètres de connexion Ozon Express sur la plateforme.
+
+## Question séparée à investiguer — webhook non matché
+Log connexe : un webhook Ozon Express réel est arrivé (`orderId=OZE_ma1252`, statut DELIVERED) mais n'a trouvé AUCUNE commande correspondante (`matched: false`, `"aucune commande pour orderId=OZE_ma1252"`). Vérifie comment le webhook essaie de faire correspondre `orderId`/tracking à une commande interne — le format `OZE_ma1252` correspond-il bien au format de tracking number stocké côté plateforme pour les commandes Ozon Express (on voit dans les logs des trackingNumber du type `TG-IMP-1787149564925-35`, format différent) ? Si les deux formats ne se correspondent jamais, aucun webhook Ozon Express entrant ne pourra jamais matcher une commande — à corriger séparément une fois la clé API réglée.
+
+## Testing checklist
+1. Une fois la clé API mise à jour côté plateforme : relancer "Synchroniser Ozon Express" → doit réellement interroger l'API pour les 45 commandes (plus d'erreur "Invalid API Key" dans les logs) et refléter les vrais statuts.
+2. Retester le scénario clé invalide (remettre temporairement une mauvaise clé) → le toast doit maintenant afficher clairement une erreur, pas un faux succès.
+3. Vérifier la correspondance webhook `orderId` ↔ tracking number Ozon Express, corriger le format de matching si besoin, puis retester avec un webhook réel.

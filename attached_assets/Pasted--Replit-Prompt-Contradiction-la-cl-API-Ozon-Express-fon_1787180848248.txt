@@ -1,0 +1,21 @@
+# Replit Prompt — Contradiction : la clé API Ozon Express fonctionne pour créer des commandes, mais échoue pour la synchronisation des statuts
+
+## Constat important
+Le client confirme que la clé API Ozon Express actuellement connectée FONCTIONNE bien : il crée des commandes via la plateforme et reçoit un vrai tracking number en retour (donc l'authentification pour la CRÉATION de colis passe correctement).
+
+Pourtant, le endpoint utilisé pour la SYNCHRONISATION des statuts (`https://api.ozonexpress.ma/customers/12082/parcels/tracking`) renvoie `{"CHECK_API":{"RESULT":"ERROR","MESSAGE":"Please verify your API Key"}}`.
+
+**Ça veut dire que la clé n'est probablement PAS le vrai problème — il y a une différence entre le code de création de commande (qui marche) et le code de synchronisation/tracking (qui échoue) dans la façon dont la clé/customer_id est lue ou envoyée.**
+
+## Ce qu'il faut investiguer
+
+1. Compare le code exact de CRÉATION de commande Ozon Express (celui qui fonctionne, récupère `apiKey`/`customerId` depuis `carrier_accounts` d'une certaine façon) avec le code de SYNCHRONISATION/tracking (celui qui échoue) — quelle différence y a-t-il dans la façon dont chacun lit/envoie les identifiants ?
+2. Vérifie si le endpoint de tracking utilise le bon format d'authentification attendu par Ozon Express — par exemple, est-ce que la clé doit être envoyée dans un header (`Authorization`, `X-API-Key`) plutôt que dans l'URL ou le body, et est-ce cohérent entre les deux endpoints (création vs tracking) ?
+3. Vérifie le `customer_id` utilisé (12082 vu dans les logs) — est-ce le MÊME customer_id que celui utilisé au moment de la création des commandes, ou y a-t-il une confusion entre deux comptes/stores différents (peut-être un ancien customer_id resté en cache quelque part) ?
+4. Regarde la documentation Ozon Express (si disponible dans le projet ou à consulter) pour l'endpoint `/customers/{id}/parcels/tracking` spécifiquement — a-t-il des exigences d'authentification différentes du endpoint de création de colis ?
+5. Teste toi-même l'appel à cet endpoint de tracking avec la même clé qui fonctionne pour la création, et montre-moi la requête exacte envoyée (headers inclus) et la réponse, pour qu'on voie où est la vraie différence.
+
+## Testing checklist
+1. Une fois la vraie cause identifiée (mauvais header, mauvais customer_id, mauvais format), corrige le code de synchronisation pour qu'il utilise exactement la même méthode d'authentification que le code de création qui fonctionne.
+2. Relancer "Synchroniser Ozon Express" → doit réussir à interroger le statut réel des 45 commandes sans erreur "Invalid API Key".
+3. Vérifier qu'au moins une commande dont le statut a changé côté Ozon Express se met à jour correctement sur la plateforme après ce fix.
