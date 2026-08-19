@@ -1,0 +1,20 @@
+# Replit Prompt — Fix : commandes importées avec statut "Confirmé" n'apparaissent pas dans la vue "Confirmés"
+
+## Bug
+Sur https://www.tajergrow.com/orders/import, quand j'importe un fichier (Excel/CSV) de commandes en spécifiant le statut "Confirmé" pour ces commandes, elles ne s'affichent PAS dans la section "Confirmés" du menu (Mes Commandes → Confirmés). Elles devraient apparaître exactement dans la vue correspondant au statut choisi lors de l'import.
+
+## Ce qu'il faut vérifier
+
+1. Dans le code qui traite l'import de fichier (`server/routes.ts`, endpoint lié à `/api/orders/import` ou équivalent), comment le statut choisi par l'utilisateur dans la configuration d'import est-il mappé vers la valeur enregistrée dans `orders.status` en base ? Vérifie la valeur exacte écrite (ex: `"confirme"`, `"CONFIRME"`, `"Confirmé"`, `"confirmed"`...).
+
+2. Compare cette valeur avec ce que le filtre de la vue "Confirmés" (`client/src/pages/orders.tsx` ou l'endpoint `/api/orders/filtered` avec `status=confirme`) attend précisément — un mismatch de casse, d'accent, ou de valeur (anglais vs français, underscore vs espace) est l'explication la plus probable, comme on l'a déjà vu plusieurs fois dans ce projet pour d'autres statuts.
+
+3. Vérifie aussi si l'import écrit bien dans le bon champ (`status` vs un autre champ genre `callCenterStatus`/`confirmationStatus` si le schéma en a plusieurs) — certaines des colonnes de statut vues ailleurs dans l'app (ex: "État Call Center" vs statut général) pourraient être différentes.
+
+4. Une fois la vraie cause identifiée (avec la valeur exacte trouvée en base pour une commande importée en "Confirmé"), corrige le mapping pour que l'import écrive exactement la même valeur que celle utilisée par les filtres de statut ailleurs dans l'app.
+
+## Testing checklist
+1. Importer un fichier de test avec 2-3 commandes marquées "Confirmé" → vérifier en base la valeur exacte du champ statut.
+2. Ouvrir "Mes Commandes → Confirmés" → ces commandes importées y apparaissent bien.
+3. Refaire le test avec un autre statut d'import (ex: "Nouveau", "Annulé") pour confirmer qu'il n'y a pas le même souci ailleurs.
+4. Vérifier que les commandes importées comptent bien dans les statistiques du Dashboard (cartes CONFIRMÉES, etc.) comme n'importe quelle autre commande confirmée.
