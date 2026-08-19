@@ -8447,6 +8447,15 @@ function ensureHeaders(sheet) {
             const quantity = mapped.quantity ? parseInt(mapped.quantity) || 1 : 1;
             const orderNumber = `IMP-${Date.now()}-${i}`;
 
+            // Spreadsheet labels are user-facing and arrive in many forms
+            // ("Confirmé", "confirmed", "CONFIRME", etc.). Persist only the
+            // canonical codes used by every orders filter and dashboard metric.
+            const importedStatus = mapImportedStatus(mapped.status || '', 'nouveau');
+            // A confirmed import must enter through the status transition after
+            // its line items exist, so inventory and confirmation side effects
+            // remain identical to a manually confirmed order.
+            const initialStatus = importedStatus === 'confirme' ? 'nouveau' : importedStatus;
+
             const order = await storage.createOrder({
               storeId,
               orderNumber,
@@ -8454,7 +8463,7 @@ function ensureHeaders(sheet) {
               customerPhone: customerPhone || '',
               customerAddress: mapped.customerAddress || '',
               customerCity: mapped.customerCity || '',
-              status: mapped.status || 'nouveau',
+              status: initialStatus,
               totalPrice,
               productCost: 0,
               shippingCost: 0,
@@ -8472,7 +8481,7 @@ function ensureHeaders(sheet) {
               quantity,
             }] as any : []);
 
-            if (mapped.status === 'confirme') {
+            if (importedStatus === 'confirme') {
               await storage.updateOrderStatus(order.id, 'confirme');
             }
 
