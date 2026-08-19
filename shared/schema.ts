@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -200,6 +200,57 @@ export const orderItems = pgTable("order_items", {
   variantInfo: text("variant_info"),
   sku: text("sku"),
 });
+
+// ── TajerDrop offer access ──────────────────────────────────────────────────
+// A Seller must request a marketplace product and receive approval before it can
+// be used as part of their personal TajerDrop catalogue ("Mon Stock").
+export const offerRequests = pgTable("offer_requests", {
+  id: serial("id").primaryKey(),
+  sellerStoreId: integer("seller_store_id").references(() => stores.id).notNull(),
+  productId: integer("product_id").references(() => products.id).notNull(),
+  // pending | accepted | cancelled | automatically_cancelled | rejected
+  status: text("status").notNull().default("pending"),
+  cancelReason: text("cancel_reason"),
+  acceptedAt: timestamp("accepted_at"),
+  cancelledAt: timestamp("cancelled_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  sellerProductLookup: index("offer_requests_seller_product_status_idx")
+    .on(table.sellerStoreId, table.productId, table.status),
+}));
+
+export type SellerInvoiceLine = {
+  type: "call_center" | "delivery" | "return" | "drop_offer" | "tax";
+  description: string;
+  quantity: number;
+  unitAmount: number | null;
+  amount: number;
+};
+
+// Periodic seller statements. Amounts are stored in centimes throughout the
+// application so invoice calculations are safe from floating-point rounding.
+export const sellerInvoices = pgTable("seller_invoices", {
+  id: serial("id").primaryKey(),
+  sellerStoreId: integer("seller_store_id").references(() => stores.id).notNull(),
+  periodFrom: date("period_from").notNull(),
+  periodTo: date("period_to").notNull(),
+  previousInvoiceId: integer("previous_invoice_id"),
+  extraItems: jsonb("extra_items").$type<SellerInvoiceLine[]>().default([]),
+  items: jsonb("items").$type<SellerInvoiceLine[]>().notNull().default([]),
+  subtotal: integer("subtotal").notNull().default(0),
+  vat: integer("vat").notNull().default(0),
+  totalCashCollected: integer("total_cash_collected").notNull().default(0),
+  totalNet: integer("total_net").notNull().default(0),
+  // Draft → validated is the processing workflow; payment is kept separately.
+  processingStatus: text("processing_status").notNull().default("draft"),
+  paymentStatus: text("payment_status").notNull().default("unpaid"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  sellerPeriodInvoice: uniqueIndex("seller_invoices_store_period_unique")
+    .on(table.sellerStoreId, table.periodFrom, table.periodTo),
+}));
 
 export const adSpendTracking = pgTable("ad_spend_tracking", {
   id: serial("id").primaryKey(),

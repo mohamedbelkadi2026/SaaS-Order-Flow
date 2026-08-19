@@ -283,10 +283,19 @@ export default function AdminTajerDropProducts() {
             </p>
           </div>
         </div>
-        <Button onClick={openCreate} style={{ background: GOLD, color: NAVY }}
-          className="font-semibold">
-          <Plus className="w-4 h-4 mr-2" /> Ajouter un produit
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => navigate("/admin/tajerdrop/operations")}
+            className="border-white/20 bg-white/5 text-white hover:bg-white/10 hover:text-white"
+          >
+            Gérer les opérations
+          </Button>
+          <Button onClick={openCreate} style={{ background: GOLD, color: NAVY }}
+            className="font-semibold">
+            <Plus className="w-4 h-4 mr-2" /> Ajouter un produit
+          </Button>
+        </div>
       </div>
 
       {/* Content */}

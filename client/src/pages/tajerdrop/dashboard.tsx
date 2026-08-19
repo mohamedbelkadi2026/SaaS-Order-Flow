@@ -37,8 +37,8 @@ function StatCard({
 }
 
 export default function TajerDropDashboard() {
-  const { data: stats, isLoading } = useQuery<SellerStats>({
-    queryKey: ["/api/marketplace/stats"],
+  const { data: stats, isLoading } = useQuery<any>({
+    queryKey: ["/api/marketplace/stats/overview?from=2020-01-01&to=2099-12-31"],
   });
 
   if (isLoading) return (
@@ -47,7 +47,14 @@ export default function TajerDropDashboard() {
     </div>
   );
 
-  const s = stats || { totalLeads: 0, confirmed: 0, delivered: 0, refused: 0, confirmationRate: 0, deliveryRate: 0 };
+  const s = {
+    totalLeads: stats?.headline?.count ?? stats?.totalLeads ?? 0,
+    confirmed: stats?.callCenter?.count ?? stats?.confirmed ?? 0,
+    delivered: stats?.shipping?.count ?? stats?.delivered ?? 0,
+    refused: stats?.fulfillment?.count ?? stats?.refused ?? 0,
+    confirmationRate: stats?.callCenter?.rate ?? stats?.confirmationRate ?? 0,
+    deliveryRate: stats?.shipping?.rate ?? stats?.deliveryRate ?? 0,
+  };
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -83,18 +90,14 @@ export default function TajerDropDashboard() {
           <CardTitle className="text-base">Actions rapides</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-3">
-          <Link href="/tajerdrop/catalogue">
-            <a className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-opacity hover:opacity-90"
+          <Link href="/tajerdrop/catalogue" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-opacity hover:opacity-90"
               style={{ background: GOLD }}>
               <Package className="w-4 h-4" />
               Parcourir le catalogue
-            </a>
           </Link>
-          <Link href="/tajerdrop/commandes">
-            <a className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors hover:bg-muted">
+          <Link href="/tajerdrop/commandes" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors hover:bg-muted">
               <ShoppingCart className="w-4 h-4" />
               Mes commandes
-            </a>
           </Link>
         </CardContent>
       </Card>
@@ -108,11 +111,9 @@ export default function TajerDropDashboard() {
             <p className="text-sm text-white/60">
               Choisissez un produit dans le catalogue, fixez votre prix de vente, et créez votre première commande.
             </p>
-            <Link href="/tajerdrop/catalogue">
-              <a className="inline-block mt-3 px-5 py-2 rounded-lg text-sm font-semibold"
+            <Link href="/tajerdrop/catalogue" className="inline-block mt-3 px-5 py-2 rounded-lg text-sm font-semibold"
                 style={{ background: GOLD, color: NAVY }}>
                 Voir le catalogue
-              </a>
             </Link>
           </CardContent>
         </Card>

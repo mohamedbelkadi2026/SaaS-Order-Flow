@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -25,6 +25,7 @@ import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
 import { resolveProductId, splitVariant, normStr } from "./services/variants";
+import { expireInactiveTajerDropOfferRequests } from "./cron/tajerdrop-offer-requests";
 
 import fs from "fs";
 
@@ -1139,6 +1140,457 @@ export async function registerRoutes(
       next();
     }).catch(() => res.status(500).json({ message: "Erreur serveur" }));
   };
+
+  const TAJERDROP_CANCELLED = ["refused", "refusé", "annulé", "cancelled"];
+  const TAJERDROP_DELIVERED = ["delivered", "livré", "livree", "livrée"];
+  const TAJERDROP_RETURNED = ["retour", "returned"];
+  const normalizeTajerDropStatus = (value: unknown) =>
+    String(value || "").toLocaleLowerCase("fr-FR").trim();
+  const statusContains = (order: any, candidates: string[]) => {
+    const status = normalizeTajerDropStatus(order.status);
+    return candidates.some(candidate => status.includes(candidate));
+  };
+  const isSellerOrderDelivered = (order: any) =>
+    statusContains(order, TAJERDROP_DELIVERED);
+  const isSellerOrderCancelled = (order: any) =>
+    statusContains(order, TAJERDROP_CANCELLED);
+  const isSellerOrderReturned = (order: any) =>
+    statusContains(order, TAJERDROP_RETURNED);
+  const isSellerOrderConfirmed = (order: any) =>
+    !isSellerOrderCancelled(order) && (
+      isConfirmedCumulative(order.status || "") ||
+      statusContains(order, ["confirm", "ramassage", "expédié", "expedie", "transit", "livr"])
+    );
+
+  const readTajerDropRange = (query: Record<string, unknown>) => {
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const today = new Date();
+    const defaultDay = today.toISOString().slice(0, 10);
+    const from = typeof query.from === "string" && datePattern.test(query.from) ? query.from : defaultDay;
+    const to = typeof query.to === "string" && datePattern.test(query.to) ? query.to : from;
+    const start = new Date(`${from}T00:00:00.000Z`);
+    const end = new Date(`${to}T23:59:59.999Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      throw new Error("Période de dates invalide");
+    }
+    return { from, to, start, end };
+  };
+
+  const selectSellerOrdersInRange = async (
+    sellerStoreId: number,
+    query: Record<string, unknown>,
+  ) => {
+    const range = readTajerDropRange(query);
+    const requestedProductId = Number(query.productId);
+    const allOrders = await storage.getOrdersByStore(sellerStoreId);
+    const matchingOrders = allOrders.filter((order: any) => {
+      const createdAt = order.createdAt ? new Date(order.createdAt) : null;
+      if (!createdAt || createdAt < range.start || createdAt > range.end) return false;
+      return !Number.isFinite(requestedProductId) || requestedProductId <= 0 ||
+        (order.items || []).some((item: any) => item.productId === requestedProductId);
+    });
+    return { ...range, orders: matchingOrders };
+  };
+
+  const stockLevel = (stock: number | null | undefined) =>
+    Number(stock || 0) <= 5 ? "Low Stock" : Number(stock) <= 20 ? "Medium Stock" : "High Stock";
+
+  const enrichOfferRequests = async (requests: any[]) => {
+    if (!requests.length) return [];
+    const productIds = Array.from(new Set(requests.map(request => request.productId)));
+    const productRows = await db.select().from(products).where(inArray(products.id, productIds));
+    const productById = new Map(productRows.map(product => [product.id, product]));
+    return requests.map(request => {
+      const product = productById.get(request.productId);
+      return {
+        ...request,
+        product: product ? {
+          id: product.id,
+          name: product.name,
+          sku: product.sku,
+          imageUrl: product.imageUrl,
+          productCost: product.costPrice,
+          stockLevel: stockLevel(product.stock),
+          category: product.marketplaceCategory,
+        } : null,
+      };
+    });
+  };
+
+  type TajerDropInvoiceCalculation = {
+    lines: SellerInvoiceLine[];
+    subtotal: number;
+    vat: number;
+    totalCashCollected: number;
+    totalNet: number;
+  };
+
+  const calculateSellerInvoice = (sellerOrders: any[], extraItems: SellerInvoiceLine[] = []): TajerDropInvoiceCalculation => {
+    const delivered = sellerOrders.filter(isSellerOrderDelivered);
+    const returned = sellerOrders.filter(isSellerOrderReturned);
+    const deliveredUpsells = delivered.filter((order: any) => Number(order.upSell || 0) > 0);
+    const sumAmount = (list: any[], key: string) =>
+      list.reduce((total, item) => total + Number(item[key] || 0), 0);
+    const shippingDelivered = sumAmount(delivered, "shippingCost");
+    const shippingReturned = sumAmount(returned, "shippingCost");
+    const productCosts = sumAmount(sellerOrders, "productCost");
+    // Category-based call-center pricing does not exist yet in the admin model.
+    // Keeping it as a zero-valued, explicit line makes every generated statement
+    // auditable and ready for a future pricing configuration.
+    const serviceLines: SellerInvoiceLine[] = [
+      {
+        type: "call_center",
+        description: "Prix Lead Call Center (barème à configurer)",
+        quantity: sellerOrders.length,
+        unitAmount: 0,
+        amount: 0,
+      },
+      {
+        type: "call_center",
+        description: "Prix Upsell Livré Call Center (barème à configurer)",
+        quantity: deliveredUpsells.length,
+        unitAmount: 0,
+        amount: 0,
+      },
+      {
+        type: "delivery",
+        description: "Colis livrés",
+        quantity: delivered.length,
+        unitAmount: delivered.length ? Math.round(shippingDelivered / delivered.length) : 0,
+        amount: shippingDelivered,
+      },
+      {
+        type: "return",
+        description: "Colis retournés",
+        quantity: returned.length,
+        unitAmount: returned.length ? Math.round(shippingReturned / returned.length) : 0,
+        amount: shippingReturned,
+      },
+      {
+        type: "drop_offer",
+        description: "Total Produits Drop (coût produit)",
+        quantity: sellerOrders.reduce((total, order: any) => total + Number(order.rawQuantity || 1), 0),
+        unitAmount: null,
+        amount: productCosts,
+      },
+    ];
+    const allCostLines = [...serviceLines, ...extraItems];
+    const subtotal = allCostLines.reduce((total, line) => total + Number(line.amount || 0), 0);
+    const taxableServices = shippingDelivered + shippingReturned +
+      extraItems.filter(line => line.type !== "drop_offer").reduce((total, line) => total + Number(line.amount || 0), 0);
+    const vat = Math.round(taxableServices * 0.20);
+    const taxLine: SellerInvoiceLine = {
+      type: "tax",
+      description: "TVA (services)",
+      quantity: 1,
+      unitAmount: vat,
+      amount: vat,
+    };
+    const totalCashCollected = sumAmount(delivered, "totalPrice");
+    return {
+      lines: [...allCostLines, taxLine],
+      subtotal,
+      vat,
+      totalCashCollected,
+      totalNet: totalCashCollected - subtotal - vat,
+    };
+  };
+
+  /** POST /api/marketplace/offer-requests — Seller requests catalogue access. */
+  app.post("/api/marketplace/offer-requests", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const sellerStoreId = req.user!.storeId!;
+      const { productId } = z.object({ productId: z.number().int().positive() }).parse(req.body);
+      const product: any = await storage.getProduct(productId);
+      if (!product || !product.isMarketplaceProduct || product.marketplaceActive === false || product.archivedAt) {
+        return res.status(404).json({ message: "Offre introuvable ou indisponible" });
+      }
+      const [existing] = await db.select({ id: offerRequests.id })
+        .from(offerRequests)
+        .where(and(
+          eq(offerRequests.sellerStoreId, sellerStoreId),
+          eq(offerRequests.productId, productId),
+          inArray(offerRequests.status, ["pending", "accepted"]),
+        ))
+        .limit(1);
+      if (existing) {
+        return res.status(409).json({ message: "Une demande active existe déjà pour cette offre" });
+      }
+      const [created] = await db.insert(offerRequests).values({
+        sellerStoreId,
+        productId,
+        status: "pending",
+      }).returning();
+      res.status(201).json((await enrichOfferRequests([created]))[0]);
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Impossible de créer la demande" });
+    }
+  });
+
+  /** GET /api/marketplace/offer-requests — Seller's own request history only. */
+  app.get("/api/marketplace/offer-requests", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const requests = await db.select().from(offerRequests)
+        .where(eq(offerRequests.sellerStoreId, req.user!.storeId!))
+        .orderBy(desc(offerRequests.createdAt));
+      res.json(await enrichOfferRequests(requests));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger les demandes" });
+    }
+  });
+
+  /** DELETE /api/marketplace/offer-requests/:id — only pending requests may be cancelled. */
+  app.delete("/api/marketplace/offer-requests/:id", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const requestId = Number(req.params.id);
+      if (!Number.isInteger(requestId)) return res.status(400).json({ message: "Identifiant invalide" });
+      const [updated] = await db.update(offerRequests).set({
+        status: "cancelled",
+        cancelReason: "Cancelled by seller",
+        cancelledAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(offerRequests.id, requestId),
+        eq(offerRequests.sellerStoreId, req.user!.storeId!),
+        eq(offerRequests.status, "pending"),
+      )).returning();
+      if (!updated) return res.status(404).json({ message: "Demande en attente introuvable" });
+      res.json({ success: true, request: (await enrichOfferRequests([updated]))[0] });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible d'annuler la demande" });
+    }
+  });
+
+  /** GET /api/marketplace/my-stock — accepted products form the Seller's stock. */
+  app.get("/api/marketplace/my-stock", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const accepted = await db.select().from(offerRequests)
+        .where(and(
+          eq(offerRequests.sellerStoreId, req.user!.storeId!),
+          eq(offerRequests.status, "accepted"),
+        ))
+        .orderBy(desc(offerRequests.acceptedAt));
+      res.json(await enrichOfferRequests(accepted));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger Mon Stock" });
+    }
+  });
+
+  /** GET /api/marketplace/stats/overview — date/product-filtered Seller dashboard. */
+  app.get("/api/marketplace/stats/overview", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const result = await selectSellerOrdersInRange(req.user!.storeId!, req.query as Record<string, unknown>);
+      const metric = (predicate: (order: any) => boolean) => {
+        const matching = result.orders.filter(predicate);
+        const amount = matching.reduce((total: number, order: any) => total + Number(order.totalPrice || 0), 0);
+        return { count: matching.length, amount };
+      };
+      const total = metric(() => true);
+      const valid = metric(order => !isSellerOrderCancelled(order) && !statusContains(order, ["expir"]));
+      const confirmed = metric(isSellerOrderConfirmed);
+      const toCallBack = metric(order => statusContains(order, ["rappel", "report"]));
+      const noResponse = metric(order => statusContains(order, ["no response", "sans réponse", "boite vocale"]));
+      const unreachable = metric(order => statusContains(order, ["injoignable", "unreachable"]));
+      const cancelled = metric(isSellerOrderCancelled);
+      const expired = metric(order => statusContains(order, ["expir"]));
+      const sentToWarehouse = metric(order => statusContains(order, ["ramassage", "entrepôt", "entrepot"]));
+      const pickedUp = metric(order => statusContains(order, ["ramassé", "ramasse"]));
+      const prepared = metric(order => statusContains(order, ["prépar", "prepar"]));
+      const fulfillmentCancelled = metric(order => statusContains(order, ["fulfillment annul"]));
+      const inDelivery = metric(order => statusContains(order, ["transit", "en cours de livraison", "expédié", "expedie"]));
+      const delivered = metric(isSellerOrderDelivered);
+      const returned = metric(isSellerOrderReturned);
+      const refunded = metric(order => statusContains(order, ["rembours"]));
+      res.json({
+        period: { from: result.from, to: result.to },
+        headline: {
+          validLeads: valid,
+          confirmed,
+          delivered,
+          deliveredRevenue: { count: delivered.count, amount: delivered.amount },
+        },
+        callCenter: {
+          total, valid: { ...valid, rate: total.count ? Math.round(valid.count / total.count * 100) : 0 },
+          confirmed: { ...confirmed, rate: total.count ? Math.round(confirmed.count / total.count * 100) : 0 },
+          toCallBack: { ...toCallBack, rate: total.count ? Math.round(toCallBack.count / total.count * 100) : 0 },
+          noResponse: { ...noResponse, rate: total.count ? Math.round(noResponse.count / total.count * 100) : 0 },
+          unreachable: { ...unreachable, rate: total.count ? Math.round(unreachable.count / total.count * 100) : 0 },
+          cancelled: { ...cancelled, rate: total.count ? Math.round(cancelled.count / total.count * 100) : 0 },
+          expired: { ...expired, rate: total.count ? Math.round(expired.count / total.count * 100) : 0 },
+        },
+        fulfillment: { sentToWarehouse, pickedUp, prepared, cancelled: fulfillmentCancelled },
+        shipping: {
+          inDelivery: { ...inDelivery, rate: total.count ? Math.round(inDelivery.count / total.count * 100) : 0 },
+          delivered: { ...delivered, rate: total.count ? Math.round(delivered.count / total.count * 100) : 0 },
+          returned: { ...returned, rate: total.count ? Math.round(returned.count / total.count * 100) : 0 },
+          refunded: { ...refunded, rate: total.count ? Math.round(refunded.count / total.count * 100) : 0 },
+        },
+      });
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Impossible de calculer les statistiques" });
+    }
+  });
+
+  /** GET /api/marketplace/stats/products — Seller product performance by period. */
+  app.get("/api/marketplace/stats/products", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const result = await selectSellerOrdersInRange(req.user!.storeId!, req.query as Record<string, unknown>);
+      const accepted = await db.select().from(offerRequests).where(and(
+        eq(offerRequests.sellerStoreId, req.user!.storeId!),
+        eq(offerRequests.status, "accepted"),
+      ));
+      const stock = await enrichOfferRequests(accepted);
+      const rows = new Map<number, any>();
+      for (const request of stock) {
+        if (!request.product) continue;
+        rows.set(request.productId, {
+          product: request.product,
+          leads: 0, validLeads: 0, confirmed: 0, cancelled: 0,
+          prepared: 0, inDelivery: 0,
+        });
+      }
+      for (const order of result.orders) {
+        for (const item of order.items || []) {
+          if (item.productId == null) continue;
+          const row = rows.get(item.productId);
+          if (!row) continue;
+          row.leads++;
+          if (!isSellerOrderCancelled(order) && !statusContains(order, ["expir"])) row.validLeads++;
+          if (isSellerOrderConfirmed(order)) row.confirmed++;
+          if (isSellerOrderCancelled(order)) row.cancelled++;
+          if (statusContains(order, ["prépar", "prepar"])) row.prepared++;
+          if (statusContains(order, ["transit", "en cours de livraison", "expédié", "expedie"])) row.inDelivery++;
+        }
+      }
+      res.json({
+        period: { from: result.from, to: result.to },
+        products: Array.from(rows.values()).map(row => ({
+          ...row,
+          confirmationRate: row.leads ? Math.round(row.confirmed / row.leads * 100) : 0,
+        })),
+      });
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Impossible de calculer les statistiques produits" });
+    }
+  });
+
+  /** GET /api/marketplace/expeditions — Seller orders currently in delivery. */
+  app.get("/api/marketplace/expeditions", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const allOrders = await storage.getOrdersByStore(req.user!.storeId!);
+      const shipments = allOrders.filter((order: any) =>
+        statusContains(order, ["transit", "en cours de livraison", "expédié", "expedie"]) &&
+        !isSellerOrderDelivered(order) && !isSellerOrderReturned(order)
+      ).map((order: any) => ({
+        id: order.id, orderNumber: order.orderNumber, status: order.status,
+        trackingNumber: order.trackNumber, carrierName: order.carrierName || order.shippingProvider,
+        createdAt: order.createdAt, updatedAt: order.updatedAt,
+        customerName: order.customerName, customerCity: order.customerCity,
+        totalPrice: order.totalPrice, items: order.items || [],
+      }));
+      res.json(shipments);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger les expéditions" });
+    }
+  });
+
+  const invoiceInputSchema = z.object({
+    periodFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date de début invalide"),
+    periodTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date de fin invalide"),
+    previousInvoiceId: z.number().int().positive().nullable().optional(),
+    extraItems: z.array(z.object({
+      type: z.enum(["call_center", "delivery", "return", "drop_offer", "tax"]),
+      description: z.string().min(1).max(300),
+      quantity: z.number().int().min(1),
+      unitAmount: z.number().int().nullable().optional(),
+      amount: z.number().int(),
+    })).optional(),
+  });
+
+  const generateTajerDropInvoice = async (
+    sellerStoreId: number,
+    input: z.infer<typeof invoiceInputSchema>,
+  ) => {
+    const { start, end } = readTajerDropRange({ from: input.periodFrom, to: input.periodTo });
+    const [existing] = await db.select({ id: sellerInvoices.id })
+      .from(sellerInvoices)
+      .where(and(
+        eq(sellerInvoices.sellerStoreId, sellerStoreId),
+        eq(sellerInvoices.periodFrom, input.periodFrom),
+        eq(sellerInvoices.periodTo, input.periodTo),
+      ))
+      .limit(1);
+    if (existing) {
+      const error: any = new Error("Une facture existe déjà pour cette période");
+      error.status = 409;
+      throw error;
+    }
+
+    const allOrders = await storage.getOrdersByStore(sellerStoreId);
+    const periodOrders = allOrders.filter((order: any) => {
+      const createdAt = order.createdAt ? new Date(order.createdAt) : null;
+      return createdAt && createdAt >= start && createdAt <= end;
+    });
+    const extraItems = (input.extraItems || []) as SellerInvoiceLine[];
+    const calculation = calculateSellerInvoice(periodOrders, extraItems);
+    const [invoice] = await db.insert(sellerInvoices).values({
+      sellerStoreId,
+      periodFrom: input.periodFrom,
+      periodTo: input.periodTo,
+      previousInvoiceId: input.previousInvoiceId || null,
+      extraItems,
+      items: calculation.lines,
+      subtotal: calculation.subtotal,
+      vat: calculation.vat,
+      totalCashCollected: calculation.totalCashCollected,
+      totalNet: calculation.totalNet,
+      processingStatus: "draft",
+      paymentStatus: "unpaid",
+    }).returning();
+    return invoice;
+  };
+
+  /** POST /api/seller/invoices/generate — generate a Seller's own statement. */
+  app.post("/api/seller/invoices/generate", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const input = invoiceInputSchema.parse(req.body);
+      if (input.periodFrom > input.periodTo) {
+        return res.status(400).json({ message: "La date de début doit précéder la date de fin" });
+      }
+      const invoice = await generateTajerDropInvoice(req.user!.storeId!, input);
+      res.status(201).json(invoice);
+    } catch (err: any) {
+      res.status(err?.status || 400).json({ message: err?.message || "Impossible de générer la facture" });
+    }
+  });
+
+  /** GET /api/seller/invoices — list only the connected Seller's statements. */
+  app.get("/api/seller/invoices", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const rows = await db.select().from(sellerInvoices)
+        .where(eq(sellerInvoices.sellerStoreId, req.user!.storeId!))
+        .orderBy(desc(sellerInvoices.createdAt));
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger les factures" });
+    }
+  });
+
+  /** GET /api/seller/invoices/:id — detail, scoped to the connected Seller. */
+  app.get("/api/seller/invoices/:id", requireTajerDropSeller, async (req: any, res) => {
+    try {
+      const invoiceId = Number(req.params.id);
+      if (!Number.isInteger(invoiceId)) return res.status(400).json({ message: "Identifiant invalide" });
+      const [invoice] = await db.select().from(sellerInvoices).where(and(
+        eq(sellerInvoices.id, invoiceId),
+        eq(sellerInvoices.sellerStoreId, req.user!.storeId!),
+      )).limit(1);
+      if (!invoice) return res.status(404).json({ message: "Facture introuvable" });
+      res.json(invoice);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger la facture" });
+    }
+  });
 
   /** GET /api/marketplace/products — catalogue complet pour le Seller.
    *  Inclut catégorie, description, variantes, frais par produit. */
@@ -15097,6 +15549,225 @@ function ensureHeaders(sheet) {
   // ============================================================
   // TAJERDROP SELLER VALIDATION (Super Admin)
   // ============================================================
+
+  const enrichAdminOfferRequests = async (requests: any[]) => {
+    const enriched = await enrichOfferRequests(requests);
+    if (!enriched.length) return enriched;
+    const sellerStoreIds = Array.from(new Set(enriched.map((request: any) => request.sellerStoreId)));
+    const sellerRows = await db.select({
+      id: stores.id,
+      name: stores.name,
+      tajerdropStatus: stores.tajerdropStatus,
+    }).from(stores).where(inArray(stores.id, sellerStoreIds));
+    const sellerById = new Map(sellerRows.map(store => [store.id, store]));
+    return enriched.map((request: any) => ({
+      ...request,
+      seller: sellerById.get(request.sellerStoreId) || null,
+    }));
+  };
+
+  /** GET /api/admin/offer-requests — all Seller product requests. */
+  app.get("/api/admin/offer-requests", requireSuperAdmin, async (_req, res) => {
+    try {
+      const requests = await db.select().from(offerRequests).orderBy(desc(offerRequests.createdAt));
+      res.json(await enrichAdminOfferRequests(requests));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger les demandes d'offres" });
+    }
+  });
+
+  /** Accepting a request makes this product available in the Seller's Mon Stock. */
+  app.patch("/api/admin/offer-requests/:id/accept", requireSuperAdmin, async (req, res) => {
+    try {
+      const requestId = Number(req.params.id);
+      if (!Number.isInteger(requestId)) return res.status(400).json({ message: "Identifiant invalide" });
+      const [updated] = await db.update(offerRequests).set({
+        status: "accepted",
+        acceptedAt: new Date(),
+        cancelReason: null,
+        cancelledAt: null,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(offerRequests.id, requestId),
+        eq(offerRequests.status, "pending"),
+      )).returning();
+      if (!updated) return res.status(404).json({ message: "Demande en attente introuvable" });
+      res.json((await enrichAdminOfferRequests([updated]))[0]);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible d'accepter la demande" });
+    }
+  });
+
+  app.patch("/api/admin/offer-requests/:id/reject", requireSuperAdmin, async (req, res) => {
+    try {
+      const requestId = Number(req.params.id);
+      const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+      if (!Number.isInteger(requestId)) return res.status(400).json({ message: "Identifiant invalide" });
+      const [updated] = await db.update(offerRequests).set({
+        status: "rejected",
+        cancelReason: reason,
+        cancelledAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(offerRequests.id, requestId),
+        eq(offerRequests.status, "pending"),
+      )).returning();
+      if (!updated) return res.status(404).json({ message: "Demande en attente introuvable" });
+      res.json((await enrichAdminOfferRequests([updated]))[0]);
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Impossible de refuser la demande" });
+    }
+  });
+
+  /** Allows Admin to force the 7-day offer expiry check for support/testing. */
+  app.post("/api/admin/offer-requests/expire-inactive", requireSuperAdmin, async (_req, res) => {
+    try {
+      const expired = await expireInactiveTajerDropOfferRequests();
+      res.json({ success: true, expired });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible d'exécuter l'auto-annulation" });
+    }
+  });
+
+  const enrichAdminInvoices = async (invoices: any[]) => {
+    if (!invoices.length) return [];
+    const sellerStoreIds = Array.from(new Set(invoices.map(invoice => invoice.sellerStoreId)));
+    const sellerRows = await db.select({ id: stores.id, name: stores.name })
+      .from(stores).where(inArray(stores.id, sellerStoreIds));
+    const sellerById = new Map(sellerRows.map(store => [store.id, store]));
+    return invoices.map(invoice => ({ ...invoice, seller: sellerById.get(invoice.sellerStoreId) || null }));
+  };
+
+  app.get("/api/admin/seller-invoices", requireSuperAdmin, async (_req, res) => {
+    try {
+      const invoices = await db.select().from(sellerInvoices).orderBy(desc(sellerInvoices.createdAt));
+      res.json(await enrichAdminInvoices(invoices));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger les factures Seller" });
+    }
+  });
+
+  app.get("/api/admin/seller-invoices/:id", requireSuperAdmin, async (req, res) => {
+    try {
+      const invoiceId = Number(req.params.id);
+      if (!Number.isInteger(invoiceId)) return res.status(400).json({ message: "Identifiant invalide" });
+      const [invoice] = await db.select().from(sellerInvoices)
+        .where(eq(sellerInvoices.id, invoiceId)).limit(1);
+      if (!invoice) return res.status(404).json({ message: "Facture introuvable" });
+      res.json((await enrichAdminInvoices([invoice]))[0]);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger la facture" });
+    }
+  });
+
+  app.post("/api/admin/seller-invoices/generate", requireSuperAdmin, async (req, res) => {
+    try {
+      const { sellerStoreId, ...rawInvoice } = z.object({
+        sellerStoreId: z.number().int().positive(),
+        periodFrom: z.string(),
+        periodTo: z.string(),
+        previousInvoiceId: z.number().int().positive().nullable().optional(),
+        extraItems: z.array(z.object({
+          type: z.enum(["call_center", "delivery", "return", "drop_offer", "tax"]),
+          description: z.string().min(1).max(300),
+          quantity: z.number().int().min(1),
+          unitAmount: z.number().int().nullable().optional(),
+          amount: z.number().int(),
+        })).optional(),
+      }).parse(req.body);
+      const seller = await storage.getStore(sellerStoreId);
+      if (!seller || seller.storeType !== "tajerdrop_seller") {
+        return res.status(404).json({ message: "Seller TajerDrop introuvable" });
+      }
+      const input = invoiceInputSchema.parse(rawInvoice);
+      if (input.periodFrom > input.periodTo) {
+        return res.status(400).json({ message: "La date de début doit précéder la date de fin" });
+      }
+      const invoice = await generateTajerDropInvoice(sellerStoreId, input);
+      res.status(201).json((await enrichAdminInvoices([invoice]))[0]);
+    } catch (err: any) {
+      res.status(err?.status || 400).json({ message: err?.message || "Impossible de générer la facture" });
+    }
+  });
+
+  app.patch("/api/admin/seller-invoices/:id/validate", requireSuperAdmin, async (req, res) => {
+    try {
+      const invoiceId = Number(req.params.id);
+      if (!Number.isInteger(invoiceId)) return res.status(400).json({ message: "Identifiant invalide" });
+      const [updated] = await db.update(sellerInvoices).set({
+        processingStatus: "validated",
+        updatedAt: new Date(),
+      }).where(and(
+        eq(sellerInvoices.id, invoiceId),
+        eq(sellerInvoices.processingStatus, "draft"),
+      )).returning();
+      if (!updated) return res.status(404).json({ message: "Facture brouillon introuvable" });
+      res.json((await enrichAdminInvoices([updated]))[0]);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de valider la facture" });
+    }
+  });
+
+  app.patch("/api/admin/seller-invoices/:id/mark-paid", requireSuperAdmin, async (req, res) => {
+    try {
+      const invoiceId = Number(req.params.id);
+      if (!Number.isInteger(invoiceId)) return res.status(400).json({ message: "Identifiant invalide" });
+      const [updated] = await db.update(sellerInvoices).set({
+        paymentStatus: "paid",
+        updatedAt: new Date(),
+      }).where(and(
+        eq(sellerInvoices.id, invoiceId),
+        eq(sellerInvoices.processingStatus, "validated"),
+        eq(sellerInvoices.paymentStatus, "unpaid"),
+      )).returning();
+      if (!updated) return res.status(404).json({ message: "Facture validée non payée introuvable" });
+      res.json((await enrichAdminInvoices([updated]))[0]);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de marquer la facture payée" });
+    }
+  });
+
+  /** GET /api/admin/tajerdrop/sellers — performance snapshot for every Seller. */
+  app.get("/api/admin/tajerdrop/sellers", requireSuperAdmin, async (_req, res) => {
+    try {
+      const sellerStores = await db.select().from(stores).where(and(
+        eq(stores.storeType, "tajerdrop_seller"),
+        eq(stores.tajerdropStatus, "validated"),
+      ));
+      const snapshots = await Promise.all(sellerStores.map(async seller => {
+        const sellerOrders = await storage.getOrdersByStore(seller.id);
+        const total = sellerOrders.length;
+        const confirmed = sellerOrders.filter(isSellerOrderConfirmed).length;
+        const deliveredOrders = sellerOrders.filter(isSellerOrderDelivered);
+        const delivered = deliveredOrders.length;
+        const deliveredRevenue = deliveredOrders.reduce((sum, order: any) => sum + Number(order.totalPrice || 0), 0);
+        const [stockCount] = await db.select({ count: count() }).from(offerRequests).where(and(
+          eq(offerRequests.sellerStoreId, seller.id),
+          eq(offerRequests.status, "accepted"),
+        ));
+        const lastLead = sellerOrders.reduce<Date | null>((latest, order: any) => {
+          if (!order.createdAt) return latest;
+          const createdAt = new Date(order.createdAt);
+          return !latest || createdAt > latest ? createdAt : latest;
+        }, null);
+        return {
+          sellerStoreId: seller.id,
+          sellerName: seller.name,
+          leads: total,
+          confirmed,
+          delivered,
+          confirmationRate: total ? Math.round(confirmed / total * 100) : 0,
+          deliveryRate: confirmed ? Math.round(delivered / confirmed * 100) : 0,
+          deliveredRevenue,
+          productsInStock: Number(stockCount?.count || 0),
+          lastLeadAt: lastLead,
+        };
+      }));
+      res.json(snapshots);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Impossible de charger les statistiques Sellers" });
+    }
+  });
 
   // List all TajerDrop seller registrations (any status)
   app.get("/api/admin/tajerdrop/demandes", requireSuperAdmin, async (_req, res) => {

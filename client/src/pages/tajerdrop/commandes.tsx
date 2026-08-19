@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { formatCurrency } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Loader2, ShoppingCart, Search } from "lucide-react";
+import { Loader2, ShoppingCart, Search, Clock3, CheckCircle2, Truck } from "lucide-react";
 import { useState } from "react";
 
 const GOLD = "#C5A059";
@@ -31,6 +31,7 @@ function formatDate(d: string) {
 
 export default function TajerDropCommandes() {
   const [search, setSearch] = useState("");
+  const [view, setView] = useState<"all"|"action"|"transit">("all");
 
   // Reuse the existing orders endpoint filtered to the seller's store automatically
   const { data: resp, isLoading } = useQuery<{ orders: any[]; total: number }>({
@@ -43,13 +44,14 @@ export default function TajerDropCommandes() {
 
   const orders: any[] = resp?.orders || [];
 
+  const visible = view === "action" ? orders.filter(o => /nouveau|pending|attente|confirm/i.test(o.status || "")) : view === "transit" ? orders.filter(o => /exp|livr|transit|delivery/i.test(o.status || "")) : orders;
   const filtered = search.trim()
-    ? orders.filter(o =>
+      ? visible.filter(o =>
         o.customerName?.toLowerCase().includes(search.toLowerCase()) ||
         o.orderNumber?.toLowerCase().includes(search.toLowerCase()) ||
         o.customerPhone?.includes(search)
       )
-    : orders;
+      : visible;
 
   if (isLoading) return (
     <div className="flex items-center justify-center py-24">
@@ -64,7 +66,10 @@ export default function TajerDropCommandes() {
         <p className="text-sm text-muted-foreground mt-0.5">{orders.length} commande{orders.length !== 1 ? "s" : ""} au total</p>
       </div>
 
-      <div className="relative max-w-sm">
+       <div className="flex flex-wrap gap-2">
+       {[["all","Toutes",ShoppingCart],["action","À traiter",Clock3],["transit","En cours",Truck]].map(([key,label,Icon]:any)=><button key={key} onClick={()=>setView(key)} className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium ${view===key?"bg-[#10243d] text-white":"bg-white text-slate-600"}`}><Icon className="h-4 w-4"/>{label} <span className="text-xs opacity-60">{key==="all"?orders.length:key==="action"?orders.filter(o=>/nouveau|pending|attente|confirm/i.test(o.status||"")).length:orders.filter(o=>/exp|livr|transit|delivery/i.test(o.status||"")).length}</span></button>)}
+       </div>
+       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
           placeholder="Rechercher (nom, n° commande, téléphone)..."

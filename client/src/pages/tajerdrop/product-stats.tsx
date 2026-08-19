@@ -1,0 +1,10 @@
+import { useMemo, useState } from "react";
+import { Search, TrendingUp } from "lucide-react";
+import { PageHead, Loading, ErrorState, Empty, useJson, money } from "./shared";
+export default function ProductStats() {
+  const [search, setSearch] = useState("");
+  const { data, isLoading, error, refetch } = useJson<any[]>("/api/marketplace/stats/products?from=2020-01-01&to=2099-12-31");
+  const rows = useMemo(() => (data || []).filter(x => (x.product?.name || x.name || "").toLowerCase().includes(search.toLowerCase())), [data, search]);
+  if (isLoading) return <Loading/>; if (error) return <ErrorState retry={refetch}/>; 
+  return <div><PageHead title="Performance produits" text="Comprenez où vos ventes avancent — et où elles ralentissent."/><div className="mb-4 flex items-center gap-2 rounded-xl border bg-white px-3 py-2 max-w-sm"><Search className="h-4 w-4 text-slate-400"/><input className="w-full outline-none text-sm" placeholder="Rechercher un produit" value={search} onChange={e=>setSearch(e.target.value)}/></div>{!rows.length?<Empty title="Aucune performance à afficher" text="Les statistiques apparaîtront dès votre première activité."/>:<div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-[#10243d] text-left text-xs text-white/70"><tr>{["Produit","Leads","Confirmés","Taux","Annulés","Livraison"].map(h=><th className="px-5 py-4 font-medium" key={h}>{h}</th>)}</tr></thead><tbody>{rows.map((r:any,i)=><tr className="border-b last:border-0 hover:bg-[#fffaf0]" key={r.product?.id || i}><td className="px-5 py-4 font-semibold text-[#10243d]">{r.product?.name || r.name || "Produit"}</td><td className="px-5 py-4">{r.leads || 0}</td><td className="px-5 py-4">{r.confirmed || 0}</td><td className="px-5 py-4 font-semibold text-emerald-700">{Number(r.confirmationRate || 0).toFixed(1)}%</td><td className="px-5 py-4 text-red-600">{r.cancelled || 0}</td><td className="px-5 py-4">{r.inDelivery || 0}</td></tr>)}</tbody></table></div>}</div>;
+}

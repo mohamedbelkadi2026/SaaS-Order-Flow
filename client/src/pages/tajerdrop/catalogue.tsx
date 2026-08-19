@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import {
   Loader2, Package, ShoppingCart, Truck, Box, ChevronRight,
   TrendingUp, Search, ArrowRight,
 } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
 
 const GOLD = "#C5A059";
 const NAVY = "#0f1e38";
@@ -36,7 +37,7 @@ function MarginBadge({ margin }: { margin: number }) {
   );
 }
 
-function ProductCard({ p, onSelect }: { p: MarketplaceProduct; onSelect: () => void }) {
+function ProductCard({ p, onSelect, requested, onRequest }: { p: MarketplaceProduct; onSelect: () => void; requested?: boolean; onRequest: () => void }) {
   const totalCost = p.productCost + p.deliveryFee + p.packagingFee;
   const margin = p.suggestedPrice > 0
     ? Math.round(((p.suggestedPrice - totalCost) / p.suggestedPrice) * 100)
@@ -102,10 +103,10 @@ function ProductCard({ p, onSelect }: { p: MarketplaceProduct; onSelect: () => v
           size="sm"
           style={{ background: NAVY }}
           disabled={p.availableStock <= 0}
-          onClick={(e) => { e.stopPropagation(); onSelect(); }}
+           onClick={(e) => { e.stopPropagation(); requested ? onSelect() : onRequest(); }}
         >
           <ShoppingCart className="w-4 h-4 mr-2" />
-          {p.availableStock > 0 ? "Choisir ce produit" : "Indisponible"}
+           {requested ? "Voir le produit" : "Demander l'accès"}
         </Button>
       </CardContent>
     </Card>
@@ -200,7 +201,7 @@ function ProductDetail({ p, onBack }: { p: MarketplaceProduct; onBack: () => voi
 
           {p.availableStock <= 5 && p.availableStock > 0 && (
             <p className="text-xs text-center text-amber-600">
-              ⚠️ Plus que {p.availableStock} unité(s) disponible(s)
+              Plus que {p.availableStock} unité(s) disponible(s)
             </p>
           )}
           {p.availableStock <= 0 && (
@@ -232,9 +233,15 @@ function ProductDetail({ p, onBack }: { p: MarketplaceProduct; onBack: () => voi
 export default function TajerDropCatalogue() {
   const [selected, setSelected] = useState<MarketplaceProduct | null>(null);
   const [search, setSearch] = useState("");
+  const qc = useQueryClient();
 
   const { data: products = [], isLoading, error } = useQuery<MarketplaceProduct[]>({
     queryKey: ["/api/marketplace/products"],
+  });
+  const { data: requests = [] } = useQuery<any[]>({ queryKey: ["/api/marketplace/offer-requests"] });
+  const requestMutation = useMutation({
+    mutationFn: (productId: number) => apiRequest("POST", "/api/marketplace/offer-requests", { productId }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/marketplace/offer-requests"] }),
   });
 
   if (isLoading) return (
@@ -286,8 +293,8 @@ export default function TajerDropCatalogue() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {filtered.map((p) => (
-            <ProductCard key={p.id} p={p} onSelect={() => setSelected(p)} />
+           {filtered.map((p) => (
+             <ProductCard key={p.id} p={p} requested={requests.some((r:any) => r.productId === p.id && r.status !== "rejected")} onRequest={() => requestMutation.mutate(p.id)} onSelect={() => setSelected(p)} />
           ))}
         </div>
       )}

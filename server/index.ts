@@ -11,6 +11,7 @@ import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { startRecoveryJob } from "./recovery-job";
 import { syncAllGoogleSheets } from "./cron/sync-gsheets";
 import { syncAllPublicSheets } from "./cron/sync-gsheets-public";
+import { expireInactiveTajerDropOfferRequests } from "./cron/tajerdrop-offer-requests";
 import { initSocket } from "./socket";
 import { autoStartBaileys, autoStartDevices } from "./baileys-service";
 import { db, pool, initializeDatabase } from "./db";
@@ -978,5 +979,27 @@ app.use((req, res, next) => {
   // (e.g. because the server was down at 06:00) get promoted right away.
   promoteScheduledOrders().catch((err: any) =>
     console.error("[CRON-PROMOTE] Boot-time run failed:", err?.message ?? err),
+  );
+
+  // ── TajerDrop: expire inactive accepted offers at 04:00 Casablanca ─────────
+  // A request is considered inactive when its Seller generated no lead for the
+  // approved product during the seven days following acceptance.
+  let lastTajerDropOfferExpiryDay: string | null = null;
+  setInterval(async () => {
+    if (casablancaHour() !== 4) return;
+    const day = casablancaToday();
+    if (lastTajerDropOfferExpiryDay === day) return;
+    lastTajerDropOfferExpiryDay = day;
+    try {
+      await expireInactiveTajerDropOfferRequests();
+    } catch (err: any) {
+      console.error("[TAJERDROP-OFFER-EXPIRY] Failed:", err?.message ?? err);
+    }
+  }, 30 * 60 * 1000);
+
+  // Boot-time catch-up ensures missed cron windows do not leave stale stock
+  // access when the server was offline overnight.
+  expireInactiveTajerDropOfferRequests().catch((err: any) =>
+    console.error("[TAJERDROP-OFFER-EXPIRY] Boot-time run failed:", err?.message ?? err),
   );
 })();

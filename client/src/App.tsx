@@ -69,7 +69,15 @@ const TajerDropDashboard  = lazy(() => import("@/pages/tajerdrop/dashboard"));
 const TajerDropCatalogue  = lazy(() => import("@/pages/tajerdrop/catalogue"));
 const TajerDropCommandes  = lazy(() => import("@/pages/tajerdrop/commandes"));
 const TajerDropProfil     = lazy(() => import("@/pages/tajerdrop/profil"));
+const TajerDropProductStats = lazy(() => import("@/pages/tajerdrop/product-stats"));
+const TajerDropAnalytics = lazy(() => import("@/pages/tajerdrop/analytics"));
+const TajerDropMyStock = lazy(() => import("@/pages/tajerdrop/my-stock"));
+const TajerDropExpeditions = lazy(() => import("@/pages/tajerdrop/expeditions"));
+const TajerDropOfferRequests = lazy(() => import("@/pages/tajerdrop/offer-requests"));
+const TajerDropInvoices = lazy(() => import("@/pages/tajerdrop/invoices"));
+const TajerDropIntegrations = lazy(() => import("@/pages/tajerdrop/integrations"));
 const AdminTajerDropProducts = lazy(() => import("@/pages/admin-tajerdrop-products"));
+const AdminTajerDropOperations = lazy(() => import("@/pages/admin-tajerdrop-operations"));
 
 // ── TajerDrop Seller App — completely separate from the SaaS experience ───────
 function TajerDropApp() {
@@ -89,8 +97,15 @@ function TajerDropApp() {
       <Suspense fallback={<FullPageSpinner />}>
         <Switch key={location}>
           <Route path="/tajerdrop/dashboard"  component={TajerDropDashboard} />
+          <Route path="/tajerdrop/product-stats" component={TajerDropProductStats} />
+          <Route path="/tajerdrop/analytics" component={TajerDropAnalytics} />
           <Route path="/tajerdrop/catalogue"  component={TajerDropCatalogue} />
+          <Route path="/tajerdrop/my-stock" component={TajerDropMyStock} />
+          <Route path="/tajerdrop/expeditions" component={TajerDropExpeditions} />
           <Route path="/tajerdrop/commandes"  component={TajerDropCommandes} />
+          <Route path="/tajerdrop/offer-requests" component={TajerDropOfferRequests} />
+          <Route path="/tajerdrop/invoices" component={TajerDropInvoices} />
+          <Route path="/tajerdrop/integrations" component={TajerDropIntegrations} />
           <Route path="/tajerdrop/profil"     component={TajerDropProfil} />
           <Route component={NotFound} />
         </Switch>
@@ -334,6 +349,17 @@ function AppRouter() {
     return (
       <Suspense fallback={<FullPageSpinner />}>
         <AdminTajerDropProducts />
+      </Suspense>
+    );
+  }
+
+  // ── 2c. Admin — TajerDrop offer, invoice, and Seller operations ───────────
+  if (location === "/admin/tajerdrop/operations") {
+    if (isLoading) return <FullPageSpinner />;
+    if (!user) return <AuthPage />;
+    return (
+      <Suspense fallback={<FullPageSpinner />}>
+        <AdminTajerDropOperations />
       </Suspense>
     );
   }

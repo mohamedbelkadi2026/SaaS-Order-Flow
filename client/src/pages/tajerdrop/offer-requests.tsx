@@ -1,0 +1,10 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Clock3, X } from "lucide-react";
+import { PageHead, Loading, ErrorState, Empty, useJson } from "./shared";
+import { apiRequest } from "@/lib/queryClient";
+export default function OfferRequests() {
+ const qc=useQueryClient(); const q=useJson<any[]>("/api/marketplace/offer-requests");
+ const cancel=useMutation({mutationFn:(id:number)=>apiRequest("DELETE",`/api/marketplace/offer-requests/${id}`),onSuccess:()=>qc.invalidateQueries({queryKey:["/api/marketplace/offer-requests"]})});
+ if(q.isLoading)return <Loading/>; if(q.error)return <ErrorState retry={q.refetch}/>; const rows=q.data||[];
+ return <div><PageHead title="Mes demandes" text="Suivez les accès demandés aux produits du catalogue."/>{!rows.length?<Empty title="Aucune demande" text="Votre historique de demandes apparaîtra ici." href="/tajerdrop/catalogue" action="Parcourir le catalogue"/>:<div className="space-y-3">{rows.map((x:any)=><div className="flex items-center justify-between gap-4 rounded-2xl border bg-white p-5" key={x.id}><div><p className="font-semibold text-[#10243d]">{x.product?.name||`Produit #${x.productId}`}</p><p className="mt-1 text-xs text-slate-400">Demandé le {x.createdAt?new Date(x.createdAt).toLocaleDateString("fr-MA"):"—"}</p></div><div className="flex items-center gap-3"><span className={`rounded-full px-3 py-1 text-xs font-semibold ${x.status==="accepted"?"bg-[#dceee8] text-[#2f806d]":x.status==="rejected"?"bg-red-50 text-red-700":"bg-[#fff4dc] text-[#966d24]"}`}><Clock3 className="mr-1 inline h-3 w-3"/>{x.status==="accepted"?"Acceptée":x.status==="rejected"?"Refusée":"En attente"}</span>{x.status==="pending"&&<button title="Annuler la demande" onClick={()=>cancel.mutate(x.id)} className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="h-4 w-4"/></button>}</div></div>)}</div>}</div>;
+}

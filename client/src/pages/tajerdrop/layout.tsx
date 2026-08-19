@@ -3,15 +3,23 @@ import { useAuth } from "@/hooks/use-auth";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import {
-  LayoutDashboard, Package, ShoppingCart, User, LogOut, Menu, X, ChevronRight,
+  LayoutDashboard, Package, ShoppingCart, User, LogOut, Menu, ChevronRight,
+  BarChart3, Warehouse, Truck, FileText, PlugZap, Send,
 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
 const NAV = [
   { href: "/tajerdrop/dashboard",  label: "Tableau de bord", icon: LayoutDashboard },
+  { href: "/tajerdrop/product-stats", label: "Performance produits", icon: BarChart3 },
+  { href: "/tajerdrop/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/tajerdrop/catalogue",  label: "Catalogue",       icon: Package },
+  { href: "/tajerdrop/my-stock", label: "Mon stock", icon: Warehouse },
+  { href: "/tajerdrop/expeditions", label: "Expéditions", icon: Truck },
   { href: "/tajerdrop/commandes",  label: "Mes commandes",   icon: ShoppingCart },
+  { href: "/tajerdrop/invoices", label: "Factures", icon: FileText },
+  { href: "/tajerdrop/offer-requests", label: "Mes demandes", icon: Send },
+  { href: "/tajerdrop/integrations", label: "Intégrations", icon: PlugZap },
   { href: "/tajerdrop/profil",     label: "Mon profil",      icon: User },
 ];
 
@@ -26,10 +34,10 @@ export function TajerDropLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const logout = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/logout"),
+    mutationFn: () => apiRequest("POST", "/api/auth/logout"),
     onSuccess: () => {
       qc.clear();
-      window.location.href = "/";
+      window.location.href = "/login";
     },
   });
 
@@ -54,8 +62,7 @@ export function TajerDropLayout({ children }: { children: React.ReactNode }) {
         {NAV.map(({ href, label, icon: Icon }) => {
           const active = location === href || location.startsWith(href + "/");
           return (
-            <Link key={href} href={href}>
-              <a
+            <Link key={href} href={href}
                 onClick={() => mobile && setMobileOpen(false)}
                 style={{
                   background: active ? `${GOLD}20` : "transparent",
@@ -67,7 +74,6 @@ export function TajerDropLayout({ children }: { children: React.ReactNode }) {
                 <Icon className="w-4 h-4 shrink-0" />
                 {label}
                 {active && <ChevronRight className="w-3.5 h-3.5 ml-auto opacity-60" />}
-              </a>
             </Link>
           );
         })}

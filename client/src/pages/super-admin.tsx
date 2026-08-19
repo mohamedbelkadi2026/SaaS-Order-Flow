@@ -1253,14 +1253,22 @@ export default function SuperAdminPage() {
                   {tajerdropSellers.length}
                 </span>
               </div>
-              <button
-                onClick={() => navigate("/admin/tajerdrop")}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-80"
-                style={{ background: GOLD, color: "#0f1e38" }}
-              >
-                <Package className="w-3.5 h-3.5" />
-                Gérer le catalogue produits
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => navigate("/admin/tajerdrop/operations")}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border border-white/15 text-white/80 hover:bg-white/10"
+                >
+                  Opérations Seller
+                </button>
+                <button
+                  onClick={() => navigate("/admin/tajerdrop")}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-80"
+                  style={{ background: GOLD, color: "#0f1e38" }}
+                >
+                  <Package className="w-3.5 h-3.5" />
+                  Gérer le catalogue produits
+                </button>
+              </div>
             </div>
 
             {tajerdropLoading ? (
