@@ -1,0 +1,124 @@
+# Replit Prompt — Refonte complète et professionnelle de TajerDrop (Espace Seller + Espace Admin), inspirée d'une plateforme dropshipping de référence
+
+## Contexte
+L'espace Seller TajerDrop actuel est trop basique (juste un dashboard avec des compteurs à 0 et un lien catalogue). Je veux une refonte complète, au niveau d'une vraie plateforme dropshipping professionnelle. Je me suis inspiré de la structure d'une plateforme du marché (menu, mécanismes, facturation) pour définir précisément ce qui est attendu ci-dessous — reproduis la STRUCTURE et les MÉCANISMES décrits, pas de branding/design d'un tiers.
+
+## Fix immédiat en premier
+Le bouton "Déconnexion" dans la sidebar Seller ne fonctionne pas actuellement — corrige-le pour qu'il termine bien la session et redirige vers la page de connexion.
+
+---
+
+## Structure du menu Seller (sidebar)
+
+```
+STATISTIQUES
+  - Vue d'ensemble
+  - Statistiques Produits
+  - Analytics
+
+PRODUITS
+  - Mon Stock (produits que CE seller a ajoutés à son catalogue personnel)
+
+EXPÉDITIONS
+  - Expéditions (suivi des colis en cours d'acheminement)
+
+DROP
+  - Offres (catalogue complet parcourable)
+  - Mes demandes d'offres (suivi des demandes faites)
+
+COMMANDES
+  - Commandes (avec sous-onglets : En Call Center / Préparation-Expédition / Retours)
+
+FACTURATION
+  - Mes factures
+
+INTÉGRATIONS
+  - Google Sheet
+  - YouCan
+  - Shopify
+  - Clés API
+  - Documentation API
+```
+
+---
+
+## 1. Vue d'ensemble (dashboard résumé)
+Cartes principales pour la période du jour (avec sélecteur de date, par défaut aujourd'hui) :
+- Total Leads Valides Aujourd'hui
+- Total Confirmés Aujourd'hui
+- Total Livrés Aujourd'hui
+- Total Revenu Livré Aujourd'hui (MAD)
+
+Section "Statistiques Call Center" : Total Leads, Leads Valides (%), Confirmés (%), À Rappeler (%), Pas de Réponse (%), Injoignable (%), Annulés (%), Expirés (%) — chaque carte affiche le nombre ET le montant MAD associé.
+
+Section "Statistiques Traitement/Fulfillment" : Envoyé à l'entrepôt, Ramassé, Préparé, Fulfillment Annulé.
+
+Section "Statistiques Expédition" : En cours de livraison, Livré, Retourné, Remboursé — chaque carte avec % et montant.
+
+Filtre par produit et par date sur cette page, avec bouton de rafraîchissement.
+
+## 2. Statistiques Produits
+Tableau par produit (celui du catalogue que ce Seller a demandé/vend) avec colonnes : Produit (image + nom + SKU), Leads, Leads Valides, Confirmés, Annulés, Taux de Confirmation, Préparés, En Livraison. Filtrable par période (date de début/fin).
+
+## 3. Mon Stock (Seller Stock)
+Liste des produits que ce Seller a explicitement ajoutés à son catalogue personnel (voir mécanisme "Offres" ci-dessous — un produit doit être demandé et accepté avant d'apparaître ici). Affiche : produit, SKU, statut, niveau de stock actuel côté admin (Low/Medium/High Stock, pas le chiffre exact si on veut garder ça pour l'admin — à confirmer, mais commencer avec le niveau catégorisé comme dans le modèle de référence).
+
+## 4. Expéditions
+Vue dédiée aux commandes actuellement en transit/expédition (statut "en cours"/"expédié"), avec tracking, transporteur, dates.
+
+## 5. DROP — Offres (le catalogue à parcourir)
+Grille de produits (image, badge de niveau de stock "High/Medium/Low Stock", nom, prix de l'offre = coût total pour le Seller, SKU, tags de catégorie), avec recherche, filtres, tri (plus récent / prix). Bouton "Request" sur chaque carte.
+
+**Mécanisme "Request"** : le Seller ne peut PAS créer de commande sur un produit tant qu'il n'a pas cliqué "Request" et que la demande a été traitée. Ceci diffère du catalogue 100% ouvert prévu initialement — adopter ce mécanisme de demande/validation par produit, plus proche d'un vrai contrôle de risque pour l'admin. Si tu préfères qu'on garde le catalogue entièrement ouvert sans étape de demande, dis-le moi, mais implémente le mécanisme "Request" par défaut car il correspond au modèle de référence et donne plus de contrôle.
+
+Page détail d'un produit : galerie d'images, description complète (généraliste + bullet points arguments de vente), bouton "Demander cette offre" (Request this offer), prix de l'offre, niveau de stock, onglets "Infos générales / Description / Images pub / Vidéos pub" (si on gère du contenu marketing réutilisable par le Seller pour sa pub).
+
+## 6. Mes demandes d'offres
+Tableau des demandes faites par ce Seller : ID, Produit (image+nom+SKU), Stock, Prix de l'offre, Statut (Pending / Cancelled / Automatically Cancelled / Accepted), Raison d'annulation, Date de création, Actions (annuler une demande en attente).
+
+**Règle métier automatique importante** : si une demande est acceptée mais qu'AUCUN lead n'est généré sur ce produit dans les 7 jours suivant l'acceptation, elle est automatiquement annulée (statut "Automatically Cancelled", raison "Automatically cancelled: no leads generated within 7 days of acceptance") et le produit retiré du "Mon Stock" de ce Seller. Implémenter un job planifié qui vérifie ça quotidiennement.
+
+## 7. Commandes
+Trois sous-onglets :
+- **En Call Center** : commandes en cours de confirmation. Colonnes : Réf, Produits (image+nom+SKU+qté), Catégorie de facturation, État Call Center (Confirmed(n)/Canceled(n)/No Response(n) avec date de dernière action), Tracking (mode de création : "Manuel" / "Seller Dashboard"), Destinataire, Adresse, Montant, Commentaire, Créé le.
+- **Préparation/Expédition** : commandes confirmées en cours de traitement logistique. Mêmes colonnes + État Expédition (Delivered(n) avec date) + État Transporteur (ex: "Livrée").
+- **Retours** : commandes retournées.
+
+Actions globales sur la page Commandes : "Importer des commandes" (CSV), "Exporter", "Créer une commande" (formulaire manuel).
+
+## 8. Mes factures
+Tableau des factures/relevés périodiques : ID, Montant, Ancienne Facture (si régularisation), Éléments Extra, Période (Du/Au), Statut Traité, Statut Payé, Créé le, Actions (imprimer/télécharger PDF).
+
+**Structure détaillée d'une facture** (PDF) — c'est le vrai mécanisme de règlement financier (Phase 2 du plan qu'on avait), à implémenter précisément comme suit :
+
+| Type | Description | Quantité | Valeur unitaire | Montant |
+|---|---|---|---|---|
+| Call Center | Prix Lead Call Center (par catégorie produit) | n | X MAD | total |
+| Call Center | Prix Upsell Livré Call Center (par catégorie) | n | X MAD | total |
+| Livraison | Colis Livrés | n | X MAD | total |
+| Retour | Colis Retournés | n | X MAD | total |
+| Drop Offer | Total Produits Drop (coût produit) | n | — | total |
+
+Puis : Sous-total, TVA (services), **Total Cash Collecté** (somme COD encaissée par l'admin sur les livraisons de ce Seller), **Total Net** (= ce qui reste dû au Seller après déduction de tous les coûts admin : call center, livraison, retours, coût produit — c'est le vrai payout). Ce calcul doit se faire automatiquement sur une période donnée (ex: hebdomadaire), générant une facture par cycle.
+
+## 9. Intégrations (côté Seller)
+Le Seller doit pouvoir connecter ses propres sources de leads : Google Sheet (webhook/URL publique), YouCan, Shopify — réutiliser exactement les mécanismes d'intégration déjà existants côté SaaS classique (webhooks, clés API), mais scopés à son propre store Seller uniquement. Section "Clés API" (générer sa propre clé pour connecter des outils externes) et "Documentation API" (lien vers la doc, réutiliser si une doc API du même type existe déjà côté SaaS classique, sinon prévoir une page statique basique).
+
+---
+
+## Côté Admin — ce qui doit exister en miroir
+1. Vue de toutes les demandes d'offres ("Offer Requests") de tous les Sellers, avec possibilité d'Accepter/Refuser manuellement chaque demande.
+2. Vue de génération et validation des factures Seller (déclencher le calcul, valider/marquer payé).
+3. Vue globale des Sellers actifs avec leurs stats clés (déjà en partie prévu dans le Phase 3 précédent — étendre avec les nouvelles métriques ci-dessus).
+
+## Ce qui n'est pas dans ce prompt
+Pas de refonte de l'espace Admin catalogue (déjà fait en Phase 1) — seulement les vues Admin listées juste au-dessus, qui sont nouvelles.
+
+## Testing checklist
+1. Bouton Déconnexion fonctionne.
+2. Parcourir Offres → cliquer Request sur un produit → apparaît dans "Mes demandes d'offres" en Pending.
+3. Admin accepte la demande → produit apparaît dans "Mon Stock" du Seller, et devient sélectionnable pour créer une commande.
+4. Aucun lead généré sur ce produit après 7 jours (simuler en base) → passe automatiquement à "Automatically Cancelled" et disparaît de "Mon Stock".
+5. Créer plusieurs commandes de test (confirmées, livrées, retournées) → Vue d'ensemble, Statistiques Produits, et les 3 sous-onglets Commandes reflètent les bons chiffres.
+6. Générer une facture de test sur une période → le détail (call center, livraison, retours, drop offer, TVA, total cash collecté, total net) correspond exactement aux commandes de la période.
+7. Un Seller ne voit que SES propres données partout (aucune fuite de données d'un autre Seller).
