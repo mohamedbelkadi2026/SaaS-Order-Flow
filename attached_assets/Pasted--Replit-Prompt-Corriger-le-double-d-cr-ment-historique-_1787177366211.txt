@@ -1,0 +1,34 @@
+# Replit Prompt — Corriger le double décrément historique en production, via endpoint (Railway MCP toujours inaccessible)
+
+## Contexte
+Le bug de double décrément dans le grand livre (shipped -1 + delivered -1 pour une même commande) est confirmé et corrigé pour l'avenir. Il reste à traiter les données déjà en production, mais l'accès direct à Railway n'est toujours pas possible depuis cette session. On utilise le même pattern que pour la purge des Ajustements : un endpoint admin exécuté dans l'app déployée elle-même.
+
+## Ce qu'il faut implémenter
+
+### 1. `GET /api/admin/audit-double-decrement`
+Lecture seule, protégé `requireAdmin`. Pour chaque produit, trouve les commandes ayant DEUX mouvements sortants (`type IN ('shipped','delivered')`, quantité négative) alors qu'une seule sortie devrait exister par commande sur son cycle de vie complet. Requête approximative (adapter aux vrais noms de colonnes) :
+```sql
+SELECT product_id, order_id, COUNT(*) AS nb_sorties, array_agg(id) AS movement_ids, array_agg(type) AS types, SUM(quantity) AS total_quantity
+FROM stock_movements
+WHERE quantity < 0
+GROUP BY product_id, order_id
+HAVING COUNT(*) > 1
+ORDER BY product_id, order_id;
+```
+Retourne en JSON : liste des commandes concernées, avec produit, nombre de sorties, IDs des mouvements en double, et l'impact total sur "Total sorti" si on corrige (garder seulement 1 sortie par commande).
+
+### 2. `POST /api/admin/fix-double-decrement`
+Pour chaque commande identifiée par l'audit : garde UNIQUEMENT le premier mouvement sortant (le plus ancien, généralement le `shipped`), supprime le(s) doublon(s) (`delivered` créé en trop). Ne touche PAS au stock physique (`products.stock`) puisque le code confirme qu'il n'a jamais été doublement décrémenté — seul le grand livre (`stock_movements`) doit être nettoyé. Recalcule ensuite "Total sorti" affiché pour chaque produit concerné à partir du grand livre corrigé.
+
+## Comment je vais l'utiliser
+1. Donne-moi l'URL du GET (audit) une fois déployé.
+2. Je l'ouvrirai dans mon navigateur (admin, production) et je te donnerai le résultat.
+3. On validera ensemble avant que tu me donnes comment déclencher le POST.
+
+## Vérification spécifique demandée
+Dans le résultat de l'audit, cherche spécifiquement la commande **#18771** et le produit **"ميزان الكتروني"** — confirme si elle fait partie des cas de double décrément, et si son "Total sorti" (actuellement -128 contre Sortie 69 + En cours 26 = 95, écart de 33) s'explique par ce bug une fois les doublons comptés.
+
+## Testing checklist
+1. L'audit retourne une vraie liste depuis la production (pas 0 comme en dev).
+2. Après correction : "Total sorti" = Sortie (Livrées) + En cours pour "ميزان الكتروني" et tout autre produit concerné.
+3. `products.stock` reste inchangé pendant cette opération (seul le grand livre est nettoyé, pas le stock physique qui était déjà correct).
