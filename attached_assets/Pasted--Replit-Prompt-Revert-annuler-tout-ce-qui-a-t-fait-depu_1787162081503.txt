@@ -1,0 +1,24 @@
+# Replit Prompt — Revert : annuler tout ce qui a été fait depuis "fix total sorti exclut expeditions", garder "fix import status confirmé"
+
+## Ce que je veux
+Je veux revenir à l'état du code/de la base tel qu'il était juste AVANT le prompt "Fix : Total sorti exclut des mouvements réels (classés correction), rendant Historique incohérent avec Disponible" (celui sur le produit "pistolet 2b") — c'est-à-dire annuler TOUT ce qui a été fait après celui-ci concernant le stock (les tentatives successives de recalcul, le mécanisme "Correction historique", le champ raison obligatoire, etc., et tout ce qui a suivi jusqu'à maintenant).
+
+Je veux GARDER le fix précédent "Fix : commandes importées avec statut Confirmé n'apparaissent pas dans la vue Confirmés" (import de commandes) — celui-ci n'a rien à voir avec le stock et doit rester en place tel quel.
+
+## Ce qu'il faut faire
+
+1. Regarde l'historique Git (`git log --oneline -40`) et identifie précisément :
+   - Le commit correspondant au fix "import status confirmé" (à GARDER).
+   - Tous les commits venus APRÈS, liés au stock/Historique/Ajustement/Correction historique/recalcul/purge (à ANNULER).
+2. Si Replit a un système de Checkpoints, trouve le checkpoint correspondant exactement à l'état juste après le fix "import status confirmé" et juste avant le premier fix stock ("total sorti exclut expeditions") — utilise "Restore this checkpoint" si c'est fiable et ne fait pas perdre le fix import.
+3. Si c'est du Git classique : fais des `git revert` (pas de `git reset --hard`) sur chaque commit lié au stock, du plus récent au plus ancien, jusqu'à revenir à l'état stable — en vérifiant à chaque étape que le fix "import status confirmé" reste intact.
+4. Redéploie sur Railway.
+
+## Vérification après le revert
+1. Confirme que le code de `server/storage.ts`/`server/routes.ts` lié au calcul du stock/Historique est bien revenu à sa version d'avant tous ces fixes (pas de mécanisme "Correction historique", pas de champ "raison obligatoire" sur l'édition manuelle si celui-ci a été ajouté après — précise-moi s'il faut le garder ou pas, car c'était une bonne amélioration en soi, indépendamment du bug qu'elle a révélé).
+2. Vérifie que le fix "import status confirmé" fonctionne toujours (commandes importées en "Confirmé" apparaissent bien dans la vue Confirmés).
+3. Regarde l'état actuel du stock pour "pistolet 2b filtage" et "ميزان الكتروني" — dis-moi simplement ce que tu observes (Total reçu / Total sorti / Disponible), sans essayer de corriger quoi que ce soit toi-même à ce stade — je veux d'abord voir l'état "d'avant" tel qu'il redevient après le revert, avant de décider de la suite avec vous.
+4. Confirme-moi clairement l'état final avant que je fasse quoi que ce soit d'autre.
+
+## Important
+Ne réapplique aucun fix stock automatiquement après ce revert — je veux repartir d'un état stable et connu, et on avancera étape par étape ensemble à partir de là, pas en rejouant les mêmes tentatives.
