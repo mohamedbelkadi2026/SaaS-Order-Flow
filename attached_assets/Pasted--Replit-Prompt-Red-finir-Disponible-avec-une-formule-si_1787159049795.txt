@@ -1,0 +1,44 @@
+# Replit Prompt — Redéfinir "Disponible" avec une formule simple, unique, et 100% automatique — fini les "Ajustement"/recalculs manuels empilés
+
+## Constat (nouveau exemple, produit "pistolet 2b filtage", SKU PST2BFLTG-001)
+```
+Total reçu: +45
+Total sorti: -34
+Disponible: 11
+```
+Historique :
+- 17 août 11:00 — Entrée +45 "Stock initial"
+- 18 août 20:11 — Ajustement -34 "Édition manuelle du stock (45 → 11)"
+- 19 août 17:30 — Ajustement -34 "Correction historique — recalcul basé sur le grand livre"
+
+Mais dans le tableau `/inventory` pour ce même produit : Reçu=45, **Sortie (Livrées)=0**, **En cours=—**, Disponible=11.
+
+**Le problème de fond** : il n'y a AUCUNE commande réelle (ni livrée, ni en cours) qui justifie que Disponible soit tombé à 11. Le chiffre 11 vient uniquement d'ajustements manuels/recalculs successifs, pas d'un vrai mouvement de commande. Ce n'est pas fiable, et ça continuera à dériver à chaque nouveau recalcul tant que la logique repose sur des "Ajustement" qui s'empilent au lieu d'un calcul déterministe basé sur les vrais événements.
+
+## Ce que je veux — nouvelle logique unique, automatique, sans bouton de recalcul
+
+**Formule canonique de Disponible, à appliquer PARTOUT dans l'app (dashboard, /inventory, Historique) :**
+
+```
+Disponible = Σ(Entrée de stock réelle)
+           − Σ(commandes Confirmées/Expédiées/En cours — dès qu'une commande atteint un statut qui réserve du stock)
+           − Σ(commandes Livrées)
+           + Σ(Retours réels — commande qui revient annulée/refusée/retournée après avoir été décomptée)
+```
+
+Concrètement :
+1. **Entrée** : uniquement des vrais événements d'ajout de stock (réception fournisseur, stock initial, correction manuelle DÉLIBÉRÉE et documentée par l'admin — pas des recalculs automatiques).
+2. **Sortie** : décomptée automatiquement dès qu'une commande passe à un statut "confirmé"/"en cours d'expédition"/"livré" (reprendre exactement la même règle métier déjà utilisée pour les colonnes "Sortie (Livrées)" et "En cours" du tableau `/inventory`, qui elles semblent correctes) — chaque transition doit écrire UN mouvement `stock_movements` au moment où elle se produit, automatiquement, comme déjà en place pour `decrementStockForOrder`.
+3. **Retour** : dès qu'une commande décomptée passe à un statut retour/annulé/refusé APRÈS avoir déjà été décomptée, un mouvement de retour (+qty) doit être créé automatiquement pour remettre le stock disponible à jour — vérifie si ce mécanisme existe déjà (on a vu un type `returned` dans `stock_movements` au tout début du projet) et assure-toi qu'il se déclenche bien à chaque retour réel.
+4. **Aucun "Ajustement"/"Correction historique"/"Recalcul Disponible" ne doit plus jamais être nécessaire en fonctionnement normal.** Si `products.stock` et le total calculé à partir du grand livre divergent un jour (bug, données corrompues), ce doit être une exception rare à traiter au cas par cas manuellement par toi en debug, pas un mécanisme intégré à l'usage courant de la plateforme.
+
+## Nettoyage à faire maintenant
+Pour "pistolet 2b filtage" (et tout autre produit dans le même état — des ajustements sans commandes réelles pour les justifier) :
+1. Vérifie s'il existe une raison légitime au 11 actuel (ex: une vraie casse/perte physique documentée par l'admin) — si oui, GARDER une seule ligne "Entrée/Ajustement" claire et documentée qui explique pourquoi (ex: "Perte constatée en entrepôt — 34 unités").
+2. Si aucune commande ni raison légitime ne justifie la perte de 34 unités, il faut me le signaler clairement — ne pas décider seul de la "bonne" valeur, car ça touche à de l'argent/stock réel. Remonte-moi la liste des produits dans ce cas précis pour que je tranche avec vous.
+
+## Testing checklist
+1. Créer une commande de test, la faire passer par confirme → expédié → livré → vérifier que Disponible baisse automatiquement à chaque étape pertinente, sans clic sur quoi que ce soit.
+2. Annuler/refuser/retourner une commande déjà décomptée → Disponible remonte automatiquement du bon montant.
+3. Vérifier qu'aucun nouveau mouvement "Ajustement"/"Recalcul" n'apparaît plus dans l'Historique en usage normal (seulement Entrée, Expédition/Livraison, Retour).
+4. Confirmer que `Total reçu + Total sorti = Disponible` reste vrai en permanence pour tous les produits, sans exception, désormais.
