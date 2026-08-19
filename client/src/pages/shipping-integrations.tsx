@@ -2069,16 +2069,6 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
         return;
       }
 
-      // Defensive path for a carrier that returns an auth failure as HTTP 200.
-      if (data.apiKeyInvalid) {
-        toast({
-          title: `❌ Clé API Ozon Express invalide`,
-          description: data.message || `Reconnectez votre compte dans les paramètres transporteur.`,
-          variant: 'destructive',
-        });
-        return;
-      }
-
       toast({
         title: opts?.successTitle || `✅ ${provider} synchronisé`,
         description: data.message || `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
@@ -2101,15 +2091,6 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
       qc.invalidateQueries({ queryKey: ["/api/agents/my-stats"] });
       qc.invalidateQueries({ queryKey: ["/api/orders"] });
     } catch (e: any) {
-      const isOzonAuthError = provider === "ozonexpress" && /cl[eé] api|api key/i.test(String(e?.message || ""));
-      if (isOzonAuthError) {
-        toast({
-          title: "❌ Clé API Ozon Express invalide",
-          description: "Reconnectez votre compte dans les paramètres transporteur.",
-          variant: "destructive",
-        });
-        return;
-      }
       toast({ title: opts?.errorTitle || `Erreur ${provider}`, description: e.message, variant: "destructive" });
     } finally {
       setSyncingProvider(null);
