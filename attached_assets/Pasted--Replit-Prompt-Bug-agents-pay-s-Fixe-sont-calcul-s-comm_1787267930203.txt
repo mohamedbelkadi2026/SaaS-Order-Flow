@@ -1,0 +1,35 @@
+# Replit Prompt — Bug : agents payés "Fixe" sont calculés comme s'ils avaient un taux par livrée dans Rentabilité Avancée
+
+## Bug confirmé (avec exemple précis)
+Dans "Gestion de l'Équipe / Membres", l'agent "sabrine" a un mode de paiement **"Fixe"** (salaire fixe, comme karima=1500 DH, maria=1250 DH, najat=1200 DH — chacun avec un montant fixe défini, indépendant du nombre de commandes).
+
+Pourtant, sur `/profitability` (Rentabilité Avancée), section "Commissions par Agent (Livrées)", sabrine apparaît avec :
+```
+TAUX (DH) : 1000 DH
+LIVRÉES : 3
+TOTAL COMMISSIONS : -3000.00 DH
+```
+Le système calcule `1000 DH × 3 livrées = 3000 DH`, comme si sabrine était payée à la commission par livraison — alors qu'elle est configurée en salaire **Fixe**, sans aucun lien avec le nombre de commandes livrées.
+
+## Fix demandé — UNIQUEMENT celui-ci, ne rien changer d'autre
+
+1. Trouve, dans le calcul de "Commissions par Agent (Livrées)" et dans "Sous-total coûts livrées → Commissions agents" (Compte de Résultat COD) sur `/profitability` (`server/storage.ts`, `getAdminProfitSummary`/fonctions liées), où le coût par agent est calculé.
+2. Pour un agent dont `paymentType`/`paymentMode` = "Fixe" (ou équivalent en base, à vérifier dans le schéma `store_agent_settings` ou table utilisée par "Gestion de l'Équipe") :
+   - Ne PAS calculer son coût comme `tauxParLivraison × nombreLivrées`.
+   - Utiliser à la place son **montant fixe configuré** (`paymentAmount`, le même champ que celui affiché dans "Gestion de l'Équipe" — 1500 DH pour karima, 1250 DH pour maria, etc.) comme coût, INDÉPENDAMMENT du nombre de commandes livrées sur la période.
+   - Si la période filtrée ne couvre qu'une partie d'un mois, clarifie (ou demande-moi) si le montant fixe doit être proraté selon le nombre de jours de la période, ou toujours compté en entier — ne décide pas ça seul sans me le signaler.
+
+**Précision (déjà validée avec moi) sur les périodes multi-mois** : le montant fixe se calcule MOIS PAR MOIS, ancré sur les mois calendaires (du 1er au dernier jour de chaque mois), pas au prorata des jours d'une plage de dates arbitraire. Concrètement : pour chaque mois calendaire au moins partiellement couvert par la période filtrée, compter le montant fixe complet de ce mois pour cet agent (s'il était actif ce mois-là). Si la période filtrée est "01/08/2026 → 20/08/2026", ça compte comme le mois d'août complet (montant fixe entier d'août), pas 20/31èmes du montant. Si la période s'étend sur 2 mois calendaires (ex: "15/07/2026 → 10/08/2026"), compter le montant fixe complet de juillet ET le montant fixe complet d'août (2 mois = 2× le montant fixe), pas un prorata au jour.
+3. Pour un agent dont le mode est "Commission" (comme "soufiane imil" dans l'exemple, ou tout agent avec un vrai taux par livraison) : garder EXACTEMENT le calcul actuel (`taux × livrées`), ne rien changer.
+4. Le tableau "Commissions par Agent (Livrées)" doit continuer d'afficher le nombre de "LIVRÉES" pour tous les agents (utile en info), mais la colonne "TAUX (DH)" et "TOTAL COMMISSIONS" pour un agent Fixe doit refléter son salaire fixe, pas un taux par livraison inventé/incorrect.
+5. Applique cette correction PARTOUT où ce calcul de coût agent est utilisé dans l'app (Rentabilité Avancée, tout autre écran qui recalcule les commissions/coûts agents de la même façon) — pas seulement l'affichage de cette page.
+
+## Ce qu'il ne faut PAS toucher
+Ne change rien d'autre sur la page Rentabilité Avancée, ni sur la gestion des agents, ni sur aucun autre transporteur/produit/calcul déjà en place. Ce fix est isolé à la façon dont le coût d'un agent "Fixe" est calculé.
+
+## Testing checklist
+1. "sabrine" (Fixe) → "Commissions agents" affiche son montant fixe réel configuré (pas 1000×livrées).
+2. "karima", "maria", "najat" (Fixe) → même vérification, chacun avec son propre montant fixe.
+3. Un agent en mode "Commission" (taux réel par livraison) → calcul inchangé (taux × livrées, comme avant).
+4. "Profit Net Global" et "Sous-total coûts livrées" de la page se recalculent correctement avec ces montants fixes corrigés.
+5. Vérifier qu'un agent Fixe avec 0 livrée sur la période affiche quand même son coût fixe (pas 0 DH) — un salaire fixe est dû même sans livraison.

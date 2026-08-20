@@ -1,0 +1,59 @@
+# Replit Prompt — Root cause DÉFINITIVE trouvée (100% confirmée dans le code) : matchCityId() exige un ID numérique, mais VITIPS utilise du texte
+
+## La preuve, ligne par ligne
+
+**`shared/schema.ts`**, table `vitipsCities` :
+```ts
+externalId: text("external_id").notNull(), // abbr sent to Vitips API (e.g. "Casablanca")
+```
+Pour VITIPS, `externalId` est TOUJOURS une abréviation texte (ex: "Casablanca", "CASABLANCA"), JAMAIS un nombre.
+
+**`server/services/city-aliases.ts`**, fonction `matchCityId()` (utilisée par `getVitipsCityAbbr` dans `server/storage.ts`) :
+```ts
+const ids = Array.from(new Set(
+  cities
+    .filter(c => normalizeCityKey(c.nameNorm) === cand && isNumericId(c.externalId))
+    .map(c => c.externalId),
+));
+```
+Cette fonction ne compte un match que si `isNumericId(c.externalId)` est vrai (id purement numérique). **Pour VITIPS, c'est TOUJOURS faux** puisque `externalId` est une abréviation texte — donc `ids` est TOUJOURS vide, donc `matchCityId()` retourne TOUJOURS `null` pour VITIPS, **peu importe la ville testée**. Ce n'est pas spécifique à "Kénitra" (avec accent) — AUCUNE ville VITIPS ne peut jamais matcher avec ce code.
+
+## Pourquoi ça n'a pas été vu avant
+`matchCityId()` est une fonction générique, probablement conçue à l'origine pour un ou plusieurs transporteurs qui utilisent des IDs numériques (Waselex, Sendit, etc. utilisent des `city_id`/`district_id` numériques), puis réutilisée pour VITIPS via `getVitipsCityAbbr()` sans adapter la contrainte `isNumericId`, qui n'a aucun sens pour VITIPS.
+
+## Fix demandé
+
+Ne PAS modifier `matchCityId()` de façon à casser les autres transporteurs qui l'utilisent avec des IDs numériques (vérifier lesquels l'utilisent aussi — grep `matchCityId(` dans tout le projet). Deux options :
+
+**Option A (recommandée)** — Paramétrer `matchCityId()` pour accepter les deux types d'ID :
+```ts
+export function matchCityId(cities: CityRow[], rawCityName: string, requireNumeric: boolean = true): string | null {
+  const key = normalizeCityKey(rawCityName);
+  if (!key) return null;
+  const aliasKey = resolveCityAlias(key);
+  const candidates = Array.from(new Set([key, aliasKey]));
+
+  for (const cand of candidates) {
+    const ids = Array.from(new Set(
+      cities
+        .filter(c => normalizeCityKey(c.nameNorm) === cand && (!requireNumeric || isNumericId(c.externalId)))
+        .map(c => c.externalId),
+    ));
+    if (ids.length === 1) return ids[0];
+    if (ids.length > 1) return null;
+  }
+  return null;
+}
+```
+Puis dans `getVitipsCityAbbr` (`server/storage.ts`), appeler `matchCityId(cities, cityName, false)` (VITIPS n'a pas besoin d'ID numérique).
+
+**Option B** — Créer une fonction dédiée `matchVitipsCityAbbr()` séparée, sans la contrainte numérique, pour ne toucher à rien d'existant.
+
+Choisis l'option la plus sûre selon combien d'autres endroits utilisent `matchCityId()` avec l'hypothèse numérique — ne casse aucun transporteur qui en dépend actuellement.
+
+## Testing checklist
+1. `getVitipsCityAbbr(storeId, "Kénitra")` doit maintenant retourner l'abréviation correcte (pas null).
+2. Tester plusieurs autres villes VITIPS déjà dans `vitips_cities` (Casablanca, Tanger, etc.) → toutes doivent matcher correctement.
+3. Créer une commande de test avec ville VITIPS valide → l'expédition doit réussir directement, sans passer par toute la cascade de 9 formats (elle ne devrait même plus être nécessaire si le nom de base matche déjà).
+4. Vérifier qu'aucun autre transporteur (Waselex, Sendit) n'est affecté par ce changement — leurs résolutions de ville doivent continuer à fonctionner exactement comme avant.
+5. Confirmer que ce bug explique bien TOUS les échecs VITIPS récents (pas seulement Kénitra) — tester avec 3-4 villes différentes qui échouaient avant.

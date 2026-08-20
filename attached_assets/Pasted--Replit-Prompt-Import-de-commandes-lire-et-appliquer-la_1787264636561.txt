@@ -1,0 +1,19 @@
+# Replit Prompt — Import de commandes : lire et appliquer la colonne "ACTION BY" du fichier
+
+## Contexte
+Sur `/orders/import`, l'utilisateur importe un fichier Excel/CSV de commandes déjà "Confirmé" avec une colonne "ACTION BY" indiquant le nom de l'agent qui a confirmé chaque commande (ex: "Fatima"). Actuellement, cette colonne n'est probablement pas lue/appliquée lors de l'import — la commande importée n'a pas d'agent assigné (ACTION BY vide), ou est assignée via la distribution automatique habituelle, plutôt que de respecter la colonne présente dans le fichier.
+
+## Demande
+Quand une commande importée a une colonne "ACTION BY" renseignée dans le fichier avec un nom d'agent :
+1. Faire correspondre ce nom (insensible à la casse/espaces) à un agent existant du store (`users` où `role = 'agent'`, ou la table utilisée pour les agents).
+2. Si une correspondance unique est trouvée : assigner directement cette commande à cet agent (champ `actionBy`/`assignedToId`/équivalent déjà utilisé pour la colonne "ACTION BY" affichée dans Suivi des Colis) — SANS passer par la logique de distribution automatique habituelle (puisque l'agent est déjà explicitement connu, pas besoin de deviner).
+3. Si le nom ne correspond à aucun agent existant, ou correspond à plusieurs agents de façon ambiguë : laisser le comportement actuel (distribution automatique ou vide, comme avant), et ajouter une ligne dans le rapport d'import ("X commandes avec un agent 'ACTION BY' non reconnu : liste des noms non matchés") pour que l'utilisateur puisse vérifier/corriger.
+
+## Configuration de l'import
+Vérifie l'écran de configuration d'import (`Configuration d'importation des commandes`, déjà vu dans l'app) — si un mapping de colonnes existe déjà (comme pour "Ville", "Produit", "Téléphone" etc.), ajoute "ACTION BY" comme colonne mappable au même endroit, avec une valeur par défaut "Ne pas assigner" (comportement actuel) si l'utilisateur ne veut pas utiliser cette fonctionnalité.
+
+## Testing checklist
+1. Importer un fichier avec une colonne "ACTION BY" contenant des noms d'agents existants (ex: "Fatima", "Ghizlan") → les commandes importées ont bien ces agents assignés, visibles dans la colonne "ACTION BY" de Suivi des Colis.
+2. Importer une ligne avec un nom d'agent qui n'existe pas dans le store → cette commande n'est pas assignée par erreur à un mauvais agent ; elle suit le comportement par défaut, et apparaît dans le rapport d'import comme "non reconnue".
+3. Importer un fichier SANS colonne "ACTION BY" → comportement inchangé par rapport à avant (pas de régression).
+4. Vérifier que les commissions/statistiques par agent (Rentabilité Avancée, Commissions par Agent) comptent bien correctement ces commandes importées avec leur agent assigné.
