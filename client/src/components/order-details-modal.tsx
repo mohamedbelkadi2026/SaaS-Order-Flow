@@ -872,7 +872,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   onChange={v => set("customerCity", v)}
                   cities={carrierCities}
                   isCarrierSpecific={isCarrierSpecific}
-                   carrierLogo={getCarrierLogo(carrierData?.provider ?? effectiveOrderCarrier)}
+                  carrierLogo={getCarrierLogo(carrierData?.provider ?? effectiveOrderCarrier)}
                   isLoading={citiesLoading}
                   data-testid="select-city"
                   className="w-full"

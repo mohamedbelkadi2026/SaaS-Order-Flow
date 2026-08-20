@@ -8889,6 +8889,11 @@ function ensureHeaders(sheet) {
         scheduledFor: z.string().nullable().optional(),
       });
       const data = schema.parse(req.body);
+      // A modal can include these fields to document the selected fallback,
+      // but carrier assignment itself is server-controlled. Never allow this
+      // generic PATCH endpoint to replace an already assigned carrier.
+      delete data.shippingProvider;
+      delete data.carrierName;
       let assignedCarrier = (order as any).carrierName || (order as any).shippingProvider || null;
       // New orders can be created before a shipping workflow attaches a
       // carrier. Persist the store's only active carrier (or one explicit
