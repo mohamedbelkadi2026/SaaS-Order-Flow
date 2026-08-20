@@ -711,9 +711,73 @@ export default function Inventory() {
 
   const { data: historyMovements = [], isLoading: historyLoading } = useQuery<any[]>({
     queryKey: ["/api/stock-movements", historyProduct?.id],
-    queryFn: () => fetch(`/api/stock-movements/${historyProduct!.id}`, { credentials: "include" }).then(r => r.json()),
+    queryFn: async () => {
+      const response = await fetch(`/api/stock-movements/${historyProduct!.id}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error("Impossible de charger l'historique de stock.");
+      return response.json();
+    },
     enabled: historyProduct !== null,
+    refetchOnMount: "always",
   });
+
+  const {
+    data: doubleDecrementAudit,
+    isFetching: doubleDecrementAuditLoading,
+  } = useQuery<any>({
+    queryKey: ["/api/admin/audit-double-decrement", historyProduct?.id],
+    queryFn: async () => {
+      const response = await fetch(`/api/admin/audit-double-decrement?productId=${historyProduct!.id}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.message || "Audit des sorties indisponible.");
+      }
+      return response.json();
+    },
+    enabled: historyProduct !== null,
+    refetchOnMount: "always",
+  });
+
+  const fixDoubleDecrementMutation = useMutation({
+    mutationFn: async (productId: number) => {
+      const response = await apiRequest("POST", "/api/admin/fix-double-decrement", {
+        productId,
+        confirm: true,
+      });
+      return response.json();
+    },
+    onSuccess: (result: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements", historyProduct?.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/audit-double-decrement", historyProduct?.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      refetchStats();
+      toast({
+        title: result.deletedMovementCount > 0 ? "Doublons de sortie supprimés" : "Aucun doublon à supprimer",
+        description: result.deletedMovementCount > 0
+          ? `${result.deletedMovementCount} mouvement(s) supprimé(s), ${result.deletedQuantity} unité(s) retirée(s) du total sorti. Le stock physique n'a pas été modifié.`
+          : "Le dernier audit ne détecte plus de sortie en double pour ce produit.",
+      });
+    },
+    onError: (error: any) => {
+      toast({ title: "Nettoyage impossible", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const confirmDoubleDecrementFix = () => {
+    if (!historyProduct) return;
+    const summary = doubleDecrementAudit?.summary;
+    if (!summary?.duplicateMovements) return;
+    const approved = window.confirm(
+      `Supprimer ${summary.duplicateMovements} mouvement(s) de sortie en double (${summary.duplicateQuantity} unité(s)) pour « ${historyProduct.name} » ?\n\nLe stock physique ne sera pas modifié. Cette action ne conserve que le premier mouvement de chaque commande concernée.`
+    );
+    if (approved) fixDoubleDecrementMutation.mutate(historyProduct.id);
+  };
 
   // Restock dialog
   const [restockProduct, setRestockProduct] = useState<any | null>(null);
@@ -2407,11 +2471,13 @@ export default function Inventory() {
                  const totalRecu = realMovements.filter((m: any) => m.quantity > 0).reduce((s: number, m: any) => s + m.quantity, 0);
                  const totalSorti = Math.abs(realMovements.filter((m: any) => m.quantity < 0).reduce((s: number, m: any) => s + m.quantity, 0));
                  const corrections = realMovements.filter((m: any) => m.type === 'adjustment').reduce((s: number, m: any) => s + m.quantity, 0);
+                 const orderStatusSummary = doubleDecrementAudit?.statusSummary;
+                 const duplicateSummary = doubleDecrementAudit?.summary;
                 // Même valeur que la colonne "Disponible" du tableau (products.stock / somme variantes)
                 const reste = historyProduct?.available ?? historyProduct?.stock ?? 0;
                 return (
                   <>
-                    <div className="grid grid-cols-3 gap-3">
+                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                       <Card className="p-3 rounded-xl">
                         <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
                           <ArrowUpCircle className="w-3 h-3 text-emerald-600" /> Total reçu
@@ -2430,12 +2496,70 @@ export default function Inventory() {
                         </div>
                         <div className="text-xl font-bold text-orange-600 dark:text-orange-400" data-testid="text-history-reste">{reste}</div>
                       </Card>
+                       <Card className="p-3 rounded-xl border-emerald-200 dark:border-emerald-900">
+                         <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                           <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Livrées
+                         </div>
+                         <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400" data-testid="text-history-delivered-orders">
+                           {orderStatusSummary?.deliveredOrders ?? "—"}
+                         </div>
+                         <div className="text-[10px] text-muted-foreground">commandes distinctes</div>
+                       </Card>
+                       <Card className="p-3 rounded-xl border-blue-200 dark:border-blue-900">
+                         <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                           <PackagePlus className="w-3 h-3 text-blue-600" /> En cours
+                         </div>
+                         <div className="text-xl font-bold text-blue-700 dark:text-blue-400" data-testid="text-history-in-progress-orders">
+                           {orderStatusSummary?.inProgressOrders ?? "—"}
+                         </div>
+                         <div className="text-[10px] text-muted-foreground">expédiées non livrées</div>
+                       </Card>
                     </div>
                     {corrections !== 0 && (
                       <div className="text-xs text-muted-foreground px-1">
                          Ajustements manuels inclus dans les totaux : {corrections > 0 ? `+${corrections}` : corrections}
                       </div>
                     )}
+                     {doubleDecrementAuditLoading ? (
+                       <div className="text-xs text-muted-foreground px-1">Vérification des sorties en double…</div>
+                     ) : duplicateSummary?.anomalyGroups > 0 && (
+                       <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100" data-testid="stock-history-duplicate-warning">
+                         <div className="flex items-start gap-2">
+                           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
+                           <div className="min-w-0 flex-1">
+                             <div className="text-sm font-semibold">
+                               {duplicateSummary.duplicateMovements > 0
+                                 ? `${duplicateSummary.duplicateMovements} sortie${duplicateSummary.duplicateMovements > 1 ? "s" : ""} historique${duplicateSummary.duplicateMovements > 1 ? "s" : ""} en double prouvée${duplicateSummary.duplicateMovements > 1 ? "s" : ""}`
+                                 : "Mouvements sortants multiples à vérifier"}
+                             </div>
+                             <p className="mt-1 text-xs leading-relaxed">
+                               {duplicateSummary.duplicateMovements > 0
+                                 ? `${duplicateSummary.duplicateQuantity} unité${duplicateSummary.duplicateQuantity > 1 ? "s" : ""} gonflent le Total sorti. `
+                                 : "Aucune suppression automatique n’est proposée car les mouvements ne forment pas une paire historique prouvée. "}
+                               Commande{doubleDecrementAudit.groups.length > 1 ? "s" : ""} concernée{doubleDecrementAudit.groups.length > 1 ? "s" : ""} :{" "}
+                               {doubleDecrementAudit.groups.slice(0, 8).map((group: any, index: number) => (
+                                 <span key={`${group.orderId}-${group.variantId ?? "base"}`}>
+                                   #{group.orderNumber} ({group.outboundMovementCount} sorties{group.safeToRemove ? "" : ", à vérifier"}){index < Math.min(doubleDecrementAudit.groups.length, 8) - 1 ? ", " : ""}
+                                 </span>
+                               ))}
+                               {doubleDecrementAudit.groups.length > 8 ? "…" : ""}
+                             </p>
+                             {duplicateSummary.duplicateMovements > 0 && (
+                               <Button
+                                 className="mt-3"
+                                 size="sm"
+                                 variant="outline"
+                                 onClick={confirmDoubleDecrementFix}
+                                 disabled={fixDoubleDecrementMutation.isPending}
+                                 data-testid="button-fix-double-decrement"
+                               >
+                                 {fixDoubleDecrementMutation.isPending ? "Nettoyage…" : "Supprimer les doublons prouvés"}
+                               </Button>
+                             )}
+                           </div>
+                         </div>
+                       </div>
+                     )}
                   </>
                 );
               })()}

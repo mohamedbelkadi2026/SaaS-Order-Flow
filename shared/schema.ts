@@ -848,6 +848,35 @@ export const stockAdjustmentPurgeBackups = pgTable("stock_adjustment_purge_backu
   backedUpAt:         timestamp("backed_up_at").defaultNow().notNull(),
 });
 
+// Immutable snapshots of the legacy shipped→delivered pairs removed by the
+// stock reconciliation. Keeping these records makes every deletion traceable
+// and recoverable instead of treating the stock ledger as disposable history.
+export const stockDoubleDecrementReconciliationRuns = pgTable("stock_double_decrement_reconciliation_runs", {
+  id:               serial("id").primaryKey(),
+  executedByUserId: integer("executed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  storeId:          integer("store_id").notNull().references(() => stores.id, { onDelete: 'cascade' }),
+  productId:        integer("product_id").references(() => products.id, { onDelete: 'set null' }),
+  movementsDeleted: integer("movements_deleted").notNull().default(0),
+  quantityDeleted:  integer("quantity_deleted").notNull().default(0),
+  createdAt:        timestamp("created_at").defaultNow().notNull(),
+});
+
+export const stockDoubleDecrementReconciliationBackups = pgTable("stock_double_decrement_reconciliation_backups", {
+  id:                  serial("id").primaryKey(),
+  reconciliationRunId: integer("reconciliation_run_id").notNull().references(() => stockDoubleDecrementReconciliationRuns.id, { onDelete: 'cascade' }),
+  originalMovementId:  integer("original_movement_id").notNull(),
+  storeId:             integer("store_id").notNull(),
+  productId:           integer("product_id").notNull(),
+  variantId:           integer("variant_id"),
+  type:                text("type").notNull(),
+  quantity:            integer("quantity").notNull(),
+  reason:              text("reason"),
+  orderId:             integer("order_id"),
+  userId:              integer("user_id"),
+  originalCreatedAt:   timestamp("original_created_at").notNull(),
+  backedUpAt:          timestamp("backed_up_at").defaultNow().notNull(),
+});
+
 export const insertStockMovementSchema = createInsertSchema(stockMovements).omit({ id: true, createdAt: true });
 export type StockMovement = typeof stockMovements.$inferSelect;
 export type InsertStockMovement = z.infer<typeof insertStockMovementSchema>;

@@ -1444,7 +1444,7 @@ export class DatabaseStorage implements IStorage {
   async getStockMovementsWithProducts(storeId: number, productId?: number): Promise<any[]> {
     const conds: any[] = [eq(stockMovements.storeId, storeId)];
     if (productId) conds.push(eq(stockMovements.productId, productId));
-    return await db
+    const query = db
       .select({
         id:          stockMovements.id,
         storeId:     stockMovements.storeId,
@@ -1465,8 +1465,12 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(products, eq(stockMovements.productId, products.id))
     .leftJoin(users, eq(stockMovements.userId, users.id))
       .where(and(...conds))
-      .orderBy(desc(stockMovements.createdAt))
-      .limit(500);
+      .orderBy(desc(stockMovements.createdAt));
+
+    // The product History drawer derives lifetime totals from this response.
+    // Its selected-product query must therefore include the complete ledger,
+    // not the generic 500-row list cap used by the global history screen.
+    return productId ? await query : await query.limit(500);
   }
 
   async assignOrder(id: number, agentId: number | null): Promise<Order | undefined> {

@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -9332,6 +9332,7 @@ function ensureHeaders(sheet) {
   app.get("/api/stock-movements", requireAuth, async (req: any, res: any) => {
     try {
       const storeId = req.user!.storeId!;
+      res.set("Cache-Control", "no-store, max-age=0");
       const movements = await storage.getStockMovementsWithProducts(storeId);
       res.json(movements);
     } catch (err: any) {
@@ -9344,10 +9345,283 @@ function ensureHeaders(sheet) {
     try {
       const storeId = req.user!.storeId!;
       const productId = Number(req.params.productId);
+      res.set("Cache-Control", "no-store, max-age=0");
       const movements = await storage.getStockMovementsWithProducts(storeId, isNaN(productId) ? undefined : productId);
       res.json(movements);
     } catch (err: any) {
       res.status(500).json({ message: err?.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Historical double-outbound reconciliation.
+  //
+  // A legacy transition could append `shipped` then `delivered` for the same
+  // order item. Physical stock was already guarded, but both negative ledger
+  // rows remained and inflated the History drawer. These endpoints only read
+  // or remove those proven duplicate ledger rows; product and variant stock
+  // columns are never changed here.
+  // ─────────────────────────────────────────────────────────────────────────
+  const normalizedText = (value: string | null | undefined) =>
+    (value || "").trim().toLocaleLowerCase("fr-FR");
+
+  const parseDoubleDecrementFilter = (req: any) => {
+    const source = req.method === "GET" ? req.query : req.body || {};
+    const rawProductId = String(source.productId ?? "").trim();
+    const productId = rawProductId ? Number(rawProductId) : undefined;
+    if (rawProductId && (!Number.isInteger(productId) || productId! <= 0)) {
+      throw new Error("productId doit être un entier positif.");
+    }
+    const productName = typeof source.productName === "string" ? source.productName.trim() : "";
+    return { productId, productName: productName || undefined };
+  };
+
+  const auditDoubleDecrement = async (
+    storeId: number,
+    filter: { productId?: number; productName?: string },
+    database: any = db,
+  ) => {
+    const conditions: any[] = [
+      eq(stockMovements.storeId, storeId),
+      sql`${stockMovements.orderId} IS NOT NULL`,
+    ];
+    if (filter.productId) conditions.push(eq(stockMovements.productId, filter.productId));
+
+    // Include the complete per-order ledger group, not just outbound rows:
+    // a returned item followed by a new shipment is a legitimate second exit,
+    // never a legacy shipped→delivered duplicate.
+    const ledgerRows = await database
+      .select({
+        id: stockMovements.id,
+        productId: stockMovements.productId,
+        productName: products.name,
+        productSku: products.sku,
+        variantId: stockMovements.variantId,
+        variantName: productVariants.name,
+        orderId: stockMovements.orderId,
+        orderNumber: orders.orderNumber,
+        orderStatus: orders.status,
+        quantity: stockMovements.quantity,
+        type: stockMovements.type,
+        reason: stockMovements.reason,
+        userId: stockMovements.userId,
+        createdAt: stockMovements.createdAt,
+      })
+      .from(stockMovements)
+      .innerJoin(products, eq(stockMovements.productId, products.id))
+      .leftJoin(orders, eq(stockMovements.orderId, orders.id))
+      .leftJoin(productVariants, eq(stockMovements.variantId, productVariants.id))
+      .where(and(...conditions))
+      .orderBy(stockMovements.createdAt, stockMovements.id);
+
+    const matchingRows = filter.productName
+      ? ledgerRows.filter((row: any) => normalizedText(row.productName) === normalizedText(filter.productName))
+      : ledgerRows;
+
+    const byOrderProductVariant = new Map<string, typeof matchingRows>();
+    for (const row of matchingRows) {
+      const key = `${row.orderId}:${row.productId}:${row.variantId ?? "base"}`;
+      const group = byOrderProductVariant.get(key) || [];
+      group.push(row);
+      byOrderProductVariant.set(key, group);
+    }
+
+    const groups = Array.from(byOrderProductVariant.values())
+      .map((movements) => {
+        const outboundMovements = movements.filter((movement) =>
+          movement.quantity < 0 && (movement.type === "shipped" || movement.type === "delivered"),
+        );
+        if (outboundMovements.length < 2) return null;
+
+        const shipped = outboundMovements.filter((movement) => movement.type === "shipped");
+        const delivered = outboundMovements.filter((movement) => movement.type === "delivered");
+        const [shippedMovement] = shipped;
+        const [deliveredMovement] = delivered;
+        const compareLedgerOrder = (left: any, right: any) => {
+          const timeDelta = new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+          return timeDelta !== 0 ? timeDelta : left.id - right.id;
+        };
+        const hasOnlyOneShippedThenDeliveredPair =
+          outboundMovements.length === 2 &&
+          shipped.length === 1 &&
+          delivered.length === 1 &&
+          !!shippedMovement &&
+          !!deliveredMovement &&
+          Math.abs(shippedMovement.quantity) === Math.abs(deliveredMovement.quantity) &&
+          compareLedgerOrder(shippedMovement, deliveredMovement) < 0;
+        const returnBetweenPair = hasOnlyOneShippedThenDeliveredPair && movements.some((movement) => {
+          if (movement.type !== "returned" || movement.quantity <= 0) return false;
+          return compareLedgerOrder(shippedMovement!, movement) < 0 &&
+            compareLedgerOrder(movement, deliveredMovement!) < 0;
+        });
+        const isProvenLegacyPair =
+          hasOnlyOneShippedThenDeliveredPair &&
+          isDeliveredStatus(shippedMovement!.orderStatus) &&
+          !returnBetweenPair;
+        const anomalyReason = isProvenLegacyPair
+          ? "Paire historique shipped → delivered prouvée"
+          : "Mouvements multiples ambigus — aucune suppression automatique";
+
+        const keptMovement = shippedMovement || outboundMovements[0];
+        const duplicateMovements = isProvenLegacyPair ? [deliveredMovement!] : [];
+        return {
+          productId: keptMovement.productId,
+          productName: keptMovement.productName,
+          productSku: keptMovement.productSku,
+          variantId: keptMovement.variantId,
+          variantName: keptMovement.variantName,
+          orderId: keptMovement.orderId,
+          orderNumber: keptMovement.orderNumber || String(keptMovement.orderId),
+          outboundMovementCount: outboundMovements.length,
+          keptMovement,
+          duplicateMovements,
+          duplicateQuantity: duplicateMovements.reduce((total, movement) => total + Math.abs(movement.quantity), 0),
+          safeToRemove: isProvenLegacyPair,
+          anomalyReason,
+          movements,
+        };
+      })
+      .filter((group): group is NonNullable<typeof group> => group !== null);
+
+    const eligibleGroups = groups.filter((group) => group.safeToRemove);
+
+    let statusSummary: { deliveredOrders: number; inProgressOrders: number } | null = null;
+    if (filter.productId) {
+      const productOrders = await database
+        .select({
+          orderId: orders.id,
+          status: orders.status,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(eq(orderItems.productId, filter.productId), eq(orders.storeId, storeId)));
+
+      const distinctOrders = new Map<number, string>();
+      for (const order of productOrders) distinctOrders.set(order.orderId, order.status);
+      statusSummary = { deliveredOrders: 0, inProgressOrders: 0 };
+      for (const status of distinctOrders.values()) {
+        if (isDeliveredStatus(status)) {
+          statusSummary.deliveredOrders++;
+        } else if ([
+          "expédié", "Attente De Ramassage", "Ramassé", "in_progress",
+          "En cours de livraison", "En transit", "Tentative échouée", "En cours de réception",
+        ].includes(status)) {
+          statusSummary.inProgressOrders++;
+        }
+      }
+    }
+
+    return {
+      filter,
+      summary: {
+        anomalyGroups: groups.length,
+        anomalyOrders: new Set(groups.map((group) => group.orderId)).size,
+        eligibleGroups: eligibleGroups.length,
+        duplicateGroups: eligibleGroups.length,
+        duplicateOrders: new Set(eligibleGroups.map((group) => group.orderId)).size,
+        duplicateMovements: eligibleGroups.reduce((total, group) => total + group.duplicateMovements.length, 0),
+        duplicateQuantity: eligibleGroups.reduce((total, group) => total + group.duplicateQuantity, 0),
+        productsAffected: new Set(eligibleGroups.map((group) => group.productId)).size,
+      },
+      statusSummary,
+      groups,
+      eligibleGroups,
+    };
+  };
+
+  app.get("/api/admin/audit-double-decrement", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const filter = parseDoubleDecrementFilter(req);
+      const audit = await auditDoubleDecrement(req.user!.storeId!, filter);
+      res.set("Cache-Control", "no-store, max-age=0");
+      res.json(audit);
+    } catch (err: any) {
+      res.status(400).json({ message: err?.message || "Audit impossible." });
+    }
+  });
+
+  app.post("/api/admin/fix-double-decrement", requireAuth, requireAdmin, async (req: any, res: any) => {
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({
+        message: "Confirmation explicite requise. Envoyez { confirm: true } après avoir vérifié l'audit.",
+      });
+    }
+
+    try {
+      const storeId = req.user!.storeId!;
+      const filter = parseDoubleDecrementFilter(req);
+      const result = await db.transaction(async (tx) => {
+        // One reconciliation at a time per store. The audit is re-run after
+        // acquiring the lock, so a stale preview can never decide deletions.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${storeId})`);
+        const before = await auditDoubleDecrement(storeId, filter, tx);
+        const movementsToRemove = before.eligibleGroups.flatMap((group) =>
+          group.duplicateMovements,
+        );
+        const duplicateIds = movementsToRemove.map((movement: any) => movement.id);
+        const plannedQuantity = movementsToRemove.reduce(
+          (total: number, movement: any) => total + Math.abs(movement.quantity),
+          0,
+        );
+        let backupRunId: number | null = null;
+        if (movementsToRemove.length > 0) {
+          const [run] = await tx.insert(stockDoubleDecrementReconciliationRuns)
+            .values({
+              executedByUserId: req.user!.id,
+              storeId,
+              productId: filter.productId ?? null,
+              movementsDeleted: movementsToRemove.length,
+              quantityDeleted: plannedQuantity,
+            })
+            .returning({ id: stockDoubleDecrementReconciliationRuns.id });
+          backupRunId = run.id;
+
+          await tx.insert(stockDoubleDecrementReconciliationBackups).values(
+            movementsToRemove.map((movement: any) => ({
+              reconciliationRunId: backupRunId!,
+              originalMovementId: movement.id,
+              storeId,
+              productId: movement.productId,
+              variantId: movement.variantId,
+              type: movement.type,
+              quantity: movement.quantity,
+              reason: movement.reason,
+              orderId: movement.orderId,
+              userId: movement.userId,
+              originalCreatedAt: movement.createdAt,
+            })),
+          );
+        }
+        const deleted = duplicateIds.length === 0
+          ? []
+          : await tx.delete(stockMovements)
+            .where(and(
+              eq(stockMovements.storeId, storeId),
+              inArray(stockMovements.id, duplicateIds),
+              inArray(stockMovements.type, ["shipped", "delivered"]),
+              lt(stockMovements.quantity, 0),
+            ))
+            .returning({ id: stockMovements.id, quantity: stockMovements.quantity });
+        if (deleted.length !== movementsToRemove.length) {
+          throw new Error("Le grand livre a changé pendant la correction ; aucune suppression n'a été conservée.");
+        }
+        const after = await auditDoubleDecrement(storeId, filter, tx);
+
+        return {
+          deletedMovementCount: deleted.length,
+          deletedQuantity: deleted.reduce((total, movement) => total + Math.abs(movement.quantity), 0),
+          backupRunId,
+          before,
+          after,
+          physicalStockChanged: false,
+        };
+      });
+
+      res.set("Cache-Control", "no-store, max-age=0");
+      res.json(result);
+    } catch (err: any) {
+      console.error("[STOCK-DOUBLE-DECREMENT] Reconciliation failed:", err);
+      res.status(500).json({ message: err?.message || "Correction impossible." });
     }
   });
 
