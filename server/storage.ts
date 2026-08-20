@@ -1741,7 +1741,10 @@ export class DatabaseStorage implements IStorage {
     if (!(cityName || "").trim()) return null;
     const cities = await db.select().from(vitipsCities)
       .where(eq(vitipsCities.storeId, storeId));
-    return matchCityId(cities, cityName);
+    // Vitips externalId is the API abbreviation (for example "Casablanca"),
+    // not a numeric city ID. Keep the matcher strict and unambiguous while
+    // allowing this official text value.
+    return matchCityId(cities, cityName, false);
   }
 
   // ── Waselex city referential (global, seeded from official Excel) ────────

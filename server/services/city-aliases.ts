@@ -250,10 +250,16 @@ const isNumericId = (id: string) => /^\d+$/.test(id);
  * prefix matching are deliberately forbidden: "Casablanca - Lissasfa" must
  * never silently resolve to another Casablanca neighbourhood.
  *
- * Returns a numeric external ID only when exactly one distinct ID matches.
+ * Returns an external ID only when exactly one distinct ID matches. Numeric
+ * IDs are required by default; carriers whose official API value is text can
+ * opt out without weakening the numeric-carrier safeguard.
  * Callers must fail fast on null rather than sending a different locality.
  */
-export function matchCityId(cities: CityRow[], rawCityName: string): string | null {
+export function matchCityId(
+  cities: CityRow[],
+  rawCityName: string,
+  requireNumericExternalId = true,
+): string | null {
   const key = normalizeCityKey(rawCityName);
   if (!key) return null;
   const aliasKey = resolveCityAlias(key);
@@ -265,7 +271,10 @@ export function matchCityId(cities: CityRow[], rawCityName: string): string | nu
   for (const cand of candidates) {
     const ids = Array.from(new Set(
       cities
-        .filter(c => normalizeCityKey(c.nameNorm) === cand && isNumericId(c.externalId))
+        .filter(c =>
+          normalizeCityKey(c.nameNorm) === cand
+          && (!requireNumericExternalId || isNumericId(c.externalId)),
+        )
         .map(c => c.externalId),
     ));
     if (ids.length === 1) return ids[0];
