@@ -1,0 +1,20 @@
+# Replit Prompt — Pousser le fix (dépendances de build manquantes + Waselex) vers GitHub/Railway maintenant
+
+## Découverte importante à confirmer
+Tu as trouvé que le build de production échouait à cause de dépendances manquantes (`workbox-window`, `form-data`) — c'est corrigé. Tu as aussi dit "Le projet n'a pas encore de déploiement actif, donc aucune URL de production n'existe à vérifier" — ça me surprend, car on avait confirmé un déploiement Railway réussi juste avant (commit 8fd6e76, statut Success sur www.tajergrow.com).
+
+## Ce que je veux, dans l'ordre
+
+1. Clarifie : par "publier cette version", tu parles bien de pousser ce nouveau commit vers GitHub `main` pour déclencher un nouveau déploiement Railway (le même mécanisme que la dernière fois, PAS le bouton "Publish" de Replit qui est un système différent et non pertinent ici) ?
+2. Si oui : pousse ce commit vers GitHub `main` maintenant.
+3. Une fois poussé, vérifie sur Railway (comme la dernière fois) que ce nouveau commit a bien déclenché un déploiement, et surtout que le BUILD RÉUSSIT cette fois-ci (confirme qu'il n'y a plus d'erreur `workbox-window`/`form-data` dans les logs de build Railway) — c'est crucial : si le build échouait silencieusement avant sur d'autres déploiements précédents dans cette conversation, ça expliquerait pourquoi plusieurs fix passés semblaient ne jamais arriver en production.
+4. Une fois le déploiement confirmé réussi (statut Success, comme le commit précédent), vérifie l'URL réelle de production `https://www.tajergrow.com/api/carriers/cities?provider=waselex` avec un vrai compte.
+
+## Question importante à investiguer en parallèle
+Si ce problème de build cassé (dépendances manquantes) existait déjà AVANT ce commit, est-ce qu'il pourrait expliquer pourquoi certains fix précédents dans cette conversation semblaient "ne jamais arriver en production" malgré des commits poussés ? Vérifie depuis quand `workbox-window`/`form-data` sont utilisés dans le code sans être déclarés comme dépendances — ça nous dira si c'est un problème récent ou de longue date.
+
+## Testing checklist
+1. Confirmation claire : commit poussé vers GitHub main.
+2. Confirmation Railway : build réussi (pas d'erreur de dépendances), déploiement Success.
+3. Vérification production réelle : count Waselex = 1480, dropdown affiche bien toutes les villes.
+4. Réponse à la question sur l'ancienneté du problème de build cassé.
