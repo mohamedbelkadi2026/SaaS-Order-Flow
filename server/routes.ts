@@ -8871,6 +8871,8 @@ function ensureHeaders(sheet) {
         customerPhone: z.string().optional(),
         customerAddress: z.string().optional(),
         customerCity: z.string().optional(),
+        shippingProvider: z.string().nullable().optional(),
+        carrierName: z.string().nullable().optional(),
         waselexCityId: z.number().int().positive().nullable().optional(),
         shippingCost: z.number().optional(),
         comment: z.string().nullable().optional(),
@@ -8887,7 +8889,33 @@ function ensureHeaders(sheet) {
         scheduledFor: z.string().nullable().optional(),
       });
       const data = schema.parse(req.body);
-      const assignedCarrier = (order as any).carrierName || (order as any).shippingProvider || null;
+      // A modal can include these fields to document the selected fallback,
+      // but carrier assignment itself is server-controlled. Never allow this
+      // generic PATCH endpoint to replace an already assigned carrier.
+      delete data.shippingProvider;
+      delete data.carrierName;
+      let assignedCarrier = (order as any).carrierName || (order as any).shippingProvider || null;
+      // New orders can be created before a shipping workflow attaches a
+      // carrier. Persist the store's only active carrier (or one explicit
+      // active default) when the order is first edited, so city validation
+      // and future shipping actions use the same carrier.
+      if (!assignedCarrier) {
+        const activeAccounts = (await storage.getCarrierAccounts(order.storeId))
+          .filter((account: any) => account.isActive === 1 || account.isActive === true);
+        const defaultAccounts = activeAccounts.filter(
+          (account: any) => account.isDefault === 1 || account.isDefault === true
+        );
+        const defaultAccount = activeAccounts.length === 1
+          ? activeAccounts[0]
+          : defaultAccounts.length === 1
+            ? defaultAccounts[0]
+            : null;
+        if (defaultAccount?.carrierName) {
+          assignedCarrier = defaultAccount.carrierName;
+          data.shippingProvider = assignedCarrier;
+          data.carrierName = assignedCarrier;
+        }
+      }
       const isWaselexCarrier = !!assignedCarrier
         && ["waselex", "waselexma"].includes(assignedCarrier.toLowerCase().replace(/[\s._-]+/g, ""));
       if (isWaselexCarrier) {
