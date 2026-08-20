@@ -293,9 +293,13 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       ).then(r => r.json()),
     staleTime: 3 * 60 * 1000,
   });
-  // Fallback to MOROCCAN_CITIES if API fails or returns empty
+  const isWaselexCarrier = orderCarrier?.toLowerCase().trim() === "waselex";
+  // Waselex must never silently fall back to generic Moroccan cities: its
+  // dropdown is only valid when it contains the Excel-derived referential.
   const carrierCities = (carrierData?.cities && carrierData.cities.length > 0)
     ? carrierData.cities
+    : isWaselexCarrier
+    ? []
     : MOROCCAN_CITIES;
   const isCarrierSpecific = carrierData?.isCarrierSpecific ?? false;
 

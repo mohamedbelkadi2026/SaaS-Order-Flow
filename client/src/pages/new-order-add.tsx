@@ -124,7 +124,10 @@ export default function NewOrderAdd() {
   const activeCities = useMemo(() => {
     if (!activeCarrier) return MOROCCAN_CITIES;
     const list = activeCarrier.cities as string[];
-    return list && list.length > 0 ? list : MOROCCAN_CITIES;
+    if (list && list.length > 0) return list;
+    // Waselex is constrained to its Excel-derived referential. If it cannot be
+    // loaded, show no choices instead of silently mixing in generic Moroccan cities.
+    return activeCarrier.provider?.toLowerCase() === "waselex" ? [] : MOROCCAN_CITIES;
   }, [activeCarrier]);
 
   // Build price lookup map from citiesDetailed (Sendit only, name → DH)

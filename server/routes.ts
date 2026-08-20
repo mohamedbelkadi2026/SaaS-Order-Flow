@@ -16677,17 +16677,19 @@ function ensureHeaders(sheet) {
         console.log(`[VITIPS-CITY] order=${orderId} city="${matchedCity}" → abbr="${singleVitipsCityAbbr}"`);
       }
 
-      // For Waselex: resolve city name → numeric city_id (référentiel global).
-      // Pas de blocage si non résolu — fallback envoi du nom texte `city`.
+      // For Waselex: resolve city name → numeric city_id from the global
+      // Excel-derived referential. Do not send a free-text fallback: every
+      // Waselex shipment must use the exact external_id selected from this list.
       let singleWaselexCityId: string | undefined;
       if (provider.toLowerCase() === 'waselex') {
         const resolved = await storage.resolveWaselexCity(matchedCity);
-        if (resolved) {
-          singleWaselexCityId = String(resolved.cityId);
-          console.log(`[WSLX-CITY] order=${orderId} city="${matchedCity}" → city_id=${singleWaselexCityId} ("${resolved.name}")`);
-        } else {
-          console.warn(`[WSLX-CITY] order=${orderId} city="${matchedCity}" → non résolue, envoi du nom texte en fallback`);
+        if (!resolved) {
+          return res.status(422).json({
+            message: `Ville « ${matchedCity} » introuvable dans le référentiel Waselex. Sélectionnez une ville proposée dans la liste Waselex, puis réessayez.`,
+          });
         }
+        singleWaselexCityId = String(resolved.cityId);
+        console.log(`[WSLX-CITY] order=${orderId} city="${matchedCity}" → city_id=${singleWaselexCityId} ("${resolved.name}")`);
       }
 
       const shipResult = await shipOrderToCarrier(provider, creds, {
