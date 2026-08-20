@@ -1,0 +1,32 @@
+# Replit Prompt — Nouvelle section "Rentabilité par Produit" dans Rentabilité Avancée, sous "Commissions par Agent (Livrées)"
+
+## Demande
+Sur `/profitability`, ajouter une nouvelle section juste EN DESSOUS de "Commissions par Agent (Livrées)" : **"Rentabilité par Produit"**.
+
+## Contenu
+Un tableau listant UNIQUEMENT les produits qui ont des dépenses publicitaires (`adSpend`/`adSpendTracking` > 0) enregistrées sur la période filtrée (respecter les mêmes filtres déjà actifs sur la page : dates, source, buyer, magasin — cohérent avec le reste de la page). Pour chaque produit :
+
+| Colonne | Détail |
+|---|---|
+| Produit | Nom + image miniature si disponible |
+| Dépense pub (DH) | Total `adSpend` de ce produit sur la période |
+| Revenu livré (DH) | Somme des commandes livrées de ce produit |
+| Coût produit + livraison + emballage (DH) | Détail ou total des coûts liés aux commandes livrées de ce produit |
+| Commandes livrées | Nombre de commandes livrées de ce produit sur la période |
+| Profit Net (DH) | Revenu livré − (coût produit + livraison + emballage + dépense pub) |
+| Profit par livrée (DH) | Profit Net ÷ Commandes livrées — c'est la métrique clé demandée : combien on gagne net à chaque commande livrée pour ce produit, une fois la pub déduite |
+
+Trie le tableau par défaut sur "Profit Net" décroissant (les produits les plus rentables en premier), avec possibilité de trier sur n'importe quelle colonne.
+
+## Réutilisation du code existant
+Réutilise exactement les mêmes calculs déjà utilisés plus haut sur la même page pour "Compte de Résultat (COD)" (coût produit, livraison, emballage) et "Pub par Media Buyer" (dépense pub) — juste regroupés par produit ici au lieu d'être agrégés globalement ou par buyer. Ne recalcule pas différemment, pour que les totaux de cette nouvelle section restent cohérents avec le reste de la page.
+
+## Cas limites
+- Produit avec dépense pub mais 0 commande livrée sur la période → afficher quand même la ligne avec Profit Net négatif (= -dépense pub) et "Profit par livrée" = "—" (division par zéro évitée).
+- Si aucun produit n'a de dépense pub sur la période filtrée, afficher un message clair "Aucune dépense publicitaire enregistrée sur cette période" plutôt qu'un tableau vide.
+
+## Testing checklist
+1. Filtrer par une période où on sait qu'un produit précis a de la pub et des livraisons → vérifier que Profit Net et Profit par livrée correspondent au calcul manuel (Revenu − Coûts − Pub) ÷ Livrées.
+2. Vérifier qu'un produit sans dépense pub n'apparaît PAS dans ce tableau (mais reste visible ailleurs sur la page comme avant).
+3. Changer les filtres de la page (dates, source, buyer) → le tableau se met à jour de façon cohérente avec le reste de la page.
+4. Vérifier le cas produit avec pub mais 0 livraison (Profit par livrée = "—", pas d'erreur/NaN affiché).
