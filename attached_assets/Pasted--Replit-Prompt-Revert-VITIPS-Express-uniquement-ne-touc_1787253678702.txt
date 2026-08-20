@@ -1,0 +1,22 @@
+# Replit Prompt — Revert VITIPS Express uniquement, ne touche à RIEN de Waselex
+
+## Ce que je veux
+VITIPS Express ne fonctionne plus (expédition bloquée à "0/1" indéfiniment, voir capture précédente). Je veux revenir au code VITIPS Express tel qu'il était AVANT que ça casse — au dernier état où l'expédition VITIPS Express fonctionnait correctement.
+
+## Ce qui NE doit PAS être touché
+Waselex fonctionne bien actuellement (référentiel des 1480 villes, sélection par défaut sur commande "Nouveau", tout est validé) — ne touche à AUCUN fichier ni AUCUNE ligne de code lié à Waselex dans ce revert. Si un commit mélange des changements Waselex et VITIPS, isole et n'annule QUE la partie VITIPS.
+
+## Ce qu'il faut faire
+
+1. Regarde l'historique Git (`git log --oneline -30`) et identifie précisément quel(s) commit(s) a/ont touché le code VITIPS Express (`server/services/carrier-service.ts` ou fichiers liés à `vitipsexpress`) — et lequel est le dernier commit où VITIPS fonctionnait encore (juste avant que le blocage "0/1" apparaisse).
+2. Si un commit contient à la fois des changements VITIPS et Waselex : ne fais PAS un revert de commit entier — identifie et annule seulement les lignes concernant VITIPS, en gardant intactes celles de Waselex.
+3. Si les commits sont bien séparés (un commit = un sujet) : fais un `git revert` (pas `git reset --hard`) uniquement sur le/les commit(s) VITIPS concerné(s).
+4. Redéploie sur Railway (commit + push comme d'habitude), vérifie le déploiement réussi.
+
+## Vérification après le revert
+1. Teste l'expédition d'une commande VITIPS Express de test → doit fonctionner comme avant (pas de blocage "0/1").
+2. Vérifie que Waselex fonctionne TOUJOURS exactement comme avant ce revert (référentiel 1480 villes, sélection par défaut sur commande sans carrier assigné, label "Ville (Waselex)") — teste-le explicitement pour confirmer qu'il n'a pas été affecté.
+3. Confirme-moi les deux résultats avant que je fasse mes propres tests.
+
+## Important
+Ne réapplique aucun nouveau fix VITIPS automatiquement après ce revert — je veux d'abord repartir d'un état stable et connu pour VITIPS, sans rien casser côté Waselex.
