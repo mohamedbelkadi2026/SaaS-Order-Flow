@@ -1702,12 +1702,14 @@ export async function shipOrderToCarrier(
 
       let resp: any;
       try {
+        console.log(`${tag} [VITIPS-DEBUG] Envoi requête HTTP vers ${apiUrl}...`);
         resp = await axios.post(apiUrl, tryPayload, {
           headers,
           timeout:     TIMEOUT_MS,
           httpsAgent:  SSL_AGENT,
           validateStatus: () => true,
         });
+        console.log(`${tag} [VITIPS-DEBUG] Réponse reçue, status=${resp?.status}`);
       } catch (netErr: any) {
         console.error(`[VITIPS-CITY-RETRY] Network error on city="${cityCandidate}": ${netErr?.message}`);
         throw netErr; // bubble up to outer catch

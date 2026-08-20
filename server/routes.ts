@@ -29,6 +29,40 @@ import { expireInactiveTajerDropOfferRequests } from "./cron/tajerdrop-offer-req
 
 import fs from "fs";
 
+const VITIPS_CITY_LOOKUP_TIMEOUT_MS = 10_000;
+
+async function getVitipsCityAbbrWithTimeout(
+  storeId: number,
+  cityName: string,
+  orderId: number,
+): Promise<string | null> {
+  console.log(`[VITIPS-DEBUG] order=${orderId} — début résolution ville "${cityName}"`);
+
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  try {
+    const resolved = await Promise.race([
+      storage.getVitipsCityAbbr(storeId, cityName),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(
+            `Vitips: délai dépassé après ${VITIPS_CITY_LOOKUP_TIMEOUT_MS / 1000}s lors de la résolution de la ville « ${cityName} ». Réessayez dans quelques instants.`,
+          ));
+        }, VITIPS_CITY_LOOKUP_TIMEOUT_MS);
+      }),
+    ]);
+
+    console.log(`[VITIPS-DEBUG] order=${orderId} — ville résolue: ${resolved ?? "null"}`);
+    return resolved;
+  } catch (error: any) {
+    console.error(
+      `[VITIPS-DEBUG] order=${orderId} — échec résolution ville "${cityName}": ${error?.message || error}`,
+    );
+    throw error;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
 // ── Strip HTML tags from API keys (Ameex sometimes stores wrapped values) ─────
 function stripHtml(val: string | null | undefined): string {
   if (!val) return "";
@@ -2461,7 +2495,7 @@ export async function registerRoutes(
 
                 let vitipsCityAbbr: string | undefined;
                 if (provider.toLowerCase() === 'vitipsexpress') {
-                  const resolved = await storage.getVitipsCityAbbr(storeId, resolvedCity);
+                  const resolved = await getVitipsCityAbbrWithTimeout(storeId, resolvedCity, order.id);
                   if (!resolved) {
                     return {
                       success:        false,
