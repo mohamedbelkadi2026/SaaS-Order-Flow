@@ -1,0 +1,20 @@
+# Replit Prompt — L'expédition vers VITIPS Express reste bloquée, sans aucun message d'erreur ni de succès
+
+## Constat
+Quand je clique "Expédier" sur une commande avec le transporteur VITIPS Express, rien ne se passe visiblement : pas de message d'erreur, pas de confirmation de succès, le bouton reste juste bloqué/en attente indéfiniment.
+
+## Ce que je veux, avec preuve — pas de correction sans avoir vu la vraie cause
+
+1. Reproduis le cas toi-même (ou demande-moi de cliquer "Expédier" sur une commande VITIPS Express précise pendant que tu es prêt à lire les logs), et regarde immédiatement les logs serveur (Railway) au moment du clic.
+2. Cherche toute ligne liée à VITIPS (`[VITIPS...]` ou équivalent) : la requête envoyée à l'API VITIPS Express (endpoint, payload), la réponse reçue (ou l'absence de réponse/timeout), et toute exception JavaScript non catchée qui pourrait expliquer que le frontend reste bloqué sans jamais recevoir de réponse (succès ou erreur) du serveur.
+3. Vérifie côté frontend (le bouton "Expédier" lui-même) : reste-t-il en état "chargement" indéfiniment parce que la requête ne se termine jamais (timeout réseau, requête qui pend), ou parce que la réponse revient mais n'est pas traitée correctement (pas de gestion d'erreur qui débloquerait visuellement le bouton) ?
+4. Donne-moi le résultat exact trouvé (requête, réponse, erreur) avant de proposer un fix.
+
+## Hypothèses à vérifier en particulier
+- Clé API / credentials VITIPS Express invalides ou expirés pour ce store (comme on l'a vu pour Ozon Express).
+- Une erreur serveur non catchée qui fait planter la requête sans jamais renvoyer de réponse HTTP au frontend (d'où le blocage silencieux, ni succès ni erreur affichée).
+- Un problème de format de payload envoyé à VITIPS Express (ville non résolue, champ manquant) qui bloque avant même l'appel réseau.
+
+## Testing checklist
+1. Une fois la vraie cause identifiée et corrigée, cliquer "Expédier" sur une commande VITIPS Express de test → soit ça réussit avec confirmation claire, soit ça échoue avec un message d'erreur explicite — jamais un blocage silencieux.
+2. Vérifier que le bouton ne reste plus bloqué indéfiniment même en cas d'erreur réseau (timeout géré proprement côté frontend).
