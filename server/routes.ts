@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -16863,6 +16863,17 @@ function ensureHeaders(sheet) {
   // CARRIER CITY MAPPING
   // ══════════════════════════════════════════════════════════════════
 
+  // Waselex is deliberately read from its global Excel-derived referential,
+  // never from a store cache or a generic Moroccan fallback. That guarantees
+  // the dropdown contains exactly the city names that resolve to its city_id.
+  const getWaselexCityReference = async () => db
+    .select({
+      externalId: waselexCities.externalId,
+      name: waselexCities.name,
+    })
+    .from(waselexCities)
+    .orderBy(waselexCities.name);
+
   /**
    * GET /api/carriers/cities?provider=digylog
    * Returns the city list for the given carrier (or all active shipping carriers).
@@ -16872,6 +16883,18 @@ function ensureHeaders(sheet) {
     try {
       const storeId = req.user!.storeId!;
       const provider = (req.query.provider as string | undefined)?.toLowerCase().trim();
+
+      if (provider === "waselex") {
+        const waselexReference = await getWaselexCityReference();
+        res.set("Cache-Control", "no-store, max-age=0");
+        return res.json({
+          provider,
+          cities: waselexReference.map((city) => city.name),
+          isCarrierSpecific: true,
+          source: "waselex_referential",
+          count: waselexReference.length,
+        });
+      }
 
       // ── 1. Check DB-synced city cache (carrier_cities table) ─────────────
       // If the admin ran "Synchroniser les villes", this is the live list.
@@ -17050,6 +17073,22 @@ function ensureHeaders(sheet) {
 
         const result = await Promise.all(
           filtered.map(async (acct) => {
+            if (acct.carrierName.toLowerCase() === "waselex") {
+              const waselexReference = await getWaselexCityReference();
+              return {
+                id: acct.id,
+                provider: acct.carrierName,
+                magasinId: (acct as any).magasinId ?? null,
+                isActive: acct.isActive,
+                cities: waselexReference.map((city) => city.name),
+                logo: CARRIER_LOGOS_SERVER.waselex ?? null,
+                deliveryFee: (acct as any).deliveryFee || 0,
+                deliveryFeeDH: (((acct as any).deliveryFee || 0) / 100).toFixed(2),
+                source: "waselex_referential",
+                cityCount: waselexReference.length,
+              };
+            }
+
             // Check DB-synced city cache first
             const dbCities = await storage.getCarrierCities(storeId, acct.carrierName);
             // If no cached cities, trigger background sync so next request has data
@@ -17152,10 +17191,15 @@ function ensureHeaders(sheet) {
         }]);
       }
 
+      const waselexReference = await getWaselexCityReference();
+      const waselexCityNames = waselexReference.map((city) => city.name);
       const result = integrations.map(i => {
         const creds = JSON.parse(i.credentials || "{}");
         const storedList: string[] | undefined = creds.cityList;
-        const cities = Array.isArray(storedList) && storedList.length > 0
+        const isWaselex = i.provider.toLowerCase() === "waselex";
+        const cities = isWaselex
+          ? waselexCityNames
+          : Array.isArray(storedList) && storedList.length > 0
           ? storedList
           : getDefaultCitiesForProvider(i.provider);
         const logo = CARRIER_LOGOS_SERVER[i.provider.toLowerCase()] ?? null;
@@ -17165,7 +17209,7 @@ function ensureHeaders(sheet) {
           isActive: i.isActive,
           cities,
           logo,
-          source: Array.isArray(storedList) && storedList.length > 0 ? "stored" : "default",
+          source: isWaselex ? "waselex_referential" : Array.isArray(storedList) && storedList.length > 0 ? "stored" : "default",
           cityCount: cities.length,
         };
       });

@@ -283,7 +283,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const { data: carrierData, isLoading: citiesLoading } = useQuery<{
     provider: string | null; cities: string[]; isCarrierSpecific: boolean; source?: string;
   }>({
-    queryKey: ["/api/carriers/cities", orderCarrier],
+    queryKey: ["/api/carriers/cities", orderCarrier, "waselex-referential-v1"],
     queryFn: () =>
       fetch(
         orderCarrier
