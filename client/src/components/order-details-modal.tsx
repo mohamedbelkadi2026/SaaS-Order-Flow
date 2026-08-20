@@ -319,10 +319,33 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     },
   });
 
-  // ── Carrier city list — filtered by the order's assigned carrier ──
+  // Carrier accounts are also needed for the city fallback on a fresh order,
+  // so fetch them whenever an order has no explicitly assigned carrier.
   const orderCarrier = resolveOrderCarrier(freshOrder, order);
-  const isWaselexCarrier = orderCarrier === "waselex";
-  const cityProvider = isWaselexCarrier ? "waselex" : orderCarrier;
+  const { data: carrierAccounts = [] } = useQuery<any[]>({
+    queryKey: ['/api/carrier-accounts'],
+    staleTime: 5 * 60 * 1000,
+    enabled: !!order?.id && !orderCarrier,
+  });
+
+  // ── Carrier city list — filtered by the order's assigned carrier ──
+  // A newly-created order may not have a carrier persisted yet. The carrier
+  // accounts query below supplies a safe default when the store has exactly
+  // one active account (or one unambiguous active default account).
+  const activeCarrierAccounts = carrierAccounts.filter(
+    (account: any) => account.isActive === 1 || account.isActive === true
+  );
+  const defaultCarrierAccount = !orderCarrier
+    ? activeCarrierAccounts.length === 1
+      ? activeCarrierAccounts[0]
+      : activeCarrierAccounts.filter((account: any) => account.isDefault === 1 || account.isDefault === true).length === 1
+        ? activeCarrierAccounts.find((account: any) => account.isDefault === 1 || account.isDefault === true)
+        : null
+    : null;
+  const effectiveOrderCarrier = orderCarrier
+    ?? canonicalCarrierName(defaultCarrierAccount?.carrierName);
+  const isWaselexCarrier = effectiveOrderCarrier === "waselex";
+  const cityProvider = isWaselexCarrier ? "waselex" : effectiveOrderCarrier;
   const { data: carrierData, isLoading: citiesLoading } = useQuery<{
     provider: string | null;
     cities: string[];
@@ -362,19 +385,12 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     enabled: !!user && !user.isSuperAdmin,
   });
 
-  // Carrier accounts — needed to determine the carrier dropdown in the attach box.
-  // Only fetched when the attach box would be visible (confirmé order + feature enabled).
   const attachBoxVisible = order?.status === 'confirme' && (user?.isSuperAdmin || storeInfo?.settings?.allowAttachTracking);
-  const orderHasCarrier  = !!((order as any)?.shippingProvider || (order as any)?.carrierName);
-  const { data: carrierAccounts = [] } = useQuery<any[]>({
-    queryKey: ['/api/carrier-accounts'],
-    staleTime: 5 * 60 * 1000,
-    enabled: attachBoxVisible && !orderHasCarrier,  // only needed when carrier isn't already set
-  });
+  const orderHasCarrier  = !!orderCarrier;
   // If the order already has a carrier, the backend will keep it — no dropdown needed.
   // If only one carrier account exists, the backend auto-selects it — no dropdown needed.
   // Show dropdown only when the order has no carrier AND the store has multiple carrier accounts.
-  const showCarrierDropdown = attachBoxVisible && !orderHasCarrier && carrierAccounts.length > 1;
+  const showCarrierDropdown = attachBoxVisible && !orderHasCarrier && activeCarrierAccounts.length > 1;
 
   // Recalculate totalPrice whenever items change — skipped when user has manually
   // overridden the price (manualPriceOverride flag set by the Prix total onChange).
@@ -522,6 +538,10 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         customerPhone: fields.customerPhone,
         customerAddress: fields.customerAddress,
         customerCity: fields.customerCity,
+        ...(defaultCarrierAccount && !orderCarrier ? {
+          shippingProvider: effectiveOrderCarrier,
+          carrierName: effectiveOrderCarrier,
+        } : {}),
         ...(isWaselexCarrier ? {
           waselexCityId: carrierData?.citiesDetailed?.find(
             city => city.name === (fields.customerCity || "").trim()
@@ -852,7 +872,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   onChange={v => set("customerCity", v)}
                   cities={carrierCities}
                   isCarrierSpecific={isCarrierSpecific}
-                  carrierLogo={getCarrierLogo(carrierData?.provider ?? orderCarrier)}
+                   carrierLogo={getCarrierLogo(carrierData?.provider ?? effectiveOrderCarrier)}
                   isLoading={citiesLoading}
                   data-testid="select-city"
                   className="w-full"

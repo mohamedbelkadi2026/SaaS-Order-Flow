@@ -1,0 +1,29 @@
+# Replit Prompt — Root cause confirmée (code vérifié) : les commandes "Nouveau" n'ont pas encore de carrier assigné, donc pas de liste Waselex
+
+## Diagnostic (confirmé en lisant le code, pas une hypothèse)
+
+Dans `client/src/components/order-details-modal.tsx` :
+```ts
+const orderCarrier = resolveOrderCarrier(freshOrder, order);
+const isWaselexCarrier = orderCarrier === "waselex";
+const cityProvider = isWaselexCarrier ? "waselex" : orderCarrier;
+```
+`resolveOrderCarrier()` lit `carrierName`/`shippingProvider` sur l'objet commande. Le fix précédent (référentiel 1480 villes) est CORRECT et fonctionne dès que `orderCarrier === "waselex"`.
+
+Le vrai problème : **une commande fraîchement créée (statut "Nouveau") n'a PAS encore de `carrierName`/`shippingProvider` renseigné** — ce champ n'est rempli que plus tard dans le workflow (typiquement à l'expédition/l'attache d'un transporteur). Donc pour toute commande "Nouveau", `orderCarrier` vaut `null`, `cityProvider` vaut `null`, et le composant retombe légitimement sur la liste générique — ce n'est pas un bug de logique, c'est un manque de valeur par défaut.
+
+## Fix demandé
+
+Pour un store qui n'a qu'UN SEUL transporteur connecté et actif (ou un transporteur marqué "par défaut" s'il existe une telle notion dans `carrier_accounts`), les commandes SANS carrier explicitement assigné doivent utiliser par défaut la liste de villes de ce transporteur unique, dès la création — pas seulement une fois qu'un carrier est formellement attaché.
+
+Concrètement dans `order-details-modal.tsx` :
+1. Récupère les `carrier_accounts` actifs du store (déjà fetché ailleurs dans ce composant, `carrierAccounts`).
+2. Si `orderCarrier` est `null` ET que le store a exactement 1 carrier actif : utilise ce carrier comme `cityProvider` par défaut (fallback), au lieu de tomber sur `MOROCCAN_CITIES` générique.
+3. Si le store a 0 ou plusieurs carriers actifs sans assignation claire : garder le comportement actuel (liste générique), car on ne peut pas deviner lequel choisir.
+4. Le label du champ doit refléter ce carrier par défaut ("Ville (Waselex)") même si ce n'est qu'une valeur par défaut pas encore formellement enregistrée sur la commande — et au moment de la sauvegarde, enregistrer explicitement ce carrier par défaut sur la commande (`carrierName`/`shippingProvider`) pour que ça reste cohérent ensuite.
+
+## Testing checklist
+1. Store avec Waselex comme SEUL carrier actif → ouvrir une commande "Nouveau" (sans carrier assigné) → le champ affiche déjà "Ville (Waselex)" avec les 1480 villes, pas la liste générique.
+2. Sélectionner une ville, enregistrer → vérifier que la commande a bien maintenant `carrierName`/`shippingProvider` = "waselex" enregistré.
+3. Store avec plusieurs carriers actifs → comportement inchangé (liste générique tant qu'aucun carrier n'est assigné), pour ne pas deviner à tort.
+4. Vérifier commande #YC-10687 précisément après ce fix.
