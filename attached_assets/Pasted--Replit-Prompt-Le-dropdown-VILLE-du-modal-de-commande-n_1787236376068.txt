@@ -1,0 +1,20 @@
+# Replit Prompt — Le dropdown "VILLE" du modal de commande n'affiche pas le référentiel Waselex, malgré le fix déployé
+
+## Constat
+Commande #YC-10687 (boutique "semart"), qui EST assignée au transporteur Waselex. Dans le modal d'édition de cette commande, le champ ville affiche juste "VILLE" (pas "VILLE (WASELEX)" comme on le voit pour d'autres transporteurs type Sendit) et propose la liste générique marocaine (Agadir, Ait Melloul, Al Hoceima, Asilah, Azilal, Azrou, Beni Mellal...) — pas les 1480 villes du référentiel Waselex qu'on vient de corriger et déployer (commit e4c14d7, confirmé Success sur Railway).
+
+## Ce qui semble se passer
+Le fix précédent a corrigé `/api/carriers/cities?provider=waselex` et `/api/carriers/cities/all`. Mais CE modal précis (édition de commande, celui qui s'ouvre depuis Suivi des Colis / liste des commandes) utilise apparemment un AUTRE chemin de code pour peupler son dropdown ville — un composant différent de celui déjà corrigé, ou qui n'a jamais reçu le bon `provider` en paramètre.
+
+## Ce qu'il faut faire
+
+1. Identifie le composant frontend EXACT qui affiche ce champ "VILLE" dans le modal d'édition de commande (`client/src/pages/orders.tsx` ou un composant modal séparé) — pas le composant du formulaire de création de commande déjà vérifié en DEV.
+2. Vérifie quel appel réseau ce composant fait pour peupler la liste de villes — appelle-t-il `/api/carriers/cities` avec `provider=waselex` ? Ou un autre endpoint (peut-être un endpoint générique/legacy qui ne connaît pas Waselex) ?
+3. Vérifie aussi comment ce modal détermine le transporteur de LA commande (#YC-10687) — est-ce qu'il lit bien `carrierName`/`shippingProvider` = "waselex" sur cette commande, et transmet cette info à l'appel de liste de villes ?
+4. Corrige ce modal pour qu'il utilise le même mécanisme déjà corrigé (référentiel Waselex de 1480 villes) quand la commande est assignée à Waselex — le label doit aussi devenir "VILLE (WASELEX)" comme pour les autres transporteurs déjà corrects (Sendit, etc.).
+5. Vérifie s'il existe d'AUTRES endroits dans l'app où un dropdown de ville similaire est affiché pour une commande Waselex (page de création manuelle, import, etc.) et applique le même correctif partout où c'est pertinent, pour éviter de devoir refaire ce fix modal par modal.
+
+## Testing checklist
+1. Ouvrir le modal d'édition de la commande #YC-10687 → le champ ville affiche "VILLE (WASELEX)" et propose bien les 1480 villes (Aazanen, Agadir, Zrizer trouvables).
+2. Vérifier un autre modal/formulaire où une ville Waselex peut être sélectionnée (création manuelle de commande) → même comportement cohérent.
+3. Sélectionner une ville, enregistrer la commande → vérifier que le bon `city_id`/`external_id` Waselex est bien sauvegardé sur la commande (pas juste le nom texte).
