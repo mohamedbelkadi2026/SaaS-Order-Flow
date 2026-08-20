@@ -1,0 +1,26 @@
+# Replit Prompt — Les villes Waselex n'apparaissent pas toutes (devrait être 504 depuis le fichier Excel)
+
+## Constat
+Le reste de l'intégration Waselex fonctionne bien. Seul problème : la liste des villes disponibles pour Waselex n'affiche pas toutes les villes — il en manque par rapport aux 504 villes du fichier Excel officiel (Villes_Sendit_Prix_Delais... non, celui-là c'était Sendit — le fichier Waselex fourni précédemment, "Excel villes Waselex") qu'on avait fourni pour l'import.
+
+## Ce qu'il faut vérifier
+
+1. Combien de villes sont actuellement en base pour Waselex ? 
+```sql
+SELECT COUNT(*) FROM waselex_cities;
+```
+Compare ce chiffre au nombre réel attendu (504, ou le nombre exact de lignes du fichier Excel fourni).
+
+2. Si le nombre en base est déjà correct (proche de 504) mais que l'UI n'en affiche qu'une partie : le problème est côté frontend/API de récupération (`/api/carriers/cities?provider=waselex` ou équivalent) — vérifie s'il y a une pagination, une limite (`LIMIT`), ou un filtre qui tronque la liste avant de l'envoyer au dropdown.
+
+3. Si le nombre en base est incomplet (beaucoup moins que 504) : le script d'import du fichier Excel n'a pas tout importé — vérifie les erreurs du script d'import (lignes ignorées, doublons rejetés, erreurs de parsing sur certains noms de villes avec caractères spéciaux) et relance-le proprement pour compléter l'import.
+
+4. Donne-moi le nombre exact trouvé en base vs le nombre attendu, avant de corriger quoi que ce soit.
+
+## Fix
+Une fois la vraie cause identifiée (troncature d'affichage vs import incomplet), corrige-la pour que TOUTES les villes du fichier Excel soient bien disponibles dans le sélecteur de ville Waselex, sans limite artificielle.
+
+## Testing checklist
+1. `SELECT COUNT(*) FROM waselex_cities;` = nombre exact du fichier Excel fourni.
+2. Le dropdown "VILLE (WASELEX)" dans le formulaire de commande affiche bien toutes ces villes (recherche par nom pour vérifier plusieurs villes prises au hasard dans la liste complète, pas seulement les plus connues).
+3. Vérifier qu'une ville qui n'apparaissait pas avant (à identifier dans le diagnostic) apparaît bien maintenant et se résout au bon `city_id`/`district_id` pour créer une commande.
