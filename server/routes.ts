@@ -26,6 +26,7 @@ import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
 import { resolveProductId, splitVariant, normStr } from "./services/variants";
 import { expireInactiveTajerDropOfferRequests } from "./cron/tajerdrop-offer-requests";
+import { calculateAgentCompensation } from "./services/agent-compensation";
 import {
   buildImportedAgentNameIndex,
   normalizeImportedAgentName,
@@ -780,14 +781,21 @@ export async function registerRoutes(
     let pasReponse = 0, rappel = 0, confirmeReporte = 0;
     let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0, totalAgentCommissions = 0;
 
-    // Fetch agent commission rates for accurate profit calc
+    // Fetch agent compensation settings for accurate profit calc.
     const agentSettingsList = await storage.getStoreAgentSettings(storeId);
-    const agentCommissionMap = new Map<number, number>(
-      agentSettingsList.map((s: any) => [s.agentId, s.commissionRate ?? 0])
+    const storeAgents = (await storage.getUsersByStore(storeId)).filter((candidate: any) =>
+      candidate.role === "agent" && (!agentId || agentId === "all" || candidate.id === Number(agentId))
     );
 
     // Real COGS: use order_items × products.cost_price, fallback to orders.product_cost
     const deliveredInFilter = allOrders.filter(o => isDeliveredStatus(o.status));
+    totalAgentCommissions = calculateAgentCompensation({
+      agents: storeAgents,
+      settings: agentSettingsList,
+      deliveredOrders: deliveredInFilter,
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+    }).totalCostCents;
     const statsCogsMap = await storage.computeOrdersCOGS(
       deliveredInFilter.map(o => ({ id: o.id, productCost: (o as any).productCost ?? 0 }))
     );
@@ -860,11 +868,6 @@ export async function registerRoutes(
         const orderConfDH = (statsItemsByOrder.get(o.id) ?? [])
           .reduce((sum: number, item: any) => sum + (confByPid.get(item.productId ?? 0) ?? 0), 0);
         totalConfirmationCost += Math.round(orderConfDH * 100);
-        // Agent commission: stored in DH, convert to cents
-        if (o.assignedToId) {
-          const rate = agentCommissionMap.get(o.assignedToId) ?? 0;
-          totalAgentCommissions += rate * 100;
-        }
       }
     });
 

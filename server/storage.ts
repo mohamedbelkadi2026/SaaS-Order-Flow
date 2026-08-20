@@ -22,6 +22,8 @@ import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY
 import { eq, desc, and, sql, count, ne, like, ilike, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
 import { matchCityId, normalizeCityKey, resolveCityAlias } from "./services/city-aliases";
+import { calculateAgentCompensation, variableCommissionCostCents } from "./services/agent-compensation";
+import { casablancaToday } from "./utils/casablanca-time";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -191,8 +193,15 @@ export interface IStorage {
 
   getAgentPermissions(agentId: number): Promise<Record<string, boolean>>;
   updateAgentPermissions(agentId: number, permissions: Record<string, boolean>): Promise<void>;
-  getAgentWallet(agentId: number, storeId: number, opts?: { dateFrom?: string; dateTo?: string; dateRange?: string }): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }>;
-  getCommissionsSummary(storeId: number): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>;
+  getAgentWallet(agentId: number, storeId: number, opts?: { dateFrom?: string; dateTo?: string; dateRange?: string }): Promise<{
+    totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number;
+    paymentType: "fixed" | "commission"; paymentAmount: number; monthsCount: number; periodLabel: string;
+  }>;
+  getCommissionsSummary(storeId: number): Promise<{
+    agentId: number; agentName: string; paymentType: "fixed" | "commission";
+    paymentAmount: number; monthsCount: number; commissionRate: number;
+    deliveredTotal: number; totalOwed: number;
+  }[]>;
 
   getStoresByOwner(userId: number): Promise<Store[]>;
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
@@ -216,7 +225,11 @@ export interface IStorage {
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
     byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
-    byAgent: { agentId: number; agentName: string; commissionRate: number; deliveredCount: number; totalCommission: number }[];
+    byAgent: {
+      agentId: number; agentName: string; paymentType: "fixed" | "commission";
+      paymentAmount: number; commissionRate: number; deliveredCount: number;
+      monthsCount: number; totalCommission: number;
+    }[];
     ordersCount: number;
   }>;
   getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string, magasinId?: number): Promise<{
@@ -3291,21 +3304,30 @@ export class DatabaseStorage implements IStorage {
       )
     ).groupBy(orders.storeId);
 
-    // 5b. Agent commissions per store (commissionRate in DH × 100 = centimes, per delivered order with assigned agent)
-    const commissionRows = await db.select({
+    // 5b. Agent compensation per store. Commission agents remain per delivery;
+    // fixed agents are charged once per calendar month since their creation.
+    const compensationAgents = await db.select().from(users).where(and(
+      sql`${users.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+      eq(users.role, 'agent'),
+    ));
+    const compensationSettings = await db.select().from(storeAgentSettings).where(
+      sql`${storeAgentSettings.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+    );
+    const deliveredAssignments = await db.select({
       storeId: orders.storeId,
-      totalCommissions: sql<number>`COALESCE(SUM(${storeAgentSettings.commissionRate}::bigint * 100), 0)`,
-    }).from(orders)
-      .innerJoin(storeAgentSettings, and(
-        eq(storeAgentSettings.storeId, orders.storeId),
-        eq(storeAgentSettings.agentId, orders.assignedToId),
-      ))
-      .where(and(
-        sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
-        eq(orders.status, 'delivered'),
-      ))
-      .groupBy(orders.storeId);
-    const commissionMap = new Map(commissionRows.map(r => [r.storeId, Number(r.totalCommissions)]));
+      assignedToId: orders.assignedToId,
+    }).from(orders).where(and(
+      sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+      eq(orders.status, 'delivered'),
+    ));
+    const commissionMap = new Map(storeIds.map(candidateStoreId => [
+      candidateStoreId,
+      calculateAgentCompensation({
+        agents: compensationAgents.filter(agent => agent.storeId === candidateStoreId),
+        settings: compensationSettings.filter(setting => setting.storeId === candidateStoreId),
+        deliveredOrders: deliveredAssignments.filter(order => order.storeId === candidateStoreId),
+      }).totalCostCents,
+    ]));
 
     // 5c. Legacy ad spend per store (amount stored in DH → × 100 to get centimes)
     const legacyAdRows = await db.select({
@@ -3795,37 +3817,63 @@ export class DatabaseStorage implements IStorage {
     await db.update(users).set({ dashboardPermissions: permissions }).where(eq(users.id, agentId));
   }
 
-  async getAgentWallet(agentId: number, storeId: number, opts?: { dateFrom?: string; dateTo?: string; dateRange?: string }): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }> {
+  async getAgentWallet(agentId: number, storeId: number, opts?: { dateFrom?: string; dateTo?: string; dateRange?: string }): Promise<{
+    totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number;
+    paymentType: "fixed" | "commission"; paymentAmount: number; monthsCount: number; periodLabel: string;
+  }> {
     const setting = await this.getAgentStoreSetting(agentId, storeId);
     const rate = Number(setting?.commissionRate ?? 0);
+    const agentRows = await db.select().from(users).where(and(eq(users.id, agentId), eq(users.storeId, storeId))).limit(1);
     const now = new Date();
+    const todayCasablanca = casablancaToday(now);
+    const shiftDateOnly = (date: string, days: number): string => {
+      const [year, month, day] = date.split('-').map(Number);
+      const shifted = new Date(Date.UTC(year, month - 1, day + days));
+      return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}`;
+    };
 
     let periodStart: Date;
     let periodEnd: Date = new Date();
     let periodLabel = 'Ce mois';
+    let compensationDateFrom = `${todayCasablanca.slice(0, 7)}-01`;
+    let compensationDateTo = todayCasablanca;
 
     if (opts?.dateFrom) {
       periodStart = new Date(opts.dateFrom + 'T00:00:00');
       periodEnd   = opts.dateTo ? new Date(opts.dateTo + 'T23:59:59') : new Date();
+      compensationDateFrom = opts.dateFrom;
+      compensationDateTo = opts.dateTo ?? todayCasablanca;
       periodLabel = opts.dateFrom === opts.dateTo
         ? opts.dateFrom
         : `${opts.dateFrom} → ${opts.dateTo || "aujourd'hui"}`;
     } else if (opts?.dateRange === 'today') {
       periodStart = new Date(); periodStart.setHours(0, 0, 0, 0);
+      compensationDateFrom = todayCasablanca;
+      compensationDateTo = todayCasablanca;
       periodLabel = "Aujourd'hui";
     } else if (opts?.dateRange === 'yesterday') {
       periodStart = new Date(); periodStart.setDate(periodStart.getDate() - 1); periodStart.setHours(0, 0, 0, 0);
       periodEnd   = new Date(); periodEnd.setDate(periodEnd.getDate() - 1); periodEnd.setHours(23, 59, 59, 999);
+      compensationDateFrom = shiftDateOnly(todayCasablanca, -1);
+      compensationDateTo = compensationDateFrom;
       periodLabel = 'Hier';
     } else if (opts?.dateRange === '7days') {
       periodStart = new Date(); periodStart.setDate(periodStart.getDate() - 6); periodStart.setHours(0, 0, 0, 0);
+      compensationDateFrom = shiftDateOnly(todayCasablanca, -6);
+      compensationDateTo = todayCasablanca;
       periodLabel = '7 derniers jours';
     } else if (opts?.dateRange === 'lastmonth') {
       periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       periodEnd   = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      const [year, month] = todayCasablanca.split('-').map(Number);
+      const previousMonthEnd = new Date(Date.UTC(year, month - 1, 0));
+      compensationDateTo = `${previousMonthEnd.getUTCFullYear()}-${String(previousMonthEnd.getUTCMonth() + 1).padStart(2, '0')}-${String(previousMonthEnd.getUTCDate()).padStart(2, '0')}`;
+      compensationDateFrom = `${compensationDateTo.slice(0, 7)}-01`;
       periodLabel = 'Mois dernier';
     } else if (opts?.dateRange === 'all') {
       periodStart = new Date('2020-01-01');
+      compensationDateFrom = '2020-01-01';
+      compensationDateTo = todayCasablanca;
       periodLabel = 'Tout le temps';
     } else {
       periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -3848,16 +3896,31 @@ export class DatabaseStorage implements IStorage {
 
     const deliveredTotal = Number(totalRow?.count ?? 0);
     const deliveredThisMonth = Number(periodRow?.count ?? 0);
+    const compensation = calculateAgentCompensation({
+      agents: agentRows,
+      settings: setting ? [setting] : [],
+      deliveredOrders: Array.from({ length: deliveredThisMonth }, () => ({ assignedToId: agentId })),
+      dateFrom: compensationDateFrom,
+      dateTo: compensationDateTo,
+    });
+    const line = compensation.lines[0];
     return {
-      totalEarned: deliveredThisMonth * rate,
+      totalEarned: Number(line?.totalCostCents ?? 0) / 100,
       deliveredThisMonth,
       deliveredTotal,
-      commissionRate: rate,
+      commissionRate: line?.commissionRate ?? rate,
+      paymentType: line?.paymentType ?? "commission",
+      paymentAmount: line?.paymentAmount ?? Number(agentRows[0]?.paymentAmount ?? 0),
+      monthsCount: line?.monthsCount ?? 0,
       periodLabel,
     };
   }
 
-  async getCommissionsSummary(storeId: number, opts?: { dateFrom?: string; dateTo?: string; month?: string; agentId?: string }): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]> {
+  async getCommissionsSummary(storeId: number, opts?: { dateFrom?: string; dateTo?: string; month?: string; agentId?: string }): Promise<{
+    agentId: number; agentName: string; paymentType: "fixed" | "commission";
+    paymentAmount: number; monthsCount: number; commissionRate: number;
+    deliveredTotal: number; totalOwed: number;
+  }[]> {
     const agents = await db.select().from(users).where(and(eq(users.storeId, storeId), eq(users.role, 'agent')));
     const result = [];
 
@@ -3865,19 +3928,27 @@ export class DatabaseStorage implements IStorage {
     const now = new Date();
     let cutoff: Date;
     let endDate: Date = new Date();
+    let compensationDateFrom: string;
+    let compensationDateTo: string;
 
     if (opts?.dateFrom) {
       cutoff = new Date(opts.dateFrom + 'T00:00:00');
       endDate = opts?.dateTo ? new Date(opts.dateTo + 'T23:59:59') : new Date();
+      compensationDateFrom = opts.dateFrom;
+      compensationDateTo = opts.dateTo ?? casablancaToday(now);
     } else if (opts?.month) {
       // Format: "2026-04" → first and last day of month
       const [year, mon] = opts.month.split('-').map(Number);
       cutoff = new Date(year, mon - 1, 1);
       endDate = new Date(year, mon, 0, 23, 59, 59);
+      compensationDateFrom = `${opts.month}-01`;
+      compensationDateTo = `${year}-${String(mon).padStart(2, '0')}-${String(new Date(Date.UTC(year, mon, 0)).getUTCDate()).padStart(2, '0')}`;
     } else {
       // Default: current month
       cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
       endDate = new Date();
+      compensationDateTo = casablancaToday(now);
+      compensationDateFrom = `${compensationDateTo.slice(0, 7)}-01`;
     }
 
     for (const agent of agents) {
@@ -3903,12 +3974,23 @@ export class DatabaseStorage implements IStorage {
         ));
 
       const deliveredTotal = allDelivered.length;
+      const compensation = calculateAgentCompensation({
+        agents: [agent],
+        settings: setting ? [setting] : [],
+        deliveredOrders: allDelivered,
+        dateFrom: compensationDateFrom,
+        dateTo: compensationDateTo,
+      });
+      const line = compensation.lines[0];
       result.push({
         agentId: agent.id,
         agentName: agent.username,
-        commissionRate: rate,
+        paymentType: line?.paymentType ?? "commission",
+        paymentAmount: line?.paymentAmount ?? Number(agent.paymentAmount ?? 0),
+        monthsCount: line?.monthsCount ?? 0,
+        commissionRate: line?.commissionRate ?? rate,
         deliveredTotal,
-        totalOwed: deliveredTotal * rate,
+        totalOwed: Number(line?.totalCostCents ?? 0) / 100,
       });
     }
     return result;
@@ -4140,7 +4222,11 @@ export class DatabaseStorage implements IStorage {
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
     byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
-    byAgent: { agentId: number; agentName: string; commissionRate: number; deliveredCount: number; totalCommission: number }[];
+    byAgent: {
+      agentId: number; agentName: string; paymentType: "fixed" | "commission";
+      paymentAmount: number; commissionRate: number; deliveredCount: number;
+      monthsCount: number; totalCommission: number;
+    }[];
     ordersCount: number;
   }> {
     // --- Delivered orders (COD: only status='delivered' counts) ---
@@ -4206,23 +4292,23 @@ export class DatabaseStorage implements IStorage {
       packagingCostTotal += Math.round(orderEmballageDH * 100);
     }
 
-    // --- Agent commissions (delivered orders only) ---
+    // --- Agent compensation ---
+    // Commission agents remain per delivered order. Fixed agents are charged
+    // once for every calendar month touched by the selected period.
     const agentSettingsAll = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, storeId));
     const agentUsersAll = await db.select().from(users).where(eq(users.storeId, storeId));
-    const agentMap = new Map<number, { commissionRate: number; name: string }>();
-    for (const s of agentSettingsAll) {
-      const u = agentUsersAll.find(u => u.id === s.agentId);
-      agentMap.set(s.agentId, { commissionRate: Number(s.commissionRate ?? 0), name: u?.username ?? `Agent ${s.agentId}` });
-    }
-    let agentCommissions = 0;
-    const agentCounts = new Map<number, number>();
-    for (const o of deliveredOrders) {
-      if (o.assignedToId) {
-        const rate = Number(agentMap.get(o.assignedToId)?.commissionRate ?? 0);
-        agentCommissions += rate * 100; // DH → cents
-        agentCounts.set(o.assignedToId, (agentCounts.get(o.assignedToId) ?? 0) + 1);
-      }
-    }
+    const agentById = new Map(agentUsersAll.map(agent => [Number(agent.id), agent]));
+    const rateByAgentId = new Map(
+      agentSettingsAll.map(setting => [Number(setting.agentId), Number(setting.commissionRate ?? 0)]),
+    );
+    const compensation = calculateAgentCompensation({
+      agents: agentUsersAll,
+      settings: agentSettingsAll,
+      deliveredOrders,
+      dateFrom,
+      dateTo,
+    });
+    const agentCommissions = compensation.totalCostCents;
 
     // --- Ad Spend: filter by productId when a product filter is active (product-specific ad spend isolation) ---
     // Legacy adSpendTracking table
@@ -4274,7 +4360,10 @@ export class DatabaseStorage implements IStorage {
       if (attributedId === undefined) continue;
       const u = agentUsersAll.find(u => u.id === attributedId);
       const existing = buyerOrderMap.get(attributedId) ?? { revenue: 0, orderProfit: 0, name: u?.username ?? `User ${attributedId}` };
-      const agentComm = o.assignedToId ? Number(agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0;
+      const assignedAgent = o.assignedToId ? agentById.get(Number(o.assignedToId)) : undefined;
+      const agentComm = o.assignedToId
+        ? variableCommissionCostCents(assignedAgent, rateByAgentId.get(Number(o.assignedToId)) ?? 0)
+        : 0;
       const realCogs = Number(cogsMap.get(o.id) ?? 0);
       existing.revenue += Number(o.totalPrice ?? 0);
       const orderPkgDH = (itemsByOrderId.get(o.id) ?? [])
@@ -4301,11 +4390,16 @@ export class DatabaseStorage implements IStorage {
       return { buyerId: bid, buyerName: u?.username ?? bo?.name ?? `User ${bid}`, adSpend: bSpend, revenue: bRevenue, netProfit: bOrderProfit - bSpend };
     });
 
-    const byAgent = Array.from(agentCounts.entries()).map(([agentId, count]) => {
-      const info = agentMap.get(agentId);
-      const rate = Number(info?.commissionRate ?? 0);
-      return { agentId, agentName: info?.name ?? `Agent ${agentId}`, commissionRate: rate, deliveredCount: count, totalCommission: Number(count) * rate };
-    });
+    const byAgent = compensation.lines.map(line => ({
+      agentId: line.agentId,
+      agentName: line.agentName,
+      paymentType: line.paymentType,
+      paymentAmount: line.paymentAmount,
+      commissionRate: line.commissionRate,
+      deliveredCount: line.deliveredCount,
+      monthsCount: line.monthsCount,
+      totalCommission: line.totalCostCents / 100,
+    }));
 
     return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, agentCommissions, adSpend: totalAdSpend, netProfit, byBuyer, byAgent, ordersCount: deliveredOrders.length };
   }
@@ -4331,9 +4425,12 @@ export class DatabaseStorage implements IStorage {
     if (magasinId) orderConditions.push(eq(orders.magasinId, magasinId));
     const buyerOrders = await db.select().from(orders).where(and(...orderConditions));
 
-    // Agent commission rates lookup
+    // Per-order costs only include commission agents. Fixed salaries are a
+    // store-level overhead and are intentionally not duplicated per buyer.
     const agentSettingsAll = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, storeId));
     const agentRateMap = new Map(agentSettingsAll.map(s => [s.agentId, Number(s.commissionRate ?? 0)]));
+    const agentUsersAll = await db.select().from(users).where(eq(users.storeId, storeId));
+    const agentById = new Map(agentUsersAll.map(agent => [Number(agent.id), agent]));
 
     // COGS via SQL JOIN (order_items × products.cost_price, fallback to orders.product_cost)
     const buyerCogsMap = await this.computeOrdersCOGS(buyerOrders.map(o => ({ id: o.id, productCost: Number(o.productCost ?? 0) })));
@@ -4345,8 +4442,10 @@ export class DatabaseStorage implements IStorage {
       productCost   += Number(buyerCogsMap.get(o.id) ?? 0);
       shippingCost  += Number(o.shippingCost ?? 0);
       if (o.assignedToId) {
-        // commissionRate stored in DH → multiply by 100 to get centimes
-        agentCommissions += Math.round(Number(agentRateMap.get(o.assignedToId) ?? 0) * 100);
+        agentCommissions += variableCommissionCostCents(
+          agentById.get(Number(o.assignedToId)),
+          agentRateMap.get(Number(o.assignedToId)) ?? 0,
+        );
       }
     }
     const packagingCostTotal = buyerOrders.length * storePackaging;
@@ -4439,6 +4538,8 @@ export class DatabaseStorage implements IStorage {
     const storePackaging = Number(store[0]?.packagingCost ?? 0);
 
     const allUsers = await db.select().from(users).where(and(eq(users.storeId, storeId), sql`${users.role} IN ('owner','admin','media_buyer')`));
+    const agentUsers = await db.select().from(users).where(and(eq(users.storeId, storeId), eq(users.role, 'agent')));
+    const agentById = new Map(agentUsers.map(agent => [Number(agent.id), agent]));
     const agentSettingsAll = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, storeId));
 
     const orderConditions: any[] = [eq(orders.storeId, storeId)];
@@ -4505,9 +4606,11 @@ export class DatabaseStorage implements IStorage {
         productCost += Number(teamCogsMap.get(o.id) ?? 0);
         shippingCost += Number(o.shippingCost ?? 0);
         if (o.assignedToId) {
-          // Use Number() coercion to avoid type mismatch between agentId (number) and assignedToId (may be string)
           const agentSetting = agentSettingsAll.find(as => Number(as.agentId) === Number(o.assignedToId));
-          agentCommissions += Number(agentSetting?.commissionRate ?? 0) * 100;
+          agentCommissions += variableCommissionCostCents(
+            agentById.get(Number(o.assignedToId)),
+            Number(agentSetting?.commissionRate ?? 0),
+          );
         }
       }
       const packagingCost = deliveredOrders.length * storePackaging;

@@ -25,10 +25,15 @@ function parts(d: Date): { year: number; month: number; day: number; hour: numbe
   };
 }
 
+/** Returns YYYY-MM-DD for a date in Africa/Casablanca. */
+export function casablancaDateString(date: Date): string {
+  const { year, month, day } = parts(date);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 /** Returns YYYY-MM-DD for "today" in Africa/Casablanca. */
 export function casablancaToday(now: Date = new Date()): string {
-  const { year, month, day } = parts(now);
-  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return casablancaDateString(now);
 }
 
 /** Returns YYYY-MM-DD for "tomorrow" in Africa/Casablanca (calendar day +1). */

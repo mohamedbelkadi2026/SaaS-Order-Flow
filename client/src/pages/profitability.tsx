@@ -17,7 +17,11 @@ type AdminSummary = {
   revenue: number; productCost: number; shippingCost: number; packagingCost: number;
   agentCommissions: number; adSpend: number; netProfit: number; ordersCount: number;
   byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
-  byAgent: { agentId: number; agentName: string; commissionRate: number; deliveredCount: number; totalCommission: number }[];
+  byAgent: {
+    agentId: number; agentName: string; paymentType: "fixed" | "commission";
+    paymentAmount: number; commissionRate: number; deliveredCount: number;
+    monthsCount: number; totalCommission: number;
+  }[];
 };
 
 type BuyerProfit = {
@@ -373,7 +377,7 @@ export default function Profitability() {
                 <CostRow label="Coût d'achat produits" value={summary?.productCost ?? 0} icon={Box} indent />
                 <CostRow label="Frais de livraison" value={summary?.shippingCost ?? 0} icon={Truck} indent />
                 <CostRow label="Coût emballage" value={summary?.packagingCost ?? 0} icon={PackageOpen} indent />
-                <CostRow label="Commissions agents" value={summary?.agentCommissions ?? 0} icon={Users} indent />
+                <CostRow label="Rémunération agents" value={summary?.agentCommissions ?? 0} icon={Users} indent />
 
                 {/* Order costs subtotal */}
                 <div className="flex items-center justify-between py-2 my-1 bg-muted/20 rounded px-2">
@@ -534,12 +538,12 @@ export default function Profitability() {
         })()}
       </Card>
 
-      {/* Agent Commissions Table */}
+      {/* Agent compensation table */}
       {(summary?.byAgent?.length ?? 0) > 0 && (
         <Card className="rounded-2xl border-border/50 shadow-sm overflow-hidden">
           <CardHeader className="bg-muted/20 border-b border-border/50 py-3 px-5">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <Users className="w-3.5 h-3.5 text-primary" />Commissions par Agent (Livrées)
+              <Users className="w-3.5 h-3.5 text-primary" />Rémunération par Agent
             </CardTitle>
           </CardHeader>
           <div className="overflow-x-auto">
@@ -547,16 +551,22 @@ export default function Profitability() {
               <TableHeader>
                 <TableRow className="bg-muted/10">
                   <TableHead className="text-[11px] font-bold uppercase">Agent</TableHead>
-                  <TableHead className="text-[11px] font-bold uppercase text-right">Taux (DH)</TableHead>
+                  <TableHead className="text-[11px] font-bold uppercase text-right">Type</TableHead>
+                  <TableHead className="text-[11px] font-bold uppercase text-right">Base</TableHead>
                   <TableHead className="text-[11px] font-bold uppercase text-right">Livrées</TableHead>
-                  <TableHead className="text-[11px] font-bold uppercase text-right text-destructive/80">Total Commissions</TableHead>
+                  <TableHead className="text-[11px] font-bold uppercase text-right text-destructive/80">Total dû</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {summary!.byAgent.map(a => (
                   <TableRow key={a.agentId} data-testid={`row-agent-${a.agentId}`}>
                     <TableCell className="font-medium text-sm">{a.agentName}</TableCell>
-                    <TableCell className="text-right text-sm">{a.commissionRate} DH</TableCell>
+                    <TableCell className="text-right text-sm">{a.paymentType === "fixed" ? "Fixe" : "Commission"}</TableCell>
+                    <TableCell className="text-right text-sm">
+                      {a.paymentType === "fixed"
+                        ? `${formatCurrency(a.paymentAmount)} / mois`
+                        : `${a.commissionRate} DH / livrée`}
+                    </TableCell>
                     <TableCell className="text-right text-sm font-semibold">{a.deliveredCount}</TableCell>
                     <TableCell className="text-right text-destructive font-bold text-sm">-{formatCurrency(Number(a.totalCommission) * 100)}</TableCell>
                   </TableRow>

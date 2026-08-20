@@ -12,6 +12,7 @@ import {
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { splitVariant } from "./variants";
 import { isDeliveredStatus } from "@shared/order-status-sets";
+import { calculateAgentCompensation, variableCommissionCostCents } from "./agent-compensation";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -207,6 +208,8 @@ export async function computeProfitability(
   const agentRateMap = new Map<number, number>(
     agentSettings.map((s: any) => [s.agentId, Number(s.commissionRate ?? 0)])
   );
+  const storeUsers = await storage.getUsersByStore(storeId);
+  const agentById = new Map(storeUsers.map(agent => [Number(agent.id), agent]));
 
   // ── Catalog maps ─────────────────────────────────────────────────────────────
   const storeProductsList = await db.select({
@@ -260,6 +263,7 @@ export async function computeProfitability(
     netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
   });
 
+  let allocatedVariableAgentCostDH = 0;
   for (const item of itemRows) {
     const order = orderMap.get(item.orderId);
     if (!order) continue;
@@ -388,8 +392,13 @@ export async function computeProfitability(
         const emballageDH = Number(prodSettings?.profitDefaults?.coutEmballage || 0);
         s.packagingCost   += emballageDH;
         const confDH  = Number(prodSettings?.profitDefaults?.coutConfirmation || 0);
-        const agentDH = agentRateMap.get((order as any).assignedToId) ?? 0;
+        const assignedAgentId = Number((order as any).assignedToId);
+        const agentDH = variableCommissionCostCents(
+          agentById.get(assignedAgentId),
+          agentRateMap.get(assignedAgentId) ?? 0,
+        ) / 100;
         s.confirmationCost += confDH + agentDH;
+        allocatedVariableAgentCostDH += agentDH;
       }
     }
   }
@@ -482,8 +491,13 @@ export async function computeProfitability(
         ? (computedCost / 100)
         : (Number((order as any).productCost || 0) / 100);
 
-      const agentDH   = agentRateMap.get((order as any).assignedToId) ?? 0;
+      const assignedAgentId = Number((order as any).assignedToId);
+      const agentDH = variableCommissionCostCents(
+        agentById.get(assignedAgentId),
+        agentRateMap.get(assignedAgentId) ?? 0,
+      ) / 100;
       s.confirmationCost += agentDH;
+      allocatedVariableAgentCostDH += agentDH;
     }
   }
 
@@ -601,6 +615,17 @@ export async function computeProfitability(
   // dashboard (per-product rows only count orders that have orderItems rows).
   totals.totalOrders     = storeOrders.length;
   totals.deliveredOrders = storeOrders.filter(o => isDeliveredStatus((o as any).status)).length;
+  const agentCompensation = calculateAgentCompensation({
+    agents: storeUsers,
+    settings: agentSettings,
+    deliveredOrders: storeOrders.filter(o => isDeliveredStatus((o as any).status)),
+    dateFrom: cutoffDateStr,
+    dateTo: endDateStr,
+  });
+  const exactAgentCostDH = agentCompensation.totalCostCents / 100;
+  const agentCostAdjustmentDH = exactAgentCostDH - allocatedVariableAgentCostDH;
+  totals.confirmationCost += agentCostAdjustmentDH;
+  totals.netProfit -= agentCostAdjustmentDH;
 
   return { products: dedupedProducts, platforms, totals, globalAdSpend };
 }

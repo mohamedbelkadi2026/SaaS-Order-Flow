@@ -158,7 +158,10 @@ export default function Dashboard() {
   const [agentDateRange, setAgentDateRange] = useState<AgentDateRange>('month');
   const [agentShowCustom, setAgentShowCustom] = useState(false);
 
-  const { data: walletData } = useQuery<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }>({
+  const { data: walletData } = useQuery<{
+    totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number;
+    paymentType: "fixed" | "commission"; paymentAmount: number; monthsCount: number; periodLabel: string;
+  }>({
     queryKey: ['/api/agents/wallet', agentDateRange, filters.dateFrom, filters.dateTo],
     enabled: isAgent,
     queryFn: async () => {
@@ -336,7 +339,11 @@ export default function Dashboard() {
     enabled: isAdminUser && adminView === 'personal',
   });
 
-  const { data: commissionsSummary } = useQuery<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>({
+  const { data: commissionsSummary } = useQuery<{
+    agentId: number; agentName: string; paymentType: "fixed" | "commission";
+    paymentAmount: number; monthsCount: number; commissionRate: number;
+    deliveredTotal: number; totalOwed: number;
+  }[]>({
     queryKey: ['/api/stats/commissions-summary', activeFilters],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -1364,7 +1371,11 @@ export default function Dashboard() {
                 <div>
                   <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Mon Portefeuille</p>
                   <p className="text-white text-3xl font-bold">{Number(walletData.totalEarned).toFixed(2)} <span className="text-white/70 text-lg font-normal">DH</span></p>
-                  <p className="text-white/70 text-xs mt-0.5">{walletData.periodLabel || 'Ce mois'} — {walletData.deliveredThisMonth} livraison(s) × {walletData.commissionRate} DH</p>
+                  <p className="text-white/70 text-xs mt-0.5">
+                    {walletData.periodLabel || 'Ce mois'} — {walletData.paymentType === "fixed"
+                      ? `${walletData.monthsCount} mois × ${(walletData.paymentAmount / 100).toFixed(2)} DH`
+                      : `${walletData.deliveredThisMonth} livraison(s) × ${walletData.commissionRate} DH`}
+                  </p>
                 </div>
               </div>
               <div className="flex sm:flex-col gap-4 sm:gap-2 sm:items-end">
@@ -1374,9 +1385,11 @@ export default function Dashboard() {
                   <p className="text-white/60 text-xs">livraisons</p>
                 </div>
                 <div className="text-center sm:text-right">
-                  <p className="text-white/70 text-xs uppercase tracking-wide">Taux</p>
-                  <p className="text-white text-xl font-bold">{walletData.commissionRate} DH</p>
-                  <p className="text-white/60 text-xs">par livraison</p>
+                  <p className="text-white/70 text-xs uppercase tracking-wide">{walletData.paymentType === "fixed" ? "Fixe" : "Taux"}</p>
+                  <p className="text-white text-xl font-bold">
+                    {walletData.paymentType === "fixed" ? (walletData.paymentAmount / 100).toFixed(2) : walletData.commissionRate} DH
+                  </p>
+                  <p className="text-white/60 text-xs">{walletData.paymentType === "fixed" ? "par mois" : "par livraison"}</p>
                 </div>
               </div>
             </CardContent>
@@ -1392,12 +1405,12 @@ export default function Dashboard() {
                 <DollarSign className="w-5 h-5 text-white" />
               </div>
               <div>
-                <p className="text-white/80 text-xs font-semibold uppercase tracking-wider">Total Commissions à Payer</p>
+                <p className="text-white/80 text-xs font-semibold uppercase tracking-wider">Total Rémunérations à Payer</p>
                 <p className="text-white text-2xl font-bold">{totalCommissionsOwed.toFixed(2)} DH</p>
                 <p className="text-xs text-white/70 mt-1">
                   {filters.dateFrom && filters.dateTo
-                    ? `Livraisons du ${parseLocalYMD(filters.dateFrom).toLocaleDateString('fr-FR')} au ${parseLocalYMD(filters.dateTo).toLocaleDateString('fr-FR')}`
-                    : `Livraisons de ${new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}`}
+                    ? `Période du ${parseLocalYMD(filters.dateFrom).toLocaleDateString('fr-FR')} au ${parseLocalYMD(filters.dateTo).toLocaleDateString('fr-FR')}`
+                    : `Période de ${new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}`}
                 </p>
               </div>
             </div>
@@ -1406,7 +1419,9 @@ export default function Dashboard() {
                 <div key={a.agentId} className="text-center">
                   <p className="text-white/70 text-xs">{a.agentName}</p>
                   <p className="text-white font-semibold text-sm">{Number(a.totalOwed).toFixed(2)} DH</p>
-                  <p className="text-white/60 text-xs">{a.deliveredTotal} livrées</p>
+                  <p className="text-white/60 text-xs">
+                    {a.paymentType === "fixed" ? `${a.monthsCount} mois` : `${a.deliveredTotal} livrées`}
+                  </p>
                 </div>
               ))}
             </div>
