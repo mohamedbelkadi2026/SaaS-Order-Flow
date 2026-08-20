@@ -26,6 +26,11 @@ import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
 import { resolveProductId, splitVariant, normStr } from "./services/variants";
 import { expireInactiveTajerDropOfferRequests } from "./cron/tajerdrop-offer-requests";
+import {
+  buildImportedAgentNameIndex,
+  normalizeImportedAgentName,
+  resolveImportedAgentName,
+} from "./services/order-import-agents";
 
 import fs from "fs";
 
@@ -8477,9 +8482,18 @@ function ensureHeaders(sheet) {
         const rows: Record<string, any>[] = XLSX.utils.sheet_to_json(ws, { defval: "" });
 
         const storeId = req.user!.storeId!;
+        const hasAgentMapping = Object.values(mapping).includes("assignedAgentName");
+        const agentNameIndex = hasAgentMapping
+          ? buildImportedAgentNameIndex(await storage.getUsersByStore(storeId))
+          : new Map<string, number[]>();
         let imported = 0;
         let skipped = 0;
         const errors: string[] = [];
+        let assignedAgents = 0;
+        let unmatchedAgents = 0;
+        let ambiguousAgents = 0;
+        const unmatchedAgentNames = new Map<string, string>();
+        const ambiguousAgentNames = new Map<string, string>();
 
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i];
@@ -8507,6 +8521,20 @@ function ensureHeaders(sheet) {
             // its line items exist, so inventory and confirmation side effects
             // remain identical to a manually confirmed order.
             const initialStatus = importedStatus === 'confirme' ? 'nouveau' : importedStatus;
+            let assignedToId: number | null = null;
+            let agentAssignmentOutcome: "matched" | "unmatched" | "ambiguous" | null = null;
+            let reportedAgentName = "";
+
+            if (hasAgentMapping && mapped.assignedAgentName) {
+              const rawAgentName = mapped.assignedAgentName.trim().replace(/\s+/g, " ");
+              const resolution = resolveImportedAgentName(agentNameIndex, rawAgentName);
+              agentAssignmentOutcome = resolution.status;
+              reportedAgentName = rawAgentName;
+
+              if (resolution.status === "matched") {
+                assignedToId = resolution.agentId;
+              }
+            }
 
             const order = await storage.createOrder({
               storeId,
@@ -8521,6 +8549,7 @@ function ensureHeaders(sheet) {
               shippingCost: 0,
               adSpend: 0,
               source: 'import',
+              assignedToId,
               comment: mapped.comment || null,
               rawProductName: mapped.rawProductName || null,
             } as any, mapped.rawProductName ? [{
@@ -8538,13 +8567,33 @@ function ensureHeaders(sheet) {
             }
 
             await storage.incrementMonthlyOrders(storeId);
+            if (agentAssignmentOutcome === "matched") {
+              assignedAgents++;
+            } else if (agentAssignmentOutcome === "ambiguous") {
+              ambiguousAgents++;
+              ambiguousAgentNames.set(normalizeImportedAgentName(reportedAgentName), reportedAgentName);
+            } else if (agentAssignmentOutcome === "unmatched") {
+              unmatchedAgents++;
+              unmatchedAgentNames.set(normalizeImportedAgentName(reportedAgentName), reportedAgentName);
+            }
             imported++;
           } catch (rowErr: any) {
             errors.push(`Ligne ${i + 2}: ${rowErr.message}`);
           }
         }
 
-        res.json({ imported, skipped, errors });
+        res.json({
+          imported,
+          skipped,
+          errors,
+          agentAssignments: {
+            assigned: assignedAgents,
+            unmatched: unmatchedAgents,
+            ambiguous: ambiguousAgents,
+            unmatchedNames: Array.from(unmatchedAgentNames.values()),
+            ambiguousNames: Array.from(ambiguousAgentNames.values()),
+          },
+        });
       } catch (err: any) {
         res.status(500).json({ message: err.message || "Erreur d'importation" });
       }

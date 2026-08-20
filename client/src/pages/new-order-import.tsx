@@ -16,6 +16,7 @@ const DB_FIELDS = [
   { value: "rawProductName", label: "Nom du produit" },
   { value: "totalPrice", label: "Prix total (DH)" },
   { value: "status", label: "Status" },
+  { value: "assignedAgentName", label: "Agent assigné (ACTION BY)" },
   { value: "comment", label: "Commentaire" },
   { value: "sku", label: "SKU / Référence" },
   { value: "variantInfo", label: "Variant" },
@@ -26,6 +27,13 @@ interface ImportResult {
   imported: number;
   skipped: number;
   errors: string[];
+  agentAssignments?: {
+    assigned: number;
+    unmatched: number;
+    ambiguous: number;
+    unmatchedNames: string[];
+    ambiguousNames: string[];
+  };
 }
 
 export default function NewOrderImport() {
@@ -62,7 +70,15 @@ export default function NewOrderImport() {
       const autoMap: Record<string, string> = {};
       h.forEach(col => {
         const lower = col.toLowerCase().trim();
-        if (lower.includes("nom") || lower.includes("name") || lower.includes("destinataire")) autoMap[col] = "customerName";
+        const compact = lower.replace(/[\s_-]+/g, "");
+        if (
+          compact.includes("actionby")
+          || lower.includes("agent")
+          || lower.includes("confirmé par")
+          || lower.includes("confirme par")
+          || lower.includes("confirmed by")
+        ) autoMap[col] = "assignedAgentName";
+        else if (lower.includes("nom") || lower.includes("name") || lower.includes("destinataire")) autoMap[col] = "customerName";
         else if (lower.includes("tel") || lower.includes("phone") || lower.includes("mobile")) autoMap[col] = "customerPhone";
         else if (lower.includes("adresse") || lower.includes("address")) autoMap[col] = "customerAddress";
         else if (lower.includes("ville") || lower.includes("city")) autoMap[col] = "customerCity";
@@ -217,6 +233,9 @@ export default function NewOrderImport() {
                 </div>
               ))}
             </div>
+            <p className="text-xs text-gray-500">
+              La colonne Agent / ACTION BY est facultative. Laissez-la sur « Ignorer » pour conserver le comportement actuel sans affectation.
+            </p>
 
             {/* Preview table */}
             {preview.length > 0 && (
@@ -254,7 +273,7 @@ export default function NewOrderImport() {
           <div className="bg-white border rounded-lg p-8 shadow-sm text-center space-y-4">
             <CheckCircle2 className="w-16 h-16 text-green-500 mx-auto" />
             <h2 className="text-xl font-bold text-gray-800">Importation terminée</h2>
-            <div className="flex justify-center gap-6 text-sm">
+            <div className="flex flex-wrap justify-center gap-6 text-sm">
               <div className="text-center">
                 <p className="text-3xl font-bold text-green-600">{result.imported}</p>
                 <p className="text-gray-500 mt-1">Commandes importées</p>
@@ -265,7 +284,32 @@ export default function NewOrderImport() {
                   <p className="text-gray-500 mt-1">Ignorées</p>
                 </div>
               )}
+              {(result.agentAssignments?.assigned || 0) > 0 && (
+                <div className="text-center">
+                  <p className="text-3xl font-bold text-blue-600">{result.agentAssignments!.assigned}</p>
+                  <p className="text-gray-500 mt-1">Agents affectés</p>
+                </div>
+              )}
             </div>
+            {result.agentAssignments && (result.agentAssignments.unmatched > 0 || result.agentAssignments.ambiguous > 0) && (
+              <div className="text-left bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600" />
+                  <p className="text-xs font-semibold text-amber-800">Affectations ACTION BY à vérifier</p>
+                </div>
+                {result.agentAssignments.unmatched > 0 && (
+                  <p className="text-xs text-amber-700">
+                    {result.agentAssignments.unmatched} commande(s) avec un agent non reconnu : {result.agentAssignments.unmatchedNames.join(", ")}
+                  </p>
+                )}
+                {result.agentAssignments.ambiguous > 0 && (
+                  <p className="text-xs text-amber-700 mt-1">
+                    {result.agentAssignments.ambiguous} commande(s) avec un nom d’agent ambigu : {result.agentAssignments.ambiguousNames.join(", ")}
+                  </p>
+                )}
+                <p className="text-xs text-amber-700 mt-2">Ces commandes ont été importées sans agent assigné.</p>
+              </div>
+            )}
             {result.errors.length > 0 && (
               <div className="text-left bg-red-50 border border-red-200 rounded-lg p-3 max-h-40 overflow-y-auto">
                 <div className="flex items-center gap-2 mb-2">
