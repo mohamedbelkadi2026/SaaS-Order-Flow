@@ -1,0 +1,26 @@
+# Replit Prompt — Réconcilier l'écart (95 vs 129) sur "ميزان الكتروني" + rendre l'Historique transparent (détection commande comptée 2x)
+
+## Constat chiffré
+Produit "ميزان الكتروني" : Reçu=300, Sortie(Livrées)=70, En cours=25 → 70+25=95 devrait donner Disponible=205.
+Mais le panneau Historique affiche Total sorti=-129, Disponible=171 (300-129=171).
+Écart de 34 entre "95 attendu" et "129 affiché" — signe probable que certaines commandes comptent pour 2 sorties au lieu d'1 (le bug de double décrément qu'on a déjà identifié et corrigé pour l'avenir, mais dont l'historique existant n'a peut-être pas encore été nettoyé sur ce produit).
+
+## Ce qu'il faut faire
+
+### 1. Réconcilier ce produit précisément
+Exécute l'audit déjà défini précédemment (`GET /api/admin/audit-double-decrement`, ou l'équivalent) spécifiquement filtré sur le produit "ميزان الكتروني" — liste chaque commande ayant plus d'un mouvement sortant (`shipped`/`delivered`/`Expédition`/`Livraison`) associé, avec le détail des mouvements en double. Confirme si le total de commandes en double correspond bien à l'écart de 34.
+
+### 2. Corriger ce produit (et tout autre dans le même cas)
+Applique le nettoyage déjà défini : garder un seul mouvement sortant par commande, supprimer les doublons, sans toucher au stock physique. Une fois fait, Total sorti doit redevenir cohérent : Total sorti = Sortie (Livrées) + En cours, exactement.
+
+### 3. Rendre l'Historique transparent — nouvelle exigence
+Ajoute dans le panneau Historique un résumé qui distingue clairement, en plus de "Total reçu / Total sorti / Disponible" :
+- **Livrées** : nombre de commandes distinctes livrées.
+- **En cours** : nombre de commandes distinctes en cours/expédiées non encore livrées.
+- Un avertissement visuel (badge orange/rouge) si une commande a plus d'un mouvement sortant détecté, avec son numéro affiché, pour que ce genre d'anomalie soit visible directement dans l'app sans avoir à demander une analyse à chaque fois.
+
+## Testing checklist
+1. "ميزان الكتروني" : après nettoyage, Total sorti = -95 (70+25), Disponible = 205.
+2. L'Historique affiche bien un résumé Livrées/En cours cohérent avec le tableau `/inventory`.
+3. Vérifier 2-3 autres produits pour confirmer la même cohérence.
+4. Si un nouveau doublon apparaît un jour (ne devrait plus arriver vu le fix précédent), il doit être visuellement signalé dans l'Historique, pas juste caché dans le total.
