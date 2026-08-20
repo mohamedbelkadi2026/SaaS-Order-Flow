@@ -1,0 +1,33 @@
+# Replit Prompt — VITIPS bloqué à "0/1" : j'ai identifié 2 points de blocage précis dans le code, vérifie-les
+
+## Contexte
+J'ai inspecté `server/routes.ts` (endpoint `/api/orders/bulk-ship`) et `server/services/carrier-service.ts` (`shipOrderToCarrier`) moi-même. Le code est globalement bien conçu (un `finally` envoie toujours une notification finale via `broadcastToStore(storeId, 'shipping_progress', {..., complete: true})`, et l'appel HTTP vers VITIPS utilise axios avec `TIMEOUT_MS = 15_000`). Donc en théorie, ça ne devrait JAMAIS rester bloqué indéfiniment.
+
+Pourtant, en pratique, la modale reste à "0/1" sans jamais recevoir la notification finale. Voici les 2 points précis à vérifier, dans cet ordre :
+
+## Point 1 — `storage.getVitipsCityAbbr(storeId, resolvedCity)` (server/routes.ts, juste avant l'appel `shipOrderToCarrier` pour vitipsexpress)
+Cette fonction interroge la base de données (table `vitips_cities`) pour résoudre le nom de ville en abréviation VITIPS. Contrairement à l'appel axios qui a un timeout de 15s, cette requête DB n'a — a priori — aucun timeout explicite. Si le pool de connexions DB est momentanément saturé, verrouillé, ou si cette requête traîne pour une autre raison, l'exécution du `Promise.allSettled` batch reste bloquée sur cet `await` sans jamais atteindre l'appel axios (donc son timeout de 15s ne se déclenche jamais, puisqu'on n'y arrive pas).
+
+**Action** : ajoute un timeout explicite (ex: `Promise.race` avec un timeout de 5-10s) autour de `storage.getVitipsCityAbbr(...)`, avec un message d'erreur clair en cas de dépassement, pour qu'un blocage DB ne puisse plus jamais geler tout le batch indéfiniment.
+
+## Point 2 — Log de diagnostic ciblé, à ajouter temporairement
+Ajoute ces logs précis autour de l'appel VITIPS dans `server/routes.ts` :
+```ts
+console.log(`[VITIPS-DEBUG] order=${order.id} — début résolution ville "${resolvedCity}"`);
+const resolved = await storage.getVitipsCityAbbr(storeId, resolvedCity);
+console.log(`[VITIPS-DEBUG] order=${order.id} — ville résolue: ${resolved}`);
+```
+et dans `carrier-service.ts`, juste avant/après l'appel axios pour vitipsexpress :
+```ts
+console.log(`${tag} [VITIPS-DEBUG] Envoi requête HTTP vers ${apiUrl}...`);
+// ... appel axios ...
+console.log(`${tag} [VITIPS-DEBUG] Réponse reçue, status=${response?.status}`);
+```
+Déploie, reproduis le blocage (clique "Expédier" sur une commande VITIPS), et regarde EXACTEMENT jusqu'où les logs vont avant de s'arrêter — ça nous dira précisément si ça bloque à la résolution de ville (Point 1), à l'appel HTTP lui-même (timeout qui ne se déclenche pas comme prévu), ou ailleurs.
+
+## Ce que je veux en retour
+Colle-moi les logs exacts obtenus après reproduction — pas une nouvelle hypothèse sans preuve.
+
+## Testing checklist
+1. Une fois le vrai point de blocage identifié et corrigé (timeout ajouté ou bug trouvé), reproduire le clic "Expédier" VITIPS → doit soit réussir, soit échouer avec un message clair, jamais rester bloqué à "0/1".
+2. Vérifier qu'un timeout DB ajouté (Point 1) ne casse pas le fonctionnement normal quand tout va bien (la résolution de ville doit rester rapide dans le cas nominal).
