@@ -174,6 +174,7 @@ export const orders = pgTable("orders", {
   pickupDate: timestamp("pickup_date"),
   carrierId: integer("carrier_id"),
   carrierName: text("carrier_name"),
+  waselexCityId: integer("waselex_city_id"),
   driverName:  text("driver_name").default(""),
   driverPhone: text("driver_phone").default(""),
   offerName:       text("offer_name"),        // enrichment from Google Sheets / forms

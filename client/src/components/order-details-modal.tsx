@@ -52,6 +52,32 @@ function getCarrierLogo(provider: string | null | undefined): string | null {
   return CARRIER_LOGOS[(provider || "").toLowerCase()] ?? null;
 }
 
+function canonicalCarrierName(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const compact = value.toLowerCase().trim().replace(/[\s._-]+/g, "");
+  return compact === "waselex" || compact === "waselexma" ? "waselex" : value.trim();
+}
+
+function resolveOrderCarrier(...orders: Array<any | null | undefined>): string | null {
+  for (const candidate of orders) {
+    if (!candidate) continue;
+    for (const value of [
+      candidate.carrierName,
+      candidate.shippingProvider,
+      candidate.carrier?.carrierName,
+      candidate.carrier?.provider,
+      candidate.carrier?.name,
+      candidate.shipping?.provider,
+      candidate.shipping?.carrier,
+      candidate.provider,
+    ]) {
+      const resolved = canonicalCarrierName(value);
+      if (resolved) return resolved;
+    }
+  }
+  return null;
+}
+
 /** Remove lone hyphens used as placeholder last names (e.g. "Ahmed -") */
 function cleanCustomerName(name: string): string {
   return (name || "")
@@ -278,22 +304,43 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   // current open session — reset to null on close so reopening re-applies.
   const freshOrderAppliedRef = useRef<number | null>(null);
 
+  // Always fetch the latest order before selecting its carrier city list. Order
+  // rows are intentionally lightweight in several views and can omit carrier
+  // fields, while the detail endpoint contains the canonical assignment.
+  const { data: freshOrder, isFetched: freshOrderFetched } = useQuery<any>({
+    queryKey: ['/api/orders', order?.id],
+    enabled: !!order?.id,
+    staleTime: 0,
+    refetchOnMount: true,
+    queryFn: async () => {
+      const res = await fetch(`/api/orders/${order!.id}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch order');
+      return res.json();
+    },
+  });
+
   // ── Carrier city list — filtered by the order's assigned carrier ──
-  const orderCarrier = (order as any)?.carrierName || order?.shippingProvider || null;
+  const orderCarrier = resolveOrderCarrier(freshOrder, order);
+  const isWaselexCarrier = orderCarrier === "waselex";
+  const cityProvider = isWaselexCarrier ? "waselex" : orderCarrier;
   const { data: carrierData, isLoading: citiesLoading } = useQuery<{
-    provider: string | null; cities: string[]; isCarrierSpecific: boolean; source?: string;
+    provider: string | null;
+    cities: string[];
+    citiesDetailed?: Array<{ name: string; cityId?: number }>;
+    isCarrierSpecific: boolean;
+    source?: string;
   }>({
-    queryKey: ["/api/carriers/cities", orderCarrier, "waselex-referential-v1"],
+    queryKey: ["/api/carriers/cities", cityProvider, "waselex-referential-v2"],
     queryFn: () =>
       fetch(
-        orderCarrier
-          ? `/api/carriers/cities?provider=${encodeURIComponent(orderCarrier)}`
+        cityProvider
+          ? `/api/carriers/cities?provider=${encodeURIComponent(cityProvider)}`
           : `/api/carriers/cities`,
         { credentials: "include" }
       ).then(r => r.json()),
+    enabled: !order?.id || freshOrderFetched,
     staleTime: 3 * 60 * 1000,
   });
-  const isWaselexCarrier = orderCarrier?.toLowerCase().trim() === "waselex";
   // Waselex must never silently fall back to generic Moroccan cities: its
   // dropdown is only valid when it contains the Excel-derived referential.
   const carrierCities = (carrierData?.cities && carrierData.cities.length > 0)
@@ -328,21 +375,6 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   // If only one carrier account exists, the backend auto-selects it — no dropdown needed.
   // Show dropdown only when the order has no carrier AND the store has multiple carrier accounts.
   const showCarrierDropdown = attachBoxVisible && !orderHasCarrier && carrierAccounts.length > 1;
-
-  // Always fetch the latest order from the server when the modal opens.
-  // staleTime=0 ensures a refetch even when the same order is reopened after
-  // save, so the modal never displays a totalPrice from a stale list-cache prop.
-  const { data: freshOrder } = useQuery<any>({
-    queryKey: ['/api/orders', order?.id],
-    enabled: !!order?.id,
-    staleTime: 0,
-    refetchOnMount: true,
-    queryFn: async () => {
-      const res = await fetch(`/api/orders/${order!.id}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Failed to fetch order');
-      return res.json();
-    },
-  });
 
   // Recalculate totalPrice whenever items change — skipped when user has manually
   // overridden the price (manualPriceOverride flag set by the Prix total onChange).
@@ -490,6 +522,11 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         customerPhone: fields.customerPhone,
         customerAddress: fields.customerAddress,
         customerCity: fields.customerCity,
+        ...(isWaselexCarrier ? {
+          waselexCityId: carrierData?.citiesDetailed?.find(
+            city => city.name === (fields.customerCity || "").trim()
+          )?.cityId ?? null,
+        } : {}),
         status: fields.status,
         scheduledFor: fields.status === 'confirme_reporte'
           ? ((fields.scheduledFor || "").slice(0, 10) || null)
@@ -809,7 +846,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                 </div>
               </Field>
 
-              <Field label={carrierData?.provider ? `Ville (${carrierData.provider})` : "Ville"}>
+              <Field label={isWaselexCarrier ? "Ville (Waselex)" : carrierData?.provider ? `Ville (${carrierData.provider})` : "Ville"}>
                 <CityCombobox
                   value={fields.customerCity || ""}
                   onChange={v => set("customerCity", v)}

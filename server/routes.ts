@@ -8245,6 +8245,10 @@ function ensureHeaders(sheet) {
         customerPhone: z.string().min(1),
         customerAddress: z.string().optional().default(''),
         customerCity: z.string().optional().default(''),
+        shippingProvider: z.string().nullable().optional(),
+        carrierName: z.string().nullable().optional(),
+        carrierId: z.number().nullable().optional(),
+        waselexCityId: z.number().int().positive().nullable().optional(),
         status: z.string().optional().default('nouveau'),
         canOpen: z.number().optional().default(1),
         isStock: z.number().optional().default(0),
@@ -8284,6 +8288,19 @@ function ensureHeaders(sheet) {
       const totalPriceCents = Math.round(data.totalPrice * 100);
       const rawProductName = data.items.map(i => i.rawProductName).filter(Boolean).join(' + ') || null;
       const orderNumber = `MAN-${Date.now()}`;
+      const selectedCarrier = data.carrierName || data.shippingProvider || null;
+      const isWaselexCarrier = !!selectedCarrier
+        && ["waselex", "waselexma"].includes(selectedCarrier.toLowerCase().replace(/[\s._-]+/g, ""));
+      let resolvedWaselexCity: { cityId: number; name: string; deliveryFee: number } | null = null;
+      if (isWaselexCarrier) {
+        resolvedWaselexCity = await storage.resolveWaselexCity(data.customerCity);
+        if (!resolvedWaselexCity) {
+          return res.status(400).json({ message: "Ville Waselex invalide. Choisissez une ville dans la liste Waselex." });
+        }
+        if (data.waselexCityId != null && data.waselexCityId !== resolvedWaselexCity.cityId) {
+          return res.status(400).json({ message: "L'identifiant de ville Waselex ne correspond pas à la ville sélectionnée." });
+        }
+      }
 
       // Compute real COGS from linked products
       let computedProductCost = 0;
@@ -8330,7 +8347,7 @@ function ensureHeaders(sheet) {
         customerName: data.customerName,
         customerPhone: data.customerPhone,
         customerAddress: data.customerAddress,
-        customerCity: data.customerCity,
+        customerCity: resolvedWaselexCity?.name ?? data.customerCity,
         status: data.status,
         totalPrice: totalPriceCents,
         productCost: computedProductCost,
@@ -8343,6 +8360,10 @@ function ensureHeaders(sheet) {
         canOpen: data.canOpen,
         isStock: data.isStock,
         replace: data.replace,
+        shippingProvider: selectedCarrier,
+        carrierName: selectedCarrier,
+        carrierId: data.carrierId ?? null,
+        waselexCityId: resolvedWaselexCity?.cityId ?? null,
       } as any, data.items.filter(i => i.rawProductName).map(i => ({
         orderId: 0,
         productId: i.productId ?? null,
@@ -8850,6 +8871,7 @@ function ensureHeaders(sheet) {
         customerPhone: z.string().optional(),
         customerAddress: z.string().optional(),
         customerCity: z.string().optional(),
+        waselexCityId: z.number().int().positive().nullable().optional(),
         shippingCost: z.number().optional(),
         comment: z.string().nullable().optional(),
         canOpen: z.number().optional(),
@@ -8865,6 +8887,21 @@ function ensureHeaders(sheet) {
         scheduledFor: z.string().nullable().optional(),
       });
       const data = schema.parse(req.body);
+      const assignedCarrier = (order as any).carrierName || (order as any).shippingProvider || null;
+      const isWaselexCarrier = !!assignedCarrier
+        && ["waselex", "waselexma"].includes(assignedCarrier.toLowerCase().replace(/[\s._-]+/g, ""));
+      if (isWaselexCarrier) {
+        const cityToResolve = data.customerCity ?? order.customerCity ?? "";
+        const resolvedWaselexCity = await storage.resolveWaselexCity(cityToResolve);
+        if (!resolvedWaselexCity) {
+          return res.status(400).json({ message: "Ville Waselex invalide. Choisissez une ville dans la liste Waselex." });
+        }
+        if (data.waselexCityId != null && data.waselexCityId !== resolvedWaselexCity.cityId) {
+          return res.status(400).json({ message: "L'identifiant de ville Waselex ne correspond pas à la ville sélectionnée." });
+        }
+        data.customerCity = resolvedWaselexCity.name;
+        data.waselexCityId = resolvedWaselexCity.cityId;
+      }
 
       // ── Authorize shippingCost edits ────────────────────────────────────────
       if (data.shippingCost !== undefined) {
@@ -16884,7 +16921,10 @@ function ensureHeaders(sheet) {
   app.get("/api/carriers/cities", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const provider = (req.query.provider as string | undefined)?.toLowerCase().trim();
+      const requestedProvider = (req.query.provider as string | undefined)?.toLowerCase().trim();
+      const provider = requestedProvider && ["waselex", "waselexma"].includes(requestedProvider.replace(/[\s._-]+/g, ""))
+        ? "waselex"
+        : requestedProvider;
 
       if (provider === "waselex") {
         const waselexReference = await getWaselexCityReference();
@@ -16892,6 +16932,7 @@ function ensureHeaders(sheet) {
         return res.json({
           provider,
           cities: waselexReference.map((city) => city.name),
+          citiesDetailed: waselexReference.map((city) => ({ name: city.name, cityId: city.externalId })),
           isCarrierSpecific: true,
           source: "waselex_referential",
           count: waselexReference.length,
@@ -17075,7 +17116,7 @@ function ensureHeaders(sheet) {
 
         const result = await Promise.all(
           filtered.map(async (acct) => {
-            if (acct.carrierName.toLowerCase() === "waselex") {
+            if (["waselex", "waselexma"].includes(acct.carrierName.toLowerCase().replace(/[\s._-]+/g, ""))) {
               const waselexReference = await getWaselexCityReference();
               return {
                 id: acct.id,
@@ -17083,6 +17124,7 @@ function ensureHeaders(sheet) {
                 magasinId: (acct as any).magasinId ?? null,
                 isActive: acct.isActive,
                 cities: waselexReference.map((city) => city.name),
+                citiesDetailed: waselexReference.map((city) => ({ name: city.name, cityId: city.externalId })),
                 logo: CARRIER_LOGOS_SERVER.waselex ?? null,
                 deliveryFee: (acct as any).deliveryFee || 0,
                 deliveryFeeDH: (((acct as any).deliveryFee || 0) / 100).toFixed(2),
@@ -17198,7 +17240,9 @@ function ensureHeaders(sheet) {
       const result = integrations.map(i => {
         const creds = JSON.parse(i.credentials || "{}");
         const storedList: string[] | undefined = creds.cityList;
-        const isWaselex = i.provider.toLowerCase() === "waselex";
+        const isWaselex = ["waselex", "waselexma"].includes(
+          i.provider.toLowerCase().replace(/[\s._-]+/g, "")
+        );
         const cities = isWaselex
           ? waselexCityNames
           : Array.isArray(storedList) && storedList.length > 0
@@ -17210,6 +17254,9 @@ function ensureHeaders(sheet) {
           provider: i.provider,
           isActive: i.isActive,
           cities,
+          ...(isWaselex ? {
+            citiesDetailed: waselexReference.map((city) => ({ name: city.name, cityId: city.externalId })),
+          } : {}),
           logo,
           source: isWaselex ? "waselex_referential" : Array.isArray(storedList) && storedList.length > 0 ? "stored" : "default",
           cityCount: cities.length,

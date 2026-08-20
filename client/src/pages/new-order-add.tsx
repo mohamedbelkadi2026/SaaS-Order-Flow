@@ -96,7 +96,7 @@ export default function NewOrderAdd() {
   // ── Carrier city lists ─────────────────────────────────────────────
   const { data: allCarriers = [], isLoading: citiesLoading } = useQuery<{
     id: number; provider: string; isActive: number; cities: string[];
-    citiesDetailed?: Array<{ name: string; price: number | null; delais: string | null }>;
+    citiesDetailed?: Array<{ name: string; price?: number | null; delais?: string | null; cityId?: number }>;
     logo: string | null; source: string; magasinId: number | null;
   }[]>({
     queryKey: selectedMagasinId
@@ -127,7 +127,9 @@ export default function NewOrderAdd() {
     if (list && list.length > 0) return list;
     // Waselex is constrained to its Excel-derived referential. If it cannot be
     // loaded, show no choices instead of silently mixing in generic Moroccan cities.
-    return activeCarrier.provider?.toLowerCase() === "waselex" ? [] : MOROCCAN_CITIES;
+    return ["waselex", "waselexma"].includes(activeCarrier.provider?.toLowerCase().replace(/[\s._-]+/g, ""))
+      ? []
+      : MOROCCAN_CITIES;
   }, [activeCarrier]);
 
   // Build price lookup map from citiesDetailed (Sendit only, name → DH)
@@ -135,13 +137,19 @@ export default function NewOrderAdd() {
     const detailed = (activeCarrier as any)?.citiesDetailed as Array<{ name: string; price: number | null }> | undefined;
     if (!detailed?.length) return {};
     const m: Record<string, number | null> = {};
-    for (const c of detailed) m[c.name] = c.price;
+    for (const c of detailed) m[c.name] = c.price ?? null;
     return m;
   }, [activeCarrier]);
 
   // Price for the currently-selected city (DH)
   const selectedCityPrice = customerCity && cityPriceMap[customerCity] != null
     ? cityPriceMap[customerCity]
+    : null;
+
+  const selectedWaselexCityId = ["waselex", "waselexma"].includes(
+    activeCarrier?.provider?.toLowerCase().replace(/[\s._-]+/g, "") ?? ""
+  )
+    ? (activeCarrier as any)?.citiesDetailed?.find((city: any) => city.name === customerCity)?.cityId ?? null
     : null;
 
   const activeCarrierLogo: string | null = (activeCarrier as any)?.logo ?? null;
@@ -200,6 +208,10 @@ export default function NewOrderAdd() {
         customerPhone: customerPhone.trim(),
         customerAddress: customerAddress.trim(),
         customerCity: customerCity.trim(),
+        shippingProvider: activeCarrier?.provider && activeCarrier.provider !== "default" ? activeCarrier.provider : null,
+        carrierName: activeCarrier?.provider && activeCarrier.provider !== "default" ? activeCarrier.provider : null,
+        carrierId: activeCarrier?.id ?? null,
+        waselexCityId: selectedWaselexCityId,
         status,
         canOpen: canOpen ? 1 : 0,
         isStock: isStock ? 1 : 0,
