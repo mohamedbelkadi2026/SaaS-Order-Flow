@@ -202,6 +202,22 @@ export const orderItems = pgTable("order_items", {
   sku: text("sku"),
 });
 
+// Transactional snapshots for the single-level "undo last deletion" action.
+// Orders remain hard-deleted from the active table so existing reads, stats,
+// imports and unique constraints keep their current behavior.
+export const orderDeletionBatches = pgTable("order_deletion_batches", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id, { onDelete: "cascade" }).notNull(),
+  deletedBy: integer("deleted_by").references(() => users.id, { onDelete: "set null" }),
+  deletedAt: timestamp("deleted_at").defaultNow().notNull(),
+  orderCount: integer("order_count").notNull(),
+  snapshot: jsonb("snapshot").notNull(),
+  restoredBy: integer("restored_by").references(() => users.id, { onDelete: "set null" }),
+  restoredAt: timestamp("restored_at"),
+}, (table) => ({
+  latestByStore: index("idx_order_deletion_batches_store_latest").on(table.storeId, table.id),
+}));
+
 // ── TajerDrop offer access ──────────────────────────────────────────────────
 // A Seller must request a marketplace product and receive approval before it can
 // be used as part of their personal TajerDrop catalogue ("Mon Stock").

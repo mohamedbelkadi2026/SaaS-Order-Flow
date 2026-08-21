@@ -1,9 +1,9 @@
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
-  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
+  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, orderDeletionBatches, stockLogs, stockMovements, payments, emailVerificationCodes,
   carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, waselexCities, carrierCityPricing,
-  pushSubscriptions,
+  pushSubscriptions, aiLogs, aiConversations,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -12,7 +12,7 @@ import {
   type Subscription, type InsertSubscription, type Customer, type InsertCustomer,
   type AgentProduct,
   type StoreAgentSetting, type InsertStoreAgentSetting,
-  type OrderFollowUpLog, type InsertOrderFollowUpLog,
+  type OrderFollowUpLog, type InsertOrderFollowUpLog, type AiLog,
   type StockLog,
   type Payment, type InsertPayment,
   csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
@@ -24,6 +24,28 @@ import { alias as aliasedTable } from "drizzle-orm/pg-core";
 import { matchCityId, normalizeCityKey, resolveCityAlias } from "./services/city-aliases";
 import { calculateAgentCompensation, variableCommissionCostCents } from "./services/agent-compensation";
 import { casablancaToday } from "./utils/casablanca-time";
+
+export type OrderDeletionUndoState =
+  | { available: false }
+  | {
+      available: true;
+      batchId: number;
+      orderCount: number;
+      deletedAt: Date;
+      orderNumbers: string[];
+    };
+
+type OrderDeletionSnapshot = {
+  version: 2;
+  orders: Order[];
+  items: OrderItem[];
+  followUpLogs: OrderFollowUpLog[];
+  aiLogs: AiLog[];
+  aiConversationLinks: { id: number; orderId: number }[];
+  stockLogLinks: { id: number; orderId: number }[];
+  stockMovementLinks: { id: number; orderId: number }[];
+  deletionStockMovementIds: number[];
+};
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -66,8 +88,10 @@ export interface IStorage {
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
   bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]>;
   getOrdersByIds(orderIds: number[], storeId: number): Promise<Order[]>;
-  deleteOrder(id: number, storeId: number): Promise<void>;
-  bulkDeleteOrders(ids: number[], storeId: number): Promise<number>;
+  deleteOrder(id: number, storeId: number, deletedBy: number): Promise<void>;
+  bulkDeleteOrders(ids: number[], storeId: number, deletedBy: number): Promise<number>;
+  getLatestOrderDeletion(storeId: number): Promise<OrderDeletionUndoState>;
+  restoreLatestOrderDeletion(storeId: number, restoredBy: number, expectedBatchId: number): Promise<{ restored: number; orderIds: number[] }>;
   createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order>;
   updateOrderStatus(id: number, status: string, actorId?: number | null): Promise<Order | undefined>;
   assignOrder(id: number, agentId: number | null): Promise<Order | undefined>;
@@ -1145,81 +1169,369 @@ export class DatabaseStorage implements IStorage {
       .where(and(inArray(orders.id, orderIds), eq(orders.storeId, storeId)));
   }
 
-  async deleteOrder(id: number, storeId: number): Promise<void> {
-    // Verify the order belongs to this store for security
-    const [order] = await db.select({ id: orders.id, status: orders.status }).from(orders)
-      .where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
-    if (!order) throw new Error('Order not found or access denied');
-    // Stock recovery: if confirmed, restore inventory before deleting and
-    // log a ledger 'adjustment' row so the audit trail isn't broken by the
-    // delete (we can't use 'returned' here because the order itself is gone
-    // and we want the reason to make it clear it was a manual deletion).
-    if (order.status === 'confirme') {
-      const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
-      for (const item of items) {
-        if (item.productId) {
-          await db.update(products).set({ stock: sql`stock + ${item.quantity}` }).where(eq(products.id, item.productId));
-          await db.insert(stockMovements).values({
-            storeId,
-            productId: item.productId,
-            type: 'adjustment',
-            quantity: item.quantity,
-            orderId: id,
-            reason: `Stock restauré — commande #${id} (confirmée) supprimée`,
-          });
-        }
-      }
-    }
-    // Delete dependent rows first to avoid FK constraint violations
-    const { aiLogs, aiConversations } = await import("@shared/schema");
-    await db.delete(aiLogs).where(eq(aiLogs.orderId, id));
-    await db.update(aiConversations).set({ orderId: null }).where(eq(aiConversations.orderId as any, id));
-    await db.delete(orderFollowUpLogs).where(eq(orderFollowUpLogs.orderId, id));
-    await db.update(stockLogs).set({ orderId: null } as any).where(eq((stockLogs as any).orderId, id));
-    await db.delete(orderItems).where(eq(orderItems.orderId, id));
-    // Delete the order
-    await db.delete(orders).where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
+  async deleteOrder(id: number, storeId: number, deletedBy: number): Promise<void> {
+    const deleted = await this.bulkDeleteOrders([id], storeId, deletedBy);
+    if (deleted === 0) throw new Error('Order not found or access denied');
   }
 
-  async bulkDeleteOrders(ids: number[], storeId: number): Promise<number> {
+  async bulkDeleteOrders(ids: number[], storeId: number, deletedBy: number): Promise<number> {
     if (ids.length === 0) return 0;
-    // Verify all orders belong to this store
-    const owned = await db.select({ id: orders.id, status: orders.status }).from(orders)
-      .where(and(inArray(orders.id, ids), eq(orders.storeId, storeId)));
-    const ownedIds = owned.map(o => o.id);
-    if (ownedIds.length === 0) return 0;
-    // Stock recovery: restore inventory for any confirmed orders being deleted
-    const confirmedIds = owned.filter(o => o.status === 'confirme').map(o => o.id);
-    if (confirmedIds.length > 0) {
-      const itemsToRestore = await db.select().from(orderItems)
-        .where(inArray(orderItems.orderId, confirmedIds));
-      for (const item of itemsToRestore) {
-        if (item.productId) {
-          await db.update(products).set({ stock: sql`stock + ${item.quantity}` }).where(eq(products.id, item.productId));
-          // Mirror the same audit-trail logic as deleteOrder for each item.
-          await db.insert(stockMovements).values({
+    const uniqueIds = Array.from(new Set(ids.filter(Number.isInteger)));
+    if (uniqueIds.length === 0) return 0;
+
+    return await db.transaction(async (tx) => {
+      // Serialize user-triggered deletion and restoration actions per store so
+      // "latest batch" cannot race another delete/restore transaction.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(735791, ${storeId})`);
+
+      // Lock parent orders before collecting the snapshot. PostgreSQL foreign
+      // key checks take a KEY SHARE lock on the referenced order, which
+      // conflicts with FOR UPDATE: new/relinked dependent rows therefore wait
+      // until this deletion commits or roll back when the parent disappears.
+      await tx.execute(sql`
+        SELECT ${orders.id}
+        FROM ${orders}
+        WHERE ${orders.storeId} = ${storeId}
+          AND ${inArray(orders.id, uniqueIds)}
+        FOR UPDATE
+      `);
+
+      const owned = await tx.select().from(orders)
+        .where(and(inArray(orders.id, uniqueIds), eq(orders.storeId, storeId)));
+      const ownedIds = owned.map(order => order.id);
+      if (ownedIds.length === 0) return 0;
+
+      // Lock every existing dependent row before reading its snapshot. Together
+      // with the parent lock above, this prevents concurrent edits, unlinks,
+      // inserts or relinks from falling between snapshot and deletion.
+      await tx.execute(sql`SELECT ${orderItems.id} FROM ${orderItems} WHERE ${inArray(orderItems.orderId, ownedIds)} FOR UPDATE`);
+      await tx.execute(sql`SELECT ${orderFollowUpLogs.id} FROM ${orderFollowUpLogs} WHERE ${inArray(orderFollowUpLogs.orderId, ownedIds)} FOR UPDATE`);
+      await tx.execute(sql`SELECT ${aiLogs.id} FROM ${aiLogs} WHERE ${inArray(aiLogs.orderId, ownedIds)} FOR UPDATE`);
+      await tx.execute(sql`SELECT ${aiConversations.id} FROM ${aiConversations} WHERE ${inArray(aiConversations.orderId as any, ownedIds)} FOR UPDATE`);
+      await tx.execute(sql`SELECT ${stockLogs.id} FROM ${stockLogs} WHERE ${inArray(stockLogs.orderId as any, ownedIds)} FOR UPDATE`);
+      await tx.execute(sql`SELECT ${stockMovements.id} FROM ${stockMovements} WHERE ${inArray(stockMovements.orderId as any, ownedIds)} FOR UPDATE`);
+
+      // Keep transaction queries sequential. node-postgres uses one checked-out
+      // client per transaction and concurrent client.query calls are deprecated.
+      const items = await tx.select().from(orderItems).where(inArray(orderItems.orderId, ownedIds));
+      const followUpLogs = await tx.select().from(orderFollowUpLogs).where(inArray(orderFollowUpLogs.orderId, ownedIds));
+      const archivedAiLogs = await tx.select().from(aiLogs).where(inArray(aiLogs.orderId, ownedIds));
+      const conversationRows = await tx.select({
+        id: aiConversations.id,
+        orderId: aiConversations.orderId,
+        storeId: aiConversations.storeId,
+      })
+        .from(aiConversations).where(inArray(aiConversations.orderId as any, ownedIds));
+      const stockLogRows = await tx.select({
+        id: stockLogs.id,
+        orderId: stockLogs.orderId,
+        storeId: stockLogs.storeId,
+      })
+        .from(stockLogs).where(inArray(stockLogs.orderId as any, ownedIds));
+      const existingStockMovementRows = await tx.select({
+        id: stockMovements.id,
+        orderId: stockMovements.orderId,
+        storeId: stockMovements.storeId,
+      })
+        .from(stockMovements).where(inArray(stockMovements.orderId as any, ownedIds));
+
+      // The database cannot express cross-table tenant equality in a foreign
+      // key. Fail closed before any mutation if legacy/corrupt data links one
+      // store's order to another store's product or store-owned log.
+      const itemProductIds = Array.from(new Set(
+        items.flatMap(item => item.productId == null ? [] : [item.productId]),
+      ));
+      if (itemProductIds.length > 0) {
+        const ownedProducts = await tx.select({ id: products.id }).from(products)
+          .where(and(
+            inArray(products.id, itemProductIds),
+            eq(products.storeId, storeId),
+          ));
+        if (ownedProducts.length !== itemProductIds.length) {
+          throw new Error("Une commande référence un produit d'un autre magasin; suppression annulée");
+        }
+      }
+      if (archivedAiLogs.some(log => log.storeId !== storeId)) {
+        throw new Error("Une commande référence un journal IA d'un autre magasin; suppression annulée");
+      }
+      if (conversationRows.some(row => row.storeId !== storeId)) {
+        throw new Error("Une commande référence une conversation d'un autre magasin; suppression annulée");
+      }
+      if (stockLogRows.some(row => row.storeId !== storeId)) {
+        throw new Error("Une commande référence un journal de stock d'un autre magasin; suppression annulée");
+      }
+      if (existingStockMovementRows.some(row => row.storeId !== storeId)) {
+        throw new Error("Une commande référence un mouvement de stock d'un autre magasin; suppression annulée");
+      }
+
+      const deletionStockMovementIds: number[] = [];
+      const confirmedIds = new Set(owned.filter(order => order.status === 'confirme').map(order => order.id));
+      for (const item of items) {
+        if (confirmedIds.has(item.orderId) && item.productId) {
+          const updatedProducts = await tx.update(products)
+            .set({ stock: sql`stock + ${item.quantity}` })
+            .where(and(
+              eq(products.id, item.productId),
+              eq(products.storeId, storeId),
+            ))
+            .returning({ id: products.id });
+          if (updatedProducts.length !== 1) {
+            throw new Error("Produit lié introuvable dans ce magasin; suppression annulée");
+          }
+          const [movement] = await tx.insert(stockMovements).values({
             storeId,
             productId: item.productId,
             type: 'adjustment',
             quantity: item.quantity,
             orderId: item.orderId,
-            reason: `Stock restauré — commande #${item.orderId} (confirmée) supprimée (lot)`,
-          });
+            userId: deletedBy,
+            reason: `Stock restauré — commande #${item.orderId} (confirmée) supprimée`,
+          }).returning({ id: stockMovements.id });
+          deletionStockMovementIds.push(movement.id);
         }
       }
+
+      const snapshot: OrderDeletionSnapshot = {
+        version: 2,
+        orders: owned,
+        items,
+        followUpLogs,
+        aiLogs: archivedAiLogs,
+        aiConversationLinks: conversationRows
+          .filter((row): row is { id: number; orderId: number; storeId: number } => row.orderId != null)
+          .map(({ id, orderId }) => ({ id, orderId })),
+        stockLogLinks: stockLogRows
+          .filter((row): row is { id: number; orderId: number; storeId: number } => row.orderId != null)
+          .map(({ id, orderId }) => ({ id, orderId })),
+        stockMovementLinks: existingStockMovementRows
+          .filter((row): row is { id: number; orderId: number; storeId: number } => row.orderId != null)
+          .map(({ id, orderId }) => ({ id, orderId })),
+        deletionStockMovementIds,
+      };
+
+      await tx.insert(orderDeletionBatches).values({
+        storeId,
+        deletedBy,
+        orderCount: ownedIds.length,
+        snapshot,
+      });
+
+      await tx.delete(aiLogs).where(and(
+        inArray(aiLogs.orderId, ownedIds),
+        eq(aiLogs.storeId, storeId),
+      ));
+      await tx.update(aiConversations).set({ orderId: null }).where(and(
+        inArray(aiConversations.orderId as any, ownedIds),
+        eq(aiConversations.storeId, storeId),
+      ));
+      await tx.delete(orderFollowUpLogs).where(inArray(orderFollowUpLogs.orderId, ownedIds));
+      await tx.update(stockLogs).set({ orderId: null } as any).where(and(
+        inArray(stockLogs.orderId as any, ownedIds),
+        eq(stockLogs.storeId, storeId),
+      ));
+      await tx.delete(orderItems).where(inArray(orderItems.orderId, ownedIds));
+      const deleted = await tx.delete(orders)
+        .where(and(inArray(orders.id, ownedIds), eq(orders.storeId, storeId)))
+        .returning({ id: orders.id });
+
+      if (deleted.length !== ownedIds.length) {
+        throw new Error("La suppression n'a pas pu être archivée complètement");
+      }
+      return deleted.length;
+    });
+  }
+
+  async getLatestOrderDeletion(storeId: number): Promise<OrderDeletionUndoState> {
+    const [batch] = await db.select().from(orderDeletionBatches)
+      .where(eq(orderDeletionBatches.storeId, storeId))
+      .orderBy(desc(orderDeletionBatches.id))
+      .limit(1);
+    if (!batch || batch.restoredAt) return { available: false };
+
+    const snapshot = batch.snapshot as OrderDeletionSnapshot;
+    if (snapshot.version !== 2 || !Array.isArray(snapshot.orders)) {
+      return { available: false };
     }
-    // Delete dependent rows first to avoid FK constraint violations
-    const { aiLogs, aiConversations } = await import("@shared/schema");
-    await db.delete(aiLogs).where(inArray(aiLogs.orderId, ownedIds));
-    await db.update(aiConversations).set({ orderId: null }).where(inArray(aiConversations.orderId as any, ownedIds));
-    await db.delete(orderFollowUpLogs).where(inArray(orderFollowUpLogs.orderId, ownedIds));
-    await db.update(stockLogs).set({ orderId: null } as any).where(inArray((stockLogs as any).orderId, ownedIds));
-    await db.delete(orderItems).where(inArray(orderItems.orderId, ownedIds));
-    // Delete the orders
-    const deleted = await db.delete(orders)
-      .where(and(inArray(orders.id, ownedIds), eq(orders.storeId, storeId)))
-      .returning({ id: orders.id });
-    return deleted.length;
+    return {
+      available: true,
+      batchId: batch.id,
+      orderCount: batch.orderCount,
+      deletedAt: batch.deletedAt,
+      orderNumbers: snapshot.orders.slice(0, 5).map(order => order.orderNumber),
+    };
+  }
+
+  async restoreLatestOrderDeletion(storeId: number, restoredBy: number, expectedBatchId: number): Promise<{ restored: number; orderIds: number[] }> {
+    return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(735791, ${storeId})`);
+
+      const [latest] = await tx.select().from(orderDeletionBatches)
+        .where(eq(orderDeletionBatches.storeId, storeId))
+        .orderBy(desc(orderDeletionBatches.id))
+        .limit(1);
+      if (!latest || latest.restoredAt) throw new Error("Rien à restaurer");
+      if (latest.id !== expectedBatchId) {
+        throw new Error("Une suppression plus récente existe; actualisez la page et confirmez à nouveau");
+      }
+
+      // Claim the batch atomically. Concurrent retries block on this row and
+      // then return no row once the first transaction commits.
+      const [claimed] = await tx.update(orderDeletionBatches)
+        .set({ restoredAt: new Date(), restoredBy })
+        .where(and(eq(orderDeletionBatches.id, latest.id), isNull(orderDeletionBatches.restoredAt)))
+        .returning({ id: orderDeletionBatches.id });
+      if (!claimed) throw new Error("Rien à restaurer");
+
+      const snapshot = latest.snapshot as OrderDeletionSnapshot;
+      if (snapshot.version !== 2 || snapshot.orders.length === 0) {
+        throw new Error("Archive de suppression invalide");
+      }
+
+      const orderIds = snapshot.orders.map(order => order.id);
+      const existing = await tx.select({ id: orders.id }).from(orders).where(inArray(orders.id, orderIds));
+      if (existing.length > 0) {
+        throw new Error("Certaines commandes existent déjà; restauration annulée");
+      }
+
+      if (snapshot.aiConversationLinks.length > 0) {
+        const expectedIds = snapshot.aiConversationLinks.map(link => link.id);
+        const currentLinks = await tx.select({ id: aiConversations.id, orderId: aiConversations.orderId })
+          .from(aiConversations)
+          .where(and(
+            inArray(aiConversations.id, expectedIds),
+            eq(aiConversations.storeId, storeId),
+          ));
+        if (currentLinks.length !== expectedIds.length || currentLinks.some(link => link.orderId !== null)) {
+          throw new Error("Des conversations liées ont changé depuis la suppression; restauration annulée");
+        }
+      }
+      if (snapshot.stockLogLinks.length > 0) {
+        const expectedIds = snapshot.stockLogLinks.map(link => link.id);
+        const currentLinks = await tx.select({ id: stockLogs.id, orderId: stockLogs.orderId })
+          .from(stockLogs)
+          .where(and(
+            inArray(stockLogs.id, expectedIds),
+            eq(stockLogs.storeId, storeId),
+          ));
+        if (currentLinks.length !== expectedIds.length || currentLinks.some(link => link.orderId !== null)) {
+          throw new Error("Des journaux de stock liés ont changé depuis la suppression; restauration annulée");
+        }
+      }
+      if (snapshot.stockMovementLinks.length > 0) {
+        const expectedIds = snapshot.stockMovementLinks.map(link => link.id);
+        const currentLinks = await tx.select({ id: stockMovements.id, orderId: stockMovements.orderId })
+          .from(stockMovements)
+          .where(and(
+            inArray(stockMovements.id, expectedIds),
+            eq(stockMovements.storeId, storeId),
+          ));
+        if (currentLinks.length !== expectedIds.length || currentLinks.some(link => link.orderId !== null)) {
+          throw new Error("Des mouvements de stock liés ont changé depuis la suppression; restauration annulée");
+        }
+      }
+      if (snapshot.deletionStockMovementIds.length > 0) {
+        const currentMovements = await tx.select({ id: stockMovements.id }).from(stockMovements)
+          .where(and(
+            inArray(stockMovements.id, snapshot.deletionStockMovementIds),
+            eq(stockMovements.storeId, storeId),
+          ));
+        if (currentMovements.length !== snapshot.deletionStockMovementIds.length) {
+          throw new Error("Les ajustements de stock ont changé depuis la suppression; restauration annulée");
+        }
+      }
+
+      const asDate = (value: unknown): Date | null =>
+        value == null ? null : value instanceof Date ? value : new Date(String(value));
+      const restoredOrders = snapshot.orders.map(order => ({
+        ...order,
+        returnConfirmedAt: asDate(order.returnConfirmedAt),
+        createdAt: asDate(order.createdAt),
+        updatedAt: asDate(order.updatedAt),
+        lastActionAt: asDate(order.lastActionAt),
+        pickupDate: asDate(order.pickupDate),
+      }));
+      await tx.insert(orders).values(restoredOrders as any);
+
+      if (snapshot.items.length > 0) {
+        await tx.insert(orderItems).values(snapshot.items as any);
+      }
+      if (snapshot.followUpLogs.length > 0) {
+        await tx.insert(orderFollowUpLogs).values(snapshot.followUpLogs.map(log => ({
+          ...log,
+          createdAt: asDate(log.createdAt),
+        })) as any);
+      }
+      if (snapshot.aiLogs.length > 0) {
+        await tx.insert(aiLogs).values(snapshot.aiLogs.map(log => ({
+          ...log,
+          createdAt: asDate(log.createdAt),
+        })) as any);
+      }
+
+      for (const link of snapshot.aiConversationLinks) {
+        const updated = await tx.update(aiConversations)
+          .set({ orderId: link.orderId })
+          .where(and(
+            eq(aiConversations.id, link.id),
+            eq(aiConversations.storeId, storeId),
+            isNull(aiConversations.orderId),
+          ))
+          .returning({ id: aiConversations.id });
+        if (updated.length !== 1) {
+          throw new Error("Une conversation liée a changé depuis la suppression; restauration annulée");
+        }
+      }
+      for (const link of snapshot.stockLogLinks) {
+        const updated = await tx.update(stockLogs)
+          .set({ orderId: link.orderId } as any)
+          .where(and(
+            eq(stockLogs.id, link.id),
+            eq(stockLogs.storeId, storeId),
+            isNull(stockLogs.orderId),
+          ))
+          .returning({ id: stockLogs.id });
+        if (updated.length !== 1) {
+          throw new Error("Un journal de stock lié a changé depuis la suppression; restauration annulée");
+        }
+      }
+      for (const link of snapshot.stockMovementLinks) {
+        const updated = await tx.update(stockMovements)
+          .set({ orderId: link.orderId })
+          .where(and(
+            eq(stockMovements.id, link.id),
+            eq(stockMovements.storeId, storeId),
+            isNull(stockMovements.orderId),
+          ))
+          .returning({ id: stockMovements.id });
+        if (updated.length !== 1) {
+          throw new Error("Un mouvement de stock lié a changé depuis la suppression; restauration annulée");
+        }
+      }
+
+      const confirmedIds = new Set(snapshot.orders.filter(order => order.status === 'confirme').map(order => order.id));
+      for (const item of snapshot.items) {
+        if (confirmedIds.has(item.orderId) && item.productId) {
+          const updated = await tx.update(products)
+            .set({ stock: sql`stock - ${item.quantity}` })
+            .where(and(
+              eq(products.id, item.productId),
+              eq(products.storeId, storeId),
+            ))
+            .returning({ id: products.id });
+          if (updated.length === 0) {
+            throw new Error(`Produit ${item.productId} introuvable; restauration annulée`);
+          }
+        }
+      }
+      if (snapshot.deletionStockMovementIds.length > 0) {
+        await tx.delete(stockMovements).where(and(
+          inArray(stockMovements.id, snapshot.deletionStockMovementIds),
+          eq(stockMovements.storeId, storeId),
+        ));
+      }
+
+      return { restored: orderIds.length, orderIds };
+    });
   }
 
   async createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order> {

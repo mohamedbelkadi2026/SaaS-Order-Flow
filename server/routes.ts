@@ -2762,7 +2762,7 @@ export async function registerRoutes(
       }
       const orderId = Number(req.params.id);
       if (isNaN(orderId)) return res.status(400).json({ message: "ID invalide" });
-      await storage.deleteOrder(orderId, user.storeId!);
+      await storage.deleteOrder(orderId, user.storeId!, user.id);
       res.json({ ok: true, deleted: orderId });
     } catch (err: any) {
       res.status(err.message?.includes('not found') ? 404 : 500).json({ message: err.message || "Suppression échouée" });
@@ -2820,10 +2820,44 @@ export async function registerRoutes(
       if (!Array.isArray(orderIds) || orderIds.length === 0) {
         return res.status(400).json({ message: "orderIds (array) requis" });
       }
-      const deleted = await storage.bulkDeleteOrders(orderIds.map(Number), user.storeId!);
+      const deleted = await storage.bulkDeleteOrders(orderIds.map(Number), user.storeId!, user.id);
       res.json({ ok: true, deleted });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Suppression en masse échouée" });
+    }
+  });
+
+  app.get("/api/orders/deletion-undo", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (!['owner', 'admin', 'super_admin'].includes(user.role)) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      res.json(await storage.getLatestOrderDeletion(user.storeId!));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Historique de suppression indisponible" });
+    }
+  });
+
+  app.post("/api/orders/deletion-undo/restore", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (!['owner', 'admin', 'super_admin'].includes(user.role)) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      const batchId = Number(req.body?.batchId);
+      if (!Number.isInteger(batchId) || batchId <= 0) {
+        return res.status(400).json({ message: "Lot de suppression invalide" });
+      }
+      const restored = await storage.restoreLatestOrderDeletion(user.storeId!, user.id, batchId);
+      res.json({ ok: true, ...restored });
+    } catch (err: any) {
+      const isConflict = err.message === "Rien à restaurer"
+        || err.message?.includes("restauration annulée")
+        || err.message?.includes("suppression plus récente");
+      res.status(isConflict ? 409 : 500).json({
+        message: err.message || "Restauration échouée",
+      });
     }
   });
 

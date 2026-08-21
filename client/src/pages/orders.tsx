@@ -172,6 +172,16 @@ const STATUS_DROPDOWN_OPTIONS: { value: string; label: string; disabled?: boolea
   { value: 'Confirmé par livreur *',        label: 'Confirmé par livreur *'     },
 ];
 
+type DeletionUndoState =
+  | { available: false }
+  | {
+      available: true;
+      batchId: number;
+      orderCount: number;
+      deletedAt: string;
+      orderNumbers: string[];
+    };
+
 const ALL_ORDER_STATUSES = [
   { value: '', label: 'Tous les statuts' },
 
@@ -724,6 +734,7 @@ export default function Orders() {
   const [, params] = useRoute("/orders/:filter");
   const filterKey = params?.filter || "";
   const urlStatus = STATUS_MAP[filterKey] || (filterKey ? filterKey : "nouveau");
+  const { toast } = useToast();
   // Pages where the driver/livreur info is relevant: any carrier-flow page.
   // Once the order has been picked up by a courier, the driver phone is useful
   // everywhere downstream (chasing a delivery, asking why it bounced, etc.) —
@@ -734,6 +745,7 @@ export default function Orders() {
   const whatsappLink = (phone: string, order: any) => buildWhatsappLink(phone, order, storeData?.whatsappTemplate);
   const { user } = useAuth();
   const isMediaBuyer = user?.role === 'media_buyer';
+  const canUndoOrderDeletion = ['owner', 'admin', 'super_admin'].includes(user?.role ?? '');
 
   const [filters, setFilters] = useState({
     status: urlStatus,
@@ -885,14 +897,28 @@ export default function Orders() {
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteSingleId, setDeleteSingleId] = useState<number | null>(null);
+  const [showRestoreDeletionModal, setShowRestoreDeletionModal] = useState(false);
+  const { data: deletionUndoState, isLoading: isDeletionUndoLoading } = useQuery<DeletionUndoState>({
+    queryKey: ["/api/orders/deletion-undo"],
+    queryFn: async () => {
+      const response = await fetch("/api/orders/deletion-undo", { credentials: "include" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || "Historique de suppression indisponible");
+      return payload;
+    },
+    enabled: canUndoOrderDeletion,
+    staleTime: 0,
+    retry: false,
+  });
 
   const deleteSingleMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/orders/${id}`),
     onSuccess: (_, id) => {
       setHiddenOrderIds((prev: Set<number>) => new Set(Array.from(prev).concat(id)));
       setSelectedIds((prev: Set<number>) => { const n = new Set(Array.from(prev)); n.delete(id); return n; });
-      qc.invalidateQueries({ queryKey: ['/api/orders'] });
-      toast({ title: "Commande supprimée", description: "La commande a été supprimée définitivement." });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders/deletion-undo'] });
+      toast({ title: "Commande supprimée", description: "Vous pouvez annuler cette suppression depuis la barre d’outils." });
     },
     onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
   });
@@ -903,10 +929,53 @@ export default function Orders() {
       const count = data?.deleted ?? ids.length;
       setHiddenOrderIds((prev: Set<number>) => new Set(Array.from(prev).concat(ids)));
       setSelectedIds(new Set<number>());
-      qc.invalidateQueries({ queryKey: ['/api/orders'] });
-      toast({ title: `${count} commande${count > 1 ? 's' : ''} supprimée${count > 1 ? 's' : ''} avec succès` });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders/deletion-undo'] });
+      toast({
+        title: `${count} commande${count > 1 ? 's' : ''} supprimée${count > 1 ? 's' : ''} avec succès`,
+        description: "Vous pouvez annuler ce lot depuis la barre d’outils.",
+      });
     },
     onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
+  });
+
+  const restoreDeletionMutation = useMutation({
+    mutationFn: async () => {
+      if (!deletionUndoState?.available) throw new Error("Rien à restaurer");
+      const response = await fetch("/api/orders/deletion-undo/restore", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId: deletionUndoState.batchId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || "Restauration échouée");
+      return payload as { restored: number; orderIds: number[] };
+    },
+    onSuccess: (data) => {
+      setHiddenOrderIds((previous) => {
+        const next = new Set(previous);
+        for (const id of data.orderIds) next.delete(id);
+        return next;
+      });
+      setShowRestoreDeletionModal(false);
+      queryClient.setQueryData<DeletionUndoState>(["/api/orders/deletion-undo"], { available: false });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders/deletion-undo'] });
+      toast({
+        title: `${data.restored} commande${data.restored > 1 ? 's' : ''} restaurée${data.restored > 1 ? 's' : ''}`,
+        description: "Les données et les ajustements de stock ont été rétablis.",
+      });
+    },
+    onError: (err: any) => {
+      setShowRestoreDeletionModal(false);
+      queryClient.invalidateQueries({ queryKey: ['/api/orders/deletion-undo'] });
+      toast({
+        title: "Erreur de restauration",
+        description: err.message || "Une erreur s'est produite.",
+        variant: "destructive",
+      });
+    },
   });
 
   const bulkMarkEcShippedMutation = useMutation({
@@ -914,8 +983,8 @@ export default function Orders() {
     onSuccess: (data: any, ids) => {
       const count = data?.updated ?? ids.length;
       setSelectedIds(new Set<number>());
-      qc.invalidateQueries({ queryKey: ['/api/orders'] });
-      qc.invalidateQueries({ queryKey: ['/api/orders/filtered'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders/filtered'] });
       toast({
         title: `✅ ${count} commande${count > 1 ? 's' : ''} marquée${count > 1 ? 's' : ''} comme expédiée${count > 1 ? 's' : ''} (EC)`,
         description: "Statut → Attente De Ramassage. Le suivi sera mis à jour automatiquement par le prochain webhook Express Coursier.",
@@ -1545,6 +1614,22 @@ export default function Orders() {
               >
                 {bulkDeleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
               </Button>
+              {canUndoOrderDeletion && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 border-amber-200 text-amber-600 hover:bg-amber-50 disabled:opacity-40"
+                  title={deletionUndoState?.available ? "Annuler la dernière suppression" : "Rien à restaurer"}
+                  aria-label={deletionUndoState?.available ? "Annuler la dernière suppression" : "Rien à restaurer"}
+                  onClick={() => deletionUndoState?.available && setShowRestoreDeletionModal(true)}
+                  disabled={isDeletionUndoLoading || !deletionUndoState?.available || restoreDeletionMutation.isPending}
+                  data-testid="button-undo-last-deletion"
+                >
+                  {isDeletionUndoLoading || restoreDeletionMutation.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <RotateCcw className="w-4 h-4" />}
+                </Button>
+              )}
               <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
                 <Truck className="w-4 h-4" />
               </Button>
@@ -2739,6 +2824,20 @@ export default function Orders() {
               >
                 {bulkDeleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
               </button>
+              {canUndoOrderDeletion && (
+                <button
+                  className="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600 border border-amber-100 active:scale-95 transition-all disabled:opacity-40"
+                  title={deletionUndoState?.available ? "Annuler la dernière suppression" : "Rien à restaurer"}
+                  aria-label={deletionUndoState?.available ? "Annuler la dernière suppression" : "Rien à restaurer"}
+                  data-testid="button-mobile-undo-last-deletion"
+                  onClick={() => deletionUndoState?.available && setShowRestoreDeletionModal(true)}
+                  disabled={isDeletionUndoLoading || !deletionUndoState?.available || restoreDeletionMutation.isPending}
+                >
+                  {isDeletionUndoLoading || restoreDeletionMutation.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <RotateCcw className="w-4 h-4" />}
+                </button>
+              )}
               <button
                 className="w-9 h-9 rounded-xl flex items-center justify-center text-white active:scale-95"
                 style={{ background: '#16a34a' }}
@@ -2767,8 +2866,8 @@ export default function Orders() {
             </div>
             <DialogDescription className="text-sm text-red-600/80 dark:text-red-400/80 ml-13">
               {deleteSingleId !== null
-                ? "Voulez-vous vraiment supprimer cette commande ? Cette action est irréversible."
-                : `Voulez-vous vraiment supprimer ${selectedIds.size} commande${selectedIds.size > 1 ? 's' : ''} ? Cette action est irréversible et définitive.`}
+                ? "Voulez-vous vraiment supprimer cette commande ? Vous pourrez annuler cette suppression depuis la barre d’outils."
+                : `Voulez-vous vraiment supprimer ${selectedIds.size} commande${selectedIds.size > 1 ? 's' : ''} ? Vous pourrez annuler ce lot depuis la barre d’outils.`}
             </DialogDescription>
           </div>
           <div className="px-6 py-4 flex justify-end gap-2 bg-background">
@@ -2790,7 +2889,65 @@ export default function Orders() {
               {(deleteSingleMutation.isPending || bulkDeleteMutation.isPending) ? (
                 <><Loader2 className="w-4 h-4 animate-spin" /> Suppression...</>
               ) : (
-                <><Trash2 className="w-4 h-4" /> Supprimer définitivement</>
+                <><Trash2 className="w-4 h-4" /> Supprimer</>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── RESTORE LAST DELETION CONFIRMATION ──────────────────── */}
+      <Dialog open={showRestoreDeletionModal} onOpenChange={setShowRestoreDeletionModal}>
+        <DialogContent className="sm:max-w-md rounded-2xl border-none shadow-2xl p-0 overflow-hidden" data-testid="dialog-restore-deletion-confirm">
+          <div className="bg-amber-50 dark:bg-amber-950/30 px-6 pt-6 pb-4">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-5 h-5 text-amber-700 dark:text-amber-400" />
+              </div>
+              <DialogTitle className="text-base font-bold text-amber-800 dark:text-amber-300">
+                Annuler la dernière suppression
+              </DialogTitle>
+            </div>
+            {deletionUndoState?.available ? (
+              <DialogDescription asChild>
+                <div className="space-y-2 text-sm text-amber-800/90 dark:text-amber-300/90">
+                  <p className="font-medium">
+                    Restaurer {deletionUndoState.orderCount} commande{deletionUndoState.orderCount > 1 ? 's' : ''} supprimée{deletionUndoState.orderCount > 1 ? 's' : ''} le{' '}
+                    {new Date(deletionUndoState.deletedAt).toLocaleString('fr-FR', {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                    })} ?
+                  </p>
+                  <p className="text-xs">
+                    Commandes : {deletionUndoState.orderNumbers.join(', ')}
+                    {deletionUndoState.orderCount > deletionUndoState.orderNumbers.length ? '…' : ''}
+                  </p>
+                  <p className="text-xs">Les données et l’état du stock seront restaurés.</p>
+                </div>
+              </DialogDescription>
+            ) : (
+              <DialogDescription>Rien à restaurer.</DialogDescription>
+            )}
+          </div>
+          <div className="px-6 py-4 flex justify-end gap-2 bg-background">
+            <Button
+              variant="outline"
+              onClick={() => setShowRestoreDeletionModal(false)}
+              className="rounded-lg"
+              data-testid="btn-restore-deletion-cancel"
+            >
+              Annuler
+            </Button>
+            <Button
+              onClick={() => restoreDeletionMutation.mutate()}
+              disabled={!deletionUndoState?.available || restoreDeletionMutation.isPending}
+              className="rounded-lg gap-2 bg-amber-600 hover:bg-amber-700 text-white"
+              data-testid="btn-restore-deletion-confirm"
+            >
+              {restoreDeletionMutation.isPending ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Restauration...</>
+              ) : (
+                <><RotateCcw className="w-4 h-4" /> Restaurer</>
               )}
             </Button>
           </div>
@@ -2887,7 +3044,7 @@ export default function Orders() {
                         });
                         const data = await res.json();
                         setAmeexShipOrderId(null);
-                        qc.invalidateQueries({ queryKey: ['/api/orders'] });
+                        queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
                         toast({
                           title: "✅ Expédié via Ameex",
                           description: data.trackingNumber
