@@ -1,0 +1,29 @@
+Pasted--Replit-Prompt-Nouveau-bouton-Annuler-la-derni-re-suppr_1787320020691.txt
+# Replit Prompt — Nouveau bouton "Annuler la dernière suppression" dans Mes Commandes
+
+## Contexte
+Des commandes ont été supprimées par erreur (accidentellement). Je veux un bouton qui permette de restaurer la/les dernière(s) commande(s) supprimée(s), pour éviter de perdre des données par erreur de manipulation.
+
+## Demande — fonctionnalité isolée, ne rien changer d'autre sur la page
+
+Ajoute un bouton **"Annuler la dernière suppression"** dans la barre d'outils de "Mes Commandes"/Suivi des Colis (à côté des boutons déjà existants), visible pour les admins.
+
+### Comportement
+1. Au clic, le bouton restaure le DERNIER lot de commandes supprimées (que ce soit une suppression individuelle ou une suppression multiple/en masse faite en une seule action) — même logique qu'un "undo" classique.
+2. Avant de restaurer, affiche une confirmation claire : "Restaurer X commande(s) supprimée(s) le [date/heure] ? [Détail : quelques infos identifiantes, ex: codes de commande]".
+3. Après confirmation, les commandes redeviennent visibles avec exactement leur état d'avant suppression (statut, produit, client, etc. — rien ne doit être perdu ou modifié).
+4. Le bouton doit se désactiver ou indiquer clairement "Rien à restaurer" si aucune suppression récente n'existe (pas de suppressions dans un historique récent, ou déjà restaurées).
+5. Une fois une suppression restaurée, elle ne doit plus pouvoir être "re-restaurée" par erreur (éviter les doublons si on clique plusieurs fois) — soit désactiver le bouton après usage jusqu'à la prochaine suppression, soit le rendre idempotent proprement.
+
+## Implémentation technique suggérée
+Si un mécanisme de suppression existe déjà (soft-delete avec un champ `deletedAt`, ou table d'archive) : réutilise-le pour cette fonctionnalité (juste remettre `deletedAt` à `null` pour restaurer). Si les commandes sont actuellement supprimées en dur (hard delete, sans trace) : mets en place un vrai soft-delete d'abord (ajouter `deletedAt` si pas déjà présent, faire en sorte que la suppression normale ne fasse plus qu'un soft-delete au lieu d'un vrai DELETE SQL), pour que cette fonctionnalité d'annulation soit possible et fiable. Vérifie d'abord ce qui existe déjà avant de choisir l'approche.
+
+## Ce qu'il ne faut PAS toucher
+Ne change rien d'autre dans "Mes Commandes"/Suivi des Colis (filtres, colonnes, autres boutons, comportement de suppression normal si ce n'est l'ajout du soft-delete nécessaire) — uniquement ce nouveau bouton et son mécanisme.
+
+## Testing checklist
+1. Supprimer une commande de test → cliquer "Annuler la dernière suppression" → elle réapparaît avec exactement les mêmes données.
+2. Supprimer plusieurs commandes en une fois (suppression en masse) → le bouton restaure bien TOUTES celles de cette action, pas juste une.
+3. Cliquer le bouton sans suppression récente → message clair "Rien à restaurer", pas d'erreur.
+4. Recliquer une deuxième fois juste après une restauration réussie → ne recrée pas de doublons.
+5. Vérifier qu'aucun autre comportement de la page (filtres, autres actions) n'a changé.
