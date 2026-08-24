@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2, Calculator } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2, Calculator, Clock } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
@@ -2477,7 +2477,7 @@ export default function Inventory() {
                 const reste = historyProduct?.available ?? historyProduct?.stock ?? 0;
                 return (
                   <>
-                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       <Card className="p-3 rounded-xl">
                         <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
                           <ArrowUpCircle className="w-3 h-3 text-emerald-600" /> Total reçu
@@ -2512,9 +2512,33 @@ export default function Inventory() {
                          <div className="text-xl font-bold text-blue-700 dark:text-blue-400" data-testid="text-history-in-progress-orders">
                            {orderStatusSummary?.inProgressOrders ?? "—"}
                          </div>
-                         <div className="text-[10px] text-muted-foreground">expédiées non livrées</div>
+                         <div className="text-[10px] text-muted-foreground">chez le transporteur</div>
+                       </Card>
+                       <Card className="p-3 rounded-xl border-rose-200 dark:border-rose-900">
+                         <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                           <RotateCcw className="w-3 h-3 text-rose-600" /> Refusées / Retournées
+                         </div>
+                         <div className="text-xl font-bold text-rose-700 dark:text-rose-400" data-testid="text-history-refused-orders">
+                           {orderStatusSummary?.refusedOrders ?? "—"}
+                         </div>
+                         <div className="text-[10px] text-muted-foreground">stock déjà revenu</div>
+                       </Card>
+                       <Card className="p-3 rounded-xl border-amber-200 dark:border-amber-900">
+                         <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                           <Clock className="w-3 h-3 text-amber-600" /> En attente d'expédition
+                         </div>
+                         <div className="text-xl font-bold text-amber-700 dark:text-amber-400" data-testid="text-history-awaiting-shipment-orders">
+                           {orderStatusSummary?.awaitingShipmentOrders ?? "—"}
+                         </div>
+                         <div className="text-[10px] text-muted-foreground">pas encore expédiées</div>
                        </Card>
                     </div>
+                    {orderStatusSummary && (
+                      <div className="text-[11px] text-muted-foreground px-1">
+                        Total : {orderStatusSummary.totalOrders} commande{orderStatusSummary.totalOrders > 1 ? "s" : ""} pour ce produit
+                        {" "}({orderStatusSummary.deliveredOrders} livrées + {orderStatusSummary.inProgressOrders} en cours + {orderStatusSummary.refusedOrders} refusées/retournées + {orderStatusSummary.awaitingShipmentOrders} en attente d'expédition)
+                      </div>
+                    )}
                     {corrections !== 0 && (
                       <div className="text-xs text-muted-foreground px-1">
                          Ajustements manuels inclus dans les totaux : {corrections > 0 ? `+${corrections}` : corrections}
