@@ -3003,7 +3003,13 @@ export async function registerRoutes(
 
   app.get(api.products.list.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    const prods = await storage.getProductsByStore(storeId);
+    // This feeds every "pick a product" combobox in the app (order
+    // line-item picker in order-details-modal.tsx, automation config,
+    // etc.) — archived products (delete-with-orders, see
+    // bulkDeleteProducts/archiveProduct) should never be offered for new
+    // selections. The inventory management page uses a separate endpoint
+    // (/api/products/inventory) and is unaffected by this filter.
+    const prods = (await storage.getProductsByStore(storeId)).filter(p => !p.archivedAt);
     if (!prods.length) return res.json([]);
     const variants = await db
       .select()
@@ -9997,6 +10003,39 @@ function ensureHeaders(sheet) {
             ? `Édition manuelle du stock (${product.stock} → ${updateData.stock}) — ${manualReason}`
             : `Édition manuelle du stock (${product.stock} → ${updateData.stock})`,
         });
+      }
+
+      // If this is a rename, link any still-unlinked order items whose
+      // rawProductName matches the OLD name to this product BEFORE the name
+      // changes underneath them. Those legacy/imported items (productId
+      // NULL) are only found via name-text matching (resolveProductId, same
+      // as /api/products/:id/link-historical and "Lier tout l'historique") —
+      // once the name changes, their old rawProductName text can never match
+      // the new name again, silently dropping them out of this product's
+      // Dashboard stats and stock-history drawer (both keyed by productId).
+      // Linking them now while the old name still matches makes the
+      // connection permanent (by id, not text) so a future rename can't
+      // orphan them again.
+      let renameLinked = 0;
+      if (data.name !== undefined && data.name.trim() && data.name.trim() !== product.name) {
+        const unlinkedItems = await db
+          .select({ id: orderItems.id, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
+          .from(orderItems)
+          .innerJoin(orders, eq(orderItems.orderId, orders.id))
+          .where(and(
+            eq(orders.storeId, product.storeId!),
+            sql`${orderItems.productId} IS NULL`,
+            sql`${orderItems.rawProductName} IS NOT NULL`,
+          ));
+        for (const item of unlinkedItems) {
+          const { productId: resolvedPid, variantName } = resolveProductId(item.rawProductName || '', [{ id: productId, name: product.name }]);
+          if (resolvedPid === productId) {
+            await db.update(orderItems)
+              .set({ productId, variantInfo: variantName || item.variantInfo || '' } as any)
+              .where(eq(orderItems.id, item.id));
+            renameLinked++;
+          }
+        }
       }
 
       const updated = await storage.updateProduct(productId, updateData as any);
