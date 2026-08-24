@@ -695,15 +695,24 @@ export async function registerRoutes(
     }
     if (productId && productId !== 'all') {
       const pid = Number(productId);
-      // Also match by rawProductName for orders created before the product was added to stock
+      // Exact-match only (never substring) — a loose `.includes()` match here
+      // used to also count any order whose rawProductName merely CONTAINED
+      // this product's name (e.g. "Pistolet 2b Pro" matching "Pistolet 2b"),
+      // inflating Dashboard counts above what the strict productId-only
+      // filter on the orders list (getFilteredOrders) shows for the same
+      // product. Matches resolveProductId's safety rule in
+      // server/services/variants.ts: never guess on a partial/ambiguous
+      // match. The rawProductName fallback only applies to items that
+      // aren't linked to a catalog product yet (productId IS NULL) — once
+      // "Lier tout l'historique" links them, they're caught by the first
+      // condition and this fallback becomes a no-op for them.
       const productRecord = await db.select({ name: products.name })
         .from(products).where(eq(products.id, pid)).limit(1);
-      const productName = productRecord[0]?.name?.toLowerCase().trim() || '';
+      const productNameNorm = productRecord[0]?.name ? normStr(productRecord[0].name) : '';
       allOrders = allOrders.filter(o =>
         o.items?.some((i: any) =>
           i.productId === pid ||
-          (productName && (i.rawProductName || '').toLowerCase().trim().includes(productName)) ||
-          (productName && (o as any).rawProductName && (o as any).rawProductName.toLowerCase().trim().includes(productName))
+          (i.productId == null && productNameNorm && normStr(i.rawProductName || '') === productNameNorm)
         )
       );
     }
