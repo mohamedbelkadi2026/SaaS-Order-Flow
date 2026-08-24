@@ -2648,15 +2648,6 @@ export class DatabaseStorage implements IStorage {
           notLike(orders.status, 'Pas de réponse%'),
         ));
       
-      const deliveredItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
-        .from(orderItems)
-        .innerJoin(orders, eq(orderItems.orderId, orders.id))
-        .where(and(
-          eq(orderItems.productId, p.id),
-          eq(orders.storeId, storeId),
-          inArray(orders.status, ['delivered', 'Livré', 'livré'])
-        ));
-
       const inTransitItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
@@ -2677,8 +2668,6 @@ export class DatabaseStorage implements IStorage {
           eq(orders.storeId, storeId)
         ));
 
-      // sortie = only delivered quantities (stock deducted on delivery, not on confirme)
-      const sortie = Number(deliveredItems[0]?.qty || 0);
       const inTransit = Number(inTransitItems[0]?.qty || 0);
       const totalOrdered = Number(totalOrderItems[0]?.qty || 0);
       const totalConfirmedQty = Number(confirmedItems[0]?.qty || 0);
@@ -2697,6 +2686,15 @@ export class DatabaseStorage implements IStorage {
       const lastRestock = productMovements
         .filter(m => m.type === 'restock')
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+
+      // ── Sortie (Livrées) now comes from the same stock_movements ledger ───
+      // as Reçu, instead of a live orders.status query. The ledger is the
+      // single source of truth for physical stock departures, so this stays
+      // in sync with what actually moved stock (type='delivered' rows are
+      // stored as negative quantities — negate the sum to get a positive count).
+      const sortie = -productMovements
+        .filter(m => m.type === 'delivered')
+        .reduce((s, m) => s + (m.quantity || 0), 0);
 
       const confirmRate = totalOrdered > 0 ? Math.round(totalConfirmedQty / totalOrdered * 100) : 0;
       // deliverRate = Delivered / Confirmed (not total) — correct carrier-delivery formula
