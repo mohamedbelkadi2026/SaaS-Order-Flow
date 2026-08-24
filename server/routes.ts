@@ -9196,13 +9196,46 @@ function ensureHeaders(sheet) {
     const id = parseInt(req.params.id);
     try {
       // Verify the item's parent order belongs to the user's store
-      const [itemRow] = await db.select({ orderId: orderItems.orderId }).from(orderItems).where(eq(orderItems.id, id));
+      const [itemRow] = await db.select().from(orderItems).where(eq(orderItems.id, id));
       if (!itemRow) return res.status(404).json({ message: "Item non trouvé" });
       const order = await storage.getOrder(itemRow.orderId);
       if (!order || (order.storeId !== req.user!.storeId && !req.user!.isSuperAdmin)) {
         return res.status(403).json({ message: "Accès refusé" });
       }
+      const oldProductId = itemRow.productId;
       const item = await storage.updateOrderItem(id, req.body);
+
+      // If the product link changed (re-pointed to a different/new catalog
+      // product — e.g. picking a new item from the "Stock ou nom libre..."
+      // combobox on an existing line item) and this order is already
+      // delivered, move/backfill the stock ledger to match. Without this,
+      // the OLD product keeps the delivered-quantity credit forever and the
+      // NEW product's Sortie (Livrées) / stock-history drawer never reflects
+      // it, even though orderItems.productId now correctly points elsewhere.
+      const newProductId = (req.body as any).productId;
+      if (item && newProductId !== undefined && newProductId !== oldProductId && order.storeId && isDeliveredStatus(order.status)) {
+        if (oldProductId != null) {
+          await db.update(stockMovements)
+            .set({ productId: newProductId } as any)
+            .where(and(eq(stockMovements.orderId, order.id), eq(stockMovements.productId, oldProductId)));
+        }
+        if (newProductId != null) {
+          const existingLedgerRow = await db.select({ id: stockMovements.id }).from(stockMovements)
+            .where(and(eq(stockMovements.orderId, order.id), eq(stockMovements.productId, newProductId)))
+            .limit(1);
+          if (existingLedgerRow.length === 0) {
+            await db.insert(stockMovements).values({
+              storeId: order.storeId,
+              productId: newProductId,
+              orderId: order.id,
+              type: 'delivered',
+              quantity: -Math.abs(item.quantity || 1),
+              reason: `Backfill — produit changé manuellement sur la commande (déjà livrée)`,
+            } as any);
+          }
+        }
+      }
+
       res.json(item);
     } catch (err: any) {
       res.status(500).json({ message: err.message });

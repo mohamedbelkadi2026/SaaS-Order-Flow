@@ -4120,7 +4120,7 @@ export class DatabaseStorage implements IStorage {
     return item;
   }
 
-  async updateOrderItem(id: number, data: { quantity?: number; price?: number; rawProductName?: string; sku?: string; variantInfo?: string }): Promise<OrderItem | undefined> {
+  async updateOrderItem(id: number, data: { quantity?: number; price?: number; rawProductName?: string; sku?: string; variantInfo?: string; productId?: number | null }): Promise<OrderItem | undefined> {
     const [item] = await db.update(orderItems).set(data as any).where(eq(orderItems.id, id)).returning();
     return item;
   }

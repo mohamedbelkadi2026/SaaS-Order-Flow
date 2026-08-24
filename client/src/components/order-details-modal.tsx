@@ -579,6 +579,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
             variantInfo: item.variantInfo || null,
             quantity: item.quantity,
             price: item.price,
+            productId: item.productId ?? null,
           });
         }
       }
