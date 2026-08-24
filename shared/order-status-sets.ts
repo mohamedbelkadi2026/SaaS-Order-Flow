@@ -32,6 +32,19 @@ export const CONFIRMED_STATUS_SET = new Set<string>(CONFIRMED_STATUSES);
 export const DELIVERED_STATUS_SET = new Set<string>(DELIVERED_STATUSES);
 export const SHIPPED_STATUS_SET = new Set<string>(SHIPPED_STATUSES);
 
+// IN_TRANSIT = order has left the warehouse but has NOT reached a terminal
+// state yet (not delivered, not refused, not returned). This is narrower
+// than SHIPPED_STATUSES, which also includes delivered/refused/retourné for
+// "has this order ever shipped" checks. Both the inventory table's "En
+// cours" column and the stock-history drawer's "En cours" card must count
+// the same thing — import this instead of re-declaring the list, or the two
+// views drift apart again (see file header).
+export const IN_TRANSIT_STATUSES = [
+  'expédié', 'Attente De Ramassage', 'Ramassé', 'in_progress',
+  'En cours de livraison', 'En transit', 'Tentative échouée', 'En cours de réception',
+] as const;
+export const IN_TRANSIT_STATUS_SET = new Set<string>(IN_TRANSIT_STATUSES);
+
 // ── Subtractive "confirmed (cumulative)" definition ────────────────────────
 // The old approach (CONFIRMED_STATUSES above) enumerated every status that
 // counts as confirmed. But carrier/transit statuses are numerous and keep

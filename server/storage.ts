@@ -18,7 +18,7 @@ import {
   csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
   type PushSubscription, type InsertPushSubscription,
 } from "@shared/schema";
-import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
+import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET, IN_TRANSIT_STATUSES } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, ilike, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
 import { matchCityId, normalizeCityKey, resolveCityAlias } from "./services/city-aliases";
@@ -2654,10 +2654,7 @@ export class DatabaseStorage implements IStorage {
         .where(and(
           eq(orderItems.productId, p.id),
           eq(orders.storeId, storeId),
-          inArray(orders.status, [
-            'in_progress', 'expédié', 'Attente De Ramassage',
-            'transit', 'unreachable', 'En Cours De Retour', 'refused', 'Retour Recu',
-          ])
+          inArray(orders.status, [...IN_TRANSIT_STATUSES])
         ));
 
       const totalOrderItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
