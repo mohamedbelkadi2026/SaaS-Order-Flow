@@ -9512,7 +9512,13 @@ function ensureHeaders(sheet) {
           sql`${orderItems.rawProductName} IS NOT NULL`,
         ));
 
-      const storeProds = await storage.getProductsByStore(storeId);
+      // Archived products (e.g. the losing side of a duplicate-product
+      // merge — see mergeDuplicateProducts) must NOT be part of the
+      // matching pool here: resolveProductId's ambiguity guard treats any
+      // two products sharing a name as unresolvable, so an archived
+      // duplicate left in this list would keep blocking the very items a
+      // merge was meant to fix, even after the merge archived it.
+      const storeProds = (await storage.getProductsByStore(storeId)).filter((p: any) => !p.archivedAt);
       let linked = 0;
       let unmatched = 0;
       let backfilled = 0;
@@ -10557,8 +10563,17 @@ function ensureHeaders(sheet) {
 
       // Load all products (with variants) for this store
       const storeProducts = await storage.getProductsByStore(storeId);
+      // Archived products (e.g. the losing side of a duplicate-product merge
+      // — see mergeDuplicateProducts) must NOT be part of the matching pool:
+      // resolveProductId's ambiguity guard treats any two products sharing a
+      // name as unresolvable, so an archived duplicate left in this list
+      // would keep reporting these items as unresolved even after the merge
+      // archived it. storeProducts (unfiltered) is still used below for
+      // name lookups, so an item that happens to reference an archived
+      // product still displays its name correctly.
+      const activeStoreProducts = storeProducts.filter((p: any) => !p.archivedAt);
       const storeProdsWithVariants = await Promise.all(
-        storeProducts.map(async (p: any) => ({
+        activeStoreProducts.map(async (p: any) => ({
           id: p.id,
           name: p.name,
           variants: await db.select({ name: productVariants.name })
@@ -10677,8 +10692,14 @@ function ensureHeaders(sheet) {
 
       // ── Re-run the audit to identify mismatches ─────────────────────────────
       const storeProducts = await storage.getProductsByStore(storeId);
+      // Archived products must NOT be part of the matching pool (see the
+      // same note in audit-product-links above) — but storeProducts
+      // (unfiltered) is still used below for full-catalog stock
+      // reconciliation and name-lookup display, both of which should still
+      // cover archived products.
+      const activeStoreProducts = storeProducts.filter((p: any) => !p.archivedAt);
       const storeProdsWithVariants = await Promise.all(
-        storeProducts.map(async (p: any) => ({
+        activeStoreProducts.map(async (p: any) => ({
           id: p.id,
           name: p.name,
           variants: await db.select({ name: productVariants.name })
