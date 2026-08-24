@@ -10160,6 +10160,50 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // GET /api/products/duplicate-groups — admin: full duplicate-name groups
+  // with per-candidate activity stats, so the admin can pick which one to
+  // keep before merging (see mergeDuplicateProducts in storage.ts for why
+  // duplicates matter beyond clutter: resolveProductId refuses to link ANY
+  // order to an ambiguous name, so two products sharing a name can silently
+  // orphan otherwise-correct order↔product links).
+  app.get("/api/products/duplicate-groups", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const groups = await storage.getDuplicateProductGroups(storeId);
+      res.json({ groups });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // POST /api/products/merge-duplicates — admin: merge `mergeIds` into
+  // `keepId` (re-points order_items, stock_movements, product_variants;
+  // recalculates stock from the ledger; archives the merged-away products —
+  // never hard-deletes).
+  app.post("/api/products/merge-duplicates", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const { keepId, mergeIds } = req.body as { keepId?: number; mergeIds?: number[] };
+    if (!keepId || !Array.isArray(mergeIds) || mergeIds.length === 0) {
+      return res.status(400).json({ message: "keepId et mergeIds sont requis" });
+    }
+    try {
+      const allIds = [keepId, ...mergeIds];
+      const rows = await db.select({ id: products.id }).from(products)
+        .where(and(inArray(products.id, allIds), eq(products.storeId, storeId)));
+      if (rows.length !== allIds.length) {
+        return res.status(403).json({ message: "Un ou plusieurs produits n'appartiennent pas à cette boutique" });
+      }
+      const result = await storage.mergeDuplicateProducts(storeId, keepId, mergeIds.filter(id => id !== keepId));
+      res.json({
+        message: `✅ ${result.itemsMoved} article(s) de commande et ${result.movementsMoved} mouvement(s) de stock déplacés, ${result.variantsMoved} variante(s) reparentée(s). Stock du produit conservé : ${result.newStock}.`,
+        ...result,
+      });
+    } catch (err: any) {
+      console.error("[MergeDuplicateProducts]", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // GET /api/products/all-ids — lightweight: returns only IDs for "select all across pages"
   app.get("/api/products/all-ids", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;

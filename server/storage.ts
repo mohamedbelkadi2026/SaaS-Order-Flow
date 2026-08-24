@@ -159,6 +159,8 @@ export interface IStorage {
   bulkDeleteProducts(storeId: number, productIds: number[], force: boolean): Promise<{ deleted: number; archived: number; skipped: number; errors: any[] }>;
   getProductsWithoutOrders(storeId: number): Promise<any[]>;
   getDuplicateProducts(storeId: number): Promise<any[]>;
+  getDuplicateProductGroups(storeId: number): Promise<any[]>;
+  mergeDuplicateProducts(storeId: number, keepId: number, mergeIds: number[]): Promise<{ itemsMoved: number; movementsMoved: number; variantsMoved: number; newStock: number }>;
   getArchivedProducts(storeId: number): Promise<any[]>;
   getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]>;
   getCsvProfitReports(storeId: number): Promise<CsvProfitReport[]>;
@@ -2529,6 +2531,104 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return dupes;
+  }
+
+  // Same grouping as getDuplicateProducts, but returns full groups (every
+  // member, not just the flagged-as-extra ones) with enough per-product
+  // activity signal (linked order items, ledger movement rows, current
+  // stock) for an admin to pick which duplicate is the REAL one — e.g. a
+  // catalog can have two products both literally named "pistolet 2b" where
+  // resolveProductId's ambiguity guard then refuses to link ANY order to
+  // either of them (see @shared /server/services/variants.ts SAFETY RULES),
+  // silently orphaning otherwise-correct order links. Merging down to one
+  // canonical product per name is the actual fix, not re-running the linker.
+  async getDuplicateProductGroups(storeId: number): Promise<any[]> {
+    const allProducts = await db.select().from(products)
+      .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`))
+      .orderBy(desc(products.createdAt));
+    const normName = (s: string) => (s || "").toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+    const groups: Record<string, typeof allProducts> = {};
+    for (const p of allProducts) {
+      const key = normName(p.name);
+      (groups[key] ||= []).push(p);
+    }
+    const result: any[] = [];
+    for (const [key, items] of Object.entries(groups)) {
+      if (items.length < 2) continue;
+      const productIds = items.map(p => p.id);
+      const itemCounts = await db.select({ productId: orderItems.productId, count: sql<number>`COUNT(*)` })
+        .from(orderItems).where(inArray(orderItems.productId, productIds)).groupBy(orderItems.productId);
+      const movCounts = await db.select({ productId: stockMovements.productId, count: sql<number>`COUNT(*)` })
+        .from(stockMovements).where(inArray(stockMovements.productId, productIds)).groupBy(stockMovements.productId);
+      const itemCountByPid = new Map(itemCounts.map(r => [r.productId, Number(r.count)]));
+      const movCountByPid = new Map(movCounts.map(r => [r.productId, Number(r.count)]));
+      result.push({
+        key,
+        candidates: items.map(p => ({
+          id: p.id,
+          name: p.name,
+          sku: p.sku,
+          stock: p.stock,
+          createdAt: p.createdAt,
+          ordersLinked: itemCountByPid.get(p.id) ?? 0,
+          movementsCount: movCountByPid.get(p.id) ?? 0,
+        })),
+      });
+    }
+    return result;
+  }
+
+  // Merge `mergeIds` into `keepId`: re-points every order_item and
+  // stock_movements row (and reparents any product_variants) from the
+  // duplicates onto the keeper, recalculates the keeper's stock (and any
+  // moved variants' stock) from the ledger, then ARCHIVES the duplicates
+  // (never hard-deletes — see the destructive-delete discussion elsewhere;
+  // archiving keeps everything recoverable if something about the merge
+  // needs manual review afterwards). All-or-nothing in one transaction.
+  async mergeDuplicateProducts(storeId: number, keepId: number, mergeIds: number[]): Promise<{ itemsMoved: number; movementsMoved: number; variantsMoved: number; newStock: number }> {
+    let itemsMoved = 0, movementsMoved = 0, variantsMoved = 0;
+    await db.transaction(async (tx) => {
+      for (const mergeId of mergeIds) {
+        if (mergeId === keepId) continue;
+        const movedItems = await tx.update(orderItems).set({ productId: keepId } as any)
+          .where(eq(orderItems.productId, mergeId)).returning({ id: orderItems.id });
+        itemsMoved += movedItems.length;
+
+        const movedMovs = await tx.update(stockMovements).set({ productId: keepId } as any)
+          .where(and(eq(stockMovements.productId, mergeId), eq(stockMovements.storeId, storeId))).returning({ id: stockMovements.id });
+        movementsMoved += movedMovs.length;
+
+        const movedVariants = await tx.update(productVariants).set({ productId: keepId } as any)
+          .where(eq(productVariants.productId, mergeId)).returning({ id: productVariants.id });
+        variantsMoved += movedVariants.length;
+
+        await tx.update(products).set({ archivedAt: new Date() } as any)
+          .where(and(eq(products.id, mergeId), eq(products.storeId, storeId)));
+      }
+
+      // Recalculate the keeper's stock from the ledger (parent-level rows only)
+      const [{ parentTotal }] = await tx
+        .select({ parentTotal: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)` })
+        .from(stockMovements)
+        .where(and(eq(stockMovements.productId, keepId), sql`${stockMovements.variantId} IS NULL`));
+      await tx.update(products).set({ stock: Number(parentTotal) } as any)
+        .where(and(eq(products.id, keepId), eq(products.storeId, storeId)));
+
+      // Recalculate stock for every variant now under the keeper
+      const keeperVariants = await tx.select({ id: productVariants.id })
+        .from(productVariants).where(eq(productVariants.productId, keepId));
+      for (const v of keeperVariants) {
+        const [{ variantTotal }] = await tx
+          .select({ variantTotal: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)` })
+          .from(stockMovements)
+          .where(and(eq(stockMovements.productId, keepId), eq(stockMovements.variantId, v.id)));
+        await tx.update(productVariants).set({ stock: Number(variantTotal) } as any).where(eq(productVariants.id, v.id));
+      }
+    });
+
+    const [finalProduct] = await db.select({ stock: products.stock }).from(products).where(eq(products.id, keepId));
+    return { itemsMoved, movementsMoved, variantsMoved, newStock: finalProduct?.stock ?? 0 };
   }
 
   async getArchivedProducts(storeId: number): Promise<any[]> {

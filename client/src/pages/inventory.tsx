@@ -740,6 +740,49 @@ export default function Inventory() {
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
+  // Duplicate-product merge: two catalog products sharing the exact same
+  // name make resolveProductId refuse to link ANY order to either of them
+  // (ambiguity guard) — this is what silently orphans order↔product links,
+  // including ones "Réparer les liens produits" had already fixed before a
+  // duplicate existed. Merging down to one canonical product per name is
+  // the actual fix.
+  const [dupGroups, setDupGroups] = useState<any[]>([]);
+  const [dupOpen, setDupOpen] = useState(false);
+  const [dupKeepByGroup, setDupKeepByGroup] = useState<Record<string, number>>({});
+  const [dupMergedGroups, setDupMergedGroups] = useState<Record<string, any>>({});
+  const fetchDuplicateGroupsMutation = useMutation({
+    mutationFn: () => apiRequest("GET", "/api/products/duplicate-groups").then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      const groups = data.groups || [];
+      setDupGroups(groups);
+      setDupMergedGroups({});
+      // Default the "keep" pick to whichever candidate has the most real
+      // activity (orders + ledger rows) — a much safer default than
+      // "newest", since the one with actual sales history is almost always
+      // the product that should survive the merge.
+      const defaults: Record<string, number> = {};
+      for (const g of groups) {
+        const best = [...g.candidates].sort((a: any, b: any) => (b.ordersLinked + b.movementsCount) - (a.ordersLinked + a.movementsCount))[0];
+        if (best) defaults[g.key] = best.id;
+      }
+      setDupKeepByGroup(defaults);
+      setDupOpen(true);
+      if (groups.length === 0) toast({ title: "Aucun doublon", description: "Aucun produit en double détecté." });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+  const mergeDuplicatesMutation = useMutation({
+    mutationFn: (vars: { keepId: number; mergeIds: number[] }) =>
+      apiRequest("POST", "/api/products/merge-duplicates", vars).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any, vars) => {
+      setDupMergedGroups(prev => ({ ...prev, [String(vars.keepId)]: data }));
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      toast({ title: "✅ Doublons fusionnés", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
   const { data: historyMovements = [], isLoading: historyLoading } = useQuery<any[]>({
     queryKey: ["/api/stock-movements", historyProduct?.id],
     queryFn: async () => {
@@ -1525,6 +1568,20 @@ export default function Inventory() {
             <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
           ) : (
             <><Link2 className="w-4 h-4" /> Réparer les liens produits</>
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => fetchDuplicateGroupsMutation.mutate()}
+          disabled={fetchDuplicateGroupsMutation.isPending}
+          data-testid="button-find-duplicate-products"
+        >
+          {fetchDuplicateGroupsMutation.isPending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Recherche en cours...</>
+          ) : (
+            <><Copy className="w-4 h-4" /> Fusionner les doublons</>
           )}
         </Button>
         <Button
@@ -2955,6 +3012,74 @@ export default function Inventory() {
             ) : (
               <Button onClick={() => setLinkAuditOpen(false)}>Fermer</Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Duplicate-product merge: pick a keeper per group, merge the rest into it ── */}
+      <Dialog open={dupOpen} onOpenChange={(v) => { if (!mergeDuplicatesMutation.isPending) setDupOpen(v); }}>
+        <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Copy className="w-5 h-5 text-violet-500" /> Fusionner les doublons</DialogTitle>
+            <DialogDescription>
+              Deux produits avec exactement le même nom empêchent le rattachement automatique des commandes (le
+              système refuse de deviner lequel des deux est le bon). Choisissez celui à garder pour chaque groupe —
+              tout le reste (commandes, historique, stock) sera déplacé dessus, et les doublons seront archivés.
+            </DialogDescription>
+          </DialogHeader>
+
+          {dupGroups.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Aucun doublon détecté.</p>
+          ) : (
+            <div className="space-y-4">
+              {dupGroups.map((g: any) => {
+                const merged = dupMergedGroups[String(dupKeepByGroup[g.key])];
+                return (
+                  <div key={g.key} className="border rounded-lg p-3 space-y-2">
+                    <p className="text-sm font-medium">{g.candidates[0]?.name}</p>
+                    {merged ? (
+                      <p className="text-xs text-emerald-600">{merged.message}</p>
+                    ) : (
+                      <>
+                        <div className="space-y-1.5">
+                          {g.candidates.map((c: any) => (
+                            <label key={c.id} className="flex items-center gap-2 text-xs cursor-pointer">
+                              <input
+                                type="radio"
+                                name={`keep-${g.key}`}
+                                checked={dupKeepByGroup[g.key] === c.id}
+                                onChange={() => setDupKeepByGroup(prev => ({ ...prev, [g.key]: c.id }))}
+                              />
+                              <span className="font-mono text-muted-foreground">{c.sku}</span>
+                              <span>Stock: {c.stock}</span>
+                              <span className="text-blue-600">{c.ordersLinked} commande(s) liée(s)</span>
+                              <span className="text-muted-foreground">{c.movementsCount} mouvement(s) ledger</span>
+                              <span className="text-muted-foreground">créé le {new Date(c.createdAt).toLocaleDateString('fr-FR')}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            const keepId = dupKeepByGroup[g.key];
+                            const mergeIds = g.candidates.map((c: any) => c.id).filter((id: number) => id !== keepId);
+                            mergeDuplicatesMutation.mutate({ keepId, mergeIds });
+                          }}
+                          disabled={mergeDuplicatesMutation.isPending}
+                          data-testid={`button-merge-group-${g.key}`}
+                        >
+                          {mergeDuplicatesMutation.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Fusion…</> : "Fusionner ce groupe"}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDupOpen(false)} disabled={mergeDuplicatesMutation.isPending}>Fermer</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
