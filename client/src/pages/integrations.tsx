@@ -1608,9 +1608,11 @@ function WebhookTab({ platform, webhookKey, stores, origin }: { platform: Platfo
 // ---- Main page ----
 export default function Integrations() {
   const { user } = useAuth();
+  const { toast } = useToast();
   const { data: webhookData } = useWebhookKey();
   const { data: magasins } = useMagasins();
   const [activeTab, setActiveTab] = useState<PlatformId>("gsheets");
+  const [wpUrlCopied, setWpUrlCopied] = useState(false);
 
   // Fetch the canonical public URL from the backend (Railway sets RAILWAY_PUBLIC_DOMAIN).
   // Falls back to window.location.origin so it always works in dev and on custom domains.
@@ -1622,12 +1624,49 @@ export default function Integrations() {
   const webhookKey = webhookData?.webhookKey || "LOADING";
   const stores = magasins || [];
   const platform = PLATFORMS.find(p => p.id === activeTab)!;
+  const wordpressWebhookUrl = `${origin}/api/webhooks/wordpress/${webhookKey}`;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div>
         <h1 className="text-2xl font-display font-bold" data-testid="text-integrations-title">Intégrations</h1>
         <p className="text-muted-foreground mt-1">Connectez vos boutiques e-commerce pour synchroniser les commandes en temps réel.</p>
+      </div>
+
+      {/* ── WordPress / Elementor landing-page webhook ──────────────────
+          Not an e-commerce platform integration like the tabs below — this
+          is for pages built OUTSIDE this app (WordPress + Elementor Pro,
+          etc.) whose native "Webhook" form action needs a single URL with
+          no custom headers. */}
+      <div className="border rounded-xl p-4 bg-white dark:bg-card space-y-2">
+        <div className="flex items-center gap-2">
+          <Link2 className="w-4 h-4 text-violet-500" />
+          <h2 className="text-sm font-semibold">Webhook pour pages WordPress / Elementor</h2>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Collez cette URL dans le champ "Webhook" de votre formulaire Elementor (ou tout autre constructeur de
+          pages WordPress). Nommez les champs du formulaire exactement : <code className="text-[11px] bg-muted px-1 rounded">name</code>,{" "}
+          <code className="text-[11px] bg-muted px-1 rounded">phone</code>, <code className="text-[11px] bg-muted px-1 rounded">city</code> —
+          et, si besoin, <code className="text-[11px] bg-muted px-1 rounded">product</code>, <code className="text-[11px] bg-muted px-1 rounded">price</code>.
+        </p>
+        <div className="flex items-center gap-2">
+          <Input readOnly value={wordpressWebhookUrl} className="font-mono text-xs" data-testid="input-wordpress-webhook-url" />
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0 gap-2"
+            onClick={() => {
+              navigator.clipboard.writeText(wordpressWebhookUrl);
+              setWpUrlCopied(true);
+              toast({ title: "✅ URL copiée", description: "Collez-la dans le champ Webhook de votre formulaire." });
+              setTimeout(() => setWpUrlCopied(false), 3000);
+            }}
+            data-testid="button-copy-wordpress-webhook-url"
+          >
+            {wpUrlCopied ? <CheckCircle className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+            {wpUrlCopied ? "Copié" : "Copier"}
+          </Button>
+        </div>
       </div>
 
       {/* Tabs */}

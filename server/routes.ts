@@ -6910,6 +6910,88 @@ export async function registerRoutes(
     }
   });
 
+  // ── WordPress / Elementor landing-page webhook ──────────────────────────
+  // Dedicated URL for landing pages built outside this platform (e.g. a
+  // WordPress + Elementor Pro page) that use Elementor's native "Webhook"
+  // form action. That action POSTs a flat JSON body (no custom headers
+  // possible in its UI), so the webhookKey has to live in the URL path
+  // itself — same shape as the gsheets webhook above, just under its own
+  // name and source tag so these orders are traceable separately, and kept
+  // fully independent so nothing about the existing integrations changes.
+  // Elementor form field IDs must be set to: name, phone, city, address
+  // (optional), product (optional), price (optional).
+  app.post("/api/webhooks/wordpress/:webhookKey", async (req, res) => {
+    const webhookKey = req.params.webhookKey;
+    if (!webhookKey || webhookKey.length < 12) {
+      console.warn("[WEBHOOK-SEC] wordpress webhook with short/missing key — rejected");
+      return res.status(401).json({ message: "Invalid webhook key" });
+    }
+    try {
+      const store = await storage.getStoreByWebhookKey(webhookKey);
+      if (!store) {
+        console.warn(`[WEBHOOK-SEC] wordpress unknown webhook key: ${webhookKey.slice(0, 8)}…`);
+        return res.status(404).json({ message: "Invalid webhook key" });
+      }
+      const storeId = store.id;
+      const data = req.body;
+      const customerName = data.name || data.customer_name || data['Nom'] || '';
+      const customerPhone = data.phone || data.telephone || data['Téléphone'] || '';
+      const customerCity = data.city || data.ville || data['Ville'] || '';
+      const customerAddress = data.address || data.adresse || data['Adresse'] || '';
+      const productName = data.product || data.produit || data['Produit'] || '';
+      const totalPrice = Math.round(parseFloat(String(data.price || data.prix || data['Prix'] || '0').replace(',', '.')) * 100) || 0;
+      const orderNumber = data.ref || data.order_id || `WP-${Date.now()}`;
+      if (!customerName && !customerPhone) return res.status(400).json({ message: "Missing customer data" });
+      const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
+      if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
+      const wpPaywall = await storage.checkPaywall(storeId);
+      if (wpPaywall.isBlocked) return res.status(402).json({ message: wpPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariantsWP = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const vByProdWP = new Map<number, { name: string }[]>();
+      for (const v of allVariantsWP) { if (!vByProdWP.has(v.productId)) vByProdWP.set(v.productId, []); vByProdWP.get(v.productId)!.push({ name: v.name }); }
+      const storeProductsWP = storeProducts.map(p => ({ ...p, variants: vByProdWP.get(p.id) || [] }));
+      const skuMatchesWP = productName ? storeProducts.filter(p => p.sku && p.sku === productName) : [];
+      let matchedWP = skuMatchesWP.length === 1 ? skuMatchesWP[0] : undefined;
+      if (!matchedWP) {
+        const resolved = resolveProductId(productName, storeProductsWP);
+        if (resolved.productId) matchedWP = storeProducts.find(p => p.id === resolved.productId);
+      }
+      const wpOrderItems = productName
+        ? [{ productId: matchedWP?.id ?? null, rawProductName: productName, quantity: 1, price: totalPrice, orderId: 0 }]
+        : [];
+      console.log("━━━ NEW WEBHOOK ARRIVED (WordPress) ━━━");
+      console.log(`[Webhook] Customer: ${customerName} | Phone: ${customerPhone} | Product: ${productName}`);
+      const wpIntegration = await storage.getIntegrationByProvider(storeId, 'gsheets');
+      const wpMagasinId = wpIntegration?.magasinId ?? null;
+      const wpOrder = await storage.createOrder({
+        storeId, magasinId: wpMagasinId,
+        orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        rawProductName: productName || null,
+        status: 'nouveau', totalPrice, productCost: matchedWP ? matchedWP.costPrice : 0,
+        shippingCost: 0, adSpend: 0, source: 'wordpress', comment: null,
+      } as any, wpOrderItems);
+      const wpNextAgentId = await storage.getNextAgent(storeId, wpMagasinId, matchedWP?.id, customerCity);
+      if (wpNextAgentId) await storage.assignOrder(wpOrder.id, wpNextAgentId);
+      await storage.incrementMonthlyOrders(storeId);
+      await storage.createIntegrationLog({ storeId, integrationId: wpIntegration?.id || null, provider: 'wordpress', action: 'order_synced', status: 'success', message: `Commande WordPress ${orderNumber} importée` });
+      emitNewOrder(storeId, { id: wpOrder.id, orderNumber, customerName, status: 'nouveau', source: 'wordpress' });
+      notifyNewOrder({ id: wpOrder.id, storeId, assignedToId: wpNextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: wpOrder.totalPrice || 0 });
+      broadcastToStore(storeId, "new_order", { id: wpOrder.id, orderNumber });
+      res.json({ success: true, orderId: wpOrder.id });
+      // ── Fire-and-forget: AI WhatsApp confirmation ──────────────
+      if (getWaAutoSettings(storeId).aiConfirmation) {
+        triggerAIForNewOrder(storeId, wpOrder.id, customerPhone, customerName, matchedWP?.id)
+          .catch(err => console.error(`[AI] WordPress trigger failed for order ${wpOrder.id}:`, err.message));
+      } else {
+        console.log('[WA] AI confirmation disabled — skipping auto-send');
+      }
+    } catch (err: any) {
+      console.error('WordPress webhook error:', err);
+      res.status(500).json({ message: 'Processing failed' });
+    }
+  });
+
   // Google Sheets webhook
   app.post("/api/webhooks/gsheets/:webhookKey", async (req, res) => {
     const webhookKey = req.params.webhookKey;
@@ -7195,6 +7277,15 @@ export async function registerRoutes(
       columnMapping:   (row as any)?.gsheetColumnMapping ?? null,
       webhookUrl:      (row as any)?.gsheetWebhookUrl ?? null,
     });
+  });
+
+  // GET /api/integrations/wordpress/webhook-url — ready-to-copy URL for the
+  // WordPress/Elementor landing-page webhook (see POST /api/webhooks/wordpress/:webhookKey above).
+  app.get("/api/integrations/wordpress/webhook-url", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const webhookKey = await storage.getOrGenerateWebhookKey(storeId);
+    const webhookUrl = `${req.protocol}://${req.get("host")}/api/webhooks/wordpress/${webhookKey}`;
+    res.json({ webhookUrl, webhookKey });
   });
 
   app.get("/api/integrations/gsheets/apps-script", requireAuth, async (req: any, res: any) => {
