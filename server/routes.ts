@@ -9,7 +9,7 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
-import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus, IN_TRANSIT_STATUSES } from "@shared/order-status-sets";
+import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
@@ -9683,14 +9683,31 @@ function ensureHeaders(sheet) {
 
       const distinctOrders = new Map<number, string>();
       for (const order of productOrders) distinctOrders.set(order.orderId, order.status);
-      statusSummary = { deliveredOrders: 0, inProgressOrders: 0 };
-      for (const status of distinctOrders.values()) {
-        if (isDeliveredStatus(status)) {
-          statusSummary.deliveredOrders++;
-        } else if ((IN_TRANSIT_STATUSES as readonly string[]).includes(status)) {
-          statusSummary.inProgressOrders++;
-        }
+
+      // "En cours" = order has a recorded physical departure (ledger type
+      // 'shipped' or 'delivered') but is NOT delivered right now and has NOT
+      // been resolved as a return yet (no ledger row of type 'returned').
+      // Same definition as the inventory table's "En cours" column (see
+      // getInventoryStats in storage.ts) — any carrier sub-status (reporté,
+      // injoignable, "confirmé pas encore livré", etc.) still counts as en
+      // cours until the return is actually confirmed, so this never needs a
+      // hardcoded list of carrier status strings.
+      const shippedOrderIds = new Set<number>();
+      const returnedOrderIds = new Set<number>();
+      for (const row of matchingRows as any[]) {
+        if (row.orderId == null) continue;
+        if (row.type === "shipped" || row.type === "delivered") shippedOrderIds.add(row.orderId);
+        else if (row.type === "returned") returnedOrderIds.add(row.orderId);
       }
+
+      statusSummary = { deliveredOrders: 0, inProgressOrders: 0 };
+      distinctOrders.forEach((status, orderId) => {
+        if (isDeliveredStatus(status)) {
+          statusSummary!.deliveredOrders++;
+        } else if (shippedOrderIds.has(orderId) && !returnedOrderIds.has(orderId)) {
+          statusSummary!.inProgressOrders++;
+        }
+      });
     }
 
     return {

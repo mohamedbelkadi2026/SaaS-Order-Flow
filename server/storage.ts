@@ -18,7 +18,7 @@ import {
   csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
   type PushSubscription, type InsertPushSubscription,
 } from "@shared/schema";
-import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET, IN_TRANSIT_STATUSES } from "@shared/order-status-sets";
+import { DELIVERED_STATUSES, isConfirmedCumulative, isDeliveredStatus, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, ilike, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
 import { matchCityId, normalizeCityKey, resolveCityAlias } from "./services/city-aliases";
@@ -2612,13 +2612,25 @@ export class DatabaseStorage implements IStorage {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const newProducts = allProducts.filter(p => p.createdAt && new Date(p.createdAt) >= startOfMonth).length;
 
-    // Pull every stock movement for this store's products in one query and
-    // group by product. We use this ledger for "Reçu" (cumulative purchased)
-    // so manual restocks no longer corrupt the lifetime number.
+    // Pull every stock movement for this store's products in one query,
+    // joined with the owning order's live status, and group by product.
+    // This single ledger now backs "Reçu", "Sortie (Livrées)" AND "En
+    // cours" so none of the three can drift apart from what actually
+    // moved physical stock.
     const productIds = allProducts.map(p => p.id);
     const allMovements = productIds.length === 0
       ? []
-      : await db.select().from(stockMovements)
+      : await db.select({
+          id: stockMovements.id,
+          productId: stockMovements.productId,
+          type: stockMovements.type,
+          quantity: stockMovements.quantity,
+          orderId: stockMovements.orderId,
+          createdAt: stockMovements.createdAt,
+          orderStatus: orders.status,
+        })
+          .from(stockMovements)
+          .leftJoin(orders, eq(stockMovements.orderId, orders.id))
           .where(and(
             eq(stockMovements.storeId, storeId),
             inArray(stockMovements.productId, productIds),
@@ -2648,15 +2660,6 @@ export class DatabaseStorage implements IStorage {
           notLike(orders.status, 'Pas de réponse%'),
         ));
       
-      const inTransitItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
-        .from(orderItems)
-        .innerJoin(orders, eq(orderItems.orderId, orders.id))
-        .where(and(
-          eq(orderItems.productId, p.id),
-          eq(orders.storeId, storeId),
-          inArray(orders.status, [...IN_TRANSIT_STATUSES])
-        ));
-
       const totalOrderItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
@@ -2665,7 +2668,6 @@ export class DatabaseStorage implements IStorage {
           eq(orders.storeId, storeId)
         ));
 
-      const inTransit = Number(inTransitItems[0]?.qty || 0);
       const totalOrdered = Number(totalOrderItems[0]?.qty || 0);
       const totalConfirmedQty = Number(confirmedItems[0]?.qty || 0);
       const available = totalStock; // live stock = initial minus all deliveries plus all returns
@@ -2684,14 +2686,37 @@ export class DatabaseStorage implements IStorage {
         .filter(m => m.type === 'restock')
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
 
-      // ── Sortie (Livrées) now comes from the same stock_movements ledger ───
-      // as Reçu, instead of a live orders.status query. The ledger is the
-      // single source of truth for physical stock departures, so this stays
-      // in sync with what actually moved stock (type='delivered' rows are
-      // stored as negative quantities — negate the sum to get a positive count).
-      const sortie = -productMovements
-        .filter(m => m.type === 'delivered')
-        .reduce((s, m) => s + (m.quantity || 0), 0);
+      // ── Sortie (Livrées) & En cours now come from the same ledger ─────────
+      // A physical departure is recorded exactly once per order — as type
+      // 'shipped' at the first carrier transition, or as type 'delivered'
+      // only if the order jumped straight there without an earlier shipped
+      // status (see updateOrderStatus RULE 0.5 / RULE 1). So which bucket a
+      // departure belongs in TODAY depends on the order's current status,
+      // not on which of the two types got recorded:
+      //   • order is delivered right now             → Sortie (Livrées)
+      //   • order has a confirmed return ledger row   → neither (stock is back)
+      //   • otherwise (still with the carrier — reporté, injoignable,
+      //     "confirmé pas encore livré", any carrier sub-status)
+      //                                                → En cours
+      // This intentionally never enumerates raw carrier status strings (that
+      // list is huge and grows with every new carrier — see the warning in
+      // @shared/order-status-sets.ts); it only needs to know whether the
+      // order is delivered and whether its return was ever physically
+      // confirmed (stockMovements type='returned').
+      const returnedOrderIds = new Set(
+        productMovements
+          .filter(m => m.type === 'returned' && m.orderId != null)
+          .map(m => m.orderId as number)
+      );
+      let sortie = 0;
+      let inTransit = 0;
+      for (const m of productMovements) {
+        if (m.type !== 'shipped' && m.type !== 'delivered') continue;
+        if (m.orderId == null || returnedOrderIds.has(m.orderId)) continue;
+        const qty = Math.abs(m.quantity || 0);
+        if (isDeliveredStatus(m.orderStatus)) sortie += qty;
+        else inTransit += qty;
+      }
 
       const confirmRate = totalOrdered > 0 ? Math.round(totalConfirmedQty / totalOrdered * 100) : 0;
       // deliverRate = Delivered / Confirmed (not total) — correct carrier-delivery formula
