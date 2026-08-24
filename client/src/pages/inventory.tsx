@@ -709,6 +709,37 @@ export default function Inventory() {
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
+  // Product-link repair: an order item can end up pointing at the wrong
+  // catalog product (or none) — e.g. a product got renamed/replaced and the
+  // item's rawProductName text no longer matches its stored productId. This
+  // re-resolves every item's link from its current rawProductName against
+  // the CURRENT catalog, migrates the affected stock_movements rows where
+  // safe, and recalculates products.stock from the ledger for the whole
+  // catalog — so a product's Livrées/Sortie numbers catch up with any
+  // manual re-links or renames that happened before this repair.
+  const [linkAuditResult, setLinkAuditResult] = useState<any>(null);
+  const [linkAuditOpen, setLinkAuditOpen] = useState(false);
+  const [linkApplyResult, setLinkApplyResult] = useState<any>(null);
+  const auditProductLinksMutation = useMutation({
+    mutationFn: () => apiRequest("GET", "/api/products/audit-product-links").then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setLinkAuditResult(data);
+      setLinkApplyResult(null);
+      setLinkAuditOpen(true);
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+  const applyProductLinksMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/products/apply-product-link-corrections", {}).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setLinkApplyResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      toast({ title: "✅ Liens réparés", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
   const { data: historyMovements = [], isLoading: historyLoading } = useQuery<any[]>({
     queryKey: ["/api/stock-movements", historyProduct?.id],
     queryFn: async () => {
@@ -1480,6 +1511,20 @@ export default function Inventory() {
             <><Loader2 className="w-4 h-4 animate-spin" /> Réparation en cours...</>
           ) : (
             <><History className="w-4 h-4" /> Réparer l'historique des stocks</>
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => auditProductLinksMutation.mutate()}
+          disabled={auditProductLinksMutation.isPending}
+          data-testid="button-audit-product-links"
+        >
+          {auditProductLinksMutation.isPending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
+          ) : (
+            <><Link2 className="w-4 h-4" /> Réparer les liens produits</>
           )}
         </Button>
         <Button
@@ -2844,6 +2889,76 @@ export default function Inventory() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* ── Product-link repair: preview (audit) then confirm (apply) ── */}
+      <Dialog open={linkAuditOpen} onOpenChange={(v) => { if (!applyProductLinksMutation.isPending) { setLinkAuditOpen(v); if (!v) { setLinkAuditResult(null); setLinkApplyResult(null); } } }}>
+        <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Link2 className="w-5 h-5 text-violet-500" /> Réparer les liens produits</DialogTitle>
+            <DialogDescription>
+              {linkApplyResult?.message ?? linkAuditResult?.message}
+            </DialogDescription>
+          </DialogHeader>
+
+          {!linkApplyResult && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Recalcule le lien de chaque article de commande à partir de son nom actuel, migre les mouvements de
+                stock concernés quand c'est sûr de le faire, puis recalcule le stock de tous les produits et
+                variantes à partir de l'historique. Utile après un renommage ou un changement manuel de produit sur
+                une commande.
+              </p>
+              {linkAuditResult?.rows?.length > 0 ? (
+                <div className="space-y-2 max-h-64 overflow-y-auto border rounded-lg p-2">
+                  {linkAuditResult.rows.slice(0, 100).map((r: any) => (
+                    <div key={r.oi_id} className="text-xs border-b pb-1.5 last:border-0">
+                      <div className="font-medium truncate">{r.rawProductName}</div>
+                      <div className="text-muted-foreground">
+                        {r.currentProductName ?? "— (non lié)"} → <span className="text-emerald-600 font-medium">{r.computedProductName ?? "— (non lié)"}</span>
+                        <span className="ml-2 text-[10px] uppercase tracking-wide">{r.status}</span>
+                      </div>
+                    </div>
+                  ))}
+                  {linkAuditResult.rows.length > 100 && (
+                    <p className="text-xs text-muted-foreground pt-1">+ {linkAuditResult.rows.length - 100} autre(s)…</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">Aucun problème de lien détecté.</p>
+              )}
+            </>
+          )}
+
+          {linkApplyResult?.ambiguousMovOrders?.length > 0 && (
+            <div className="space-y-1.5 max-h-48 overflow-y-auto border border-amber-300 dark:border-amber-800 rounded-lg p-2">
+              <p className="text-xs font-medium text-amber-700 dark:text-amber-400">À vérifier manuellement ({linkApplyResult.ambiguousMovOrders.length}) :</p>
+              {linkApplyResult.ambiguousMovOrders.map((a: any, i: number) => (
+                <div key={i} className="text-xs text-muted-foreground">
+                  Commande #{a.orderId} — {a.oldProductName ?? a.oldProductId} — {a.reason}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <DialogFooter>
+            {!linkApplyResult ? (
+              <>
+                <Button variant="outline" onClick={() => setLinkAuditOpen(false)} disabled={applyProductLinksMutation.isPending}>Annuler</Button>
+                <Button
+                  onClick={() => applyProductLinksMutation.mutate()}
+                  disabled={applyProductLinksMutation.isPending}
+                  data-testid="button-apply-product-link-corrections"
+                >
+                  {applyProductLinksMutation.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Application…</> : "Appliquer la réparation"}
+                </Button>
+              </>
+            ) : (
+              <Button onClick={() => setLinkAuditOpen(false)}>Fermer</Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
 
       <Dialog
         open={adjustmentPurgeOpen}
