@@ -2440,7 +2440,14 @@ export default function Inventory() {
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2">
               <History className="w-5 h-5 text-orange-500" />
-              Historique — {historyProduct?.name ?? ""}
+              {/* historyProduct is a snapshot taken when the drawer was opened
+                  (see setHistoryProduct(product) on the row's clock icon) — if
+                  the product gets renamed elsewhere while this stays cached,
+                  historyProduct.name would go stale. Look the current name up
+                  by id from the live inventory query so a rename always shows
+                  immediately, falling back to the snapshot only if the
+                  product isn't in the current page (e.g. filtered out). */}
+              Historique — {(inventoryData?.products?.find((p: any) => p.id === historyProduct?.id)?.name) ?? historyProduct?.name ?? ""}
             </SheetTitle>
           </SheetHeader>
 

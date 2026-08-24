@@ -644,7 +644,13 @@ export async function registerRoutes(
       const mid = Number(magasinId);
       allOrders = allOrders.filter(o => (o as any).magasinId === mid);
     }
-    const storeProducts = await storage.getProductsByStore(storeId);
+    // Archived products (deleted-with-orders, kept only for historical
+    // integrity — see bulkDeleteProducts/archiveProduct) should never clutter
+    // an active-use filter dropdown. Exclude them here explicitly since
+    // getProductsByStore intentionally returns everything (other call sites,
+    // like matching an incoming order to a catalog product, may still need
+    // archived rows).
+    const storeProducts = (await storage.getProductsByStore(storeId)).filter((p: any) => !p.archivedAt);
     const storeAgents = (await storage.getUsersByStore(storeId)).filter(u => u.role === 'agent');
 
     const cities = [...new Set(allOrders.map(o => o.customerCity).filter(Boolean))].sort();
