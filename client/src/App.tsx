@@ -161,7 +161,18 @@ function AgentGuard({ children }: { children: React.ReactNode }) {
   const [location, navigate] = useLocation();
   const { toast } = useToast();
 
-  const isAgentBlocked = user?.role === "agent" && AGENT_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
+  // An admin can grant a specific agent access to /inventory via the "Accès
+  // au Stock / Inventaire" toggle in Team management
+  // (dashboardPermissions.show_inventory). Without this check the toggle has
+  // no effect: the agent would still be redirected away here even after the
+  // sidebar link appears (see AGENT_ALLOWED_HREFS in app-layout.tsx, which
+  // must stay in sync with this same flag).
+  const hasInventoryPermission = !!(user as any)?.dashboardPermissions?.show_inventory;
+  const agentBlockedPaths = hasInventoryPermission
+    ? AGENT_BLOCKED_PATHS.filter((p) => p !== "/inventory")
+    : AGENT_BLOCKED_PATHS;
+
+  const isAgentBlocked = user?.role === "agent" && agentBlockedPaths.some(p => location === p || location.startsWith(p + "/"));
   const isMediaBuyerBlocked = user?.role === "media_buyer" && MEDIA_BUYER_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
   const isBlocked = isAgentBlocked || isMediaBuyerBlocked;
 

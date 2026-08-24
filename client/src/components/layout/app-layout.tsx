@@ -555,7 +555,17 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       ]
     : baseNavPre;
 
-  const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add', '/orders/all'];
+  // "Stock" sidebar link + /inventory route are otherwise hidden for agents
+  // (see AGENT_BLOCKED_PATHS in App.tsx) — an admin can grant a specific
+  // agent read/write access to inventory via the "Accès au Stock /
+  // Inventaire" toggle in Team management (dashboardPermissions.show_inventory).
+  // Both this sidebar filter and the App.tsx route guard must check the same
+  // flag, or the toggle silently does nothing (link never shows, or shows
+  // but the route still redirects the agent away).
+  const hasInventoryPermission = !!(user as any)?.dashboardPermissions?.show_inventory;
+  const AGENT_ALLOWED_HREFS = hasInventoryPermission
+    ? ['/', '/orders', '/orders/add', '/orders/all', '/inventory']
+    : ['/', '/orders', '/orders/add', '/orders/all'];
 
   const navItems = useMemo(() => {
     if (isMediaBuyer) return [...MEDIA_BUYER_NAV];
@@ -565,7 +575,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       if (agentSpecialty === 'suivi' && item.name === 'Nouvelle commande') return false;
       return true;
     });
-  }, [isMediaBuyer, isAgent, baseNav, agentSpecialty]);
+  }, [isMediaBuyer, isAgent, baseNav, agentSpecialty, hasInventoryPermission]);
 
   const visibleOrderSubItems = useMemo(() => {
     if (isMediaBuyer) return ORDER_SUB_ITEMS.filter(s => s.name !== 'Suivi des Colis');
