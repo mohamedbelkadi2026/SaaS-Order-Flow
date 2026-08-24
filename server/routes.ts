@@ -9438,12 +9438,39 @@ function ensureHeaders(sheet) {
   });
 
   // Backfill order_items.product_id for orders whose rawProductName matches the given product
+  // After linking a previously-unlinked order item to a catalog product, the
+  // stock ledger has NO retroactive record of that sale — stockMovements
+  // rows are only created live, at the moment updateOrderStatus() transitions
+  // an order's status (see RULE 0.5 / RULE 1 there). Without this backfill, a
+  // newly-linked item whose order is already delivered stays invisible to the
+  // ledger-derived "Sortie (Livrées)" / stock-history drawer forever, even
+  // though orderItems.productId is now correctly set (see getInventoryStats).
+  // This deliberately only writes to the ledger — it does NOT adjust
+  // products.stock, since we can't know whether the store owner already
+  // manually compensated for these historical sales in their stock count;
+  // touching live sellable stock retroactively needs an explicit, separate
+  // decision, not a side effect of linking.
+  async function backfillLedgerForNewlyLinkedItem(orderId: number, productId: number, quantity: number, storeId: number) {
+    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId));
+    if (!order || !isDeliveredStatus(order.status)) return; // only backfill confirmed deliveries for now
+    const existing = await db.select({ id: stockMovements.id }).from(stockMovements)
+      .where(and(eq(stockMovements.orderId, orderId), eq(stockMovements.productId, productId)))
+      .limit(1);
+    if (existing.length > 0) return; // already recorded, don't duplicate
+    await db.insert(stockMovements).values({
+      storeId, productId, orderId,
+      type: 'delivered',
+      quantity: -Math.abs(quantity || 1),
+      reason: `Backfill — commande liée après coup (déjà livrée)`,
+    } as any);
+  }
+
   // POST /api/products/link-all-historical — admin: link ALL unlinked order items to catalog
   app.post("/api/products/link-all-historical", requireAuth, requireAdmin, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     try {
       const unlinkedItems = await db
-        .select({ id: orderItems.id, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
+        .select({ id: orderItems.id, orderId: orderItems.orderId, quantity: orderItems.quantity, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
         .where(and(
@@ -9455,6 +9482,7 @@ function ensureHeaders(sheet) {
       const storeProds = await storage.getProductsByStore(storeId);
       let linked = 0;
       let unmatched = 0;
+      let backfilled = 0;
 
       for (const item of unlinkedItems) {
         const { productId: resolvedPid, variantName } = resolveProductId(item.rawProductName || '', storeProds);
@@ -9463,12 +9491,20 @@ function ensureHeaders(sheet) {
             .set({ productId: resolvedPid, variantInfo: variantName || item.variantInfo || '' } as any)
             .where(eq(orderItems.id, item.id));
           linked++;
+          const before = await db.select({ id: stockMovements.id }).from(stockMovements)
+            .where(and(eq(stockMovements.orderId, item.orderId), eq(stockMovements.productId, resolvedPid))).limit(1);
+          await backfillLedgerForNewlyLinkedItem(item.orderId, resolvedPid, item.quantity, storeId);
+          if (before.length === 0) {
+            const after = await db.select({ id: stockMovements.id }).from(stockMovements)
+              .where(and(eq(stockMovements.orderId, item.orderId), eq(stockMovements.productId, resolvedPid))).limit(1);
+            if (after.length > 0) backfilled++;
+          }
         } else {
           unmatched++;
         }
       }
 
-      res.json({ linked, unmatched, total: unlinkedItems.length });
+      res.json({ linked, unmatched, backfilled, total: unlinkedItems.length });
     } catch (err) {
       throw err;
     }
@@ -9488,7 +9524,7 @@ function ensureHeaders(sheet) {
 
       // Fetch all unlinked items for this store and match against this product
       const unlinkedItems = await db
-        .select({ id: orderItems.id, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
+        .select({ id: orderItems.id, orderId: orderItems.orderId, quantity: orderItems.quantity, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
         .where(and(
@@ -9506,6 +9542,7 @@ function ensureHeaders(sheet) {
             .set({ productId, variantInfo: variantName || item.variantInfo || '' } as any)
             .where(eq(orderItems.id, item.id));
           linked++;
+          await backfillLedgerForNewlyLinkedItem(item.orderId, productId, item.quantity, storeId);
         }
       }
 
