@@ -10160,35 +10160,6 @@ function ensureHeaders(sheet) {
     }
   });
 
-  // GET /api/products/:id — fetch a single product with its variants
-  app.get("/api/products/:id", requireAuth, async (req: any, res: any) => {
-    const storeId = req.user!.storeId!;
-    const productId = parseInt(req.params.id);
-    if (isNaN(productId)) return res.status(400).json({ message: "ID invalide" });
-    try {
-      const product = await storage.getProduct(productId);
-      if (!product || product.storeId !== storeId) return res.status(404).json({ message: "Produit introuvable" });
-      const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
-      res.json({ ...product, variants });
-    } catch (err) {
-      throw err;
-    }
-  });
-
-  // GET /api/products/:id/usage — check how many orders link to a product
-  app.get("/api/products/:id/usage", requireAuth, async (req: any, res: any) => {
-    const storeId = req.user!.storeId!;
-    const productId = parseInt(req.params.id);
-    try {
-      const product = await storage.getProduct(productId);
-      if (!product || product.storeId !== storeId) return res.status(404).json({ message: "Produit introuvable" });
-      const usage = await storage.getProductUsage(storeId, productId);
-      res.json(usage);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
   // GET /api/products/all-ids — lightweight: returns only IDs for "select all across pages"
   app.get("/api/products/all-ids", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
@@ -10938,6 +10909,41 @@ function ensureHeaders(sheet) {
       });
     } catch (err: any) {
       console.error("[ApplyProductLinkCorrections]", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // GET /api/products/:id — fetch a single product with its variants
+  // NOTE: must come AFTER every literal /api/products/xxx GET route above
+  // (all-ids, audit-product-links, cleanup-suggestions, etc.) — Express
+  // matches routes in registration order, so if this were registered first,
+  // a request to e.g. /api/products/audit-product-links would bind
+  // id="audit-product-links", fail parseInt, and 400 with "ID invalide"
+  // before ever reaching the intended handler.
+  app.get("/api/products/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = parseInt(req.params.id);
+    if (isNaN(productId)) return res.status(400).json({ message: "ID invalide" });
+    try {
+      const product = await storage.getProduct(productId);
+      if (!product || product.storeId !== storeId) return res.status(404).json({ message: "Produit introuvable" });
+      const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
+      res.json({ ...product, variants });
+    } catch (err) {
+      throw err;
+    }
+  });
+
+  // GET /api/products/:id/usage — check how many orders link to a product
+  app.get("/api/products/:id/usage", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = parseInt(req.params.id);
+    try {
+      const product = await storage.getProduct(productId);
+      if (!product || product.storeId !== storeId) return res.status(404).json({ message: "Produit introuvable" });
+      const usage = await storage.getProductUsage(storeId, productId);
+      res.json(usage);
+    } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
   });
