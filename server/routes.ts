@@ -9974,20 +9974,22 @@ function ensureHeaders(sheet) {
 
       // If a manual stock edit slipped in via PATCH (legacy path — restock UI
       // should use POST /restock instead), record an 'adjustment' ledger row
-      // for the delta so the audit trail is never silently broken.
+      // for the delta so the audit trail is never silently broken. The reason
+      // is optional — it's still recorded when given, but no longer blocks
+      // the edit when left blank (userId + timestamp on the ledger row are
+      // enough to trace who changed what and when).
       if (typeof updateData.stock === 'number' && updateData.stock !== product.stock) {
         const delta = updateData.stock - product.stock;
         const manualReason = data.manualStockReason?.trim();
-        if (!manualReason) {
-          return res.status(400).json({ message: "La raison est obligatoire pour modifier manuellement le stock." });
-        }
         await db.insert(stockMovements).values({
           storeId: product.storeId!,
           productId: product.id,
           type: 'adjustment',
           quantity: delta,
           userId: req.user!.id,
-          reason: `Édition manuelle du stock (${product.stock} → ${updateData.stock}) — ${manualReason}`,
+          reason: manualReason
+            ? `Édition manuelle du stock (${product.stock} → ${updateData.stock}) — ${manualReason}`
+            : `Édition manuelle du stock (${product.stock} → ${updateData.stock})`,
         });
       }
 

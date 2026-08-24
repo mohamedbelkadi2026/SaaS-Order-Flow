@@ -1145,14 +1145,6 @@ export default function Inventory() {
     const isManualStockChange = !hasVariants &&
       editedStock !== undefined &&
       editedStock !== Number(editingProduct.stock);
-    if (isManualStockChange && !manualStockReason.trim()) {
-      toast({
-        title: "Motif requis",
-        description: "Indiquez la raison de la modification manuelle du stock.",
-        variant: "destructive",
-      });
-      return;
-    }
     try {
       // Image is stored as base64 in form.imageUrl — no separate upload step needed
       const imageChanged = (form.imageUrl || null) !== (editingProduct.imageUrl || null);
@@ -1971,7 +1963,7 @@ export default function Inventory() {
             </div>
             {!hasVariants && (
               <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-800 dark:bg-amber-950/20">
-                <Label htmlFor="manual-stock-reason">Raison de la modification du stock <span className="text-red-600">*</span></Label>
+                <Label htmlFor="manual-stock-reason">Raison de la modification du stock <span className="text-muted-foreground font-normal">(optionnel)</span></Label>
                 <Textarea
                   id="manual-stock-reason"
                   data-testid="input-manual-stock-reason"
@@ -1980,7 +1972,7 @@ export default function Inventory() {
                   placeholder="Ex. recomptage physique, perte constatée, correction d’inventaire…"
                   rows={2}
                 />
-                <p className="text-xs text-muted-foreground">Obligatoire uniquement si le stock change. Votre nom et votre e-mail seront associés au mouvement.</p>
+                <p className="text-xs text-muted-foreground">Recommandé si le stock change — aide à garder un historique clair. Votre nom et votre e-mail seront associés au mouvement.</p>
               </div>
             )}
             <div className="space-y-2">
