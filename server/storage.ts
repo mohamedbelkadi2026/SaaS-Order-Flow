@@ -2770,7 +2770,6 @@ export class DatabaseStorage implements IStorage {
 
       const totalOrdered = Number(totalOrderItems[0]?.qty || 0);
       const totalConfirmedQty = Number(confirmedItems[0]?.qty || 0);
-      const available = totalStock; // live stock = initial minus all deliveries plus all returns
 
       // ── Reçu now comes from the stock_movements ledger ────────────────────
       // Sum of every 'restock' row (lifetime, never decreases). Going forward
@@ -2821,6 +2820,26 @@ export class DatabaseStorage implements IStorage {
       const confirmRate = totalOrdered > 0 ? Math.round(totalConfirmedQty / totalOrdered * 100) : 0;
       // deliverRate = Delivered / Confirmed (not total) — correct carrier-delivery formula
       const deliverRate = totalConfirmedQty > 0 ? Math.round(sortie / totalConfirmedQty * 100) : 0;
+
+      // ── Disponible = Reçu − Sortie (Livrées) − En cours ────────────────────
+      // Pure ledger formula instead of reading products.stock directly — the
+      // three inputs are already ledger-derived (above), so this can never
+      // drift from what the rest of this drawer/table shows. A return
+      // (stockMovements type='returned') is already excluded from sortie/
+      // inTransit, so it automatically flows back into Disponible the moment
+      // it's recorded — no manual "Réparer" step needed.
+      // Self-heal: for products with no real variants, the correction is
+      // unambiguous (one stock number, one ledger) — write it back to
+      // products.stock so every other part of the app that reads it directly
+      // (order creation checks, Stock Bas/Rupture badges, etc.) benefits too.
+      // Products WITH variants keep their per-variant stock untouched here —
+      // distributing a whole-product ledger delta across variants would be a
+      // guess, not a correction.
+      const available = recu - sortie - inTransit;
+      if (variants.length === 0 && available !== p.stock) {
+        db.update(products).set({ stock: available }).where(eq(products.id, p.id))
+          .catch(err => console.error(`[Disponible self-heal] product ${p.id}:`, err.message));
+      }
 
       productStats.push({
         id: p.id,
