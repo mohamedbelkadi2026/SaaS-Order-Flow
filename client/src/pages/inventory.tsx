@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2, Calculator, Clock } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2, Calculator, Clock, Truck } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
@@ -779,6 +779,28 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
       toast({ title: "✅ Doublons fusionnés", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  // One-time backfill for orders stuck at 'confirme_reporte' from the old
+  // OzonExpress mapping bug (see carrier-service.ts) — these are genuinely
+  // shipped/with-the-carrier orders that got misfiled as "not yet shipped".
+  const [ozonRepairPreview, setOzonRepairPreview] = useState<any>(null);
+  const [ozonRepairOpen, setOzonRepairOpen] = useState(false);
+  const [ozonRepairResult, setOzonRepairResult] = useState<any>(null);
+  const auditOzonRepairMutation = useMutation({
+    mutationFn: () => apiRequest("GET", "/api/orders/repair-ozon-confirme-reporte/preview").then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => { setOzonRepairPreview(data); setOzonRepairResult(null); setOzonRepairOpen(true); },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+  const applyOzonRepairMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/orders/repair-ozon-confirme-reporte/apply", {}).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setOzonRepairResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      toast({ title: "✅ Commandes corrigées", description: data.message });
     },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
@@ -1582,6 +1604,20 @@ export default function Inventory() {
             <><Loader2 className="w-4 h-4 animate-spin" /> Recherche en cours...</>
           ) : (
             <><Copy className="w-4 h-4" /> Fusionner les doublons</>
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => auditOzonRepairMutation.mutate()}
+          disabled={auditOzonRepairMutation.isPending}
+          data-testid="button-repair-ozon-confirme-reporte"
+        >
+          {auditOzonRepairMutation.isPending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
+          ) : (
+            <><Truck className="w-4 h-4" /> Réparer statuts Ozon</>
           )}
         </Button>
         <Button
@@ -3080,6 +3116,57 @@ export default function Inventory() {
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setDupOpen(false)} disabled={mergeDuplicatesMutation.isPending}>Fermer</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Ozon confirme_reporte repair: preview then confirm ── */}
+      <Dialog open={ozonRepairOpen} onOpenChange={(v) => { if (!applyOzonRepairMutation.isPending) setOzonRepairOpen(v); }}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Truck className="w-5 h-5 text-violet-500" /> Réparer statuts Ozon</DialogTitle>
+            <DialogDescription>{ozonRepairResult?.message ?? ozonRepairPreview?.message}</DialogDescription>
+          </DialogHeader>
+          {!ozonRepairResult && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Corrige les commandes expédiées via OzonExpress bloquées sur "confirme_reporte" à cause d'un ancien
+                bug de mapping (elles sont en réalité chez le transporteur, injoignables — pas "en attente
+                d'expédition"). Le stock sera décrémenté comme au moment de l'expédition initiale, puisqu'il ne
+                l'avait jamais été pour ces commandes précises.
+              </p>
+              {ozonRepairPreview?.orders?.length > 0 && (
+                <div className="space-y-1.5 max-h-56 overflow-y-auto border rounded-lg p-2">
+                  {ozonRepairPreview.orders.slice(0, 100).map((o: any) => (
+                    <div key={o.id} className="text-xs border-b pb-1.5 last:border-0 flex justify-between">
+                      <span className="truncate">#{o.orderNumber || o.id} — {o.customerName}</span>
+                      <span className="text-muted-foreground font-mono">{o.trackNumber}</span>
+                    </div>
+                  ))}
+                  {ozonRepairPreview.orders.length > 100 && (
+                    <p className="text-xs text-muted-foreground pt-1">+ {ozonRepairPreview.orders.length - 100} autre(s)…</p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+          <DialogFooter>
+            {!ozonRepairResult ? (
+              <>
+                <Button variant="outline" onClick={() => setOzonRepairOpen(false)} disabled={applyOzonRepairMutation.isPending}>Annuler</Button>
+                {ozonRepairPreview?.count > 0 && (
+                  <Button
+                    onClick={() => applyOzonRepairMutation.mutate()}
+                    disabled={applyOzonRepairMutation.isPending}
+                    data-testid="button-apply-ozon-repair"
+                  >
+                    {applyOzonRepairMutation.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Correction…</> : "Corriger"}
+                  </Button>
+                )}
+              </>
+            ) : (
+              <Button onClick={() => setOzonRepairOpen(false)}>Fermer</Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

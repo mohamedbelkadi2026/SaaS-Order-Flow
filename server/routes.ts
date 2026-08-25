@@ -10399,6 +10399,71 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // ── One-time backfill: orders stuck at 'confirme_reporte' from the
+  // OzonExpress mapping bug (see carrier-service.ts commit 14a72f1) ─────────
+  // Only targets orders that are UNAMBIGUOUSLY affected: shipped via
+  // OzonExpress (shippingProvider) AND actually dispatched (trackNumber set)
+  // — a genuine confirmation-stage 'confirme_reporte' (agent rescheduling the
+  // confirmation call) never has a tracking number yet, so this can't
+  // misfire on a legitimately-in-progress confirmation.
+  app.get("/api/orders/repair-ozon-confirme-reporte/preview", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select({
+        id: orders.id, orderNumber: orders.orderNumber, customerName: orders.customerName,
+        trackNumber: orders.trackNumber, updatedAt: orders.updatedAt,
+      }).from(orders).where(and(
+        eq(orders.storeId, storeId),
+        eq(orders.status, 'confirme_reporte'),
+        sql`LOWER(${orders.shippingProvider}) = 'ozonexpress'`,
+        sql`${orders.trackNumber} IS NOT NULL`,
+      ));
+      res.json({
+        count: rows.length,
+        orders: rows,
+        message: rows.length === 0
+          ? "✅ Aucune commande affectée par l'ancien mapping Ozon."
+          : `${rows.length} commande(s) expédiée(s) via Ozon sont bloquées sur 'confirme_reporte' à cause de l'ancien mapping — elles seront corrigées vers 'unreachable' (injoignable, en cours chez le transporteur).`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/orders/repair-ozon-confirme-reporte/apply", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select({ id: orders.id }).from(orders).where(and(
+        eq(orders.storeId, storeId),
+        eq(orders.status, 'confirme_reporte'),
+        sql`LOWER(${orders.shippingProvider}) = 'ozonexpress'`,
+        sql`${orders.trackNumber} IS NOT NULL`,
+      ));
+      let fixed = 0;
+      const errors: any[] = [];
+      for (const row of rows) {
+        try {
+          // Reuses the exact live status-transition logic (RULE 0.5: ledger
+          // row + stockLogs + products.stock decrement) instead of
+          // reimplementing it — 'unreachable' is now in SHIPPED_STATUS_SET
+          // (14a72f1) while the order's prevStatus ('confirme_reporte') is
+          // not, so this correctly fires as a first-shipped-transition.
+          await storage.updateOrderStatus(row.id, 'unreachable', null);
+          fixed++;
+        } catch (e: any) {
+          errors.push({ orderId: row.id, error: e.message });
+        }
+      }
+      res.json({
+        message: `✅ ${fixed} commande(s) corrigée(s) vers 'unreachable'${errors.length ? ` — ${errors.length} erreur(s)` : ""}.`,
+        fixed, errors,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+
   // GET /api/products/all-ids — lightweight: returns only IDs for "select all across pages"
   app.get("/api/products/all-ids", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
