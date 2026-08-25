@@ -2604,10 +2604,16 @@ export default function Inventory() {
                      return reason.startsWith('recalcul disponible') ||
                        reason.startsWith('correction historique — recalcul');
                    })();
-                 const realMovements = historyMovements.filter((m: any) => !isRecalcAdjustment(m));
-                 const totalRecu = realMovements.filter((m: any) => m.quantity > 0).reduce((s: number, m: any) => s + m.quantity, 0);
-                 const totalSorti = Math.abs(realMovements.filter((m: any) => m.quantity < 0).reduce((s: number, m: any) => s + m.quantity, 0));
-                 const corrections = realMovements.filter((m: any) => m.type === 'adjustment').reduce((s: number, m: any) => s + m.quantity, 0);
+                 // Same numbers as the "Reçu" / "Sortie (Livrées)" columns in
+                 // the inventory table (historyProduct is that same row) —
+                 // NOT a fresh client-side sum of every ledger movement type.
+                 // Those used to disagree (e.g. 414/-271 here vs 300/35 in
+                 // the table for the same product) because this card summed
+                 // every movement (including 'adjustment' rows) while the
+                 // table only counts type='restock' / delivered-status
+                 // departures. One definition now, shared everywhere.
+                 const totalRecu = historyProduct?.recu ?? 0;
+                 const totalSorti = historyProduct?.sortie ?? 0;
                  const orderStatusSummary = doubleDecrementAudit?.statusSummary;
                  const duplicateSummary = doubleDecrementAudit?.summary;
                 // Même valeur que la colonne "Disponible" du tableau (products.stock / somme variantes)
@@ -2676,12 +2682,7 @@ export default function Inventory() {
                         {" "}({orderStatusSummary.deliveredOrders} livrées + {orderStatusSummary.inProgressOrders} en cours + {orderStatusSummary.refusedOrders} refusées/retournées + {orderStatusSummary.awaitingShipmentOrders} en attente d'expédition)
                       </div>
                     )}
-                    {corrections !== 0 && (
-                      <div className="text-xs text-muted-foreground px-1">
-                         Ajustements manuels inclus dans les totaux : {corrections > 0 ? `+${corrections}` : corrections}
-                      </div>
-                    )}
-                     {doubleDecrementAuditLoading ? (
+                    {doubleDecrementAuditLoading ? (
                        <div className="text-xs text-muted-foreground px-1">Vérification des sorties en double…</div>
                      ) : duplicateSummary?.anomalyGroups > 0 && (
                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100" data-testid="stock-history-duplicate-warning">
