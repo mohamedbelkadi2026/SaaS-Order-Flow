@@ -25,7 +25,7 @@ export const SHIPPED_STATUSES = [
   'expédié', 'Attente De Ramassage', 'Ramassé', 'in_progress',
   'En cours de livraison', 'En transit', 'delivered', 'livré', 'livre',
   'livrée', 'Livré', 'Livrée', 'Tentative échouée', 'retourné',
-  'Retour Recu', 'refused', 'En cours de réception',
+  'Retour Recu', 'refused', 'En cours de réception', 'unreachable',
 ] as const;
 
 export const CONFIRMED_STATUS_SET = new Set<string>(CONFIRMED_STATUSES);

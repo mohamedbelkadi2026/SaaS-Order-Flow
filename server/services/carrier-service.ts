@@ -2681,8 +2681,8 @@ export const OZON_STATUS_MAP: Record<string, string> = {
   DEPLA:                 "unreachable",
   DEPLA_DAY_2:           "unreachable",
   DEPLA_DAY_3:           "unreachable",
-  POSTPONED:             "confirme_reporte",
-  RPO:                   "confirme_reporte",
+  POSTPONED:             "unreachable",
+  RPO:                   "unreachable",
   // Intentionally unmapped (financial/edge — never overwrite):
   // INVOICED, NOT_PAID, REMBOURSED, EN, INT, SANS_ADRE, OUT_OF_AREA, SCTR, NCVRT, BAM_SEIZED, DAMAGED
 };
@@ -2710,8 +2710,8 @@ export const OZON_NAME_MAP: Record<string, string> = {
   "livraison sous conditions":         "transit",
   "envoye a l'agence":                 "transit",
   "recu en agence de livraison":       "transit",
-  "reporte":                           "confirme_reporte",
-  "reporte aujourd hui":               "confirme_reporte",
+  "reporte":                           "unreachable",
+  "reporte aujourd hui":               "unreachable",
   "pas de reponse + sms":              "unreachable",
   "pas reponse +deplacement":          "unreachable",
   "pas de reponse j+2":                "unreachable",
