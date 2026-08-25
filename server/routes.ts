@@ -6910,6 +6910,75 @@ export async function registerRoutes(
     }
   });
 
+  // Elementor Pro's native Webhook action (and other WordPress form
+  // builders) can send data in several different shapes depending on
+  // version/config:
+  //   1) { fields: { <field_id>: { id, title, value } , ... }, form_name, ... }
+  //      — Elementor Pro's actual JSON structure. A flat data.name lookup
+  //        finds nothing here because the real value is at
+  //        data.fields.name.value (or under whatever id the site owner gave
+  //        the field) — this was the actual cause of "nothing arrives".
+  //   2) form_fields[name]=..., form_fields[phone]=... (bracket-notation,
+  //      application/x-www-form-urlencoded — same shape already handled by
+  //      the Apps Script template's doPost() elsewhere in this file).
+  //   3) Simple flat JSON: { name: "...", phone: "...", ... }.
+  // This extractor tries all three, matching on EITHER the field's id/key OR
+  // its human title/label against a wide alias list (same philosophy as
+  // COLUMN_ALIASES in the Apps Script generator above), so it keeps working
+  // no matter what a given site named its fields — as long as the id or the
+  // visible label is recognizably "name", "nom", "الاسم", etc.
+  function extractLeadFields(body: any): Record<string, string> {
+    const norm = (s: any) => String(s ?? "").toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+    const ALIASES: Record<string, string[]> = {
+      name: ["nom", "nom client", "nom du client", "nom complet", "client", "fullname", "full name", "name",
+        "customer", "customer name", "customer_name", "destinataire", "recipient",
+        "الاسم", "اسم العميل", "الإسم الكامل", "الاسم الكامل", "اسمك"],
+      phone: ["telephone", "téléphone", "tel", "mobile", "gsm", "whatsapp", "phone",
+        "numero", "numéro", "numero de telephone", "numéro de téléphone", "tele",
+        "رقم الهاتف", "هاتف", "هاتفك"],
+      address: ["adresse", "address", "rue", "street", "العنوان", "votre adresse", "عنوانك"],
+      city: ["ville", "city", "town", "localite", "localité", "المدينة", "votre ville", "مدينتك"],
+      product: ["produit", "product", "article", "item", "المنتج", "nom du produit"],
+      price: ["prix", "price", "montant", "amount", "total", "tarif", "السعر"],
+      ref: ["ref", "reference", "référence", "order_id"],
+    };
+    const canonOf = (key: string): string | null => {
+      const nk = norm(key);
+      for (const [canon, aliases] of Object.entries(ALIASES)) {
+        if (nk === canon || aliases.some(a => norm(a) === nk)) return canon;
+      }
+      return null;
+    };
+    const result: Record<string, string> = {};
+    const consider = (key: string, value: any) => {
+      const canon = canonOf(key);
+      if (!canon || result[canon]) return;
+      const v = value && typeof value === "object" ? (value.value ?? value.val ?? "") : value;
+      const s = String(v ?? "").trim();
+      if (s) result[canon] = s;
+    };
+
+    // 1) Elementor Pro native shape: fields.<id> = { id, title, value }
+    if (body?.fields && typeof body.fields === "object") {
+      for (const [fid, fval] of Object.entries<any>(body.fields)) {
+        consider(fid, fval);
+        if (fval && typeof fval === "object" && fval.title) consider(fval.title, fval);
+      }
+    }
+    // 2) Bracket-notation urlencoded: form_fields[name]=...
+    for (const [key, value] of Object.entries<any>(body || {})) {
+      const m = key.match(/^form_fields\[([^\]]+)\]$/);
+      if (m) consider(m[1], value);
+    }
+    // 3) Flat top-level keys
+    for (const [key, value] of Object.entries<any>(body || {})) {
+      if (key === "fields" || /^form_fields\[/.test(key)) continue;
+      consider(key, value);
+    }
+    return result;
+  }
+
   // ── WordPress / Elementor landing-page webhook ──────────────────────────
   // Dedicated URL for landing pages built outside this platform (e.g. a
   // WordPress + Elementor Pro page) that use Elementor's native "Webhook"
@@ -6918,8 +6987,7 @@ export async function registerRoutes(
   // itself — same shape as the gsheets webhook above, just under its own
   // name and source tag so these orders are traceable separately, and kept
   // fully independent so nothing about the existing integrations changes.
-  // Elementor form field IDs must be set to: name, phone, city, address
-  // (optional), product (optional), price (optional).
+  // Field names/ids/labels are matched loosely — see extractLeadFields above.
   app.post("/api/webhooks/wordpress/:webhookKey", async (req, res) => {
     const webhookKey = req.params.webhookKey;
     if (!webhookKey || webhookKey.length < 12) {
@@ -6939,13 +7007,14 @@ export async function registerRoutes(
       const storeId = store.id;
       wpStoreIdForCatch = storeId;
       const data = req.body;
-      const customerName = data.name || data.customer_name || data['Nom'] || '';
-      const customerPhone = data.phone || data.telephone || data['Téléphone'] || '';
-      const customerCity = data.city || data.ville || data['Ville'] || '';
-      const customerAddress = data.address || data.adresse || data['Adresse'] || '';
-      const productName = data.product || data.produit || data['Produit'] || '';
-      const totalPrice = Math.round(parseFloat(String(data.price || data.prix || data['Prix'] || '0').replace(',', '.')) * 100) || 0;
-      const orderNumber = data.ref || data.order_id || `WP-${Date.now()}`;
+      const lead = extractLeadFields(data);
+      const customerName = lead.name || '';
+      const customerPhone = lead.phone || '';
+      const customerCity = lead.city || '';
+      const customerAddress = lead.address || '';
+      const productName = lead.product || '';
+      const totalPrice = Math.round(parseFloat((lead.price || '0').replace(',', '.')) * 100) || 0;
+      const orderNumber = lead.ref || `WP-${Date.now()}`;
       if (!customerName && !customerPhone) {
         await storage.createIntegrationLog({
           storeId, integrationId: null, provider: 'wordpress',
