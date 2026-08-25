@@ -6926,13 +6926,18 @@ export async function registerRoutes(
       console.warn("[WEBHOOK-SEC] wordpress webhook with short/missing key — rejected");
       return res.status(401).json({ message: "Invalid webhook key" });
     }
+    let wpStoreIdForCatch: number | undefined;
     try {
       const store = await storage.getStoreByWebhookKey(webhookKey);
       if (!store) {
         console.warn(`[WEBHOOK-SEC] wordpress unknown webhook key: ${webhookKey.slice(0, 8)}…`);
+        // No storeId here (key doesn't resolve to any store), so this can't
+        // be logged into a store's own Journal des Intégrations — only
+        // reachable in server logs. Still worth returning a clear body.
         return res.status(404).json({ message: "Invalid webhook key" });
       }
       const storeId = store.id;
+      wpStoreIdForCatch = storeId;
       const data = req.body;
       const customerName = data.name || data.customer_name || data['Nom'] || '';
       const customerPhone = data.phone || data.telephone || data['Téléphone'] || '';
@@ -6941,11 +6946,27 @@ export async function registerRoutes(
       const productName = data.product || data.produit || data['Produit'] || '';
       const totalPrice = Math.round(parseFloat(String(data.price || data.prix || data['Prix'] || '0').replace(',', '.')) * 100) || 0;
       const orderNumber = data.ref || data.order_id || `WP-${Date.now()}`;
-      if (!customerName && !customerPhone) return res.status(400).json({ message: "Missing customer data" });
+      if (!customerName && !customerPhone) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'wordpress',
+          action: 'webhook_received', status: 'fail',
+          message: `❌ Champs manquants — le formulaire n'a envoyé ni "name" ni "phone". Vérifiez les Field ID dans Elementor.`,
+          payload: JSON.stringify(data).slice(0, 1000),
+        });
+        return res.status(400).json({ message: "Missing customer data" });
+      }
       const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       const wpPaywall = await storage.checkPaywall(storeId);
-      if (wpPaywall.isBlocked) return res.status(402).json({ message: wpPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
+      if (wpPaywall.isBlocked) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'wordpress',
+          action: 'webhook_received', status: 'fail',
+          message: `❌ ${wpPaywall.reason === 'expired' ? "Abonnement expiré" : "Limite de commandes atteinte"}`,
+          payload: JSON.stringify(data).slice(0, 1000),
+        });
+        return res.status(402).json({ message: wpPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
+      }
       const storeProducts = await storage.getProductsByStore(storeId);
       const allVariantsWP = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
       const vByProdWP = new Map<number, { name: string }[]>();
@@ -6988,6 +7009,14 @@ export async function registerRoutes(
       }
     } catch (err: any) {
       console.error('WordPress webhook error:', err);
+      if (wpStoreIdForCatch) {
+        await storage.createIntegrationLog({
+          storeId: wpStoreIdForCatch, integrationId: null, provider: 'wordpress',
+          action: 'webhook_received', status: 'fail',
+          message: `❌ Erreur serveur — ${err?.message || err}`,
+          payload: JSON.stringify(req.body || {}).slice(0, 1000),
+        }).catch(() => {});
+      }
       res.status(500).json({ message: 'Processing failed' });
     }
   });
