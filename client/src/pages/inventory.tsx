@@ -2673,13 +2673,22 @@ export default function Inventory() {
                          <div className="text-xl font-bold text-amber-700 dark:text-amber-400" data-testid="text-history-awaiting-shipment-orders">
                            {orderStatusSummary?.awaitingShipmentOrders ?? "—"}
                          </div>
-                         <div className="text-[10px] text-muted-foreground">pas encore expédiées</div>
+                         <div className="text-[10px] text-muted-foreground">confirmée, pas encore expédiée</div>
+                       </Card>
+                       <Card className="p-3 rounded-xl border-slate-200 dark:border-slate-800">
+                         <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                           <PackageX className="w-3 h-3 text-slate-500" /> Pas encore confirmée
+                         </div>
+                         <div className="text-xl font-bold text-slate-700 dark:text-slate-400" data-testid="text-history-not-yet-confirmed-orders">
+                           {orderStatusSummary?.notYetConfirmedOrders ?? "—"}
+                         </div>
+                         <div className="text-[10px] text-muted-foreground">nouveau, rappel, injoignable…</div>
                        </Card>
                     </div>
                     {orderStatusSummary && (
                       <div className="text-[11px] text-muted-foreground px-1">
                         Total : {orderStatusSummary.totalOrders} commande{orderStatusSummary.totalOrders > 1 ? "s" : ""} pour ce produit
-                        {" "}({orderStatusSummary.deliveredOrders} livrées + {orderStatusSummary.inProgressOrders} en cours + {orderStatusSummary.refusedOrders} refusées/retournées + {orderStatusSummary.awaitingShipmentOrders} en attente d'expédition)
+                        {" "}({orderStatusSummary.deliveredOrders} livrées + {orderStatusSummary.inProgressOrders} en cours + {orderStatusSummary.refusedOrders} refusées/retournées + {orderStatusSummary.awaitingShipmentOrders} en attente d'expédition + {orderStatusSummary.notYetConfirmedOrders} pas encore confirmées)
                       </div>
                     )}
                     {doubleDecrementAuditLoading ? (

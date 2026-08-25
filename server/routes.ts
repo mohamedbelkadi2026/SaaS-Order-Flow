@@ -9961,6 +9961,7 @@ function ensureHeaders(sheet) {
       inProgressOrders: number;
       refusedOrders: number;
       awaitingShipmentOrders: number;
+      notYetConfirmedOrders: number;
       totalOrders: number;
     } | null = null;
     if (filter.productId) {
@@ -9976,21 +9977,28 @@ function ensureHeaders(sheet) {
       const distinctOrders = new Map<number, string>();
       for (const order of productOrders) distinctOrders.set(order.orderId, order.status);
 
-      // Every distinct order for this product falls into exactly ONE of four
+      // Every distinct order for this product falls into exactly ONE of five
       // buckets, all derived from the ledger so they can never drift from
       // what actually moved stock (same source as the inventory table's "En
       // cours" — see getInventoryStats in storage.ts):
       //   • Livrées                 → delivered right now
       //   • En cours (transporteur) → shipped, not delivered, not returned
       //   • Refusées / Retournées   → shipped, then resolved back as a return
-      //   • En attente d'expédition → confirmed (or earlier) but never
-      //                               shipped yet — no ledger departure row
+      //   • En attente d'expédition → CONFIRMED (status='confirme' or
+      //                               'confirme_reporte') but never shipped
+      //                               yet — no ledger departure row
+      //   • Pas encore confirmée    → never shipped AND not confirmed either
+      //                               (nouveau, rappel, Injoignable at the
+      //                               confirmation stage, etc.) — this is a
+      //                               different pipeline stage from "waiting
+      //                               to ship" and was previously lumped
+      //                               into 'En attente d'expédition', which
+      //                               is misleading: an uncontacted lead
+      //                               isn't "awaiting shipment".
       // This intentionally never enumerates carrier status strings. It also
-      // means these four numbers always sum to the product's total order
-      // count, matching the Dashboard's own COMMANDES/LIVRÉES/EN COURS/
-      // REFUSÉES cards for the same product filter — instead of a single
-      // "En cours" number that only covered the shipped subset and left the
-      // rest invisible.
+      // means these five numbers always sum to the product's total order
+      // count, matching the Dashboard's own COMMANDES/CONFIRMÉES/LIVRÉES/EN
+      // COURS/REFUSÉES cards for the same product filter.
       const shippedOrderIds = new Set<number>();
       const returnedOrderIds = new Set<number>();
       for (const row of matchingRows as any[]) {
@@ -10004,6 +10012,7 @@ function ensureHeaders(sheet) {
         inProgressOrders: 0,
         refusedOrders: 0,
         awaitingShipmentOrders: 0,
+        notYetConfirmedOrders: 0,
         totalOrders: distinctOrders.size,
       };
       distinctOrders.forEach((status, orderId) => {
@@ -10015,8 +10024,10 @@ function ensureHeaders(sheet) {
           statusSummary!.refusedOrders++;
         } else if (wasShipped) {
           statusSummary!.inProgressOrders++;
-        } else {
+        } else if (status === 'confirme' || status === 'confirme_reporte') {
           statusSummary!.awaitingShipmentOrders++;
+        } else {
+          statusSummary!.notYetConfirmedOrders++;
         }
       });
     }
