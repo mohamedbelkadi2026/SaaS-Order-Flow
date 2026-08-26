@@ -541,7 +541,7 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
     ref:               `TJG-${input.orderNumber}`,
     external_ref:      `TJG-${input.orderNumber}`,
 
-    replace:   "true",
+    replace:   "false", // "true" is only for Ameex's exchange/replacement-parcel flow (paired with exchange_code, which this platform doesn't set) — was incorrectly copied from their Postman EXAMPLE and defaulted on every normal order, causing every shipment to show as "Échange" in Ameex's dashboard
     open:      input.canOpen ? "YES" : "NO",
     try:       "YES",
     fragile:   "0",
