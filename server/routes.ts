@@ -1105,11 +1105,15 @@ export async function registerRoutes(
       dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
     });
     // computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
-    // IMPORTANT: profResult.totals.netProfit is profit *before* ad spend (Revenue − COGS −
-    // Shipping − Packaging − Commissions). Subtract adSpendTotal (already in centimes) to get
-    // the true net profit after ads, consistent with the Rentabilité Avancée formula.
-    const profitBeforeAds = Math.round(profResult.totals.netProfit * 100);
-    const netProfit = profitBeforeAds - adSpendTotal;
+    // profResult.totals.netProfit is ALREADY the fully-final profit — each per-product row is
+    // revenue − productCost − shippingCost − packagingCost − confirmationCost − adSpend (see
+    // profit.ts), summed into totals. Do NOT subtract adSpendTotal again here — that used to
+    // double-count ad spend, making PROFIT NET on this dashboard disagree with the identical
+    // formula on Rentabilité Avancée for the exact same period (by exactly the ad-spend amount,
+    // e.g. -11457.96 DH here vs the correct +11308.52 DH there — a 22766.48 DH gap, matching
+    // Dépenses publicitaires exactly). adSpendTotal is still used below for ROAS/ROI, which
+    // legitimately need it as a standalone figure.
+    const netProfit = Math.round(profResult.totals.netProfit * 100);
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
