@@ -2821,13 +2821,22 @@ export class DatabaseStorage implements IStorage {
       // deliverRate = Delivered / Confirmed (not total) — correct carrier-delivery formula
       const deliverRate = totalConfirmedQty > 0 ? Math.round(sortie / totalConfirmedQty * 100) : 0;
 
-      // ── Disponible = Reçu − Sortie (Livrées) − En cours ────────────────────
-      // Pure ledger formula instead of reading products.stock directly — the
-      // three inputs are already ledger-derived (above), so this can never
-      // drift from what the rest of this drawer/table shows. A return
-      // (stockMovements type='returned') is already excluded from sortie/
-      // inTransit, so it automatically flows back into Disponible the moment
-      // it's recorded — no manual "Réparer" step needed.
+      // ── Disponible = Reçu + Ajustements manuels − Sortie (Livrées) − En cours ──
+      // Pure ledger formula instead of reading products.stock directly — all
+      // four inputs are ledger-derived, so this can never drift from what the
+      // rest of this drawer/table shows. A return (stockMovements
+      // type='returned') is already excluded from sortie/inTransit, so it
+      // automatically flows back into Disponible the moment it's recorded —
+      // no manual "Réparer" step needed.
+      // IMPORTANT: manual stock edits from "Modifier le produit" record a
+      // signed 'adjustment' movement for the delta (see PATCH
+      // /api/products/:id) — without including it here, a manual correction
+      // (e.g. 5 → 10) would be invisible to this formula, and the self-heal
+      // below would silently overwrite products.stock right back to the
+      // pre-edit value on the very next fetch.
+      const adjustments = productMovements
+        .filter(m => m.type === 'adjustment')
+        .reduce((s, m) => s + (m.quantity || 0), 0);
       // Self-heal: for products with no real variants, the correction is
       // unambiguous (one stock number, one ledger) — write it back to
       // products.stock so every other part of the app that reads it directly
@@ -2835,7 +2844,7 @@ export class DatabaseStorage implements IStorage {
       // Products WITH variants keep their per-variant stock untouched here —
       // distributing a whole-product ledger delta across variants would be a
       // guess, not a correction.
-      const available = recu - sortie - inTransit;
+      const available = recu + adjustments - sortie - inTransit;
       if (variants.length === 0 && available !== p.stock) {
         db.update(products).set({ stock: available }).where(eq(products.id, p.id))
           .catch(err => console.error(`[Disponible self-heal] product ${p.id}:`, err.message));
