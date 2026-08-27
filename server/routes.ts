@@ -9,7 +9,7 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
-import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
+import { DELIVERED_STATUSES, SHIPPED_STATUSES, SHIPPED_STATUS_SET, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
@@ -10020,7 +10020,18 @@ function ensureHeaders(sheet) {
         totalOrders: distinctOrders.size,
       };
       distinctOrders.forEach((status, orderId) => {
-        const wasShipped = shippedOrderIds.has(orderId);
+        // Two independent signals for "this order has shipped": the ledger
+        // (shippedOrderIds, from stockMovements rows) AND the order's
+        // current status itself. Normally they agree — RULE 0.5 in
+        // updateOrderStatus creates the ledger row at the same moment the
+        // status becomes a SHIPPED_STATUS_SET value. But a status set
+        // through a path that bypasses that (a bulk import writing
+        // orders.status directly, an older carrier-sync gap, etc.) leaves
+        // the ledger silent while the status itself is still unambiguous
+        // proof of shipment — treating that as "not shipped" is what put
+        // genuinely-shipped orders in "Pas encore confirmée" instead of
+        // "En cours". Either signal being true is enough.
+        const wasShipped = shippedOrderIds.has(orderId) || SHIPPED_STATUS_SET.has(status);
         const wasReturned = returnedOrderIds.has(orderId);
         if (isDeliveredStatus(status)) {
           statusSummary!.deliveredOrders++;
