@@ -14,7 +14,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, Calendar, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3, MapPin, Target } from "lucide-react";
+import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, EyeOff, Filter, CalendarDays, Calendar, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3, MapPin, Target } from "lucide-react";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -104,24 +104,36 @@ function getDatePreset(preset: string): { dateFrom: string; dateTo: string } {
 
 export default function Dashboard() {
   useRealtime(); // live order + status updates via Socket.io
-  const [filters, setFilters] = useState({
-    city: 'all',
-    productId: 'all',
-    agentId: 'all',
-    source: 'all',
-    shippingProvider: 'all',
-    utmSource: 'all',
-    utmCampaign: 'all',
-    magasinId: 'all',
-    datePreset: 'all',
-    dateFrom: '',
-    dateTo: '',
-    // 'creation' (default) filters everything by order-creation date.
-    // 'shipping' filters the shipping/delivery KPIs (EXPÉDIÉS, LIVRÉES,
-    // EN COURS, REFUSÉES, carrier performance) by ship (pickup) date instead,
-    // so they can reconcile with a carrier's own ship-date-based count.
-    dateType: 'creation',
+  const [filters, setFilters] = useState(() => {
+    // Default to the current month instead of "Toutes les dates" — the
+    // dashboard should open already scoped to what's happening now, not
+    // require picking "Ce mois" every time. getDatePreset already has the
+    // exact logic for this (first day of the month → today).
+    const { dateFrom, dateTo } = getDatePreset('this_month');
+    return {
+      city: 'all',
+      productId: 'all',
+      agentId: 'all',
+      source: 'all',
+      shippingProvider: 'all',
+      utmSource: 'all',
+      utmCampaign: 'all',
+      magasinId: 'all',
+      datePreset: 'this_month',
+      dateFrom,
+      dateTo,
+      // 'creation' (default) filters everything by order-creation date.
+      // 'shipping' filters the shipping/delivery KPIs (EXPÉDIÉS, LIVRÉES,
+      // EN COURS, REFUSÉES, carrier performance) by ship (pickup) date instead,
+      // so they can reconcile with a carrier's own ship-date-based count.
+      dateType: 'creation',
+    };
   });
+
+  // Privacy toggle for the "Produits Commandés" table — lets an admin hide
+  // exact product names (e.g. while screen-sharing) without losing the
+  // stats columns next to them. Session-only, not persisted.
+  const [hideProductNames, setHideProductNames] = useState(false);
 
   const activeFilters = useMemo(() => {
     const f: Record<string, string> = {};
@@ -278,7 +290,10 @@ export default function Dashboard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [platformFilter, setPlatformFilter] = useState('all');
-  const [mbDateRange, setMbDateRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
+  const [mbDateRange, setMbDateRange] = useState<{ from: string; to: string }>(() => {
+    const { dateFrom, dateTo } = getDatePreset('this_month');
+    return { from: dateFrom, to: dateTo };
+  });
   const [mbCityFilter, setMbCityFilter] = useState('all');
   const [mbProductFilter, setMbProductFilter] = useState('all');
   const [mbCampaignFilter, setMbCampaignFilter] = useState('all');
@@ -405,6 +420,7 @@ export default function Dashboard() {
   };
 
   const resetFilters = () => {
+    const { dateFrom, dateTo } = getDatePreset('this_month');
     setFilters({
       city: 'all', productId: 'all',
       // For agents, keep the agentId-lock to themselves so reset doesn't
@@ -413,7 +429,7 @@ export default function Dashboard() {
       agentId: isAgent && user?.id ? String(user.id) : 'all',
       source: 'all',
       shippingProvider: 'all', utmSource: 'all', utmCampaign: 'all',
-      magasinId: 'all', datePreset: 'all', dateFrom: '', dateTo: '',
+      magasinId: 'all', datePreset: 'this_month', dateFrom, dateTo,
       dateType: 'creation',
     });
     if (isAgent) {
@@ -2334,7 +2350,18 @@ export default function Dashboard() {
       <Card className="rounded-xl border-border/50 shadow-sm bg-white dark:bg-card" data-testid="card-product-performance">
         <CardHeader className="p-4 pb-2 flex flex-row items-center justify-between">
           <CardTitle className="text-base font-semibold uppercase tracking-wide">Produits Commandés</CardTitle>
-          <span className="text-xs text-muted-foreground">{stats?.productPerformance?.length || 0} produit(s)</span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">{stats?.productPerformance?.length || 0} produit(s)</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 gap-1.5 text-xs text-muted-foreground"
+              onClick={() => setHideProductNames(v => !v)}
+              data-testid="button-toggle-product-names"
+            >
+              {hideProductNames ? <><EyeOff className="w-3.5 h-3.5" /> Noms masqués</> : <><Eye className="w-3.5 h-3.5" /> Masquer les noms</>}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -2361,7 +2388,9 @@ export default function Dashboard() {
                     <TableRow key={i} className="hover:bg-muted/20 transition-colors" data-testid={`product-perf-${i}`}>
                       <TableCell>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium text-sm">{p.name}</span>
+                          <span className="font-medium text-sm">
+                            {hideProductNames ? '••••••••' : p.name}
+                          </span>
                           {!p.inStock && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/50 font-medium">
                               Hors Stock
