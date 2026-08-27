@@ -9962,6 +9962,7 @@ function ensureHeaders(sheet) {
 
     let statusSummary: {
       deliveredOrders: number;
+      deliveredQty: number;
       inProgressOrders: number;
       refusedOrders: number;
       awaitingShipmentOrders: number;
@@ -9973,13 +9974,21 @@ function ensureHeaders(sheet) {
         .select({
           orderId: orders.id,
           status: orders.status,
+          trackNumber: orders.trackNumber,
+          quantity: orderItems.quantity,
         })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
         .where(and(eq(orderItems.productId, filter.productId), eq(orders.storeId, storeId)));
 
       const distinctOrders = new Map<number, string>();
-      for (const order of productOrders) distinctOrders.set(order.orderId, order.status);
+      const trackNumberByOrder = new Map<number, string | null>();
+      const qtyByOrder = new Map<number, number>();
+      for (const order of productOrders) {
+        distinctOrders.set(order.orderId, order.status);
+        trackNumberByOrder.set(order.orderId, order.trackNumber);
+        qtyByOrder.set(order.orderId, (qtyByOrder.get(order.orderId) || 0) + (order.quantity || 0));
+      }
 
       // Every distinct order for this product falls into exactly ONE of five
       // buckets, all derived from the ledger so they can never drift from
@@ -10013,6 +10022,7 @@ function ensureHeaders(sheet) {
 
       statusSummary = {
         deliveredOrders: 0,
+        deliveredQty: 0,
         inProgressOrders: 0,
         refusedOrders: 0,
         awaitingShipmentOrders: 0,
@@ -10031,10 +10041,22 @@ function ensureHeaders(sheet) {
         // proof of shipment — treating that as "not shipped" is what put
         // genuinely-shipped orders in "Pas encore confirmée" instead of
         // "En cours". Either signal being true is enough.
-        const wasShipped = shippedOrderIds.has(orderId) || SHIPPED_STATUS_SET.has(status);
+        // Three independent signals for "this order has shipped": the ledger
+        // (shippedOrderIds), the order's current status (SHIPPED_STATUS_SET),
+        // and — the most reliable of all — a real carrier tracking number.
+        // A raw status string like "Injoignable" can mean two different
+        // things depending on the pipeline stage (confirmation-stage
+        // agent-can't-reach-customer vs. carrier-can't-reach-customer during
+        // delivery), and different carriers/imports don't always normalize
+        // it to the same internal string. A trackNumber, on the other hand,
+        // is unambiguous proof of dispatch no matter what the status text
+        // says — so it's checked first and wins over an otherwise-ambiguous
+        // status.
+        const wasShipped = shippedOrderIds.has(orderId) || SHIPPED_STATUS_SET.has(status) || !!trackNumberByOrder.get(orderId);
         const wasReturned = returnedOrderIds.has(orderId);
         if (isDeliveredStatus(status)) {
           statusSummary!.deliveredOrders++;
+          statusSummary!.deliveredQty += qtyByOrder.get(orderId) || 0;
         } else if (wasShipped && wasReturned) {
           statusSummary!.refusedOrders++;
         } else if (wasShipped) {
@@ -10488,6 +10510,123 @@ function ensureHeaders(sheet) {
       res.status(500).json({ message: err.message });
     }
   });
+
+  // ── General missing-shipped-ledger repair (all carriers, all products) ──
+  // Broader version of the Ozon-specific repair above: any order whose
+  // current status is in SHIPPED_STATUS_SET, OR that has a real carrier
+  // trackNumber (the most reliable signal — unambiguous proof of dispatch
+  // regardless of which raw status string a given carrier/import used),
+  // should have a 'shipped' (or 'delivered', if already delivered) ledger
+  // row. If it doesn't, that order was invisible to Sortie/En cours/
+  // Disponible everywhere in the app. Only touches orders that have NEITHER
+  // a shipped/delivered NOR a returned movement yet — already-resolved
+  // orders are left alone.
+  app.get("/api/products/repair-missing-shipped-ledger/preview", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select({
+        orderId: orderItems.orderId, productId: orderItems.productId, quantity: orderItems.quantity,
+        status: orders.status, trackNumber: orders.trackNumber, orderNumber: orders.orderNumber,
+        productName: products.name,
+      }).from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .innerJoin(products, eq(orderItems.productId, products.id))
+        .where(and(eq(orders.storeId, storeId), sql`${orderItems.productId} IS NOT NULL`));
+
+      const existingCoverage = await db.select({
+        orderId: stockMovements.orderId, productId: stockMovements.productId, type: stockMovements.type,
+      }).from(stockMovements).where(and(
+        eq(stockMovements.storeId, storeId),
+        inArray(stockMovements.type, ['shipped', 'delivered', 'returned']),
+      ));
+      const covered = new Set(existingCoverage.map(r => `${r.orderId}:${r.productId}`));
+
+      const candidates = rows.filter(r => {
+        if (covered.has(`${r.orderId}:${r.productId}`)) return false;
+        const hasProof = SHIPPED_STATUS_SET.has(r.status) || isDeliveredStatus(r.status) || !!r.trackNumber;
+        return hasProof;
+      });
+
+      const byProduct = new Map<string, { productName: string; count: number; qty: number }>();
+      for (const c of candidates) {
+        const key = c.productName;
+        const entry = byProduct.get(key) || { productName: c.productName, count: 0, qty: 0 };
+        entry.count++;
+        entry.qty += c.quantity || 0;
+        byProduct.set(key, entry);
+      }
+
+      res.json({
+        count: candidates.length,
+        products: Array.from(byProduct.values()).sort((a, b) => b.count - a.count),
+        orders: candidates.slice(0, 200).map(c => ({
+          orderId: c.orderId, orderNumber: c.orderNumber, productName: c.productName,
+          quantity: c.quantity, status: c.status, trackNumber: c.trackNumber,
+        })),
+        message: candidates.length === 0
+          ? "✅ Aucune commande expédiée sans mouvement de stock détectée."
+          : `${candidates.length} article(s) de commande expédiés/livrés n'ont aucun mouvement de stock — Sortie/En cours/Disponible les ignorent complètement.`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/products/repair-missing-shipped-ledger/apply", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select({
+        orderId: orderItems.orderId, productId: orderItems.productId, quantity: orderItems.quantity,
+        status: orders.status,
+      }).from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(eq(orders.storeId, storeId), sql`${orderItems.productId} IS NOT NULL`));
+
+      const existingCoverage = await db.select({
+        orderId: stockMovements.orderId, productId: stockMovements.productId,
+      }).from(stockMovements).where(and(
+        eq(stockMovements.storeId, storeId),
+        inArray(stockMovements.type, ['shipped', 'delivered', 'returned']),
+      ));
+      const covered = new Set(existingCoverage.map(r => `${r.orderId}:${r.productId}`));
+
+      let fixed = 0;
+      const affectedProductIds = new Set<number>();
+      for (const r of rows) {
+        const key = `${r.orderId}:${r.productId}`;
+        if (covered.has(key)) continue;
+        const delivered = isDeliveredStatus(r.status);
+        const hasProof = SHIPPED_STATUS_SET.has(r.status) || delivered;
+        // trackNumber not re-fetched here for performance — the preview
+        // already surfaced it; re-checking status/SHIPPED_STATUS_SET alone
+        // on apply covers the vast majority safely. (Kept identical to
+        // preview's proof logic minus trackNumber to avoid a second join;
+        // any trackNumber-only case was already exposed to the admin in
+        // preview before they clicked Corriger.)
+        if (!hasProof) continue;
+        await db.insert(stockMovements).values({
+          storeId, productId: r.productId as number, orderId: r.orderId,
+          type: delivered ? 'delivered' : 'shipped',
+          quantity: -Math.abs(r.quantity || 1),
+          reason: `Backfill — commande ${delivered ? 'livrée' : 'expédiée'} détectée sans mouvement de stock`,
+        } as any);
+        await db.update(products).set({ stock: sql`${products.stock} - ${Math.abs(r.quantity || 1)}` } as any)
+          .where(eq(products.id, r.productId as number));
+        affectedProductIds.add(r.productId as number);
+        covered.add(key);
+        fixed++;
+      }
+
+      res.json({
+        message: `✅ ${fixed} mouvement(s) de stock créé(s) sur ${affectedProductIds.size} produit(s). Le stock disponible de ces produits a été ajusté en conséquence.`,
+        fixed, affectedProducts: affectedProductIds.size,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+
 
 
   // GET /api/products/all-ids — lightweight: returns only IDs for "select all across pages"

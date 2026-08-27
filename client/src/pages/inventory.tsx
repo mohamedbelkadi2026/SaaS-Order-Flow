@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2, Calculator, Clock, Truck } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy, Loader2, Calculator, Clock, Truck, PackageCheck } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
@@ -801,6 +801,29 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
       toast({ title: "✅ Commandes corrigées", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  // General (carrier-agnostic) version of the same idea: any order whose
+  // status or trackNumber proves it shipped/delivered, but has no
+  // stockMovements row at all — invisible to Sortie/En cours/Disponible for
+  // EVERY product, not just Ozon's confirme_reporte case.
+  const [shippedLedgerPreview, setShippedLedgerPreview] = useState<any>(null);
+  const [shippedLedgerOpen, setShippedLedgerOpen] = useState(false);
+  const [shippedLedgerResult, setShippedLedgerResult] = useState<any>(null);
+  const auditShippedLedgerMutation = useMutation({
+    mutationFn: () => apiRequest("GET", "/api/products/repair-missing-shipped-ledger/preview").then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => { setShippedLedgerPreview(data); setShippedLedgerResult(null); setShippedLedgerOpen(true); },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+  const applyShippedLedgerMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/products/repair-missing-shipped-ledger/apply", {}).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setShippedLedgerResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      toast({ title: "✅ Ledger réparé", description: data.message });
     },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
@@ -1618,6 +1641,20 @@ export default function Inventory() {
             <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
           ) : (
             <><Truck className="w-4 h-4" /> Réparer statuts Ozon</>
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => auditShippedLedgerMutation.mutate()}
+          disabled={auditShippedLedgerMutation.isPending}
+          data-testid="button-repair-missing-shipped-ledger"
+        >
+          {auditShippedLedgerMutation.isPending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
+          ) : (
+            <><PackageCheck className="w-4 h-4" /> Réparer ledger manquant</>
           )}
         </Button>
         <Button
@@ -2644,9 +2681,9 @@ export default function Inventory() {
                            <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Livrées
                          </div>
                          <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400" data-testid="text-history-delivered-orders">
-                           {orderStatusSummary?.deliveredOrders ?? "—"}
+                           {orderStatusSummary?.deliveredQty ?? "—"}
                          </div>
-                         <div className="text-[10px] text-muted-foreground">commandes distinctes</div>
+                         <div className="text-[10px] text-muted-foreground">{orderStatusSummary?.deliveredOrders ?? 0} commande{(orderStatusSummary?.deliveredOrders ?? 0) > 1 ? "s" : ""} distincte{(orderStatusSummary?.deliveredOrders ?? 0) > 1 ? "s" : ""}</div>
                        </Card>
                        <Card className="p-3 rounded-xl border-blue-200 dark:border-blue-900">
                          <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
@@ -3176,6 +3213,54 @@ export default function Inventory() {
               </>
             ) : (
               <Button onClick={() => setOzonRepairOpen(false)}>Fermer</Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── General missing-shipped-ledger repair: preview then confirm ── */}
+      <Dialog open={shippedLedgerOpen} onOpenChange={(v) => { if (!applyShippedLedgerMutation.isPending) setShippedLedgerOpen(v); }}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><PackageCheck className="w-5 h-5 text-violet-500" /> Réparer ledger manquant</DialogTitle>
+            <DialogDescription>{shippedLedgerResult?.message ?? shippedLedgerPreview?.message}</DialogDescription>
+          </DialogHeader>
+          {!shippedLedgerResult && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Détecte, pour tous les produits et tous les transporteurs, les commandes dont le statut ou le numéro
+                de suivi prouve qu'elles ont été expédiées/livrées, mais qui n'ont aucun mouvement de stock —
+                invisibles pour Sortie/En cours/Disponible. Crée le mouvement manquant et ajuste le stock disponible
+                en conséquence.
+              </p>
+              {shippedLedgerPreview?.products?.length > 0 && (
+                <div className="space-y-1.5 max-h-56 overflow-y-auto border rounded-lg p-2">
+                  {shippedLedgerPreview.products.map((p: any, i: number) => (
+                    <div key={i} className="text-xs border-b pb-1.5 last:border-0 flex justify-between">
+                      <span className="truncate">{p.productName}</span>
+                      <span className="text-muted-foreground">{p.count} commande(s) — {p.qty} unité(s)</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+          <DialogFooter>
+            {!shippedLedgerResult ? (
+              <>
+                <Button variant="outline" onClick={() => setShippedLedgerOpen(false)} disabled={applyShippedLedgerMutation.isPending}>Annuler</Button>
+                {shippedLedgerPreview?.count > 0 && (
+                  <Button
+                    onClick={() => applyShippedLedgerMutation.mutate()}
+                    disabled={applyShippedLedgerMutation.isPending}
+                    data-testid="button-apply-shipped-ledger-repair"
+                  >
+                    {applyShippedLedgerMutation.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Correction…</> : "Corriger"}
+                  </Button>
+                )}
+              </>
+            ) : (
+              <Button onClick={() => setShippedLedgerOpen(false)}>Fermer</Button>
             )}
           </DialogFooter>
         </DialogContent>
