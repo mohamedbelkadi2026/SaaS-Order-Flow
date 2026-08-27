@@ -26,14 +26,10 @@ export function buildImportedAgentNameIndex(
   for (const user of users) {
     const role = String(user.role || "").trim().toLowerCase();
     if (role !== "agent") continue;
-    // isActive defaults to 1 in the schema, but any account whose isActive
-    // ended up NULL (predates the column's default, or came through a
-    // migration/import path that never explicitly set it) would fail a
-    // strict `!== 1` check and get silently excluded here — even with an
-    // exact username match, that agent's imported orders would ALWAYS
-    // resolve to "unmatched", regardless of how the sheet spelled their
-    // name. Only exclude agents that are explicitly deactivated (0).
-    if (user.isActive === 0) continue;
+    // No isActive check: a historical CSV import should attribute orders to
+    // whichever agent actually confirmed them at the time, even if that
+    // agent has since been deactivated — deactivating someone later
+    // shouldn't erase their past attribution.
     const key = normalizeImportedAgentName(user.username);
     if (!key) continue;
 
