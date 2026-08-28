@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection } from "./services/carrier-service";
+import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -13437,6 +13437,20 @@ function ensureHeaders(sheet) {
     }
   });
 
+  app.post("/api/shipping/olivraison/test", requireAuth, async (req: any, res: any) => {
+    try {
+      const apiKey    = String(req.body?.apiKey || "").trim();
+      const secretKey = String(req.body?.secretKey || "").trim();
+      if (!apiKey || !secretKey) {
+        return res.status(400).json({ ok: false, message: "apiKey et secretKey requis." });
+      }
+      const result = await testOlivraisonConnection(apiKey, secretKey);
+      res.status(result.ok ? 200 : 422).json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, message: err?.message || "Erreur test Olivraison" });
+    }
+  });
+
   /** POST /api/shipping/sendit/sync-districts — importe les districts Sendit pour le store */
   app.post("/api/shipping/sendit/sync-districts", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
     try {
@@ -20926,6 +20940,31 @@ function sendToAPI(data) {
       }
     } catch (e: any) {
       console.log(`[OZON-AUTO-POLL] failed: ${e?.message}`);
+    }
+  }, 10 * 60 * 1000);
+
+  // Olivraison auto-poll: same idea as Ozon above, every 10 minutes. Olivraison
+  // has no push webhook (confirmed from their official docs — only
+  // GET /package/{trackingID} exists), so this periodic pull is the only way
+  // its order statuses ever update automatically. Independent loop, reuses
+  // the same generic syncCarrierOrdersInternal → runSyncLoop → trackByCarrier
+  // → trackOlivraisonShipment path already wired for the manual sync button.
+  setInterval(async () => {
+    try {
+      const accts = await storage.getAllCarrierAccountsByProvider('olivraison');
+      const storeIds = [...new Set(accts.map((a: any) => a.storeId as number))];
+      for (const sid of storeIds) {
+        try {
+          const r = await syncCarrierOrdersInternal(sid, 'olivraison');
+          if (r.updated) {
+            console.log(`[OLIVRAISON-AUTO-POLL] storeId=${sid} — ${r.synced} checked, ${r.updated} statuts`);
+          }
+        } catch (e: any) {
+          console.log(`[OLIVRAISON-AUTO-POLL] storeId=${sid} failed: ${e?.message}`);
+        }
+      }
+    } catch (e: any) {
+      console.log(`[OLIVRAISON-AUTO-POLL] failed: ${e?.message}`);
     }
   }, 10 * 60 * 1000);
 

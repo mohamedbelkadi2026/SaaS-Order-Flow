@@ -233,6 +233,30 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     }
   };
 
+  // ── Olivraison-specific fields (apiKey + secretKey → Bearer JWT, same shape as Sendit) ──
+  const isOlivraison = providerId === "olivraison";
+  const [olivraisonSecretKey,  setOlivraisonSecretKey]  = useState<string>("");
+  const [showOlivraisonSec,    setShowOlivraisonSec]    = useState(false);
+  const [olivraisonTestResult, setOlivraisonTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [olivraisonTesting,    setOlivraisonTesting]    = useState(false);
+
+  const handleOlivraisonTest = async () => {
+    setOlivraisonTestResult(null);
+    setOlivraisonTesting(true);
+    try {
+      const res = await apiRequest("POST", "/api/shipping/olivraison/test", {
+        apiKey: apiKey.trim(),
+        secretKey: olivraisonSecretKey.trim(),
+      });
+      const data = await res.json();
+      setOlivraisonTestResult({ ok: data.ok ?? res.ok, message: data.message || (res.ok ? "OK" : "Erreur") });
+    } catch {
+      setOlivraisonTestResult({ ok: false, message: "Erreur réseau" });
+    } finally {
+      setOlivraisonTesting(false);
+    }
+  };
+
   // ── Express Coursier-specific fields ─────────────────────────────────────
   const isExpressCoursier = providerId === "expresscoursier";
   const [ecStoreId, setEcStoreId] = useState<string>(
@@ -413,11 +437,25 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           throw new Error(testData?.message || "Identifiants Sendit invalides — vérifiez votre public_key et secret_key.");
         }
       }
+      // Olivraison : tester apiKey + secretKey AVANT de sauvegarder
+      if (providerId === "olivraison" && apiKey.trim() && olivraisonSecretKey.trim()) {
+        const testRes = await apiRequest("POST", "/api/shipping/olivraison/test", {
+          apiKey: apiKey.trim(),
+          secretKey: olivraisonSecretKey.trim(),
+        });
+        const testData = await testRes.json().catch(() => ({}));
+        if (!testRes.ok || testData?.ok === false) {
+          throw new Error(testData?.message || "Identifiants Olivraison invalides — vérifiez votre apiKey et secretKey.");
+        }
+      }
       if (existingAccount) {
         const body: any = { storeName: resolvedStoreName, assignmentRule: rule };
         if (isSendit) {
           if (apiKey.trim())            body.apiKey    = apiKey;
           if (senditSecretKey.trim())   body.apiSecret = senditSecretKey;
+        } else if (isOlivraison) {
+          if (apiKey.trim())               body.apiKey    = apiKey;
+          if (olivraisonSecretKey.trim())  body.apiSecret = olivraisonSecretKey;
         } else if (isAmeex) {
           if (apiKey.trim())        body.apiKey          = apiKey;
           if (ameexApiId.trim())    body.apiSecret       = ameexApiId;
@@ -456,6 +494,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         };
         if (isSendit) {
           payload.apiSecret = senditSecretKey.trim() || undefined;
+          payload.storeName = resolvedStoreName;
+        } else if (isOlivraison) {
+          payload.apiSecret = olivraisonSecretKey.trim() || undefined;
           payload.storeName = resolvedStoreName;
         } else if (isAmeex) {
           payload.apiSecret       = ameexApiId.trim() || undefined;
@@ -1384,6 +1425,77 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 )}
               </div>
             </>
+          ) : isOlivraison ? (
+            <>
+              {/* Olivraison: apiKey + secretKey — same shape as Sendit */}
+              <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-[11px] text-blue-800 leading-relaxed">
+                🔑 Trouvez vos clés dans votre compte Olivraison (portail partenaires). Vous aurez besoin des deux clés pour la connexion.
+              </div>
+
+              {/* apiKey */}
+              <div className="space-y-1.5">
+                <Label htmlFor="olivraison_key_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                  apiKey <span className="text-red-500">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="olivraison_key_create"
+                    data-testid="input-olivraison-api-key"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type="text"
+                    placeholder="Votre Olivraison apiKey..."
+                    value={apiKey}
+                    onChange={e => setApiKey(e.target.value)}
+                    className={`h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                </div>
+              </div>
+
+              {/* secretKey */}
+              <div className="space-y-1.5">
+                <Label htmlFor="olivraison_sec_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                  secretKey <span className="text-red-500">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="olivraison_sec_create"
+                    data-testid="input-olivraison-secret-key"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type={showOlivraisonSec ? "text" : "password"}
+                    placeholder="Votre Olivraison secretKey..."
+                    value={olivraisonSecretKey}
+                    onChange={e => setOlivraisonSecretKey(e.target.value)}
+                    className={`pr-8 h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!olivraisonSecretKey.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                  <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowOlivraisonSec(v => !v)}>
+                    {showOlivraisonSec ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Test connexion */}
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={handleOlivraisonTest}
+                  disabled={olivraisonTesting || !apiKey.trim() || !olivraisonSecretKey.trim()}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 transition-colors"
+                >
+                  {olivraisonTesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
+                  Tester la connexion Olivraison
+                </button>
+                {olivraisonTestResult && (
+                  <div className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs font-medium ${olivraisonTestResult.ok ? "bg-green-50 border border-green-200 text-green-700" : "bg-red-50 border border-red-200 text-red-700"}`}>
+                    {olivraisonTestResult.ok ? <Check className="w-3.5 h-3.5 mt-0.5 shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />}
+                    {olivraisonTestResult.message}
+                  </div>
+                )}
+              </div>
+            </>
           ) : isAmeex ? (
             <>
               {/* Store Name */}
@@ -1707,7 +1819,18 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             </p>
           </div>
 
-          {/* ── WebHook URL (permanent) ── */}
+          {/* ── WebHook URL (permanent) — Olivraison has no webhook, only auto-polling ── */}
+          {isOlivraison ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-300 px-3 py-2">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                <p className="text-[11px] font-semibold text-emerald-800 leading-snug">
+                  ✅ Rien à configurer côté Olivraison — leur API n'a pas de webhook. Les statuts (expédié, livré, retour…)
+                  sont récupérés automatiquement toutes les 10 minutes.
+                </p>
+              </div>
+            </div>
+          ) : (
           <div className="space-y-1.5">
             {isSendit ? (
               <>
@@ -1766,6 +1889,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               }
             </p>
           </div>
+          )}
 
           {/* ── Assignment rule ── */}
           <div className="space-y-2 pt-1">

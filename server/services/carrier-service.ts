@@ -44,6 +44,7 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   quicklivraison: "https://api.quicklivraison.ma/api/v1/orders",
   codinafrica:    "https://api.codinafrica.ma/api/v1/orders",
   waselex:        "https://waselex.ma/api/vendor/v1/orders",
+  olivraison:     "https://partners.olivraison.com",
 };
 
 // ── Waselex API base (vendor v1) ─────────────────────────────────────────────
@@ -1152,6 +1153,24 @@ export async function shipOrderToCarrier(
     const { trackingNumber, deliveryFee, labelUrl, error } = await createSenditParcel(
       input,
       { id: accId, apiKey: pubKey, apiSecret: secKey, settings },
+    );
+    if (error) {
+      return { success: false, error, carrierMessage: error, httpStatus: 0, rawResponse: null };
+    }
+    return { success: true, trackingNumber: trackingNumber!, labelUrl: labelUrl ?? undefined, deliveryFee: deliveryFee ?? undefined };
+  }
+
+  // ── Olivraison: apiKey+secretKey → Bearer JWT, dedicated createOlivraisonPackage() ──
+  if (providerKey === 'olivraison') {
+    const oKey    = (creds as any).apiKey || '';
+    const oSecret = (creds as any).apiSecret || '';
+    const oAccId  = (creds as any).id ? Number((creds as any).id) : undefined;
+    if (!oKey || !oSecret) {
+      return { success: false, error: "apiKey et secretKey Olivraison requis. Vérifiez vos identifiants dans Intégrations → Transporteurs.", carrierMessage: "missing credentials", httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    const { trackingNumber, deliveryFee, labelUrl, error } = await createOlivraisonPackage(
+      input,
+      { id: oAccId, apiKey: oKey, apiSecret: oSecret },
     );
     if (error) {
       return { success: false, error, carrierMessage: error, httpStatus: 0, rawResponse: null };
@@ -2640,6 +2659,11 @@ export async function trackByCarrier(
     return { status: r.status, rawStatus: r.rawStatus, error: r.error };
   }
 
+  if (p === 'olivraison') {
+    const r = await trackOlivraisonShipment(trackingNumber, apiKey, account);
+    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+  }
+
   return { status: null, rawStatus: null, error: `Carrier "${provider}" sync not implemented yet` };
 }
 
@@ -3481,6 +3505,217 @@ export async function loginSendit(
 /** Invalide le cache de token Sendit pour un compte (ex: après un 401). */
 export function invalidateSenditToken(accountId: number) {
   SENDIT_TOKEN_CACHE.delete(accountId);
+}
+
+// ─── Olivraison ─────────────────────────────────────────────────────────────
+// Doc officielle: https://partners.olivraison.com/docs#description/authentication
+// Auth: POST /auth/login { apiKey, secretKey } → { token, expiration: "7d" }.
+// Bearer token valable 7 jours — mis en cache par accountId, on force le
+// relogin sur 401 (même schéma que Sendit ci-dessus).
+
+export const OLIVRAISON_API_BASE = "https://partners.olivraison.com";
+
+const OLIVRAISON_TOKEN_CACHE = new Map<number, { token: string; expiry: number }>();
+
+export async function loginOlivraison(
+  apiKey: string,
+  secretKey: string,
+  accountId?: number,
+): Promise<{ token: string; error?: string }> {
+  if (accountId !== undefined) {
+    const cached = OLIVRAISON_TOKEN_CACHE.get(accountId);
+    if (cached && cached.expiry > Date.now()) {
+      return { token: cached.token };
+    }
+  }
+  try {
+    const resp = await axios.post(
+      `${OLIVRAISON_API_BASE}/auth/login`,
+      { apiKey: apiKey.trim(), secretKey: secretKey.trim() },
+      { headers: { "Content-Type": "application/json" }, timeout: 15000, httpsAgent: SSL_AGENT, validateStatus: () => true },
+    );
+    const body = resp.data;
+    console.log(`[OLIVRAISON-LOGIN] HTTP ${resp.status}: ${JSON.stringify(body).slice(0, 200)}`);
+    if (resp.status >= 400 || !body?.token) {
+      const msg = body?.description || body?.code || `HTTP ${resp.status}`;
+      return { token: "", error: `Olivraison login échoué: ${msg}` };
+    }
+    const token: string = body.token;
+    // expiration is documented as "7d" (a duration string, not a timestamp) —
+    // cache for 6 days to stay safely inside that window regardless of format.
+    if (accountId !== undefined) {
+      OLIVRAISON_TOKEN_CACHE.set(accountId, { token, expiry: Date.now() + 6 * 24 * 60 * 60 * 1000 });
+    }
+    return { token };
+  } catch (err: any) {
+    return { token: "", error: `Erreur réseau Olivraison login: ${err?.message}` };
+  }
+}
+
+export function invalidateOlivraisonToken(accountId: number) {
+  OLIVRAISON_TOKEN_CACHE.delete(accountId);
+}
+
+/** Test de connexion Olivraison — POST /auth/login et vérifie le token reçu. */
+export async function testOlivraisonConnection(
+  apiKey: string,
+  secretKey: string,
+): Promise<{ ok: boolean; message: string }> {
+  const { token, error } = await loginOlivraison(apiKey, secretKey);
+  if (error || !token) {
+    return { ok: false, message: error || "Identifiants Olivraison invalides." };
+  }
+  return { ok: true, message: "Connexion Olivraison validée ✅" };
+}
+
+// ── Mapping statuts Olivraison → statuts internes ──────────────────────────
+// Valeurs officielles (endpoint de mise à jour de statut + réponses de
+// création/pickup) : CREATED, CONFIRMED, PICKUP, TRANSIT, REPORTED,
+// SCHEDULED, RECIVED, DELIVERED, CANCELED, RETURNED, ARCHIVED, DELETED.
+// RETURNED doit impérativement contenir "retour" (isReturnStatus, storage.ts)
+// pour déclencher RULE 2a — sinon ce statut n'est jamais reconnu comme un
+// vrai retour physique et le stock ne se restaure jamais pour ce transporteur.
+export function mapOlivraisonStatus(rawStatus: string | null | undefined): string | null {
+  if (!rawStatus) return null;
+  const s = String(rawStatus).trim().toUpperCase();
+  const OLIVRAISON_STATUS_MAP: Record<string, string> = {
+    CREATED:   "nouveau",
+    CONFIRMED: "Attente De Ramassage",
+    PICKUP:    "Ramassé",
+    TRANSIT:   "En transit",
+    REPORTED:  "unreachable",   // reprogrammé par le transporteur — voir la logique Ozon (14a72f1)
+    SCHEDULED: "unreachable",   // idem — les deux exigent une date (reportedTo)
+    RECIVED:   "in_progress",   // colis reçu à un hub intermédiaire — toujours en transit
+    DELIVERED: "delivered",
+    CANCELED:  "refused",
+    RETURNED:  "Retour Recu",   // doit contenir "retour" — voir isReturnStatus()
+    ARCHIVED:  "retourné",      // terminal, hors du flux normal — traité comme un retour clos
+    DELETED:   "Annulé",
+  };
+  return OLIVRAISON_STATUS_MAP[s] ?? null; // inconnu → null = garder le statut actuel
+}
+
+/**
+ * Crée un colis Olivraison. Utilise POST /package/new (endpoint recommandé
+ * par la doc — le colis reste modifiable en statut CREATED avant confirmation),
+ * avec repli automatique sur POST /package (création + CONFIRMED immédiat) si
+ * /package/new répond 404 (compte pas encore migré côté Olivraison).
+ */
+export async function createOlivraisonPackage(
+  input: CarrierShipInput,
+  account: { id?: number; apiKey: string; apiSecret: string },
+): Promise<{ trackingNumber: string | null; deliveryFee: number | null; labelUrl: string | null; error?: string }> {
+  const apiKey    = (account.apiKey    || '').trim();
+  const secretKey = (account.apiSecret || '').trim();
+  if (!apiKey || !secretKey) {
+    return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: 'apiKey et secretKey Olivraison requis' };
+  }
+
+  const { token, error: loginErr } = await loginOlivraison(apiKey, secretKey, account.id);
+  if (loginErr) return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: loginErr };
+
+  const priceDH = input.totalPrice > 0 ? +(input.totalPrice / 100).toFixed(2) : 0;
+  const phone   = sanitizePhone(input.phone);
+  const description = (input.productName || input.orderNumber || 'Commande').slice(0, 250) || 'Commande';
+
+  const payload: Record<string, unknown> = {
+    price: priceDH,
+    description,
+    name: sanitizeArabicText(input.productName || ''),
+    // exchange MUST default to false — Olivraison's own doc pairs
+    // exchange:true with exchangePackage (their exchange/replacement-parcel
+    // flow), not a value every normal delivery should send. Copy-pasting
+    // this wrong is exactly what happened with Ameex's "replace" field
+    // (6cf6a00) — every order silently became an "Échange".
+    exchange: false,
+    noOpen: !input.canOpen,
+    orderId: String(input.orderId),
+    partnerTrackingID: input.orderNumber,
+    inventory: false,
+    destination: {
+      name: sanitizeArabicText(input.customerName),
+      phone,
+      city: input.city,
+      streetAddress: sanitizeArabicText(input.address || input.city),
+    },
+  };
+  if (input.note) payload.comment = input.note.slice(0, 250);
+
+  console.log(`[OLIVRAISON-SHIP] Order ${input.orderNumber} — payload: ${JSON.stringify(payload)}`);
+
+  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' };
+
+  const doRequest = async (tok: string, path: string) =>
+    axios.post(`${OLIVRAISON_API_BASE}${path}`, payload, {
+      headers: { ...headers, Authorization: `Bearer ${tok}` },
+      timeout: 20000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+  let resp = await doRequest(token, '/package/new');
+  if (resp.status === 404) {
+    resp = await doRequest(token, '/package');
+  }
+
+  // Re-login si 401
+  if (resp.status === 401 && account.id !== undefined) {
+    console.warn(`[OLIVRAISON-SHIP] 401 — re-login...`);
+    invalidateOlivraisonToken(account.id);
+    const { token: newTok, error: relErr } = await loginOlivraison(apiKey, secretKey, account.id);
+    if (relErr) return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: relErr };
+    resp = await doRequest(newTok, '/package/new');
+    if (resp.status === 404) resp = await doRequest(newTok, '/package');
+  }
+
+  const body = resp.data;
+  console.log(`[OLIVRAISON-SHIP] Order ${input.orderNumber} → HTTP ${resp.status}: ${JSON.stringify(body).slice(0, 400)}`);
+
+  if (resp.status >= 400 || !body?.trackingID) {
+    const detail = body?.description || body?.code || `HTTP ${resp.status}`;
+    return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: `Olivraison: ${detail}` };
+  }
+
+  const trackingNumber = String(body.trackingID);
+  console.log(`[OLIVRAISON-SHIP] ✅ Order ${input.orderNumber} → tracking=${trackingNumber} status=${body.status}`);
+  return { trackingNumber, deliveryFee: null, labelUrl: null };
+}
+
+/**
+ * Tire le statut courant d'un colis — pas de webhook documenté côté
+ * Olivraison, uniquement GET /package/{trackingID} (polling, comme
+ * ExpressCoursier avant lui côté architecture mais AVEC endpoint de
+ * lecture ici, contrairement à EC qui n'en a aucun).
+ */
+export async function trackOlivraisonShipment(
+  trackingNumber: string,
+  apiKey: string,
+  account?: { id?: number; apiSecret?: string },
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; error?: string }> {
+  const secretKey = account?.apiSecret || '';
+  if (!apiKey || !secretKey) {
+    return { status: null, rawStatus: null, rawResponse: null, error: 'apiKey/apiSecret Olivraison manquants' };
+  }
+  const { token, error: loginErr } = await loginOlivraison(apiKey, secretKey, account?.id);
+  if (loginErr) return { status: null, rawStatus: null, rawResponse: null, error: loginErr };
+
+  try {
+    const resp = await axios.get(`${OLIVRAISON_API_BASE}/package/${encodeURIComponent(trackingNumber)}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      timeout: 15000, httpsAgent: SSL_AGENT, validateStatus: () => true,
+    });
+    if (resp.status === 401 && account?.id !== undefined) {
+      invalidateOlivraisonToken(account.id);
+      return { status: null, rawStatus: null, rawResponse: null, error: 'Olivraison: token expiré, réessayez' };
+    }
+    if (resp.status >= 400) {
+      return { status: null, rawStatus: null, rawResponse: resp.data, error: `Olivraison HTTP ${resp.status}` };
+    }
+    const rawStatus = resp.data?.status ?? null;
+    return { status: mapOlivraisonStatus(rawStatus), rawStatus, rawResponse: resp.data };
+  } catch (err: any) {
+    return { status: null, rawStatus: null, rawResponse: null, error: `Erreur réseau Olivraison: ${err?.message}` };
+  }
 }
 
 // ── Mapping statuts Sendit → statuts internes ─────────────────────────────────
