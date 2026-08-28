@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection } from "./services/carrier-service";
+import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -4713,6 +4713,45 @@ export async function registerRoutes(
         citiesUrl = `${base}/cities`;
       } else if (carrierKey === "expresscoursier") {
         citiesUrl = `https://expresscoursier.ma/v1.0/cities/${encodeURIComponent(apiKey)}`;
+      } else if (carrierKey === "olivraison") {
+        // Olivraison requires a JWT obtained with both saved credentials before
+        // its reference endpoint can return the cities it serves.
+        const secretKey = sanitize((acct as any).apiSecret || "");
+        if (!secretKey) {
+          return res.status(400).json({ message: "Secret Key Olivraison manquant sur ce compte." });
+        }
+
+        const { token, error } = await loginOlivraison(apiKey, secretKey, accountId);
+        if (error || !token) {
+          return res.status(401).json({ message: error || "Connexion Olivraison impossible. Vérifiez vos identifiants." });
+        }
+
+        const axiosOlivraison = (await import("axios")).default;
+        const olivraisonResp = await axiosOlivraison.get("https://partners.olivraison.com/cities", {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+          timeout: 20_000,
+          validateStatus: () => true,
+        });
+        if (olivraisonResp.status !== 200) {
+          console.error(`[OLIVRAISON-CITIES-SYNC] HTTP ${olivraisonResp.status}: ${JSON.stringify(olivraisonResp.data).slice(0, 300)}`);
+          return res.status(olivraisonResp.status >= 400 ? olivraisonResp.status : 502).json({
+            message: `L'API Olivraison a répondu avec HTTP ${olivraisonResp.status}`,
+          });
+        }
+
+        const rawCities = Array.isArray(olivraisonResp.data) ? olivraisonResp.data : [];
+        const cities = Array.from(new Set(
+          rawCities
+            .map((city: any) => (typeof city === "string" ? city : city?.name || city?.city || "").trim())
+            .filter(Boolean),
+        )).sort();
+        if (!cities.length) {
+          return res.status(422).json({ message: "Aucune ville reçue de Olivraison. Vérifiez vos identifiants et réessayez." });
+        }
+
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, cities);
+        console.log(`[OLIVRAISON-CITIES-SYNC] ✅ Saved ${cities.length} cities for account #${accountId}`);
+        return res.json({ count: cities.length, cities, syncedAt: new Date().toISOString() });
       } else if (carrierKey === "ozonexpress") {
         // ── Ozon Express city sync ────────────────────────────────────────────
         // Confirmed working endpoint: GET https://api.ozonexpress.ma/cities (public, no auth)
