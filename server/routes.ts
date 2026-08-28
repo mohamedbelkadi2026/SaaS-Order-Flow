@@ -1799,7 +1799,7 @@ export async function registerRoutes(
         products: Array.from(byProduct.values()).sort((a, b) => b.count - a.count),
         message: rows.length === 0
           ? "✅ Aucun retour non confirmé à corriger."
-          : `${rows.length} retour(s) ont ajouté du stock automatiquement sans confirmation physique — sous la nouvelle règle, ce stock sera retiré.`,
+          : `${rows.length} retour(s) ont ajouté du stock automatiquement sans confirmation physique — ils seront retirés du stock et de l'historique.`,
       });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -1809,7 +1809,11 @@ export async function registerRoutes(
   app.post("/api/orders/repair-unconfirmed-returns/apply", requireAuth, requireAdmin, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     try {
-      const rows = await db.select({
+      // All 'returned' rows without an explicit physical confirmation, PLUS
+      // any 'adjustment' rows already created by a previous run of this tool
+      // (reason prefix below) — needed to find and clean up matched pairs
+      // from before this endpoint deleted outright instead of offsetting.
+      const returnedRows = await db.select({
         movementId: stockMovements.id, orderId: stockMovements.orderId, productId: stockMovements.productId,
         quantity: stockMovements.quantity,
       }).from(stockMovements)
@@ -1819,21 +1823,45 @@ export async function registerRoutes(
           eq(stockMovements.type, 'returned'),
           sql`${orders.returnConfirmedAt} IS NULL`,
         ));
+      const offsetRows = await db.select({
+        movementId: stockMovements.id, orderId: stockMovements.orderId, productId: stockMovements.productId,
+        quantity: stockMovements.quantity,
+      }).from(stockMovements)
+        .where(and(
+          eq(stockMovements.storeId, storeId),
+          eq(stockMovements.type, 'adjustment'),
+          sql`${stockMovements.reason} LIKE 'Annulation — retour non confirmé%'`,
+        ));
+      const offsetByKey = new Map<string, typeof offsetRows[number]>();
+      for (const o of offsetRows) offsetByKey.set(`${o.orderId}:${o.productId}`, o);
+
       let fixed = 0;
-      for (const r of rows) {
+      for (const r of returnedRows) {
         const qty = Math.abs(r.quantity || 0);
         if (!qty) continue;
-        await db.update(products).set({ stock: sql`${products.stock} - ${qty}` } as any)
-          .where(eq(products.id, r.productId as number));
-        await db.insert(stockMovements).values({
-          storeId, productId: r.productId as number, orderId: r.orderId,
-          type: 'adjustment', quantity: -qty,
-          reason: `Annulation — retour non confirmé physiquement (politique 'confirmation manuelle')`,
-        } as any);
+        const key = `${r.orderId}:${r.productId}`;
+        const existingOffset = offsetByKey.get(key);
+        if (existingOffset) {
+          // A previous run of this tool already offset it (and already
+          // adjusted products.stock at that time) — just remove both rows
+          // now so the history stops showing the confusing pair. No further
+          // stock change: it was already correct.
+          await db.delete(stockMovements).where(eq(stockMovements.id, r.movementId));
+          await db.delete(stockMovements).where(eq(stockMovements.id, existingOffset.movementId));
+        } else {
+          // Fresh case: delete the erroneous 'returned' row outright and
+          // decrement stock to match — this order was refused/cancelled but
+          // never physically confirmed as returned, so under
+          // 'manual_confirmation_only' it should never have added stock,
+          // and the history shouldn't show it as if it did.
+          await db.delete(stockMovements).where(eq(stockMovements.id, r.movementId));
+          await db.update(products).set({ stock: sql`${products.stock} - ${qty}` } as any)
+            .where(eq(products.id, r.productId as number));
+        }
         fixed++;
       }
       res.json({
-        message: `✅ ${fixed} retour(s) annulé(s) — le stock a été retiré en conséquence.`,
+        message: `✅ ${fixed} retour(s) annulé(s) — le stock a été retiré et l'historique nettoyé.`,
         fixed,
       });
     } catch (err: any) {

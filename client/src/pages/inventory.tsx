@@ -3339,9 +3339,8 @@ export default function Inventory() {
             <>
               <p className="text-xs text-muted-foreground">
                 Sous la politique "confirmation physique requise", un retour ne doit ajouter du stock qu'après une
-                confirmation explicite. Ceci annule le stock déjà ajouté automatiquement pour les retours qui n'ont
-                jamais été confirmés physiquement — une écriture d'ajustement compensatoire est créée, l'historique
-                original reste visible.
+                confirmation explicite. Ceci retire le stock déjà ajouté automatiquement pour les retours qui n'ont
+                jamais été confirmés physiquement, et supprime ces entrées erronées de l'historique.
               </p>
               {unconfirmedReturnsPreview?.products?.length > 0 && (
                 <div className="space-y-1.5 max-h-56 overflow-y-auto border rounded-lg p-2">
