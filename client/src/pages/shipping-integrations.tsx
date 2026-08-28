@@ -41,7 +41,7 @@ const PROVIDERS = [
   { id: "livo",           name: "Livo",              cities: 369, logo: "/carriers/ol.svg"       },
   { id: "quicklivraison", name: "Quick Livraison",   cities: 404, logo: "/carriers/ql.svg"       },
   { id: "codinafrica",    name: "Codinafrica",       cities: 312, logo: "/carriers/cargo.svg"    },
-  { id: "olivraison",     name: "Olivraison",        cities: 280, logo: null                     },
+  { id: "olivraison",     name: "Olivraison",        cities: 280, logo: "/carriers/olivraison.webp" },
   { id: "livreego",       name: "Livreego",          cities: 295, logo: null                     },
   { id: "powerdelivery",  name: "PowerDelivery",     cities: 350, logo: null                     },
   { id: "caledex",        name: "Caledex",           cities: 270, logo: null                     },
