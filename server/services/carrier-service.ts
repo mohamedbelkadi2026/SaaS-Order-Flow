@@ -3556,6 +3556,40 @@ export function invalidateOlivraisonToken(accountId: number) {
   OLIVRAISON_TOKEN_CACHE.delete(accountId);
 }
 
+/**
+ * Olivraison makes `orderId` / `partnerTrackingID` idempotent. A request can
+ * therefore create a package successfully but still reach us as a duplicate
+ * after a timeout or retry. In that case, recover the package's tracking ID
+ * instead of reporting a false shipping failure to the user.
+ */
+async function findExistingOlivraisonPackage(
+  token: string,
+  partnerTrackingID: string,
+): Promise<string | null> {
+  try {
+    const resp = await axios.get(`${OLIVRAISON_API_BASE}/package`, {
+      params: { page: 1, limit: 100 },
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      timeout: 20_000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+    if (resp.status !== 200) {
+      console.warn(`[OLIVRAISON-SHIP] Cannot recover duplicate package: HTTP ${resp.status}`);
+      return null;
+    }
+
+    const packages = Array.isArray(resp.data?.data) ? resp.data.data : [];
+    const existing = packages.find((item: any) =>
+      String(item?.partnerTrackingID ?? "").trim() === partnerTrackingID,
+    );
+    return existing?.trackingID ? String(existing.trackingID) : null;
+  } catch (err: any) {
+    console.warn(`[OLIVRAISON-SHIP] Cannot recover duplicate package: ${err?.message}`);
+    return null;
+  }
+}
+
 /** Test de connexion Olivraison — POST /auth/login et vérifie le token reçu. */
 export async function testOlivraisonConnection(
   apiKey: string,
@@ -3653,9 +3687,10 @@ export async function createOlivraisonPackage(
       validateStatus: () => true,
     });
 
-  let resp = await doRequest(token, '/package/new');
+  let activeToken = token;
+  let resp = await doRequest(activeToken, '/package/new');
   if (resp.status === 404) {
-    resp = await doRequest(token, '/package');
+    resp = await doRequest(activeToken, '/package');
   }
 
   // Re-login si 401
@@ -3664,8 +3699,9 @@ export async function createOlivraisonPackage(
     invalidateOlivraisonToken(account.id);
     const { token: newTok, error: relErr } = await loginOlivraison(apiKey, secretKey, account.id);
     if (relErr) return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: relErr };
-    resp = await doRequest(newTok, '/package/new');
-    if (resp.status === 404) resp = await doRequest(newTok, '/package');
+    activeToken = newTok;
+    resp = await doRequest(activeToken, '/package/new');
+    if (resp.status === 404) resp = await doRequest(activeToken, '/package');
   }
 
   const body = resp.data;
@@ -3673,6 +3709,13 @@ export async function createOlivraisonPackage(
 
   if (resp.status >= 400 || !body?.trackingID) {
     const detail = body?.description || body?.code || `HTTP ${resp.status}`;
+    if (/package\s+already\s+exists/i.test(String(detail))) {
+      const trackingNumber = await findExistingOlivraisonPackage(activeToken, String(input.orderNumber));
+      if (trackingNumber) {
+        console.log(`[OLIVRAISON-SHIP] ♻️ Order ${input.orderNumber} already exists → recovered tracking=${trackingNumber}`);
+        return { trackingNumber, deliveryFee: null, labelUrl: null };
+      }
+    }
     return { trackingNumber: null, deliveryFee: null, labelUrl: null, error: `Olivraison: ${detail}` };
   }
 
