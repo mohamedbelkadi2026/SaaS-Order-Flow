@@ -828,6 +828,40 @@ export default function Inventory() {
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
+  // Return/refused stock restoration policy — 'auto_on_retour_status'
+  // (default: stock restores automatically once status contains "retour")
+  // vs 'manual_confirmation_only' (requires an explicit physical
+  // confirmation — see confirmReturnReceipt() — even for retour statuses).
+  const { data: returnPolicyData } = useQuery<{ returnStockPolicy: string }>({
+    queryKey: ["/api/store/return-stock-policy"],
+    queryFn: () => apiRequest("GET", "/api/store/return-stock-policy").then(r => r.json()),
+  });
+  const setReturnPolicyMutation = useMutation({
+    mutationFn: (returnStockPolicy: string) => apiRequest("PATCH", "/api/store/return-stock-policy", { returnStockPolicy }).then((r: any) => r.json ? r.json() : r),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/store/return-stock-policy"] });
+      toast({ title: "✅ Politique mise à jour" });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+  const [unconfirmedReturnsPreview, setUnconfirmedReturnsPreview] = useState<any>(null);
+  const [unconfirmedReturnsOpen, setUnconfirmedReturnsOpen] = useState(false);
+  const [unconfirmedReturnsResult, setUnconfirmedReturnsResult] = useState<any>(null);
+  const auditUnconfirmedReturnsMutation = useMutation({
+    mutationFn: () => apiRequest("GET", "/api/orders/repair-unconfirmed-returns/preview").then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => { setUnconfirmedReturnsPreview(data); setUnconfirmedReturnsResult(null); setUnconfirmedReturnsOpen(true); },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+  const applyUnconfirmedReturnsMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/orders/repair-unconfirmed-returns/apply", {}).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setUnconfirmedReturnsResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      toast({ title: "✅ Retours corrigés", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
   const { data: historyMovements = [], isLoading: historyLoading } = useQuery<any[]>({
     queryKey: ["/api/stock-movements", historyProduct?.id],
     queryFn: async () => {
@@ -1657,6 +1691,34 @@ export default function Inventory() {
             <><PackageCheck className="w-4 h-4" /> Réparer ledger manquant</>
           )}
         </Button>
+        <Select
+          value={returnPolicyData?.returnStockPolicy || 'auto_on_retour_status'}
+          onValueChange={(v) => setReturnPolicyMutation.mutate(v)}
+        >
+          <SelectTrigger className="w-[240px] h-9 text-sm" data-testid="select-return-stock-policy">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto_on_retour_status">Retour: stock auto (statut "Retour")</SelectItem>
+            <SelectItem value="manual_confirmation_only">Retour: confirmation physique requise</SelectItem>
+          </SelectContent>
+        </Select>
+        {returnPolicyData?.returnStockPolicy === 'manual_confirmation_only' && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            onClick={() => auditUnconfirmedReturnsMutation.mutate()}
+            disabled={auditUnconfirmedReturnsMutation.isPending}
+            data-testid="button-repair-unconfirmed-returns"
+          >
+            {auditUnconfirmedReturnsMutation.isPending ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
+            ) : (
+              <><RotateCcw className="w-4 h-4" /> Corriger retours non confirmés</>
+            )}
+          </Button>
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -3261,6 +3323,54 @@ export default function Inventory() {
               </>
             ) : (
               <Button onClick={() => setShippedLedgerOpen(false)}>Fermer</Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Unconfirmed-returns cleanup: preview then confirm ── */}
+      <Dialog open={unconfirmedReturnsOpen} onOpenChange={(v) => { if (!applyUnconfirmedReturnsMutation.isPending) setUnconfirmedReturnsOpen(v); }}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><RotateCcw className="w-5 h-5 text-violet-500" /> Corriger retours non confirmés</DialogTitle>
+            <DialogDescription>{unconfirmedReturnsResult?.message ?? unconfirmedReturnsPreview?.message}</DialogDescription>
+          </DialogHeader>
+          {!unconfirmedReturnsResult && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Sous la politique "confirmation physique requise", un retour ne doit ajouter du stock qu'après une
+                confirmation explicite. Ceci annule le stock déjà ajouté automatiquement pour les retours qui n'ont
+                jamais été confirmés physiquement — une écriture d'ajustement compensatoire est créée, l'historique
+                original reste visible.
+              </p>
+              {unconfirmedReturnsPreview?.products?.length > 0 && (
+                <div className="space-y-1.5 max-h-56 overflow-y-auto border rounded-lg p-2">
+                  {unconfirmedReturnsPreview.products.map((p: any, i: number) => (
+                    <div key={i} className="text-xs border-b pb-1.5 last:border-0 flex justify-between">
+                      <span className="truncate">{p.productName}</span>
+                      <span className="text-muted-foreground">{p.count} retour(s) — {p.qty} unité(s)</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+          <DialogFooter>
+            {!unconfirmedReturnsResult ? (
+              <>
+                <Button variant="outline" onClick={() => setUnconfirmedReturnsOpen(false)} disabled={applyUnconfirmedReturnsMutation.isPending}>Annuler</Button>
+                {unconfirmedReturnsPreview?.count > 0 && (
+                  <Button
+                    onClick={() => applyUnconfirmedReturnsMutation.mutate()}
+                    disabled={applyUnconfirmedReturnsMutation.isPending}
+                    data-testid="button-apply-unconfirmed-returns-repair"
+                  >
+                    {applyUnconfirmedReturnsMutation.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Correction…</> : "Corriger"}
+                  </Button>
+                )}
+              </>
+            ) : (
+              <Button onClick={() => setUnconfirmedReturnsOpen(false)}>Fermer</Button>
             )}
           </DialogFooter>
         </DialogContent>

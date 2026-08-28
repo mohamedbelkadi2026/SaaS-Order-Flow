@@ -42,6 +42,17 @@ export const stores = pgTable("stores", {
   // engine reads THIS field first; users.distributionMethod is kept only as
   // legacy fallback when no magasin context is supplied.
   distributionMethod: text("distribution_method").default("auto"),
+  // Return/refused stock restoration policy:
+  // 'auto_on_retour_status' (default) — stock restores automatically the
+  //   moment an order's status becomes a "retour"-containing status (Retour
+  //   Recu, retourné, En Cours De Retour, etc.) — NOT just on 'refused'/
+  //   'Annulé' alone, since those don't guarantee the package has physically
+  //   started its way back to the warehouse.
+  // 'manual_confirmation_only' — even reaching a "retour" status doesn't
+  //   restore stock automatically; requires an explicit confirmReturnReceipt()
+  //   call (a physical scan/confirmation button) for stores that want that
+  //   certainty before touching live stock.
+  returnStockPolicy: text("return_stock_policy").default("auto_on_retour_status"),
   // Updated whenever distribution method, leadPercentage, agent linking, or
   // role-in-store changes for this magasin. getNextAgent counts only orders
   // created AFTER this timestamp — so percentage rebalances are not poisoned

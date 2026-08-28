@@ -1737,6 +1737,110 @@ export async function registerRoutes(
     }
   });
 
+  // GET/PATCH /api/store/return-stock-policy — per-store setting controlling
+  // when a refused/returned order's stock is restored automatically. See the
+  // column comment on stores.returnStockPolicy (shared/schema.ts) and RULE 2a
+  // in updateOrderStatus (storage.ts) for the full explanation.
+  app.get("/api/store/return-stock-policy", requireAuth, async (req: any, res) => {
+    try {
+      const [store] = await db.select({ returnStockPolicy: stores.returnStockPolicy })
+        .from(stores).where(eq(stores.id, req.user!.storeId!));
+      res.json({ returnStockPolicy: store?.returnStockPolicy || 'auto_on_retour_status' });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.patch("/api/store/return-stock-policy", requireAuth, requireAdmin, async (req: any, res) => {
+    const { returnStockPolicy } = req.body as { returnStockPolicy?: string };
+    if (!['auto_on_retour_status', 'manual_confirmation_only'].includes(returnStockPolicy || '')) {
+      return res.status(400).json({ message: "Valeur invalide" });
+    }
+    try {
+      await db.update(stores).set({ returnStockPolicy } as any).where(eq(stores.id, req.user!.storeId!));
+      res.json({ success: true, returnStockPolicy });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // ── Cleanup for stores switching TO 'manual_confirmation_only' ─────────────
+  // Finds orders whose stock was already auto-restored (a stockMovements
+  // type='returned' row exists) but were NEVER explicitly confirmed via
+  // confirmReturnReceipt() (returnConfirmedAt IS NULL) — under the stricter
+  // policy, that restoration shouldn't have happened without a physical
+  // confirmation. Reverses the stock impact with an offsetting 'adjustment'
+  // row rather than deleting the original 'returned' movement, so the ledger
+  // stays a complete, honest history of what actually happened.
+  app.get("/api/orders/repair-unconfirmed-returns/preview", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select({
+        movementId: stockMovements.id, orderId: stockMovements.orderId, productId: stockMovements.productId,
+        quantity: stockMovements.quantity, productName: products.name, orderNumber: orders.orderNumber,
+        returnConfirmedAt: orders.returnConfirmedAt,
+      }).from(stockMovements)
+        .innerJoin(orders, eq(stockMovements.orderId, orders.id))
+        .innerJoin(products, eq(stockMovements.productId, products.id))
+        .where(and(
+          eq(stockMovements.storeId, storeId),
+          eq(stockMovements.type, 'returned'),
+          sql`${orders.returnConfirmedAt} IS NULL`,
+        ));
+      const byProduct = new Map<string, { productName: string; count: number; qty: number }>();
+      for (const r of rows) {
+        const entry = byProduct.get(r.productName) || { productName: r.productName, count: 0, qty: 0 };
+        entry.count++;
+        entry.qty += r.quantity || 0;
+        byProduct.set(r.productName, entry);
+      }
+      res.json({
+        count: rows.length,
+        products: Array.from(byProduct.values()).sort((a, b) => b.count - a.count),
+        message: rows.length === 0
+          ? "✅ Aucun retour non confirmé à corriger."
+          : `${rows.length} retour(s) ont ajouté du stock automatiquement sans confirmation physique — sous la nouvelle règle, ce stock sera retiré.`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/orders/repair-unconfirmed-returns/apply", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select({
+        movementId: stockMovements.id, orderId: stockMovements.orderId, productId: stockMovements.productId,
+        quantity: stockMovements.quantity,
+      }).from(stockMovements)
+        .innerJoin(orders, eq(stockMovements.orderId, orders.id))
+        .where(and(
+          eq(stockMovements.storeId, storeId),
+          eq(stockMovements.type, 'returned'),
+          sql`${orders.returnConfirmedAt} IS NULL`,
+        ));
+      let fixed = 0;
+      for (const r of rows) {
+        const qty = Math.abs(r.quantity || 0);
+        if (!qty) continue;
+        await db.update(products).set({ stock: sql`${products.stock} - ${qty}` } as any)
+          .where(eq(products.id, r.productId as number));
+        await db.insert(stockMovements).values({
+          storeId, productId: r.productId as number, orderId: r.orderId,
+          type: 'adjustment', quantity: -qty,
+          reason: `Annulation — retour non confirmé physiquement (politique 'confirmation manuelle')`,
+        } as any);
+        fixed++;
+      }
+      res.json({
+        message: `✅ ${fixed} retour(s) annulé(s) — le stock a été retiré en conséquence.`,
+        fixed,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ─── Profile System Routes ─────────────────────────────────────────────────
 
   app.put("/api/user/profile", requireAuth, async (req, res) => {

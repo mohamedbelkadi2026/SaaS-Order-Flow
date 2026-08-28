@@ -1718,11 +1718,16 @@ export class DatabaseStorage implements IStorage {
         hasOutboundMovement = true;
       }
 
-      // ── RULE 2a: Refus/Annulation → restauration AUTOMATIQUE ─────────────
-      // Refused et Annulé* ne correspondent pas à un colis qui revient
-      // physiquement (annulation/refus administratif) → pas de scan requis,
-      // le stock est restauré immédiatement comme avant.
-      const AUTO_RESTORE_STATUSES = new Set(['refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']);
+      // ── RULE 2a: Retour → restauration AUTOMATIQUE (par défaut) ──────────
+      // Auto-restore fires on isReturnStatus(status) — any status containing
+      // "retour" (Retour Recu, retourné, En Cours De Retour, etc.) — NOT on
+      // 'refused'/'Annulé' alone anymore. A refused/cancelled order doesn't
+      // guarantee the package has physically started its way back to the
+      // warehouse; a "retour" status is the carrier/workflow's actual signal
+      // that it has. Gated by the store's returnStockPolicy: stores that want
+      // stricter certainty (a physical scan) set 'manual_confirmation_only'
+      // and this block is a no-op — RULE 2b / confirmReturnReceipt() below
+      // is the only path that restores stock for them.
       const [existingReturnMovement] = await tx.select({ id: stockMovements.id })
         .from(stockMovements)
         .where(and(
@@ -1734,29 +1739,35 @@ export class DatabaseStorage implements IStorage {
         hasOutboundMovement &&
         !existingReturnMovement &&
         prevStatus !== status &&
-        AUTO_RESTORE_STATUSES.has(status)
+        isReturnStatus(status)
       ) {
-        for (const item of items) {
-          if (!item.productId) continue;
-          const qty = Number(item.quantity);
-          await tx.update(products)
-            .set({ stock: sql`${products.stock} + ${qty}` })
-            .where(eq(products.id, item.productId));
-          await tx.insert(stockLogs).values({
-            storeId: stockStoreFor(item.productId), productId: item.productId, orderId: id,
-            changeAmount: qty,
-            reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
-          });
-          await tx.insert(stockMovements).values({
-            storeId: stockStoreFor(item.productId), productId: item.productId, type: 'returned', quantity: qty,
-            orderId: id, userId: actorId ?? null,
-            reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
-          });
+        const [storeRow] = await tx.select({ returnStockPolicy: stores.returnStockPolicy })
+          .from(stores).where(eq(stores.id, currentOrder.storeId!));
+        const policy = storeRow?.returnStockPolicy || 'auto_on_retour_status';
+        if (policy !== 'manual_confirmation_only') {
+          for (const item of items) {
+            if (!item.productId) continue;
+            const qty = Number(item.quantity);
+            await tx.update(products)
+              .set({ stock: sql`${products.stock} + ${qty}` })
+              .where(eq(products.id, item.productId));
+            await tx.insert(stockLogs).values({
+              storeId: stockStoreFor(item.productId), productId: item.productId, orderId: id,
+              changeAmount: qty,
+              reason: `Retour commande #${id} → ${status}`,
+            });
+            await tx.insert(stockMovements).values({
+              storeId: stockStoreFor(item.productId), productId: item.productId, type: 'returned', quantity: qty,
+              orderId: id, userId: actorId ?? null,
+              reason: `Retour commande #${id} → ${status}`,
+            });
+          }
         }
       }
-      // ── RULE 2b: Vrai retour physique (statut contenant "retour") ─────────
-      // Pas de restauration automatique ici. Attend confirmReturnReceipt()
-      // (scan douchette ou caméra). Rien à faire volontairement.
+      // ── RULE 2b: Retour en mode "confirmation manuelle" ────────────────────
+      // Pas de restauration automatique quand returnStockPolicy vaut
+      // 'manual_confirmation_only' (voir ci-dessus). Attend confirmReturnReceipt()
+      // (scan douchette ou caméra). Rien à faire volontairement ici.
 
       return updated;
     });
