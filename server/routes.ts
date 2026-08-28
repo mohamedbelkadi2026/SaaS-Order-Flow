@@ -4222,14 +4222,33 @@ export async function registerRoutes(
         (async () => {
           try {
             const axiosLib = (await import('axios')).default;
-            const resp = await axiosLib.get('https://app.ameex.ma/api/v1/cities', {
+            // Same endpoint as the manual "Synchroniser les villes" route
+            // (app.post("/api/carrier-accounts/:id/sync-cities") below) — NOT
+            // app.ameex.ma, which doesn't match the domain used everywhere
+            // else for Ameex (api.ameex.app, confirmed working for shipping/
+            // tracking) and was returning an unrelated/incomplete city list.
+            const resp = await axiosLib.get('https://api.ameex.app/customer/Delivery/Cities/Action/Type/Get', {
               headers: { 'Authorization': `Bearer ${acct.apiKey}`, 'Accept': 'application/json' },
               timeout: 15000,
               validateStatus: () => true,
             });
             if (resp.status === 200 && resp.data) {
-              const cityData = Array.isArray(resp.data) ? resp.data : (resp.data.data || resp.data.cities || []);
-              const cityNames: string[] = cityData.map((c: any) => c.name || c.ville || c.label || c).filter(Boolean);
+              // Ameex's real shape (confirmed by the manual "Synchroniser les
+              // villes" route below): {"api":{"cities":{"1":{"name":"Marrakech"}}}}
+              // — an OBJECT keyed by id, not an array. The old parsing here
+              // expected resp.data / resp.data.data / resp.data.cities to be
+              // an array, which they never are for Ameex — cityNames always
+              // came back empty from this specific fetch (silently falling
+              // through to whatever was already cached, or nothing).
+              const citiesObj = resp.data?.api?.cities || resp.data?.cities || {};
+              const rawNames: string[] = Object.values(citiesObj as Record<string, any>)
+                .map((c: any) => (c?.name || c?.ville || "").trim())
+                .filter(Boolean);
+              // Dedupe — Ameex's response can list the same city name more
+              // than once (e.g. distinct sub-district/commune entries sharing
+              // a display name), which showed up as repeated entries in the
+              // city picker dropdown.
+              const cityNames: string[] = Array.from(new Set(rawNames));
               if (cityNames.length > 0) {
                 await storage.upsertCarrierCities(storeId, 'ameex', acct.id, cityNames);
                 console.log(`[AMEEX-CITIES-BG] Synced ${cityNames.length} cities for new account #${acct.id}`);
@@ -4998,7 +5017,7 @@ export async function registerRoutes(
             nameNorm:   normName((c.name || c.ville || "").trim()),
           }))
           .filter(e => e.name);
-        cities = ameexCityEntries.map(e => e.name).sort();
+        cities = Array.from(new Set(ameexCityEntries.map(e => e.name))).sort();
       } else {
         // Other carriers: array or wrapped array
         const raw = resp.data;
@@ -17975,8 +17994,11 @@ function ensureHeaders(sheet) {
           const acct = ameexAccts[0];
           if (acct?.apiKey) {
             const axiosLib = (await import('axios')).default;
+            // Same fix as the background sync above (createCarrierAccount):
+            // wrong domain (app.ameex.ma) replaced with the endpoint already
+            // confirmed correct in the manual sync-cities route.
             const resp = await axiosLib.get(
-              'https://app.ameex.ma/api/v1/cities',
+              'https://api.ameex.app/customer/Delivery/Cities/Action/Type/Get',
               {
                 headers: { 'Authorization': `Bearer ${acct.apiKey}`, 'Accept': 'application/json' },
                 timeout: 10000,
@@ -17984,8 +18006,14 @@ function ensureHeaders(sheet) {
               }
             );
             if (resp.status === 200 && resp.data) {
-              const cityData = Array.isArray(resp.data) ? resp.data : (resp.data.data || resp.data.cities || []);
-              const cityNames: string[] = cityData.map((c: any) => c.name || c.ville || c.label || c).filter(Boolean);
+              // Ameex's real shape: {"api":{"cities":{"1":{"name":"Marrakech"}}}}
+              // — object keyed by id, not an array (see the identical fix in
+              // createCarrierAccount's background sync above).
+              const citiesObj = resp.data?.api?.cities || resp.data?.cities || {};
+              const rawNames: string[] = Object.values(citiesObj as Record<string, any>)
+                .map((c: any) => (c?.name || c?.ville || "").trim())
+                .filter(Boolean);
+              const cityNames: string[] = Array.from(new Set(rawNames)); // dedupe repeated commune/sub-district entries
               if (cityNames.length > 0) {
                 await storage.upsertCarrierCities(storeId, 'ameex', acct.id, cityNames);
                 return res.json({ provider: 'ameex', cities: cityNames, isCarrierSpecific: true, source: 'live' });
