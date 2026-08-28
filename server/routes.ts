@@ -2686,6 +2686,16 @@ export async function registerRoutes(
                   }
                 }
 
+                // Ameex "stock-managed" fulfillment: prefer a per-order
+                // override (orders.ameexProductId, set by the Google Sheets
+                // webhook) if present, otherwise fall back to the product
+                // catalog's own ameexProductId (new — applies to every order
+                // source, not just Google Sheets). First item with one set,
+                // for multi-item orders.
+                const orderAmeexProductId = (order as any).ameexProductId
+                  || (order as any).items?.find((it: any) => it.product?.ameexProductId)?.product?.ameexProductId
+                  || undefined;
+
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -2709,6 +2719,7 @@ export async function registerRoutes(
                   cityId:           ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr ?? waselexCityId,
                   ecSettings,
                   ozonSettings,
+                  ameexProductId:   orderAmeexProductId,
                 });
               })
             );
@@ -9633,6 +9644,8 @@ function ensureHeaders(sheet) {
         coutLivraison: z.number().min(0).optional(),
         coutConfirmation: z.number().min(0).optional(),
         stockDate: z.string().datetime().optional(),  // ISO — date du stock initial, défaut = maintenant
+        // Ameex "stock-managed" fulfillment — see products.ameexProductId column comment
+        ameexProductId: z.string().trim().max(200).nullable().optional(),
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
@@ -10414,6 +10427,10 @@ function ensureHeaders(sheet) {
         coutLivraison: z.number().min(0).optional(),
         coutConfirmation: z.number().min(0).optional(),
         hasVariants: z.number().optional(),
+        // Ameex "stock-managed" fulfillment — see the column comment on
+        // products.ameexProductId (shared/schema.ts) and the ship-order
+        // fallback logic in this file (search "stock-managed fulfillment").
+        ameexProductId: z.string().trim().max(200).nullable().optional(),
         variants: z.array(z.object({
           name: z.string().min(1),
           sku: z.string().optional().default(''),
@@ -17697,6 +17714,14 @@ function ensureHeaders(sheet) {
         console.log(`[WSLX-CITY] order=${orderId} city="${matchedCity}" → city_id=${singleWaselexCityId} ("${resolved.name}")`);
       }
 
+      // Ameex "stock-managed" fulfillment: prefer a per-order override
+      // (orders.ameexProductId, set by the Google Sheets webhook), otherwise
+      // fall back to the product catalog's own ameexProductId (applies to
+      // every order source).
+      const singleOrderAmeexProductId = (order as any).ameexProductId
+        || (order.items as any[] | undefined)?.find((it: any) => it.product?.ameexProductId)?.product?.ameexProductId
+        || undefined;
+
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -17718,6 +17743,7 @@ function ensureHeaders(sheet) {
         cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr ?? singleWaselexCityId,
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
+        ameexProductId:   singleOrderAmeexProductId,
       });
 
       if (!shipResult.success) {

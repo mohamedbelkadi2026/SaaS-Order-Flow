@@ -112,6 +112,16 @@ export const products = pgTable("products", {
   imageUrl: text("image_url"),
   reference: text("reference"),
   hasVariants: integer("has_variants").default(0),
+  // Ameex "stock-managed" fulfillment: some merchants keep physical stock AT
+  // Ameex's own warehouse rather than shipping it themselves. Setting this to
+  // Ameex's catalog product UUID makes every future shipment for this product
+  // (any order source) include products[0][id] in the Ameex payload, which
+  // Ameex uses to decrement THEIR OWN warehouse stock automatically as a side
+  // effect of creating the parcel — no separate API call needed. The
+  // ship-order flow (routes.ts) already reads this as a fallback when the
+  // order itself has no per-order override (orders.ameexProductId, set by
+  // the Google Sheets webhook).
+  ameexProductId: text("ameex_product_id"),
   // ── TajerDrop marketplace (Phase 1) ──
   // isMarketplaceProduct: produit du catalogue centralisé partagé avec les
   // Sellers TajerDrop. marketplaceOwnerStoreId: le store admin qui possède
@@ -123,6 +133,16 @@ export const products = pgTable("products", {
   marketplacePackagingFee: integer("marketplace_packaging_fee"), // centimes; NULL → platform default 600
   marketplaceActive: boolean("marketplace_active").default(true),
   settings: jsonb("settings"),
+  // Ameex catalog product UUID for "stock-managed" Ameex accounts — merchants
+  // whose physical stock is held AT Ameex's own warehouse. When set, every
+  // shipment for this product includes products[0][id] in the Ameex create-
+  // package payload (buildAmeexPayload, carrier-service.ts), which makes
+  // Ameex decrement THEIR OWN inventory automatically as part of creating
+  // the parcel — no separate API call needed. Previously this only existed
+  // as a per-ORDER override (orders.ameexProductId) populated exclusively by
+  // the Google Sheets webhook; this product-level field lets it apply to
+  // every order regardless of source.
+  ameexProductId: text("ameex_product_id"),
   createdAt: timestamp("created_at").defaultNow(),
   archivedAt: timestamp("archived_at"),
 });
