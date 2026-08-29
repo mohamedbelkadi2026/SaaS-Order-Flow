@@ -537,7 +537,21 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   // text, in case Ameex's backend does internal matching against their
   // Entrepôt catalog by this string — not officially documented, being
   // tested at the user's request.
-  const product  = (cleanText(input.productName) || 'Produit') + (input.productReference ? ` [${cleanText(input.productReference)}]` : '');
+  //
+  // Wrapped in Unicode LRI/PDI isolate marks (U+2066 / U+2069): an Arabic
+  // product name followed by a Latin/numeric reference like
+  // "23187-0-68234-4083-PO" gets its dash-separated number groups visually
+  // REVERSED by the Bidi Algorithm when rendered in an RTL context with no
+  // explicit directional isolation (confirmed live — Ameex's own dashboard
+  // displayed "4083-68234-0-23187-PO", the segments in exact reverse order).
+  // The underlying character sequence sent is unaffected either way — this
+  // only fixes how it's DISPLAYED — but since a human (Ameex's warehouse
+  // staff) may need to actually read this reference, it needs to render
+  // correctly. Added after cleanText(), which strips isolate marks (see its
+  // own regex), so they survive into the final payload instead of being
+  // stripped right back out.
+  const cleanRef = input.productReference ? cleanText(input.productReference) : '';
+  const product  = (cleanText(input.productName) || 'Produit') + (cleanRef ? ` [\u2066${cleanRef}\u2069]` : '');
   const note     = cleanText(input.note);
   const priceDH  = +(input.totalPrice / 100).toFixed(2);
 
