@@ -321,6 +321,15 @@ export interface CarrierShipInput {
   cityId?: string;
   // Ameex-specific: product catalog UUID for stock-managed Ameex accounts.
   ameexProductId?: string;
+  // Experimental: the platform product's own "Référence" field, appended to
+  // Ameex's free-text 'product' field. Ameex's official documented API has
+  // NO structured way to reference their internal "Entrepôt" stock catalog
+  // (confirmed via their sandbox docs: POST /Delivery/Parcels/Action/Type/Add
+  // only accepts type/receiver/phone/city/cod/address/product/comment/
+  // order_num — 'product' is plain descriptive text, not a catalog lookup).
+  // This is a low-risk experiment to see whether Ameex does any internal
+  // matching against this text — not confirmed, not documented.
+  productReference?: string;
   // Express Coursier: settings JSONB object from carrierAccounts (contains expressCoursierStoreId)
   ecSettings?: Record<string, unknown>;
   // Ozon Express: settings JSONB object from carrierAccounts (contains ozonExpressCustomerId)
@@ -524,7 +533,11 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const phone    = sanitizePhone(input.phone);
   const cityId   = String(input.cityId || '');   // numeric ID resolved from ameex_cities
   const address  = cleanText(input.address) || cleanText(input.city);
-  const product  = cleanText(input.productName) || 'Produit';
+  // Experimental: append the platform product's Référence to the product
+  // text, in case Ameex's backend does internal matching against their
+  // Entrepôt catalog by this string — not officially documented, being
+  // tested at the user's request.
+  const product  = (cleanText(input.productName) || 'Produit') + (input.productReference ? ` [${cleanText(input.productReference)}]` : '');
   const note     = cleanText(input.note);
   const priceDH  = +(input.totalPrice / 100).toFixed(2);
 

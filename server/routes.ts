@@ -2695,6 +2695,11 @@ export async function registerRoutes(
                 const orderAmeexProductId = (order as any).ameexProductId
                   || (order as any).items?.find((it: any) => it.product?.ameexProductId)?.product?.ameexProductId
                   || undefined;
+                // Experimental (see CarrierShipInput.productReference comment):
+                // the linked product's own "Référence" field, appended to
+                // Ameex's product text as an unconfirmed matching attempt.
+                const orderProductReference = (order as any).items?.find((it: any) => it.product?.reference)?.product?.reference
+                  || undefined;
 
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
@@ -2720,6 +2725,7 @@ export async function registerRoutes(
                   ecSettings,
                   ozonSettings,
                   ameexProductId:   orderAmeexProductId,
+                  productReference: orderProductReference,
                 });
               })
             );
@@ -17760,6 +17766,9 @@ function ensureHeaders(sheet) {
       const singleOrderAmeexProductId = (order as any).ameexProductId
         || (order.items as any[] | undefined)?.find((it: any) => it.product?.ameexProductId)?.product?.ameexProductId
         || undefined;
+      // Experimental (see CarrierShipInput.productReference comment).
+      const singleOrderProductReference = (order.items as any[] | undefined)?.find((it: any) => it.product?.reference)?.product?.reference
+        || undefined;
 
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
@@ -17783,6 +17792,7 @@ function ensureHeaders(sheet) {
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
         ameexProductId:   singleOrderAmeexProductId,
+        productReference: singleOrderProductReference,
       });
 
       if (!shipResult.success) {
