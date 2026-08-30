@@ -847,6 +847,26 @@ export async function registerRoutes(
     let totalShipped = 0, deliveredShipped = 0, refusedShipped = 0, pendingShipped = 0;
     const byCarrier: Record<string, { total: number; delivered: number; pending: number; refused: number }> = {};
 
+    // ── Ledger truth for "shipped"/"returned" — supplements SHIPPED_STATUSES_SET
+    // and trackNumber below (see the 'EN COURS single source of truth' comment):
+    // a carrier can't report 'customer unreachable' without a package that
+    // already left the warehouse, regardless of which raw status string a
+    // given carrier/import used — so a stockMovements ledger row is proof
+    // even when status/trackNumber alone wouldn't catch it (5899bf5).
+    const statsOrderIds = allOrders.map((o: any) => o.id);
+    const statsShippedOrderIds = new Set<number>();
+    const statsReturnedOrderIds = new Set<number>();
+    if (statsOrderIds.length > 0) {
+      const statsMovements = await db.select({ orderId: stockMovements.orderId, type: stockMovements.type })
+        .from(stockMovements)
+        .where(and(eq(stockMovements.storeId, storeId), inArray(stockMovements.orderId, statsOrderIds)));
+      for (const m of statsMovements) {
+        if (m.orderId == null) continue;
+        if (m.type === 'shipped' || m.type === 'delivered') statsShippedOrderIds.add(m.orderId);
+        else if (m.type === 'returned') statsReturnedOrderIds.add(m.orderId);
+      }
+    }
+
     allOrders.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
       else if (o.status === 'rappel') rappel++;
@@ -897,11 +917,15 @@ export async function registerRoutes(
     // when dateType==='shipping'. This is what lets EXPÉDIÉS reconcile with
     // a carrier's own ship-date-based count.
     const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
-    const shippedOrders = shippedCohortOrders.filter(o => SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
+    const shippedOrders = shippedCohortOrders.filter(o =>
+      statsShippedOrderIds.has(o.id) || SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber
+    );
     totalShipped = shippedOrders.length;
     deliveredShipped = shippedOrders.filter(o => isDeliveredStatus(o.status)).length;
-    refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
-    pendingShipped = shippedOrders.filter(o => !isDeliveredStatus(o.status) && !RETURNED_STATUSES.has(o.status)).length;
+    refusedShipped = shippedOrders.filter(o => statsReturnedOrderIds.has(o.id) || RETURNED_STATUSES.has(o.status)).length;
+    pendingShipped = shippedOrders.filter(o =>
+      !isDeliveredStatus(o.status) && !statsReturnedOrderIds.has(o.id) && !RETURNED_STATUSES.has(o.status)
+    ).length;
 
     // Per-carrier breakdown — recomputed from the same shipping/delivery
     // cohort (a carrier shipment always has a tracking number).
@@ -1004,8 +1028,14 @@ export async function registerRoutes(
       rawProductMap[key].total++;
       // confirme column = ALL confirmed: 'confirme' + 'expédié' + 'delivered'
       if (isConfirmedCumulative(o.status)) rawProductMap[key].confirme++;
-      // inProgress = all orders currently with the carrier
-      if (['in_progress', 'expédié', 'Attente De Ramassage', 'transit', 'unreachable', 'En Cours De Retour'].includes(o.status)) rawProductMap[key].inProgress++;
+      // inProgress = all orders currently with the carrier — same robust
+      // definition as the main EN COURS card above (ledger OR status OR
+      // trackNumber), not the old hardcoded 6-status list which missed
+      // 'Injoignable' and several valid SHIPPED_STATUS_SET strings entirely.
+      if (!isDeliveredStatus(o.status) && !statsReturnedOrderIds.has(o.id) && !RETURNED_STATUSES.has(o.status) &&
+          (statsShippedOrderIds.has(o.id) || SHIPPED_STATUSES_SET.has(o.status) || !!(o as any).trackNumber)) {
+        rawProductMap[key].inProgress++;
+      }
       if (isDeliveredStatus(o.status)) rawProductMap[key].delivered++;
     });
     const productPerformance = Object.values(rawProductMap).sort((a, b) => b.total - a.total);
