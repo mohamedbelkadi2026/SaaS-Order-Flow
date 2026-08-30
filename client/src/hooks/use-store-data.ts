@@ -428,6 +428,8 @@ export function useInventoryStats() {
       if (!res.ok) throw new Error("Failed to fetch inventory stats");
       return res.json();
     },
+    refetchInterval: 15000, // re-fetch every 15s so new shipments appear without a page reload
+    staleTime: 10000,
   });
 }
 

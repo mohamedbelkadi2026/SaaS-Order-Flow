@@ -917,6 +917,8 @@ export default function Inventory() {
     },
     enabled: historyProduct !== null,
     refetchOnMount: "always",
+    refetchInterval: historyProduct !== null ? 10000 : false, // refresh every 10s while drawer is open
+    staleTime: 5000,
   });
 
   const {
