@@ -916,15 +916,22 @@ export async function registerRoutes(
     // filtered) when dateType==='creation', or the pickupDate-filtered set
     // when dateType==='shipping'. This is what lets EXPÉDIÉS reconcile with
     // a carrier's own ship-date-based count.
-    const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
+    // Returned statuses — aligned with isReturnStatus() (server/storage.ts):
+    // any status containing "retour" (case-insensitive), same as the
+    // Historique drawer's definition. The old hardcoded 3-value set
+    // ['refused', 'retourné', 'Retour Recu'] missed statuses like
+    // 'En Cours De Retour', causing them to be counted as 'En cours'
+    // in Dashboard while Historique correctly filed them as returned.
+    const isRetourStatus = (s: string) => s.toLowerCase().includes('retour');
+    const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu', 'En Cours De Retour', 'retourné', 'En cours de réception']);
     const shippedOrders = shippedCohortOrders.filter(o =>
       statsShippedOrderIds.has(o.id) || SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber
     );
     totalShipped = shippedOrders.length;
     deliveredShipped = shippedOrders.filter(o => isDeliveredStatus(o.status)).length;
-    refusedShipped = shippedOrders.filter(o => statsReturnedOrderIds.has(o.id) || RETURNED_STATUSES.has(o.status)).length;
+    refusedShipped = shippedOrders.filter(o => statsReturnedOrderIds.has(o.id) || isRetourStatus(o.status) || RETURNED_STATUSES.has(o.status)).length;
     pendingShipped = shippedOrders.filter(o =>
-      !isDeliveredStatus(o.status) && !statsReturnedOrderIds.has(o.id) && !RETURNED_STATUSES.has(o.status)
+      !isDeliveredStatus(o.status) && !statsReturnedOrderIds.has(o.id) && !isRetourStatus(o.status) && !RETURNED_STATUSES.has(o.status)
     ).length;
 
     // Per-carrier breakdown — recomputed from the same shipping/delivery
@@ -1032,7 +1039,7 @@ export async function registerRoutes(
       // definition as the main EN COURS card above (ledger OR status OR
       // trackNumber), not the old hardcoded 6-status list which missed
       // 'Injoignable' and several valid SHIPPED_STATUS_SET strings entirely.
-      if (!isDeliveredStatus(o.status) && !statsReturnedOrderIds.has(o.id) && !RETURNED_STATUSES.has(o.status) &&
+      if (!isDeliveredStatus(o.status) && !statsReturnedOrderIds.has(o.id) && !isRetourStatus(o.status) && !RETURNED_STATUSES.has(o.status) &&
           (statsShippedOrderIds.has(o.id) || SHIPPED_STATUSES_SET.has(o.status) || !!(o as any).trackNumber)) {
         rawProductMap[key].inProgress++;
       }
