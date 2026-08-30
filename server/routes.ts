@@ -8205,31 +8205,49 @@ function ensureHeaders(sheet) {
     }
   }
 
-  function signYouCanState(storeId: number): string {
-    const payload = `${storeId}.${Date.now()}`;
+  function signYouCanState(storeId: number, integrationId?: number): string {
+    const payload = `${storeId}.${Date.now()}.${integrationId ?? 0}`;
     const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
     const sig = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
     return `${payload}.${sig}`;
   }
 
-  function verifyYouCanState(state: string): number | null {
+  function verifyYouCanState(state: string): { storeId: number; integrationId?: number } | null {
     const parts = (state || "").split(".");
-    if (parts.length !== 3) return null;
-    const [storeIdStr, ts, sig] = parts;
-    const payload = `${storeIdStr}.${ts}`;
-    const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
-    const expected = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
-    if (expected !== sig) return null;
-    if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
-    const storeId = parseInt(storeIdStr, 10);
-    return isNaN(storeId) ? null : storeId;
+    // Support both old 3-part state (storeId.ts.sig) and new 4-part (storeId.ts.integrationId.sig)
+    if (parts.length === 3) {
+      const [storeIdStr, ts, sig] = parts;
+      const payload = `${storeIdStr}.${ts}`;
+      const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+      const expected = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+      if (expected !== sig) return null;
+      if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
+      const storeId = parseInt(storeIdStr, 10);
+      return isNaN(storeId) ? null : { storeId };
+    }
+    if (parts.length === 4) {
+      const [storeIdStr, ts, integrationIdStr, sig] = parts;
+      const payload = `${storeIdStr}.${ts}.${integrationIdStr}`;
+      const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+      const expected = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+      if (expected !== sig) return null;
+      if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
+      const storeId = parseInt(storeIdStr, 10);
+      const integrationId = parseInt(integrationIdStr, 10);
+      return isNaN(storeId) ? null : { storeId, integrationId: integrationId || undefined };
+    }
+    return null;
   }
 
   app.get("/api/integrations/youcan/oauth/start", requireAuth, (req: any, res: any) => {
     const clientId = process.env.YOUCAN_CLIENT_ID;
     if (!clientId) return res.redirect("/integrations?youcan_error=not_configured");
     const storeId = req.user!.storeId!;
-    const state = signYouCanState(storeId);
+    // Optional: if the user clicked "Reconnecter" on an existing integration,
+    // include its DB id in the state so the callback updates that row instead
+    // of inserting a new one.
+    const integrationId = req.query.integrationId ? Number(req.query.integrationId) : undefined;
+    const state = signYouCanState(storeId, integrationId);
     const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
       `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
     const url = new URL("https://seller-area.youcan.shop/admin/oauth/authorize");
@@ -8249,12 +8267,13 @@ function ensureHeaders(sheet) {
       console.error("[YOUCAN-OAUTH] YouCan returned error:", error);
       return res.redirect(`/integrations?youcan_error=${error}`);
     }
-    const storeId = verifyYouCanState(state as string);
-    if (!storeId) {
+    const stateResult = verifyYouCanState(state as string);
+    if (!stateResult) {
       console.error("[YOUCAN-OAUTH] Invalid or expired state:", state);
       return res.redirect("/integrations?youcan_error=invalid_state");
     }
-    console.log(`[YOUCAN-OAUTH] callback verified — storeId=${storeId}`);
+    const { storeId, integrationId: stateIntegrationId } = stateResult;
+    console.log(`[YOUCAN-OAUTH] callback verified — storeId=${storeId} integrationId=${stateIntegrationId}`);
     const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
       `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
     try {
@@ -8300,14 +8319,20 @@ function ensureHeaders(sheet) {
       }
       if (youcanStoreName) oauthData.connectionName = youcanStoreName;
 
-      const existing = await db.select().from(storeIntegrations)
-        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
-        .limit(1);
-      if (existing.length > 0) {
-        await db.update(storeIntegrations).set(oauthData).where(eq(storeIntegrations.id, existing[0].id));
+      // Each YouCan store connection gets its own dedicated webhookKey and row.
+      // If the OAuth flow was started with an existing integrationId (user clicked
+      // "Reconnecter" on a specific store), update that row. Otherwise insert a new one.
+      const baseWebhookKey = await storage.getOrGenerateWebhookKey(storeId);
+      const uniqueWebhookKey = stateIntegrationId ? baseWebhookKey : `${baseWebhookKey}_yc_${Date.now()}`;
+      const finalWebhookKey = uniqueWebhookKey;
+      const finalTargetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${finalWebhookKey}`;
+
+      if (stateIntegrationId) {
+        await db.update(storeIntegrations).set({ ...oauthData, connectionName: youcanStoreName || oauthData.connectionName })
+          .where(and(eq(storeIntegrations.id, stateIntegrationId), eq(storeIntegrations.storeId, storeId)));
       } else {
         await db.insert(storeIntegrations).values({
-          storeId, provider: "youcan", type: "webhook", credentials: "{}", webhookKey, ...oauthData,
+          storeId, provider: "youcan", type: "webhook", credentials: "{}", webhookKey: uniqueWebhookKey, ...oauthData,
         });
       }
 
@@ -8316,7 +8341,7 @@ function ensureHeaders(sheet) {
         const subResp = await fetch("https://api.youcan.shop/resthooks/subscribe", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.access_token}` },
-          body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
+          body: JSON.stringify({ event: "order.create", target_url: finalTargetUrl }),
         });
         const subJson = await subResp.json();
         console.log("[YOUCAN-OAUTH] resthooks/subscribe response:", subJson);
@@ -8331,25 +8356,43 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // GET /api/integrations/youcan/status — returns ALL connected YouCan stores
   app.get("/api/integrations/youcan/status", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const rows = await db.select().from(storeIntegrations)
-      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
-      .limit(1);
-    const row = rows[0];
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
     res.json({
-      connected: !!(row?.oauthAccessToken),
-      ordersCount: row?.ordersCount ?? 0,
-      connectionName: row?.connectionName ?? null,
-      createdAt: row?.createdAt ?? null,
+      // Legacy single-store shape (keeps existing frontend working)
+      connected: rows.some(r => !!r.oauthAccessToken && r.isActive),
+      ordersCount: rows[0]?.ordersCount ?? 0,
+      connectionName: rows[0]?.connectionName ?? null,
+      createdAt: rows[0]?.createdAt ?? null,
+      // Multi-store list
+      stores: rows.map(r => ({
+        id: r.id,
+        connected: !!(r.oauthAccessToken) && !!r.isActive,
+        connectionName: r.connectionName ?? null,
+        ordersCount: r.ordersCount ?? 0,
+        createdAt: r.createdAt,
+        webhookUrl: r.webhookKey ? `${process.env.PUBLIC_URL || ''}/api/webhooks/youcan/order/${r.webhookKey}` : null,
+      })),
     });
   });
 
+  // POST /api/integrations/youcan/disconnect — disconnect a specific store by id
   app.post("/api/integrations/youcan/disconnect", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
-    await db.update(storeIntegrations)
-      .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
-      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
+    const integrationId = req.body?.integrationId ? Number(req.body.integrationId) : null;
+    if (integrationId) {
+      await db.update(storeIntegrations)
+        .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
+        .where(and(eq(storeIntegrations.id, integrationId), eq(storeIntegrations.storeId, storeId)));
+    } else {
+      // Legacy: disconnect the first active store
+      await db.update(storeIntegrations)
+        .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
+        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
+    }
     res.json({ success: true });
   });
 

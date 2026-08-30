@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -904,6 +904,7 @@ function resetActiveSheetStatuses() {
 // --- YouCan Tab ---
 function YouCanTab() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: status, refetch } = useQuery<any>({
     queryKey: ["/api/integrations/youcan/status"],
     queryFn: () => fetch("/api/integrations/youcan/status", { credentials: "include" }).then(r => r.json()),
@@ -923,71 +924,80 @@ function YouCanTab() {
     }
   }, []);
 
-  const handleDisconnect = async () => {
-    await fetch("/api/integrations/youcan/disconnect", { method: "POST", credentials: "include" });
+  const handleDisconnect = async (integrationId?: number) => {
+    await fetch("/api/integrations/youcan/disconnect", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ integrationId }),
+    });
     refetch();
-    toast({ title: "YouCan déconnecté" });
+    toast({ title: "Boutique YouCan déconnectée" });
   };
 
-  const connected = status?.connected;
+  const stores: any[] = status?.stores || (status?.connected ? [{ id: null, connected: true, connectionName: status?.connectionName, ordersCount: status?.ordersCount }] : []);
 
   return (
-    <div className="max-w-lg mx-auto">
-      <div className="bg-white dark:bg-card rounded-2xl border-2 border-dashed border-red-200 shadow-sm p-10 text-center space-y-6">
-        <div className={cn("w-16 h-16 rounded-full border-2 flex items-center justify-center mx-auto", connected ? "border-green-400 bg-green-50" : "border-red-200")}>
-          <div className="w-8 h-8 bg-red-600 rounded text-white text-sm flex items-center justify-center font-bold">Y</div>
-        </div>
+    <div className="max-w-lg mx-auto space-y-4">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-10 h-10 bg-red-600 rounded-lg text-white flex items-center justify-center font-bold text-lg">Y</div>
         <div>
-          <h2 className="text-xl font-bold mb-2">Intégration YouCan</h2>
-          {connected ? (
-            <div className="space-y-2">
-              <div className="flex items-center justify-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
-                <span className="text-sm font-medium text-green-600">Boutique connectée</span>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {status?.ordersCount ?? 0} commande{(status?.ordersCount ?? 0) !== 1 ? "s" : ""} synchronisée{(status?.ordersCount ?? 0) !== 1 ? "s" : ""}
-              </p>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              Connectez votre boutique YouCan via OAuth pour synchroniser automatiquement les nouvelles commandes.
-            </p>
-          )}
+          <h2 className="text-lg font-bold">Intégration YouCan</h2>
+          <p className="text-xs text-muted-foreground">{stores.filter((s: any) => s.connected).length} boutique(s) connectée(s)</p>
         </div>
+      </div>
 
-        {connected ? (
-          <div className="space-y-3">
-            <div className="bg-green-50 dark:bg-green-950/20 rounded-lg p-4 text-sm text-green-700 dark:text-green-400 text-left">
-              ✅ Les nouvelles commandes YouCan arrivent automatiquement dans la plateforme.
+      {/* Connected stores list */}
+      {stores.length > 0 && (
+        <div className="space-y-3">
+          {stores.map((store: any, i: number) => (
+            <div key={store.id ?? i} className="bg-white dark:bg-card rounded-xl border border-green-200 p-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="w-2.5 h-2.5 rounded-full bg-green-500 shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-medium text-sm truncate">{store.connectionName || `Boutique YouCan ${i + 1}`}</p>
+                  <p className="text-xs text-muted-foreground">{store.ordersCount ?? 0} commande(s) synchronisée(s)</p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleDisconnect(store.id)}
+                className="text-red-600 border-red-200 hover:bg-red-50 shrink-0"
+              >
+                Déconnecter
+              </Button>
             </div>
-            <Button variant="outline" onClick={handleDisconnect} className="w-full h-10 text-red-600 border-red-200 hover:bg-red-50 gap-2">
-              Déconnecter YouCan
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="bg-gray-50 dark:bg-muted/30 rounded-lg p-4 text-sm text-muted-foreground text-left space-y-1">
-              <p className="font-medium text-foreground">Pré-requis :</p>
-              <p>• Compte Partner YouCan créé sur partners.youcan.shop</p>
-              <p>• App créée manuellement (Embedded = False)</p>
-              <p>• Variables <code className="bg-muted px-1 rounded text-xs">YOUCAN_CLIENT_ID</code> et <code className="bg-muted px-1 rounded text-xs">YOUCAN_CLIENT_SECRET</code> configurées sur Railway</p>
-            </div>
-            <Button
-              onClick={() => { window.location.href = "/api/integrations/youcan/oauth/start"; }}
-              className="w-full bg-red-600 hover:bg-red-700 text-white h-11 font-semibold gap-2"
-            >
-              <Link2 className="w-4 h-4" /> Connecter ma boutique YouCan
-            </Button>
-            <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
-              <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
-              Non connecté — aucune commande synchronisée
-            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add another store button — always visible */}
+      <div className="bg-gray-50 dark:bg-muted/30 rounded-xl border-2 border-dashed border-gray-200 p-5 text-center space-y-3">
+        {stores.length === 0 && (
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Connectez votre boutique YouCan via OAuth pour synchroniser automatiquement les nouvelles commandes.
+          </p>
+        )}
+        <Button
+          onClick={() => { window.location.href = "/api/integrations/youcan/oauth/start"; }}
+          className={stores.length > 0 ? "w-full bg-red-600 hover:bg-red-700 text-white h-10 font-semibold gap-2" : "w-full bg-red-600 hover:bg-red-700 text-white h-11 font-semibold gap-2"}
+        >
+          <Link2 className="w-4 h-4" />
+          {stores.length > 0 ? "Ajouter une autre boutique YouCan" : "Connecter ma boutique YouCan"}
+        </Button>
+        {stores.length === 0 && (
+          <div className="bg-gray-100 dark:bg-muted rounded-lg p-3 text-xs text-muted-foreground text-left space-y-1">
+            <p className="font-medium text-foreground">Pré-requis :</p>
+            <p>• Compte Partner YouCan créé sur partners.youcan.shop</p>
+            <p>• App créée manuellement (Embedded = False)</p>
+            <p>• Variables <code className="bg-muted px-1 rounded">YOUCAN_CLIENT_ID</code> et <code className="bg-muted px-1 rounded">YOUCAN_CLIENT_SECRET</code> sur Railway</p>
           </div>
         )}
       </div>
     </div>
   );
+
 }
 
 // ─── Shopify integration guide steps ────────────────────────────────────────
