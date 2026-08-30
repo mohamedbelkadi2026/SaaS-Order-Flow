@@ -16788,6 +16788,39 @@ function ensureHeaders(sheet) {
 
       console.log(`[ATTACH-TRACKING] Order #${(order as any).orderNumber || orderId} → carrier="${resolvedCarrier}" trackNumber="${updated?.trackNumber}" status="${updated?.status}" user=${user.id}${user.isSuperAdmin ? ' (superAdmin)' : ''}`);
 
+      // ── Backfill the missing 'shipped' ledger row ───────────────────────────
+      // This route sets orders.status directly (raw update above), bypassing
+      // storage.updateOrderStatus()'s RULE 0.5 — the only place that normally
+      // creates the stockMovements 'shipped' row. attachStatus defaults to
+      // 'Attente De Ramassage' (a genuine SHIPPED_STATUS_SET status) even when
+      // no prior webhook is found, so EVERY manually-attached tracking number
+      // was silently leaving Sortie/En cours/Disponible unaware this order
+      // ever shipped. The route already required order.status === 'confirme'
+      // before this call (see the guard above), so this is unambiguously the
+      // order's first-ever shipped transition — no risk of double-counting.
+      if (updated && SHIPPED_STATUS_SET.has(updated.status) && (order as any).items?.length) {
+        for (const item of (order as any).items as any[]) {
+          if (!item.productId) continue;
+          const qty = Number(item.quantity) || 1;
+          const existing = await db.select({ id: stockMovements.id }).from(stockMovements)
+            .where(and(eq(stockMovements.orderId, orderId), eq(stockMovements.productId, item.productId)))
+            .limit(1);
+          if (existing.length > 0) continue; // safety net — should never happen given the 'confirme' guard above
+          await db.update(products).set({ stock: sql`${products.stock} - ${qty}` } as any)
+            .where(eq(products.id, item.productId));
+          await db.insert(stockLogs).values({
+            storeId, productId: item.productId, orderId,
+            changeAmount: -qty,
+            reason: `Expédition commande #${orderId} (tracking attaché manuellement) → ${updated.status}`,
+          });
+          await db.insert(stockMovements).values({
+            storeId, productId: item.productId, type: 'shipped', quantity: -qty,
+            orderId, userId: user.id,
+            reason: `Expédition commande #${orderId} (tracking attaché manuellement) → ${updated.status}`,
+          } as any);
+        }
+      }
+
       await storage.createIntegrationLog({
         storeId,
         integrationId: null,
