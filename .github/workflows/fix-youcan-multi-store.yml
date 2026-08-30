@@ -1,0 +1,315 @@
+name: Patch YouCan multi-store integration
+
+on:
+  push:
+    paths:
+      - .github/workflows/fix-youcan-multi-store.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch YouCan integration
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          # ---------- client/src/pages/integrations.tsx ----------
+          p = Path('client/src/pages/integrations.tsx')
+          s = p.read_text()
+          start = s.find('// --- YouCan Tab ---')
+          if start < 0:
+              raise SystemExit('YouCan Tab marker not found')
+          end = s.find('// ---', start + 10)
+          if end < 0:
+              raise SystemExit('Next integrations tab marker not found')
+
+          new_tab = r'''// --- YouCan Tab ---
+function YouCanTab() {
+  const { toast } = useToast();
+  const { data: status, refetch, isLoading } = useQuery<any>({
+    queryKey: ["/api/integrations/youcan/status"],
+    queryFn: () => fetch("/api/integrations/youcan/status", { credentials: "include" }).then(r => r.json()),
+    refetchInterval: 5000,
+  });
+
+  const integrations = Array.isArray(status?.integrations) ? status.integrations : [];
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("youcan") === "connected") {
+      toast({ title: "YouCan connecté !", description: "La boutique YouCan a été ajoutée avec succès." });
+      window.history.replaceState({}, "", window.location.pathname);
+      refetch();
+    } else if (params.get("youcan_error")) {
+      toast({ title: "Erreur YouCan", description: params.get("youcan_error") || "Erreur inconnue", variant: "destructive" });
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [refetch, toast]);
+
+  const handleAddStore = () => {
+    window.location.href = "/api/integrations/youcan/oauth/start?add=1";
+  };
+
+  const handleDisconnect = async (integrationId: number) => {
+    try {
+      const res = await fetch("/api/integrations/youcan/disconnect", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ integrationId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Impossible de déconnecter cette boutique");
+      toast({ title: "Boutique déconnectée" });
+      refetch();
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err?.message || "Erreur inconnue", variant: "destructive" });
+    }
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold">Boutiques YouCan</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Connectez plusieurs boutiques YouCan au même compte. Chaque boutique garde son propre webhook et ses commandes.
+          </p>
+        </div>
+        <Button onClick={handleAddStore} className="bg-red-600 hover:bg-red-700 text-white gap-2 shrink-0">
+          <Plus className="w-4 h-4" /> Ajouter une boutique YouCan
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center justify-center py-12 text-muted-foreground gap-2">
+          <Loader2 className="w-5 h-5 animate-spin" /> Chargement des boutiques...
+        </div>
+      ) : integrations.length === 0 ? (
+        <div className="bg-white dark:bg-card rounded-2xl border-2 border-dashed border-red-200 shadow-sm p-10 text-center space-y-5">
+          <div className="w-16 h-16 rounded-full border-2 border-red-200 flex items-center justify-center mx-auto">
+            <div className="w-8 h-8 bg-red-600 rounded text-white text-sm flex items-center justify-center font-bold">Y</div>
+          </div>
+          <div>
+            <h3 className="text-lg font-bold">Aucune boutique YouCan connectée</h3>
+            <p className="text-sm text-muted-foreground mt-2">Ajoutez votre première boutique pour synchroniser automatiquement ses nouvelles commandes.</p>
+          </div>
+          <Button onClick={handleAddStore} className="bg-red-600 hover:bg-red-700 text-white h-11 font-semibold gap-2">
+            <Link2 className="w-4 h-4" /> Connecter une boutique YouCan
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {integrations.map((item: any, index: number) => (
+            <div key={item.id} className="bg-white dark:bg-card rounded-2xl border shadow-sm p-5 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-red-50 border border-red-100 flex items-center justify-center shrink-0">
+                <div className="w-7 h-7 bg-red-600 rounded text-white text-xs flex items-center justify-center font-bold">Y</div>
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-bold truncate">{item.connectionName || `Boutique YouCan ${index + 1}`}</h3>
+                  <Badge className={item.isActive ? "bg-green-50 text-green-700 border-green-200" : "bg-gray-100 text-gray-600"} variant="outline">
+                    {item.isActive ? "Connectée" : "Déconnectée"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {item.ordersCount ?? 0} commande{(item.ordersCount ?? 0) === 1 ? "" : "s"} synchronisée{(item.ordersCount ?? 0) === 1 ? "" : "s"}
+                  {item.storeSlug ? ` • ${item.storeSlug}` : ""}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleDisconnect(Number(item.id))}
+                className="text-red-600 border-red-200 hover:bg-red-50 gap-1.5 shrink-0"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Déconnecter
+              </Button>
+            </div>
+          ))}
+          <Button onClick={handleAddStore} variant="outline" className="w-full h-11 border-dashed border-red-300 text-red-600 hover:bg-red-50 gap-2">
+            <Plus className="w-4 h-4" /> Ajouter une autre boutique YouCan
+          </Button>
+        </div>
+      )}
+
+      <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-800">
+        <strong>Multi-boutiques activé :</strong> chaque connexion possède son propre identifiant d'intégration et son propre webhook. Les commandes restent automatiquement rattachées à votre compte SaaS.
+      </div>
+    </div>
+  );
+}
+
+'''
+          s = s[:start] + new_tab + s[end:]
+          p.write_text(s)
+
+          # ---------- server/routes.ts ----------
+          p = Path('server/routes.ts')
+          s = p.read_text()
+
+          old_callback = re.compile(r'  app\.get\("/api/integrations/youcan/oauth/callback"[\s\S]*?  app\.post\("/api/integrations/youcan/disconnect"[\s\S]*?\n  \}\);', re.M)
+          new_callback = r'''  app.get("/api/integrations/youcan/oauth/callback", async (req: any, res: any) => {
+    const { code, state, error } = req.query;
+    if (error) return res.redirect(`/integrations?youcan_error=${encodeURIComponent(error)}`);
+    const sessionState = (req.session as any).youcanOauthState;
+    if (!state || state !== sessionState) return res.redirect("/integrations?youcan_error=invalid_state");
+    delete (req.session as any).youcanOauthState;
+    const storeId = parseInt((state as string).split("-")[0]);
+    if (isNaN(storeId)) return res.redirect("/integrations?youcan_error=invalid_state");
+    const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+      `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+    try {
+      const tokenResp = await fetch("https://api.youcan.shop/oauth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: process.env.YOUCAN_CLIENT_ID!,
+          client_secret: process.env.YOUCAN_CLIENT_SECRET!,
+          redirect_uri: redirectUri,
+          code: code as string,
+        }),
+      });
+      const tokens = await tokenResp.json() as any;
+      if (!tokens.access_token) {
+        console.error("[YOUCAN-OAUTH] Token exchange failed:", tokens);
+        return res.redirect("/integrations?youcan_error=token_exchange_failed");
+      }
+
+      // Identify the exact YouCan shop that authorized the app. The /me endpoint
+      // returns the seller's current store information, including name, slug and id.
+      let shop: any = {};
+      try {
+        const meResp = await fetch("https://api.youcan.shop/me", {
+          headers: { Authorization: `Bearer ${tokens.access_token}` },
+        });
+        shop = await meResp.json() as any;
+      } catch (shopErr: any) {
+        console.warn("[YOUCAN-OAUTH] Could not fetch shop details:", shopErr.message);
+      }
+
+      // IMPORTANT: never reuse the old single-row integration. Every OAuth
+      // authorization creates its own integration + webhook key so multiple
+      // YouCan shops can coexist under the same SaaS store.
+      const webhookKey = `yc-${Date.now()}-${Math.random().toString(36).slice(2, 18)}`;
+      const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${webhookKey}`;
+      const connectionName = shop?.name || shop?.slug || `Boutique YouCan ${Date.now()}`;
+
+      const oauthData: any = {
+        storeId,
+        provider: "youcan",
+        type: "webhook",
+        credentials: JSON.stringify({ youcanStoreId: shop?.id || shop?.store_id || null, slug: shop?.slug || null }),
+        webhookKey,
+        connectionName,
+        ordersCount: 0,
+        isActive: 1,
+        oauthAccessToken: encrypt(tokens.access_token),
+        oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
+      };
+      if (tokens.refresh_token) oauthData.oauthRefreshToken = encrypt(tokens.refresh_token);
+
+      const inserted = await db.insert(storeIntegrations).values(oauthData).returning({ id: storeIntegrations.id });
+      const integrationId = inserted[0]?.id;
+
+      // Subscribe this exact YouCan shop to this exact integration webhook.
+      try {
+        const subResp = await fetch("https://api.youcan.shop/resthooks/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.access_token}` },
+          body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
+        });
+        const subJson = await subResp.json();
+        console.log("[YOUCAN-OAUTH] resthooks/subscribe response:", subJson);
+      } catch (subErr: any) {
+        console.error("[YOUCAN-OAUTH] Failed to subscribe webhook (non-fatal):", subErr.message);
+      }
+
+      console.log(`[YOUCAN-OAUTH] Connected shop ${connectionName} as integration ${integrationId} for SaaS store ${storeId}`);
+      res.redirect("/integrations?youcan=connected");
+    } catch (err: any) {
+      console.error("[YOUCAN-OAUTH] Error:", err.message);
+      res.redirect("/integrations?youcan_error=server_error");
+    }
+  });
+
+  app.get("/api/integrations/youcan/status", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const rows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+      .orderBy(desc(storeIntegrations.createdAt));
+
+    const integrations = rows.map((row: any) => {
+      let meta: any = {};
+      try { meta = row.credentials ? JSON.parse(row.credentials) : {}; } catch { meta = {}; }
+      return {
+        id: row.id,
+        connectionName: row.connectionName || meta.slug || `Boutique YouCan ${row.id}`,
+        storeSlug: meta.slug || null,
+        ordersCount: row.ordersCount ?? 0,
+        isActive: !!row.isActive && !!row.oauthAccessToken,
+        createdAt: row.createdAt,
+      };
+    });
+
+    res.json({ connected: integrations.some((i: any) => i.isActive), integrations });
+  });
+
+  app.post("/api/integrations/youcan/disconnect", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const integrationId = Number(req.body?.integrationId);
+    if (!Number.isInteger(integrationId) || integrationId <= 0) {
+      return res.status(400).json({ message: "integrationId requis" });
+    }
+    const rows = await db.select({ id: storeIntegrations.id })
+      .from(storeIntegrations)
+      .where(and(
+        eq(storeIntegrations.id, integrationId),
+        eq(storeIntegrations.storeId, storeId),
+        eq(storeIntegrations.provider, "youcan"),
+      ))
+      .limit(1);
+    if (!rows[0]) return res.status(404).json({ message: "Intégration YouCan introuvable" });
+
+    await db.update(storeIntegrations)
+      .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
+      .where(eq(storeIntegrations.id, integrationId));
+    res.json({ success: true });
+  });'''
+          s2, n = old_callback.subn(new_callback, s, count=1)
+          if n != 1:
+              raise SystemExit('YouCan callback/status/disconnect block not found')
+          s = s2
+
+          # The old OAuth start endpoint is kept, but make the state explicit that
+          # this is an add-store operation. The callback always inserts a new row.
+          s = s.replace(
+              'const state = `${storeId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;',
+              'const state = `${storeId}-${Date.now()}-${Math.random().toString(36).slice(2)}-add`;',
+              1,
+          )
+
+          p.write_text(s)
+
+          # Remove this one-shot workflow from the repository after the patch is applied.
+          wf = Path('.github/workflows/fix-youcan-multi-store.yml')
+          wf.unlink()
+
+      - name: Commit patched files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add client/src/pages/integrations.tsx server/routes.ts .github/workflows/fix-youcan-multi-store.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "Support multiple YouCan stores per account"
+          git push
