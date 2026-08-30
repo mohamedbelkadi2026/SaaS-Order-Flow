@@ -828,6 +828,49 @@ export default function Inventory() {
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
+  // ── "Tout réparer" — runs all 3 repair steps in sequence automatically ───
+  // Step 1: backfill stock history (link all historical orders to products)
+  // Step 2: apply product-link corrections (fix Sortie/En cours/Disponible)
+  // Step 3: apply missing-shipped-ledger repair (create missing stockMovements rows)
+  // This is the "fix everything at once" alternative to clicking each repair
+  // button individually — produces the same result as doing them in order.
+  const [toutReparerPending, setToutReparerPending] = useState(false);
+  const toutReparer = async () => {
+    if (toutReparerPending) return;
+    setToutReparerPending(true);
+    let results: string[] = [];
+    let hasError = false;
+    try {
+      // Step 1 — backfill history
+      try {
+        const r = await apiRequest("POST", "/api/products/link-all-historical", {}).then((r: any) => r.json ? r.json() : r);
+        if (r?.message) results.push(r.message);
+      } catch (e: any) { results.push(`Historique: ${e.message}`); hasError = true; }
+      // Step 2 — apply product links
+      try {
+        const audit = await apiRequest("GET", "/api/products/audit-product-links").then((r: any) => r.json ? r.json() : r);
+        if ((audit?.corrections?.length || 0) > 0) {
+          const r = await apiRequest("POST", "/api/products/apply-product-link-corrections", { corrections: audit.corrections }).then((r: any) => r.json ? r.json() : r);
+          if (r?.message) results.push(r.message);
+        }
+      } catch (e: any) { results.push(`Liens: ${e.message}`); hasError = true; }
+      // Step 3 — fix missing shipped ledger
+      try {
+        const r = await apiRequest("POST", "/api/products/repair-missing-shipped-ledger/apply", {}).then((r: any) => r.json ? r.json() : r);
+        if (r?.message) results.push(r.message);
+      } catch (e: any) { results.push(`Ledger: ${e.message}`); hasError = true; }
+
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      toast({
+        title: hasError ? "⚠️ Réparation partielle" : "✅ Tout réparé",
+        description: results.join(" | "),
+      });
+    } finally {
+      setToutReparerPending(false);
+    }
+  };
+
   // Return/refused stock restoration policy — 'auto_on_retour_status'
   // (default: stock restores automatically once status contains "retour")
   // vs 'manual_confirmation_only' (requires an explicit physical
@@ -1018,7 +1061,7 @@ export default function Inventory() {
     name: "", sku: "", stock: "", costPrice: "", sellingPrice: "",
     description: "", reference: "",
     descriptionDarija: "", aiFeatures: "", imageUrl: "",
-    coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "",
+    coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "", ameexProductId: "",
   });
 
   // File upload state — shared between Add and Edit dialogs (only one open at a time)
@@ -1061,7 +1104,7 @@ export default function Inventory() {
   };
 
   const resetForm = () => {
-    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "", coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "" });
+    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "", coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "", ameexProductId: "" });
     setManualStockReason("");
     setHasVariants(false);
     setVariants([]);
@@ -1113,6 +1156,7 @@ export default function Inventory() {
       coutEmballage: parseFloat(form.coutEmballage) || 0,
       coutLivraison: parseFloat(form.coutLivraison) || 0,
       coutConfirmation: parseFloat(form.coutConfirmation) || 0,
+      ameexProductId: form.ameexProductId.trim() || null,
       stockDate: new Date(newProductStockDate + "T12:00:00").toISOString(),
     };
     if (hasVariants && variants.length > 0) {
@@ -1325,6 +1369,7 @@ export default function Inventory() {
         coutEmballage: parseFloat(form.coutEmballage) || 0,
         coutLivraison: parseFloat(form.coutLivraison) || 0,
         coutConfirmation: parseFloat(form.coutConfirmation) || 0,
+        ameexProductId: form.ameexProductId.trim() || null,
       };
       if (isManualStockChange) {
         updatePayload.manualStockReason = manualStockReason.trim();
@@ -1492,6 +1537,7 @@ export default function Inventory() {
       coutEmballage: pd.coutEmballage ? String(pd.coutEmballage) : "",
       coutLivraison: pd.coutLivraison ? String(pd.coutLivraison) : "",
       coutConfirmation: pd.coutConfirmation ? String(pd.coutConfirmation) : "",
+      ameexProductId: (product as any).ameexProductId || "",
     });
 
     // Load existing variants
@@ -1622,73 +1668,17 @@ export default function Inventory() {
           </Button>
         )}
         <Button
-          variant="outline"
+          variant="default"
           size="sm"
-          className="gap-2"
-          onClick={() => backfillHistoryMutation.mutate()}
-          disabled={backfillHistoryMutation.isPending}
-          data-testid="button-backfill-stock-history"
+          className="gap-2 bg-violet-600 hover:bg-violet-700 text-white"
+          onClick={toutReparer}
+          disabled={toutReparerPending}
+          data-testid="button-tout-reparer"
         >
-          {backfillHistoryMutation.isPending ? (
+          {toutReparerPending ? (
             <><Loader2 className="w-4 h-4 animate-spin" /> Réparation en cours...</>
           ) : (
-            <><History className="w-4 h-4" /> Réparer l'historique des stocks</>
-          )}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          onClick={() => auditProductLinksMutation.mutate()}
-          disabled={auditProductLinksMutation.isPending}
-          data-testid="button-audit-product-links"
-        >
-          {auditProductLinksMutation.isPending ? (
-            <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
-          ) : (
-            <><Link2 className="w-4 h-4" /> Réparer les liens produits</>
-          )}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          onClick={() => fetchDuplicateGroupsMutation.mutate()}
-          disabled={fetchDuplicateGroupsMutation.isPending}
-          data-testid="button-find-duplicate-products"
-        >
-          {fetchDuplicateGroupsMutation.isPending ? (
-            <><Loader2 className="w-4 h-4 animate-spin" /> Recherche en cours...</>
-          ) : (
-            <><Copy className="w-4 h-4" /> Fusionner les doublons</>
-          )}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          onClick={() => auditOzonRepairMutation.mutate()}
-          disabled={auditOzonRepairMutation.isPending}
-          data-testid="button-repair-ozon-confirme-reporte"
-        >
-          {auditOzonRepairMutation.isPending ? (
-            <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
-          ) : (
-            <><Truck className="w-4 h-4" /> Réparer statuts Ozon</>
-          )}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2"
-          onClick={() => auditShippedLedgerMutation.mutate()}
-          disabled={auditShippedLedgerMutation.isPending}
-          data-testid="button-repair-missing-shipped-ledger"
-        >
-          {auditShippedLedgerMutation.isPending ? (
-            <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours...</>
-          ) : (
-            <><PackageCheck className="w-4 h-4" /> Réparer ledger manquant</>
+            <><Wrench className="w-4 h-4" /> Tout réparer</>
           )}
         </Button>
         <Select
@@ -2068,6 +2058,19 @@ export default function Inventory() {
               <Input data-testid="input-product-reference" value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="Référence interne" />
             </div>
             <div className="space-y-2">
+              <Label className="text-xs font-medium">🚚 ID produit Ameex (optionnel)</Label>
+              <Input
+                data-testid="input-ameex-product-id"
+                value={form.ameexProductId}
+                onChange={e => setForm(f => ({ ...f, ameexProductId: e.target.value }))}
+                placeholder="UUID du produit dans le catalogue Ameex"
+              />
+              <p className="text-xs text-muted-foreground">
+                Uniquement si votre stock est géré par Ameex (compte "stock-managed"). Chaque commande de ce produit
+                expédiée via Ameex décrémentera automatiquement leur propre stock.
+              </p>
+            </div>
+            <div className="space-y-2">
               <Label>Photo du produit</Label>
               <input
                 ref={fileInputRef}
@@ -2224,6 +2227,19 @@ export default function Inventory() {
             <div className="space-y-2">
               <Label>Référence</Label>
               <Input data-testid="input-edit-product-reference" value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">🚚 ID produit Ameex (optionnel)</Label>
+              <Input
+                data-testid="input-edit-ameex-product-id"
+                value={form.ameexProductId}
+                onChange={e => setForm(f => ({ ...f, ameexProductId: e.target.value }))}
+                placeholder="UUID du produit dans le catalogue Ameex"
+              />
+              <p className="text-xs text-muted-foreground">
+                Uniquement si votre stock est géré par Ameex (compte "stock-managed"). Chaque commande de ce produit
+                expédiée via Ameex décrémentera automatiquement leur propre stock.
+              </p>
             </div>
 
             {/* AI Knowledge Base Section */}
