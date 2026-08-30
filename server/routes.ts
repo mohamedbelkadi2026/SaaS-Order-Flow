@@ -10299,7 +10299,11 @@ function ensureHeaders(sheet) {
         // says — so it's checked first and wins over an otherwise-ambiguous
         // status.
         const wasShipped = shippedOrderIds.has(orderId) || SHIPPED_STATUS_SET.has(status) || !!trackNumberByOrder.get(orderId);
-        const wasReturned = returnedOrderIds.has(orderId);
+        // wasReturned: ledger row (returnedOrderIds) OR status explicitly
+        // containing "retour" — matches isReturnStatus() in storage.ts so
+        // 'En Cours De Retour', 'En cours de réception', etc. are classified
+        // as Refusées/Retournées even without a ledger row yet.
+        const wasReturned = returnedOrderIds.has(orderId) || (typeof status === 'string' && status.toLowerCase().includes('retour'));
         if (isDeliveredStatus(status)) {
           statusSummary!.deliveredOrders++;
           statusSummary!.deliveredQty += qtyByOrder.get(orderId) || 0;
