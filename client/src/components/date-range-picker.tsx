@@ -20,7 +20,13 @@ const MONTHS_FR = [
 ];
 
 function toDateStr(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  // Local date components — NOT toISOString(), which converts to UTC and
+  // can shift the date backward by a day for positive-offset timezones
+  // (e.g. Morocco UTC+1: 00:00 Sept 1 local === 23:00 Aug 31 UTC).
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function parseDateStr(s: string): Date {
