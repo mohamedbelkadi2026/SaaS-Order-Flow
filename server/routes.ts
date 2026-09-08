@@ -1142,15 +1142,15 @@ export async function registerRoutes(
       dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
     });
     // computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
-    // profResult.totals.netProfit is ALREADY the fully-final profit — each per-product row is
-    // revenue − productCost − shippingCost − packagingCost − confirmationCost − adSpend (see
-    // profit.ts), summed into totals. Do NOT subtract adSpendTotal again here — that used to
-    // double-count ad spend, making PROFIT NET on this dashboard disagree with the identical
-    // formula on Rentabilité Avancée for the exact same period (by exactly the ad-spend amount,
-    // e.g. -11457.96 DH here vs the correct +11308.52 DH there — a 22766.48 DH gap, matching
-    // Dépenses publicitaires exactly). adSpendTotal is still used below for ROAS/ROI, which
-    // legitimately need it as a standalone figure.
-    const netProfit = Math.round(profResult.totals.netProfit * 100);
+    // profResult.totals.netProfit is the per-product sum — each row already subtracts its own
+    // adSpend share (see profit.ts), BUT ad spend entries with no productId (a general expense
+    // like "Facebook Ads" not tied to any specific product) go into profResult.globalAdSpend
+    // instead, and totals.netProfit never subtracts that. Confirmed live: Dashboard showed
+    // +12995.00 DH while Rentabilité Avancée (getAdminProfitSummary, which correctly sums ALL ad
+    // spend regardless of product link) showed the correct -10415.00 DH for the same period — a
+    // 23410.00 DH gap matching an unlinked "Facebook Ads" entry exactly. Must subtract
+    // globalAdSpend here too, on top of totals.netProfit, to match every other profit view.
+    const netProfit = Math.round((profResult.totals.netProfit - profResult.globalAdSpend) * 100);
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
