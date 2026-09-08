@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-interface DateRange {
+export interface DateRange {
   from: string;
   to: string;
 }
@@ -56,7 +56,7 @@ function addMonths(year: number, month: number, delta: number): { year: number; 
   return { year: y, month: m };
 }
 
-function applyPreset(preset: string): DateRange {
+export function applyPreset(preset: string): DateRange {
   const now = new Date();
   const today = toDateStr(now);
   switch (preset) {

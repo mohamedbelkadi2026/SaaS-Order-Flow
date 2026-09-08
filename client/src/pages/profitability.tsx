@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Calculator, DollarSign, ArrowDownRight, TrendingUp, Users, Megaphone, Box, Truck, PackageOpen, ShoppingCart, CheckCircle } from "lucide-react";
-import { DateRangePicker } from "@/components/date-range-picker";
+import { DateRangePicker, applyPreset } from "@/components/date-range-picker";
 
 const GOLD = "#C5A059";
 
@@ -41,8 +41,11 @@ const ROLE_LABELS: Record<string, string> = { owner: "Admin", admin: "Admin", me
 export default function Profitability() {
   const { user } = useAuth();
   const { data: products } = useProducts();
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Défaut : mois en cours (pas "Tout") — le profit affiché doit refléter
+  // le mois courant tant qu'aucun autre filtre n'est choisi.
+  const defaultRange = applyPreset("thisMonth");
+  const [dateFrom, setDateFrom] = useState(defaultRange.from);
+  const [dateTo, setDateTo] = useState(defaultRange.to);
   const [selectedProduct, setSelectedProduct] = useState("all");
   const [selectedBuyer, setSelectedBuyer] = useState("all");
   const [selectedSource, setSelectedSource] = useState("all");
