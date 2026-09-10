@@ -19373,9 +19373,10 @@ function ensureHeaders(sheet) {
   app.get("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     const settings = await storage.getAiSettings(req.user!.storeId!);
     const DEFAULT_PROMPT = "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب (المقاس، اللون، المدينة) مع الزبون على واتساب، والإجابة على أسئلتهم بشكل طبيعي. إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.";
-    const base = settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [], aiModel: "openai/gpt-4o-mini" };
+    const base = settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [], aiModel: "openai/gpt-4o-mini", scopeMode: "all_sources" };
     res.json({
       ...base,
+      scopeMode: (base as any).scopeMode || "all_sources",
       hasOpenRouterKey: !!(settings?.openrouterApiKey),
       hasOpenAiKey: !!(settings?.openaiApiKey),
       openaiApiKey: undefined,
@@ -19385,7 +19386,7 @@ function ensureHeaders(sheet) {
 
   app.put("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     try {
-      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel } = req.body;
+      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel, scopeMode } = req.body;
       // Allow explicitly clearing the key by passing empty string
       const oaiKeyToSave = openaiApiKey === "" ? null : (openaiApiKey?.trim() || undefined);
       const orKeyToSave  = openrouterApiKey === "" ? null : (openrouterApiKey?.trim() || undefined);
@@ -19394,7 +19395,8 @@ function ensureHeaders(sheet) {
         ...(oaiKeyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: oaiKeyToSave } : {}),
         ...(orKeyToSave  !== undefined || openrouterApiKey === "" ? { openrouterApiKey: orKeyToSave } : {}),
         ...(aiModel ? { aiModel } : {}),
-      });
+        ...(scopeMode === "all_sources" || scopeMode === "whatsapp_only" ? { scopeMode } : {}),
+      } as any);
       res.json({
         ...s,
         hasOpenRouterKey: !!(s.openrouterApiKey),

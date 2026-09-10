@@ -1433,6 +1433,36 @@ function AiConfirmationTab() {
             </div>
           </div>
 
+          {/* Scope: which orders the AI handles */}
+          <div className="bg-white rounded-2xl border border-zinc-100 p-5">
+            <p className="text-sm font-bold text-zinc-800 mb-1">Commandes gérées par l'IA</p>
+            <p className="text-xs text-zinc-400 mb-3">Choisissez si l'IA confirme toutes les commandes, ou seulement celles reçues directement sur WhatsApp.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {[
+                { value: "all_sources", label: "Toutes les sources", desc: "Sheet, Shopify, ajout manuel, import, WhatsApp…" },
+                { value: "whatsapp_only", label: "WhatsApp uniquement", desc: "Seuls les nouveaux leads reçus directement sur WhatsApp" },
+              ].map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => {
+                    const updated = { ...s, scopeMode: opt.value };
+                    setLocalSettings(updated);
+                    saveSettingsMutation.mutate(updated);
+                  }}
+                  className="text-left rounded-xl p-3 border-2 transition-all"
+                  style={{
+                    borderColor: (s?.scopeMode || "all_sources") === opt.value ? GOLD : "rgb(244,244,245)",
+                    background: (s?.scopeMode || "all_sources") === opt.value ? "rgba(197,160,89,0.06)" : "white",
+                  }}
+                  data-testid={`button-scope-${opt.value}`}
+                >
+                  <p className="text-xs font-bold text-zinc-800">{opt.label}</p>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">{opt.desc}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Products selector */}
           <div className="bg-white rounded-2xl border border-zinc-100 p-5">
             <p className="text-sm font-bold text-zinc-700 mb-3">Produits activés pour l'IA</p>

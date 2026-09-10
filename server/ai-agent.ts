@@ -612,6 +612,18 @@ export async function triggerAIForNewOrder(
       return;
     }
 
+    // Scope gate: 'whatsapp_only' means AI should leave every non-WhatsApp
+    // order (Sheet, Shopify, manual add, import, etc.) to the normal human
+    // confirmation workflow, and only engage orders created by the cold-lead
+    // pathway (source='whatsapp', see handleIncomingMessage below).
+    if ((settings as any).scopeMode === "whatsapp_only") {
+      const [orderRow] = await db.select({ source: orders.source }).from(orders).where(eq(orders.id, orderId)).limit(1);
+      if (orderRow?.source !== "whatsapp") {
+        console.log(`[AI] ⚠️ SKIPPED: store ${storeId} scope is 'whatsapp_only', order #${orderId} source is '${orderRow?.source}' — leaving to human confirmation`);
+        return;
+      }
+    }
+
     const enabledIds: number[] = settings.enabledProductIds ?? [];
     if (enabledIds.length > 0 && productId && !enabledIds.includes(productId)) {
       console.warn(`[AI] ⚠️ BLOCKED: Product ${productId} not in store ${storeId}'s enabled product list [${enabledIds.join(", ")}]`);
@@ -811,7 +823,94 @@ export async function handleIncomingMessage(
         });
         conv = newConv;
       } else {
-        // No order at all for this phone — nothing to do here (leads handled separately)
+        // ── Cold lead: no order at all for this phone — this is a brand-new
+        // customer, most likely from a WhatsApp ad (wa.me link with the
+        // product name pre-filled as the message text). Try to recognize
+        // which product they're asking about and start a lead from scratch,
+        // instead of doing nothing.
+        const coldLeadSettings = await storage.getAiSettings(storeId);
+        if (!coldLeadSettings?.enabled) {
+          console.log(`[AI] Cold lead from ${customerPhone} — AI disabled for store ${storeId}, nothing to do`);
+          return;
+        }
+
+        const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+        const msgNorm = normalize(customerMessage);
+        const candidateProducts = await db.select({
+          id: products.id, name: products.name, sellingPrice: products.sellingPrice,
+          whatsappDescription: products.whatsappDescription,
+          whatsappImageUrl: products.whatsappImageUrl,
+          whatsappAudioUrl: products.whatsappAudioUrl,
+          whatsappVideoUrl: products.whatsappVideoUrl,
+        }).from(products).where(eq(products.storeId, storeId));
+
+        const matchedProduct = candidateProducts.find(p => p.name && msgNorm.includes(normalize(p.name)));
+
+        if (!matchedProduct) {
+          // Can't tell which product — ask, don't create anything yet.
+          const askMsg = "السلام عليكم! ياك لاباس، بغيتي معلومات على شنو بالضبط؟ 🙏 عطينا سميت المنتج باش نعاونوك.";
+          await queueWhatsApp(storeId, customerPhone, askMsg);
+          console.log(`[AI] Cold lead from ${customerPhone} — no product match in "${customerMessage.slice(0, 80)}", asked for clarification, no order created`);
+          return;
+        }
+
+        console.log(`[AI] Cold lead from ${customerPhone} — matched product "${matchedProduct.name}" (id=${matchedProduct.id}), creating order`);
+        const priceCents = matchedProduct.sellingPrice || 0; // already in cents
+        const newOrder = await storage.createOrder({
+          storeId,
+          orderNumber: `WA-${Date.now()}`,
+          customerName: "Client WhatsApp",
+          customerPhone,
+          customerCity: "",
+          customerAddress: "",
+          status: "nouveau",
+          source: "whatsapp",
+          totalPrice: priceCents,
+        } as any, [{
+          productId: matchedProduct.id,
+          quantity: 1,
+          price: priceCents,
+          rawProductName: matchedProduct.name,
+          sku: "",
+          variantInfo: "",
+        }] as any);
+
+        const newConv = await storage.createAiConversation({
+          storeId,
+          orderId: newOrder.id,
+          customerPhone,
+          customerName: null,
+          status: "active",
+          isManual: 0,
+          conversationStep: 1,
+        });
+        conv = newConv;
+
+        await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "user", message: customerMessage });
+
+        // Send the dedicated WhatsApp content for this product before the
+        // normal conversation flow continues below (asking city/address).
+        if (matchedProduct.whatsappImageUrl) {
+          await sendWhatsAppImage(customerPhone, matchedProduct.whatsappImageUrl, matchedProduct.whatsappDescription || matchedProduct.name, storeId).catch(() => {});
+        }
+        if (matchedProduct.whatsappDescription) {
+          await queueWhatsApp(storeId, customerPhone, matchedProduct.whatsappDescription);
+          await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: matchedProduct.whatsappDescription });
+        }
+        // Audio/video are sent as raw links for now — Green API's dedicated
+        // audio/video send methods aren't wired yet (whatsapp-service.ts only
+        // has sendWhatsAppMessage/sendWhatsAppImage today).
+        const extraLinks = [matchedProduct.whatsappAudioUrl, matchedProduct.whatsappVideoUrl].filter(Boolean);
+        if (extraLinks.length > 0) {
+          await queueWhatsApp(storeId, customerPhone, extraLinks.join("\n"));
+        }
+
+        const introMsg = "واش بغيتي نأكدو ليك الطلب؟ عطيني سميتك الكاملة والمدينة ديالك 🙏";
+        await queueWhatsApp(storeId, customerPhone, introMsg);
+        await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: introMsg });
+        await storage.updateAiConversationLastMessage(newConv.id, introMsg);
+        broadcastToStore(storeId, "message", { conversationId: newConv.id, role: "assistant", content: introMsg, ts: Date.now() });
+        console.log(`[AI] Cold lead → order #${newOrder.id} created, conv #${newConv.id} started for ${customerPhone}`);
         return;
       }
     }

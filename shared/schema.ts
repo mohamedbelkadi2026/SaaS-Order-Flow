@@ -1075,6 +1075,12 @@ export const aiSettings = pgTable("ai_settings", {
   openaiApiKey: text("openai_api_key"),
   openrouterApiKey: text("openrouter_api_key"),
   aiModel: text("ai_model").default("openai/gpt-4o-mini"),
+  // 'all_sources' (default) — AI confirms orders regardless of where they
+  // came from (Sheet, Shopify, manual add, import, WhatsApp cold-lead, etc.)
+  // 'whatsapp_only' — AI only engages with orders whose orders.source is
+  // 'whatsapp' (created by the cold-lead pathway below); every other source
+  // is left for the normal human confirmation workflow untouched.
+  scopeMode: text("scope_mode").default("all_sources"),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 export type AiSetting = typeof aiSettings.$inferSelect;
