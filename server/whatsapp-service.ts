@@ -90,6 +90,11 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
   const formatted = formatPhoneForWhatsApp(phone);
   console.log(`[WA Transport:${storeId}] Sending to ${phone} → ${formatted}@s.whatsapp.net`);
 
+  // ── Try Baileys first, but NEVER exit early on "not connected" — that used
+  // to `return false` immediately, skipping the Green API fallback below
+  // entirely (only an exception fell through; the stub never throws, it just
+  // returns {state:'idle'} gracefully, so Green API was never reached at all
+  // while Baileys stays a stub). Any non-success here now falls through.
   try {
     const { getBaileysInstance } = await import("./baileys-service");
     const instance = getBaileysInstance(storeId);
@@ -104,12 +109,11 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
       }
       console.warn(`[WA Transport:${storeId}] ⚠️ Baileys send returned false`);
     } else {
-      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected (state=${status.state}) — message DROPPED (no queue)`);
+      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected (state=${status.state}) — trying Green API`);
       if (status.state !== "idle" && status.state !== "qr") {
         instance.start().catch(() => {});
         console.log(`[WA Transport:${storeId}] Reconnect triggered`);
       }
-      return false;
     }
   } catch (err: any) {
     console.error(`[WA Transport:${storeId}] Baileys error: ${err.message}`);
@@ -143,8 +147,10 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
   }
 }
 
-/* ── Image send via per-store Baileys instance ───────────────── */
+/* ── Image send via per-store Baileys instance, Green API fallback ──── */
 export async function sendWhatsAppImage(phone: string, imageUrl: string, caption: string, storeId = 1): Promise<boolean> {
+  const formatted = formatPhoneForWhatsApp(phone);
+
   try {
     const { getBaileysInstance } = await import("./baileys-service");
     const instance = getBaileysInstance(storeId);
@@ -154,11 +160,37 @@ export async function sendWhatsAppImage(phone: string, imageUrl: string, caption
         console.log(`[WA Transport:${storeId}] ✅ Image sent via Baileys → ${phone}`);
         return true;
       }
+    } else {
+      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected — trying Green API for image`);
     }
-    console.warn(`[WA Transport:${storeId}] ⚠️ Cannot send image — not connected`);
+  } catch (err: any) {
+    console.error(`[WA Transport:${storeId}] Baileys image exception: ${err.message}`);
+  }
+
+  /* ── Green API fallback — same pattern as sendWhatsAppMessage above ── */
+  const instanceId = process.env.GREENAPI_INSTANCE_ID ?? "";
+  const apiToken   = process.env.GREENAPI_API_TOKEN ?? "";
+  if (!instanceId || !apiToken) {
+    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config — image DROPPED`);
+    return false;
+  }
+
+  try {
+    const chatId = `${formatted}@c.us`;
+    const res = await fetch(`https://api.green-api.com/waInstance${instanceId}/sendFileByUrl/${apiToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId, urlFile: imageUrl, fileName: "produit.jpg", caption }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (res.ok) {
+      console.log(`[WA Transport:${storeId}] ✅ Image sent via Green API → ${chatId}`);
+      return true;
+    }
+    console.error(`[WA Transport:${storeId}] ❌ Green API image error: ${res.status}`);
     return false;
   } catch (err: any) {
-    console.error(`[WA Transport:${storeId}] ❌ Image send exception: ${err.message}`);
+    console.error(`[WA Transport:${storeId}] ❌ Green API image exception: ${err.message}`);
     return false;
   }
 }
