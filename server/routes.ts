@@ -143,6 +143,60 @@ const productImageUpload = multer({
   },
 });
 
+// WhatsApp AI content uploads (image/audio/video) — separate directory from
+// the general product image upload above, since these are dedicated assets
+// sent by the AI confirmation agent, not the product page's own imageUrl.
+const WA_CONTENT_DIR = path.join(UPLOADS_BASE, "whatsapp-content");
+if (!fs.existsSync(WA_CONTENT_DIR)) fs.mkdirSync(WA_CONTENT_DIR, { recursive: true });
+
+const waImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: WA_CONTENT_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+      cb(null, `wa_img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Seuls les fichiers image (JPG, PNG, WEBP) sont acceptés."));
+  },
+});
+
+const waAudioUpload = multer({
+  storage: multer.diskStorage({
+    destination: WA_CONTENT_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || ".mp3";
+      cb(null, `wa_audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["audio/mpeg", "audio/mp3", "audio/ogg", "audio/wav", "audio/webm", "audio/aac", "audio/m4a", "audio/x-m4a", "audio/mp4"];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Seuls les fichiers audio (MP3, OGG, WAV, M4A) sont acceptés."));
+  },
+});
+
+const waVideoUpload = multer({
+  storage: multer.diskStorage({
+    destination: WA_CONTENT_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || ".mp4";
+      cb(null, `wa_video_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/3gpp"];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Seuls les fichiers vidéo (MP4, WEBM, MOV) sont acceptés."));
+  },
+});
+
 // Leads import — memory storage (CSV / XLSX, max 5 MB)
 const leadsImportUpload = multer({
   storage: multer.memoryStorage(),
@@ -18676,6 +18730,59 @@ function ensureHeaders(sheet) {
     const localPath = req.file.path;
     console.log(`[Upload] Product image saved: ${localPath} → URL: ${url}`);
     res.json({ url, localPath });
+  });
+
+  // ── WhatsApp AI content uploads (Automation & AI → Produits WhatsApp) ──────
+  app.post("/api/upload/whatsapp-image", requireAuth, waImageUpload.single("file"), (req: any, res: any) => {
+    if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
+    res.json({ url: `/uploads/whatsapp-content/${req.file.filename}` });
+  });
+  app.post("/api/upload/whatsapp-audio", requireAuth, waAudioUpload.single("file"), (req: any, res: any) => {
+    if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
+    res.json({ url: `/uploads/whatsapp-content/${req.file.filename}` });
+  });
+  app.post("/api/upload/whatsapp-video", requireAuth, waVideoUpload.single("file"), (req: any, res: any) => {
+    if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
+    res.json({ url: `/uploads/whatsapp-content/${req.file.filename}` });
+  });
+
+  // GET all products with their WhatsApp AI content (for the product selector + current values)
+  app.get("/api/whatsapp-content/products", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select({
+        id: products.id, name: products.name, sku: products.sku,
+        whatsappImageUrl: products.whatsappImageUrl,
+        whatsappAudioUrl: products.whatsappAudioUrl,
+        whatsappVideoUrl: products.whatsappVideoUrl,
+        whatsappDescription: products.whatsappDescription,
+      }).from(products).where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`));
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // PATCH WhatsApp AI content for one product
+  app.patch("/api/whatsapp-content/products/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = Number(req.params.id);
+    const schema = z.object({
+      whatsappImageUrl: z.string().trim().max(500).nullable().optional(),
+      whatsappAudioUrl: z.string().trim().max(500).nullable().optional(),
+      whatsappVideoUrl: z.string().trim().max(500).nullable().optional(),
+      whatsappDescription: z.string().trim().max(2000).nullable().optional(),
+    });
+    try {
+      const data = schema.parse(req.body);
+      const [updated] = await db.update(products).set(data as any)
+        .where(and(eq(products.id, productId), eq(products.storeId, storeId)))
+        .returning();
+      if (!updated) return res.status(404).json({ message: "Produit introuvable" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message });
+    }
   });
 
   // Create a payment record (pending)

@@ -10,7 +10,7 @@ import {
   Radio, UserCheck, UserX, Play, TrendingUp, ShoppingCart, DollarSign, Timer,
   Lock, ChevronDown, Pause, Square, Package, Target, BarChart3, CheckSquare,
   Upload, FileSpreadsheet, Smartphone, RotateCw, Plus, Trash2, Cpu, Download,
-  TableIcon, ArrowRight, Crown,
+  TableIcon, ArrowRight, Crown, Image, Music, Video,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -22,7 +22,7 @@ const DEFAULT_SYSTEM_PROMPT = `أنت وكيل خدمة عملاء محترف م
 والإجابة على أسئلتهم بشكل طبيعي.
 إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.`;
 
-type Tab = "retargeting" | "ai" | "whatsapp" | "monitoring" | "recovery";
+type Tab = "retargeting" | "ai" | "whatsapp" | "waProducts" | "monitoring" | "recovery";
 
 /* ── Pill tabs ─────────────────────────────────────────────────── */
 function TabPill({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
@@ -100,6 +100,7 @@ export default function AutomationPage() {
             <TabPill active={tab === "retargeting"} onClick={() => setTab("retargeting")} icon={<Megaphone className="w-4 h-4" />} label="Retargeting" />
             <TabPill active={tab === "ai"} onClick={() => setTab("ai")} icon={<Bot className="w-4 h-4" />} label="IA Confirmation" />
             <TabPill active={tab === "whatsapp"} onClick={() => setTab("whatsapp")} icon={<Wifi className="w-4 h-4" />} label="Connexion WhatsApp" />
+            <TabPill active={tab === "waProducts"} onClick={() => setTab("waProducts")} icon={<Package className="w-4 h-4" />} label="Produits WhatsApp" />
             <TabPill active={tab === "monitoring"} onClick={() => setTab("monitoring")} icon={<Radio className="w-4 h-4" />} label="Live Monitoring" />
           </div>
         </div>
@@ -109,6 +110,7 @@ export default function AutomationPage() {
         {tab === "retargeting" && <RetargetingTab />}
         {tab === "ai" && <AiConfirmationTab />}
         {tab === "whatsapp" && <WhatsappTab />}
+        {tab === "waProducts" && <WhatsappProductsTab />}
         {tab === "monitoring" && <LiveMonitoringTab />}
       </div>
     </div>
@@ -2479,6 +2481,217 @@ function DevicesPanel() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════
+   TAB 3b — PRODUITS WHATSAPP (contenu IA : image / audio / vidéo / description)
+════════════════════════════════════════════════════════════════ */
+type WaProduct = {
+  id: number; name: string; sku: string | null;
+  whatsappImageUrl: string | null;
+  whatsappAudioUrl: string | null;
+  whatsappVideoUrl: string | null;
+  whatsappDescription: string | null;
+};
+
+function WhatsappProductsTab() {
+  const { toast } = useToast();
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [description, setDescription] = useState("");
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadingAudio, setUploadingAudio] = useState(false);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+
+  const { data: waProducts = [], isLoading } = useQuery<WaProduct[]>({
+    queryKey: ["/api/whatsapp-content/products"],
+    queryFn: () => fetch("/api/whatsapp-content/products", { credentials: "include" }).then(r => r.json()),
+  });
+
+  const selected = waProducts.find(p => p.id === selectedId) || null;
+
+  // Load the selected product's saved content into the form whenever selection changes
+  useEffect(() => {
+    if (selected) {
+      setDescription(selected.whatsappDescription || "");
+      setImageUrl(selected.whatsappImageUrl || null);
+      setAudioUrl(selected.whatsappAudioUrl || null);
+      setVideoUrl(selected.whatsappVideoUrl || null);
+    } else {
+      setDescription(""); setImageUrl(null); setAudioUrl(null); setVideoUrl(null);
+    }
+  }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedId) throw new Error("Choisissez un produit d'abord");
+      const res = await fetch(`/api/whatsapp-content/products/${selectedId}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          whatsappDescription: description || null,
+          whatsappImageUrl: imageUrl,
+          whatsappAudioUrl: audioUrl,
+          whatsappVideoUrl: videoUrl,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || "Erreur d'enregistrement");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "✅ Enregistré", description: "Le contenu WhatsApp de ce produit est à jour." });
+      queryClient.invalidateQueries({ queryKey: ["/api/whatsapp-content/products"] });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  async function uploadFile(file: File, kind: "image" | "audio" | "video", setUrl: (u: string) => void, setBusy: (b: boolean) => void) {
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`/api/upload/whatsapp-${kind}`, { method: "POST", credentials: "include", body: fd });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || "Échec de l'envoi");
+      const data = await res.json();
+      setUrl(data.url);
+    } catch (e: any) {
+      toast({ title: "Erreur d'envoi", description: e.message, variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+        <h3 className="text-white font-bold flex items-center gap-2 mb-1"><Package className="w-4 h-4" /> Produits WhatsApp</h3>
+        <p className="text-white/50 text-xs">
+          Contenu envoyé par l'IA de confirmation quand un client demande des infos sur un produit — image, audio,
+          vidéo et description, indépendants de la fiche produit dans Inventaire.
+        </p>
+      </div>
+
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-1.5">
+        <label className="text-white/70 text-xs font-medium">Choisir un produit</label>
+        <select
+          value={selectedId ?? ""}
+          onChange={e => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+          className="w-full bg-white/10 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white"
+          data-testid="select-whatsapp-product"
+        >
+          <option value="" className="text-black">— Sélectionner —</option>
+          {waProducts.map(p => (
+            <option key={p.id} value={p.id} className="text-black">
+              {p.name}{p.sku ? ` (${p.sku})` : ""}{(p.whatsappImageUrl || p.whatsappAudioUrl || p.whatsappVideoUrl || p.whatsappDescription) ? " ✓" : ""}
+            </option>
+          ))}
+        </select>
+        {isLoading && <p className="text-white/40 text-xs">Chargement des produits…</p>}
+      </div>
+
+      {selected && (
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-5">
+          {/* Description */}
+          <div className="space-y-1.5">
+            <label className="text-white/70 text-xs font-medium">Description (envoyée par l'IA)</label>
+            <textarea
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              rows={4}
+              placeholder="Ex: جلد طبيعي 100%، خفيف وراحة فائقة، تصميم مغربي أصيل، توصيل فابور..."
+              className="w-full bg-white/10 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-white/30 resize-none"
+              data-testid="textarea-whatsapp-description"
+            />
+          </div>
+
+          {/* Image */}
+          <MediaUploadRow
+            label="Image"
+            icon={<Image className="w-4 h-4" />}
+            url={imageUrl}
+            busy={uploadingImage}
+            accept="image/*"
+            preview={imageUrl ? <img src={imageUrl} alt="" className="w-16 h-16 object-cover rounded-lg" /> : null}
+            onPick={file => uploadFile(file, "image", setImageUrl, setUploadingImage)}
+            onRemove={() => setImageUrl(null)}
+          />
+
+          {/* Audio */}
+          <MediaUploadRow
+            label="Audio (note vocale)"
+            icon={<Music className="w-4 h-4" />}
+            url={audioUrl}
+            busy={uploadingAudio}
+            accept="audio/*"
+            preview={audioUrl ? <audio src={audioUrl} controls className="h-8 max-w-[220px]" /> : null}
+            onPick={file => uploadFile(file, "audio", setAudioUrl, setUploadingAudio)}
+            onRemove={() => setAudioUrl(null)}
+          />
+
+          {/* Video */}
+          <MediaUploadRow
+            label="Vidéo"
+            icon={<Video className="w-4 h-4" />}
+            url={videoUrl}
+            busy={uploadingVideo}
+            accept="video/*"
+            preview={videoUrl ? <video src={videoUrl} controls className="h-16 rounded-lg" /> : null}
+            onPick={file => uploadFile(file, "video", setVideoUrl, setUploadingVideo)}
+            onRemove={() => setVideoUrl(null)}
+          />
+
+          <button
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending}
+            className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-semibold text-sm rounded-xl py-2.5 flex items-center justify-center gap-2 disabled:opacity-50"
+            data-testid="button-save-whatsapp-content"
+          >
+            {saveMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+            Enregistrer
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MediaUploadRow({ label, icon, url, busy, accept, preview, onPick, onRemove }: {
+  label: string; icon: React.ReactNode; url: string | null; busy: boolean; accept: string;
+  preview: React.ReactNode; onPick: (file: File) => void; onRemove: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <div className="space-y-1.5">
+      <label className="text-white/70 text-xs font-medium flex items-center gap-1.5">{icon} {label}</label>
+      <div className="flex items-center gap-3">
+        {preview}
+        <input
+          ref={inputRef}
+          type="file"
+          accept={accept}
+          className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) onPick(f); e.target.value = ""; }}
+        />
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          className="flex items-center gap-1.5 bg-white/10 hover:bg-white/15 border border-white/15 text-white text-xs font-medium rounded-lg px-3 py-2 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+          {url ? "Remplacer" : "Choisir un fichier"}
+        </button>
+        {url && (
+          <button type="button" onClick={onRemove} className="text-red-400 hover:text-red-300">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

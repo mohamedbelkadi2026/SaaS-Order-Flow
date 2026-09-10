@@ -122,6 +122,14 @@ export const products = pgTable("products", {
   // order itself has no per-order override (orders.ameexProductId, set by
   // the Google Sheets webhook).
   ameexProductId: text("ameex_product_id"),
+  // Dedicated WhatsApp AI content — separate from imageUrl/descriptionDarija
+  // (Modifier le produit) so the AI confirmation agent has a self-contained
+  // set of assets to send, without depending on what's set elsewhere. Set
+  // from Automation & AI → Produits WhatsApp.
+  whatsappImageUrl: text("whatsapp_image_url"),
+  whatsappAudioUrl: text("whatsapp_audio_url"),
+  whatsappVideoUrl: text("whatsapp_video_url"),
+  whatsappDescription: text("whatsapp_description"),
   // ── TajerDrop marketplace (Phase 1) ──
   // isMarketplaceProduct: produit du catalogue centralisé partagé avec les
   // Sellers TajerDrop. marketplaceOwnerStoreId: le store admin qui possède
