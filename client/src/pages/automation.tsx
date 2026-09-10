@@ -1184,6 +1184,10 @@ function AiConfirmationTab() {
   const [gaTestResult, setGaTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [gaTesting, setGaTesting] = useState(false);
   const [clearingGaCreds, setClearingGaCreds] = useState(false);
+  const [gaQrOpen, setGaQrOpen] = useState(false);
+  const [gaQrLoading, setGaQrLoading] = useState(false);
+  const [gaQrImage, setGaQrImage] = useState<string | null>(null);
+  const [gaQrError, setGaQrError] = useState<string | null>(null);
 
   const saveSettingsMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -1482,6 +1486,46 @@ function AiConfirmationTab() {
               <button
                 type="button"
                 onClick={async () => {
+                  const instanceId = gaInstanceInput.trim() || s?.greenApiInstanceId;
+                  const apiToken = gaTokenInput.trim();
+                  if (!instanceId || !apiToken) {
+                    setGaQrError("Entrez Instance ID et API Token pour afficher le QR code.");
+                    setGaQrImage(null);
+                    setGaQrOpen(true);
+                    return;
+                  }
+                  setGaQrOpen(true);
+                  setGaQrLoading(true);
+                  setGaQrImage(null);
+                  setGaQrError(null);
+                  try {
+                    const res = await fetch("/api/automation/green-api-qr", {
+                      method: "POST", credentials: "include",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ instanceId, apiToken }),
+                    });
+                    const data = await res.json();
+                    if (data.ok && data.qrBase64) {
+                      setGaQrImage(data.qrBase64);
+                    } else if (data.alreadyLogged) {
+                      setGaQrError("✅ Déjà connecté — aucun QR code nécessaire.");
+                    } else {
+                      setGaQrError(data.message || "Impossible d'afficher le QR code.");
+                    }
+                  } catch (e: any) {
+                    setGaQrError(e.message);
+                  } finally {
+                    setGaQrLoading(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-700"
+                data-testid="button-show-green-api-qr"
+              >
+                Afficher le QR Code
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
                   await saveSettingsMutation.mutateAsync({
                     ...s,
                     greenApiInstanceId: gaInstanceInput.trim(),
@@ -1530,6 +1574,30 @@ function AiConfirmationTab() {
               </div>
             )}
           </div>
+
+          {/* QR Code modal — scan without leaving the platform */}
+          {gaQrOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-4" style={{ background: NAVY }}>
+                  <h2 className="text-sm font-bold text-white flex items-center gap-2"><Smartphone className="w-4 h-4" /> Scanner le QR Code WhatsApp</h2>
+                  <button onClick={() => setGaQrOpen(false)} className="text-white/60 hover:text-white"><X className="w-5 h-5" /></button>
+                </div>
+                <div className="p-6 flex flex-col items-center gap-4">
+                  {gaQrLoading && <Loader2 className="w-8 h-8 animate-spin text-zinc-300" />}
+                  {!gaQrLoading && gaQrImage && (
+                    <>
+                      <img src={gaQrImage.startsWith("data:") ? gaQrImage : `data:image/png;base64,${gaQrImage}`} alt="QR Code WhatsApp" className="w-56 h-56 rounded-xl border border-zinc-100" />
+                      <p className="text-xs text-zinc-500 text-center">Ouvrez WhatsApp sur le téléphone du magasin → Paramètres → Appareils liés → Lier un appareil, puis scannez ce code.</p>
+                    </>
+                  )}
+                  {!gaQrLoading && !gaQrImage && gaQrError && (
+                    <div className="rounded-xl p-3 text-xs bg-red-50 border border-red-200 text-red-600 w-full text-center">{gaQrError}</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* AI Toggle */}
           <div className="bg-white rounded-2xl border border-zinc-100 p-5">

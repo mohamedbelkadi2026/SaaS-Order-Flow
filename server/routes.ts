@@ -19436,7 +19436,29 @@ function ensureHeaders(sheet) {
     }
   });
 
-  /* ── Nouveau orders for AI ──────────────────────────────────────── */
+  // ── Get Green API QR code (base64 image) — lets the merchant scan without
+  // leaving the platform. Only useful when stateInstance isn't "authorized"
+  // yet; Green API returns { type: "qrCode", message: "<base64>" }.
+  app.post("/api/automation/green-api-qr", requireAuth, async (req: any, res: any) => {
+    try {
+      const { instanceId, apiToken } = req.body;
+      if (!instanceId || !apiToken) return res.status(400).json({ ok: false, message: "Instance ID et Token requis." });
+      const r = await fetch(`https://api.green-api.com/waInstance${instanceId}/qr/${apiToken}`, {
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) return res.json({ ok: false, message: `Erreur Green API (HTTP ${r.status})` });
+      if (data.type === "alreadyLogged") {
+        return res.json({ ok: true, alreadyLogged: true, message: "Déjà connecté — aucun QR code nécessaire." });
+      }
+      if (data.type === "qrCode" && data.message) {
+        return res.json({ ok: true, qrBase64: data.message });
+      }
+      return res.json({ ok: false, message: `Réponse inattendue: ${data.type || "inconnu"}` });
+    } catch (err: any) {
+      res.json({ ok: false, message: err.message || "Erreur de connexion" });
+    }
+  });
   app.get("/api/automation/nouveau-orders", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const rows = await db.select({
