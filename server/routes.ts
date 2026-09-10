@@ -19379,32 +19379,61 @@ function ensureHeaders(sheet) {
       scopeMode: (base as any).scopeMode || "all_sources",
       hasOpenRouterKey: !!(settings?.openrouterApiKey),
       hasOpenAiKey: !!(settings?.openaiApiKey),
+      hasGreenApiCreds: !!((settings as any)?.greenApiInstanceId && (settings as any)?.greenApiApiToken),
+      greenApiInstanceId: (settings as any)?.greenApiInstanceId || undefined, // instance id isn't a secret, keep it visible
       openaiApiKey: undefined,
       openrouterApiKey: undefined,
+      greenApiApiToken: undefined,
     });
   });
 
   app.put("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     try {
-      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel, scopeMode } = req.body;
+      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel, scopeMode, greenApiInstanceId, greenApiApiToken } = req.body;
       // Allow explicitly clearing the key by passing empty string
       const oaiKeyToSave = openaiApiKey === "" ? null : (openaiApiKey?.trim() || undefined);
       const orKeyToSave  = openrouterApiKey === "" ? null : (openrouterApiKey?.trim() || undefined);
+      const gaInstanceToSave = greenApiInstanceId === "" ? null : (greenApiInstanceId?.trim() || undefined);
+      const gaTokenToSave    = greenApiApiToken === ""   ? null : (greenApiApiToken?.trim()   || undefined);
       const s = await storage.upsertAiSettings(req.user!.storeId!, {
         enabled, systemPrompt, enabledProductIds,
         ...(oaiKeyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: oaiKeyToSave } : {}),
         ...(orKeyToSave  !== undefined || openrouterApiKey === "" ? { openrouterApiKey: orKeyToSave } : {}),
         ...(aiModel ? { aiModel } : {}),
         ...(scopeMode === "all_sources" || scopeMode === "whatsapp_only" ? { scopeMode } : {}),
+        ...(gaInstanceToSave !== undefined || greenApiInstanceId === "" ? { greenApiInstanceId: gaInstanceToSave } : {}),
+        ...(gaTokenToSave    !== undefined || greenApiApiToken === ""   ? { greenApiApiToken: gaTokenToSave }       : {}),
       } as any);
       res.json({
         ...s,
         hasOpenRouterKey: !!(s.openrouterApiKey),
         hasOpenAiKey: !!(s.openaiApiKey),
+        hasGreenApiCreds: !!((s as any).greenApiInstanceId && (s as any).greenApiApiToken),
+        greenApiInstanceId: (s as any).greenApiInstanceId || undefined,
         openaiApiKey: undefined,
         openrouterApiKey: undefined,
+        greenApiApiToken: undefined,
       });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  // ── Test Green API connection (per-store credentials) ──────────────────
+  app.post("/api/automation/green-api-test", requireAuth, async (req: any, res: any) => {
+    try {
+      const { instanceId, apiToken } = req.body;
+      if (!instanceId || !apiToken) return res.status(400).json({ ok: false, message: "Instance ID et Token requis." });
+      const r = await fetch(`https://api.green-api.com/waInstance${instanceId}/getStateInstance/${apiToken}`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) return res.json({ ok: false, message: `Erreur Green API (HTTP ${r.status})` });
+      if (data.stateInstance === "authorized") {
+        return res.json({ ok: true, message: "✅ Connecté et autorisé." });
+      }
+      return res.json({ ok: false, message: `Statut: ${data.stateInstance || "inconnu"} — scannez le QR code sur green-api.com pour autoriser.` });
+    } catch (err: any) {
+      res.json({ ok: false, message: err.message || "Erreur de connexion" });
+    }
   });
 
   /* ── Nouveau orders for AI ──────────────────────────────────────── */

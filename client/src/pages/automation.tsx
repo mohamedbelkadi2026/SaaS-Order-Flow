@@ -1169,6 +1169,7 @@ function AiConfirmationTab() {
     if (settings && !localSettings) {
       setLocalSettings(settings);
       if (settings.aiModel) setSelectedModel(settings.aiModel);
+      if (settings.greenApiInstanceId) setGaInstanceInput(settings.greenApiInstanceId);
     }
   }, [settings]);
 
@@ -1177,6 +1178,12 @@ function AiConfirmationTab() {
   const [clearingOrKey, setClearingOrKey] = useState(false);
   const [selectedModel, setSelectedModel] = useState("anthropic/claude-3.7-sonnet");
   const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const [gaInstanceInput, setGaInstanceInput] = useState("");
+  const [gaTokenInput, setGaTokenInput] = useState("");
+  const [showGaToken, setShowGaToken] = useState(false);
+  const [gaTestResult, setGaTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [gaTesting, setGaTesting] = useState(false);
+  const [clearingGaCreds, setClearingGaCreds] = useState(false);
 
   const saveSettingsMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -1396,6 +1403,131 @@ function AiConfirmationTab() {
               >
                 {clearingOrKey ? "Suppression..." : "Supprimer la clé OpenRouter"}
               </button>
+            )}
+          </div>
+
+          {/* Green API — WhatsApp connection (per-store) */}
+          <div className="bg-white rounded-2xl border border-zinc-100 p-5 space-y-3">
+            <div>
+              <p className="text-sm font-bold text-zinc-800">Connexion WhatsApp (Green API)</p>
+              <p className="text-xs text-zinc-400">
+                Chaque magasin utilise son propre numéro WhatsApp. Créez un compte sur{" "}
+                <a href="https://green-api.com" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: GOLD }}>green-api.com</a>,
+                scannez le QR code avec votre numéro, puis collez vos identifiants ici.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-zinc-500">Instance ID</label>
+              <input
+                type="text"
+                value={gaInstanceInput}
+                onChange={e => setGaInstanceInput(e.target.value)}
+                placeholder="Ex: 710722733767"
+                className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800"
+                data-testid="input-green-api-instance-id"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-zinc-500">API Token</label>
+              <div className="relative">
+                <input
+                  type={showGaToken ? "text" : "password"}
+                  value={gaTokenInput}
+                  onChange={e => setGaTokenInput(e.target.value)}
+                  placeholder={s?.hasGreenApiCreds ? "•••••••••••••••••••• (déjà enregistré)" : "Collez votre API Token ici"}
+                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 pr-10 text-sm text-zinc-800"
+                  data-testid="input-green-api-token"
+                />
+                <button type="button" onClick={() => setShowGaToken(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
+                  {showGaToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={async () => {
+                  setGaTesting(true);
+                  setGaTestResult(null);
+                  try {
+                    const instanceId = gaInstanceInput.trim() || s?.greenApiInstanceId;
+                    // Token: use typed value, or (if untouched) can't test without it since it's masked
+                    const apiToken = gaTokenInput.trim();
+                    if (!instanceId || !apiToken) {
+                      setGaTestResult({ ok: false, message: "Entrez Instance ID et API Token pour tester." });
+                      return;
+                    }
+                    const res = await fetch("/api/automation/green-api-test", {
+                      method: "POST", credentials: "include",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ instanceId, apiToken }),
+                    });
+                    const data = await res.json();
+                    setGaTestResult({ ok: !!data.ok, message: data.message || "Erreur" });
+                  } catch (e: any) {
+                    setGaTestResult({ ok: false, message: e.message });
+                  } finally {
+                    setGaTesting(false);
+                  }
+                }}
+                disabled={gaTesting}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-700 disabled:opacity-50"
+                data-testid="button-test-green-api"
+              >
+                {gaTesting ? "Test en cours..." : "Tester la connexion"}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await saveSettingsMutation.mutateAsync({
+                    ...s,
+                    greenApiInstanceId: gaInstanceInput.trim(),
+                    ...(gaTokenInput.trim() ? { greenApiApiToken: gaTokenInput.trim() } : {}),
+                  });
+                  setGaTokenInput("");
+                }}
+                disabled={saveSettingsMutation.isPending || !gaInstanceInput.trim()}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-white disabled:opacity-50"
+                style={{ background: GOLD }}
+                data-testid="button-save-green-api"
+              >
+                Enregistrer
+              </button>
+              {s?.hasGreenApiCreds && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setClearingGaCreds(true);
+                    try {
+                      await saveSettingsMutation.mutateAsync({ ...s, greenApiInstanceId: "", greenApiApiToken: "" });
+                      setGaInstanceInput(""); setGaTokenInput("");
+                      toast({ title: "Identifiants Green API supprimés" });
+                    } finally { setClearingGaCreds(false); }
+                  }}
+                  disabled={clearingGaCreds}
+                  className="text-xs text-red-500 hover:text-red-700 underline"
+                  data-testid="button-clear-green-api"
+                >
+                  {clearingGaCreds ? "Suppression..." : "Supprimer"}
+                </button>
+              )}
+            </div>
+
+            {gaTestResult && (
+              <div className={cn("rounded-xl p-3 text-xs flex items-start gap-2", gaTestResult.ok ? "bg-emerald-50 border border-emerald-200 text-emerald-700" : "bg-red-50 border border-red-200 text-red-600")}>
+                {gaTestResult.ok ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                <p>{gaTestResult.message}</p>
+              </div>
+            )}
+
+            {s?.hasGreenApiCreds && !gaTestResult && (
+              <div className="rounded-xl p-3 text-xs flex items-start gap-2 bg-emerald-50 border border-emerald-200 text-emerald-700">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <p>Identifiants enregistrés pour ce magasin (Instance ID: {s.greenApiInstanceId}).</p>
+              </div>
             )}
           </div>
 

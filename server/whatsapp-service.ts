@@ -1,9 +1,31 @@
 /**
  * TajerGrow WhatsApp transport layer — Multi-Tenant Edition.
  * Each store uses its own Baileys session via getBaileysInstance(storeId).
+ * Green API credentials are ALSO per-store (ai_settings.greenApiInstanceId/
+ * greenApiApiToken) — each merchant connects their own WhatsApp number, so
+ * Store A's messages never go out through Store B's number. Falls back to
+ * the global GREENAPI_INSTANCE_ID/GREENAPI_API_TOKEN env vars only if a
+ * store hasn't configured its own (useful as a shared default/dev fallback).
  *
  * Retry queue is per-store so Store A's failed messages never block Store B.
  */
+
+import { storage } from "./storage";
+
+/** Per-store Green API credentials, with the global env vars as fallback. */
+async function getGreenApiCredentials(storeId: number): Promise<{ instanceId: string; apiToken: string } | null> {
+  try {
+    const settings = await storage.getAiSettings(storeId);
+    const instanceId = (settings as any)?.greenApiInstanceId?.trim() || process.env.GREENAPI_INSTANCE_ID?.trim() || "";
+    const apiToken   = (settings as any)?.greenApiApiToken?.trim()   || process.env.GREENAPI_API_TOKEN?.trim()   || "";
+    if (!instanceId || !apiToken) return null;
+    return { instanceId, apiToken };
+  } catch {
+    const instanceId = process.env.GREENAPI_INSTANCE_ID?.trim() || "";
+    const apiToken   = process.env.GREENAPI_API_TOKEN?.trim()   || "";
+    return (instanceId && apiToken) ? { instanceId, apiToken } : null;
+  }
+}
 
 /* ── Phone number normalisation ─────────────────────────────── */
 export function formatPhoneForWhatsApp(phone: string): string {
@@ -119,13 +141,13 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
     console.error(`[WA Transport:${storeId}] Baileys error: ${err.message}`);
   }
 
-  /* ── Green API fallback (store-independent) ─────────────────── */
-  const instanceId = process.env.GREENAPI_INSTANCE_ID ?? "";
-  const apiToken   = process.env.GREENAPI_API_TOKEN ?? "";
-  if (!instanceId || !apiToken) {
-    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config — message DROPPED (no queue)`);
+  /* ── Green API fallback — PER-STORE credentials (falls back to global env vars) ── */
+  const creds = await getGreenApiCredentials(storeId);
+  if (!creds) {
+    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config for this store — message DROPPED (no queue)`);
     return false;
   }
+  const { instanceId, apiToken } = creds;
 
   try {
     const chatId = `${formatted}@c.us`;
@@ -167,13 +189,13 @@ export async function sendWhatsAppImage(phone: string, imageUrl: string, caption
     console.error(`[WA Transport:${storeId}] Baileys image exception: ${err.message}`);
   }
 
-  /* ── Green API fallback — same pattern as sendWhatsAppMessage above ── */
-  const instanceId = process.env.GREENAPI_INSTANCE_ID ?? "";
-  const apiToken   = process.env.GREENAPI_API_TOKEN ?? "";
-  if (!instanceId || !apiToken) {
-    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config — image DROPPED`);
+  /* ── Green API fallback — PER-STORE credentials ──────────────── */
+  const creds = await getGreenApiCredentials(storeId);
+  if (!creds) {
+    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config for this store — image DROPPED`);
     return false;
   }
+  const { instanceId, apiToken } = creds;
 
   try {
     const chatId = `${formatted}@c.us`;
@@ -195,7 +217,7 @@ export async function sendWhatsAppImage(phone: string, imageUrl: string, caption
   }
 }
 
-/* ── Green API config check ─────────────────────────────────── */
-export function isGreenApiConfigured(): boolean {
-  return !!(process.env.GREENAPI_INSTANCE_ID && process.env.GREENAPI_API_TOKEN);
+/* ── Green API config check (per-store, falls back to global) ──── */
+export async function isGreenApiConfigured(storeId: number): Promise<boolean> {
+  return !!(await getGreenApiCredentials(storeId));
 }

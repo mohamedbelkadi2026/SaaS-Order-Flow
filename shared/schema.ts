@@ -1075,6 +1075,13 @@ export const aiSettings = pgTable("ai_settings", {
   openaiApiKey: text("openai_api_key"),
   openrouterApiKey: text("openrouter_api_key"),
   aiModel: text("ai_model").default("openai/gpt-4o-mini"),
+  // Per-store Green API credentials — each merchant connects their OWN
+  // WhatsApp number (own Instance ID + Token from green-api.com), so
+  // messages for Store A don't go out through Store B's number. Falls
+  // back to the global GREENAPI_INSTANCE_ID/GREENAPI_API_TOKEN env vars
+  // (whatsapp-service.ts) only if a store hasn't set its own.
+  greenApiInstanceId: text("green_api_instance_id"),
+  greenApiApiToken: text("green_api_api_token"),
   // 'all_sources' (default) — AI confirms orders regardless of where they
   // came from (Sheet, Shopify, manual add, import, WhatsApp cold-lead, etc.)
   // 'whatsapp_only' — AI only engages with orders whose orders.source is
