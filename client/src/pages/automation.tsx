@@ -2568,43 +2568,43 @@ function WhatsappProductsTab() {
 
   return (
     <div className="space-y-5">
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-        <h3 className="text-white font-bold flex items-center gap-2 mb-1"><Package className="w-4 h-4" /> Produits WhatsApp</h3>
-        <p className="text-white/50 text-xs">
+      <div className="bg-white rounded-2xl border border-zinc-100 p-5">
+        <h3 className="text-sm font-bold text-zinc-800 flex items-center gap-2 mb-1"><Package className="w-4 h-4" style={{ color: GOLD }} /> Produits WhatsApp</h3>
+        <p className="text-zinc-400 text-xs leading-relaxed">
           Contenu envoyé par l'IA de confirmation quand un client demande des infos sur un produit — image, audio,
           vidéo et description, indépendants de la fiche produit dans Inventaire.
         </p>
       </div>
 
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-1.5">
-        <label className="text-white/70 text-xs font-medium">Choisir un produit</label>
+      <div className="bg-white rounded-2xl border border-zinc-100 p-5 space-y-1.5">
+        <label className="text-zinc-500 text-xs font-medium">Choisir un produit</label>
         <select
           value={selectedId ?? ""}
           onChange={e => setSelectedId(e.target.value ? Number(e.target.value) : null)}
-          className="w-full bg-white/10 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white"
+          className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800"
           data-testid="select-whatsapp-product"
         >
-          <option value="" className="text-black">— Sélectionner —</option>
+          <option value="">— Sélectionner —</option>
           {waProducts.map(p => (
-            <option key={p.id} value={p.id} className="text-black">
+            <option key={p.id} value={p.id}>
               {p.name}{p.sku ? ` (${p.sku})` : ""}{(p.whatsappImageUrl || p.whatsappAudioUrl || p.whatsappVideoUrl || p.whatsappDescription) ? " ✓" : ""}
             </option>
           ))}
         </select>
-        {isLoading && <p className="text-white/40 text-xs">Chargement des produits…</p>}
+        {isLoading && <p className="text-zinc-400 text-xs">Chargement des produits…</p>}
       </div>
 
       {selected && (
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-5">
+        <div className="bg-white rounded-2xl border border-zinc-100 p-5 space-y-5">
           {/* Description */}
           <div className="space-y-1.5">
-            <label className="text-white/70 text-xs font-medium">Description (envoyée par l'IA)</label>
+            <label className="text-zinc-500 text-xs font-medium">Description (envoyée par l'IA)</label>
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
               rows={4}
               placeholder="Ex: جلد طبيعي 100%، خفيف وراحة فائقة، تصميم مغربي أصيل، توصيل فابور..."
-              className="w-full bg-white/10 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-white/30 resize-none"
+              className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-300 resize-none"
               data-testid="textarea-whatsapp-description"
             />
           </div>
@@ -2616,7 +2616,7 @@ function WhatsappProductsTab() {
             url={imageUrl}
             busy={uploadingImage}
             accept="image/*"
-            preview={imageUrl ? <img src={imageUrl} alt="" className="w-16 h-16 object-cover rounded-lg" /> : null}
+            preview={imageUrl ? <img src={imageUrl} alt="" className="w-16 h-16 object-cover rounded-lg border border-zinc-100" /> : null}
             onPick={file => uploadFile(file, "image", setImageUrl, setUploadingImage)}
             onRemove={() => setImageUrl(null)}
           />
@@ -2640,7 +2640,7 @@ function WhatsappProductsTab() {
             url={videoUrl}
             busy={uploadingVideo}
             accept="video/*"
-            preview={videoUrl ? <video src={videoUrl} controls className="h-16 rounded-lg" /> : null}
+            preview={videoUrl ? <video src={videoUrl} controls className="h-16 rounded-lg border border-zinc-100" /> : null}
             onPick={file => uploadFile(file, "video", setVideoUrl, setUploadingVideo)}
             onRemove={() => setVideoUrl(null)}
           />
@@ -2667,7 +2667,7 @@ function MediaUploadRow({ label, icon, url, busy, accept, preview, onPick, onRem
   const inputRef = useRef<HTMLInputElement>(null);
   return (
     <div className="space-y-1.5">
-      <label className="text-white/70 text-xs font-medium flex items-center gap-1.5">{icon} {label}</label>
+      <label className="text-zinc-500 text-xs font-medium flex items-center gap-1.5">{icon} {label}</label>
       <div className="flex items-center gap-3">
         {preview}
         <input
@@ -2681,13 +2681,13 @@ function MediaUploadRow({ label, icon, url, busy, accept, preview, onPick, onRem
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
-          className="flex items-center gap-1.5 bg-white/10 hover:bg-white/15 border border-white/15 text-white text-xs font-medium rounded-lg px-3 py-2 disabled:opacity-50"
+          className="flex items-center gap-1.5 bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-700 text-xs font-medium rounded-lg px-3 py-2 disabled:opacity-50"
         >
           {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
           {url ? "Remplacer" : "Choisir un fichier"}
         </button>
         {url && (
-          <button type="button" onClick={onRemove} className="text-red-400 hover:text-red-300">
+          <button type="button" onClick={onRemove} className="text-red-500 hover:text-red-600">
             <Trash2 className="w-4 h-4" />
           </button>
         )}
