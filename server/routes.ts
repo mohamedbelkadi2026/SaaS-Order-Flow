@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, SHIPPED_STATUS_SET, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, aiSettings, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -19629,15 +19629,46 @@ function ensureHeaders(sheet) {
       const text = messageData.textMessageData?.textMessage || messageData.extendedTextMessageData?.text || "";
       if (!phone || !text) return;
 
-      // Find which store has an active conversation with this phone
-      // We search across all stores — in production each store has its own Green API instance
-      // so we can identify via the instance ID in the request or use a simpler lookup
-      const activeConvs = await db.select().from(aiConversations).where(
-        and(eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active"))
-      );
-      for (const conv of activeConvs) {
-        await handleIncomingMessage(conv.storeId, phone, text).catch(console.error);
+      // Identify which store this message belongs to — Green API is now
+      // per-store (each merchant has their own Instance ID), so match the
+      // webhook's own instance ID against ai_settings.greenApiInstanceId.
+      // CRITICAL: always call handleIncomingMessage regardless of whether an
+      // active conversation already exists — the old version only forwarded
+      // messages for phones that ALREADY had one, which meant the cold-lead
+      // pathway (handleIncomingMessage's own 'no conversation yet' branch)
+      // could never run at all, since it was filtered out before ever being
+      // reached. handleIncomingMessage already has the correct logic for
+      // both cases internally.
+      const incomingInstanceId = String(body.instanceData?.idInstance || "");
+      let targetStoreId: number | null = null;
+
+      if (incomingInstanceId) {
+        const [matched] = await db.select({ storeId: aiSettings.storeId })
+          .from(aiSettings)
+          .where(eq(aiSettings.greenApiInstanceId, incomingInstanceId))
+          .limit(1);
+        if (matched) targetStoreId = matched.storeId;
       }
+
+      if (!targetStoreId) {
+        // Fallback: no store has this instance ID configured (e.g. still
+        // using the shared global GREENAPI_INSTANCE_ID/TOKEN fallback) — try
+        // an existing active conversation for this phone, across all stores,
+        // same as before. This only helps ongoing conversations, not new
+        // cold leads, for stores that haven't set their own instance ID yet.
+        const [activeConv] = await db.select({ storeId: aiConversations.storeId })
+          .from(aiConversations)
+          .where(and(eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active")))
+          .limit(1);
+        if (activeConv) targetStoreId = activeConv.storeId;
+      }
+
+      if (!targetStoreId) {
+        console.warn(`[WA Webhook] Could not identify store for instanceId=${incomingInstanceId || "none"}, phone=${phone} — message dropped`);
+        return;
+      }
+
+      await handleIncomingMessage(targetStoreId, phone, text).catch(console.error);
     } catch (err: any) { console.error("[WA Webhook]", err.message); }
   });
 
