@@ -1237,6 +1237,7 @@ function AiConfirmationTab() {
   const hasOrKey = s?.hasOpenRouterKey;
 
   const MODEL_OPTIONS = [
+    { value: "openrouter/auto",              label: "Auto (OpenRouter)",  badge: "Décidé par ton compte OpenRouter", premium: false },
     { value: "anthropic/claude-3.7-sonnet", label: "Claude 3.7 Sonnet", badge: "★ Premium — Hybrid Reasoning", premium: true },
     { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", badge: "Best for Design",               premium: false },
     { value: "openai/gpt-4o",               label: "GPT-4o",            badge: "Best for Sales Copy",            premium: false },
