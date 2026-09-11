@@ -1164,8 +1164,30 @@ export async function handleIncomingMessage(
       // product that IS in stock, and never sending its image/audio/video even
       // when configured in Produits WhatsApp). Look up the REAL product here
       // and send accurate info as a follow-up, instead of trusting the LLM's guess.
-      if (decision.mentionedProduct) {
-        const mentionedNorm = normalizeForMatch(decision.mentionedProduct);
+      //
+      // Don't rely solely on decision.mentionedProduct — the LLM doesn't always
+      // reliably populate it even when its own reply text implies it should
+      // (confirmed live: AI said "نتأكد ليك دابا..." but never followed up).
+      // Also scan the customer's raw message directly against the catalog as
+      // a fallback, skipping the conversation's own current product so normal
+      // chat about the same item doesn't keep re-triggering this.
+      let effectiveMentionedProduct = decision.mentionedProduct;
+      const currentProductNorm = ctx?.productName ? normalizeForMatch(ctx.productName) : null;
+      if (!effectiveMentionedProduct) {
+        const msgNorm = normalizeForMatch(customerMessage);
+        const quickCatalog = await db.select({ name: products.name })
+          .from(products).where(eq(products.storeId, storeId));
+        const textMatch = quickCatalog.find(p => {
+          if (!p.name || p.name.length < 3) return false;
+          const pNorm = normalizeForMatch(p.name);
+          if (currentProductNorm && pNorm === currentProductNorm) return false;
+          return msgNorm.includes(pNorm);
+        });
+        if (textMatch) effectiveMentionedProduct = textMatch.name;
+      }
+
+      if (effectiveMentionedProduct) {
+        const mentionedNorm = normalizeForMatch(effectiveMentionedProduct);
         const catalogProducts = await db.select({
           id: products.id, name: products.name, stock: products.stock, sellingPrice: products.sellingPrice,
           whatsappDescription: products.whatsappDescription,
@@ -1193,41 +1215,48 @@ export async function handleIncomingMessage(
             sendVideoUrl = found.whatsappVideoUrl;
           }
         } else {
-          followUp = `سمح ليا خويا، ما لقيتش "${decision.mentionedProduct}" فالمنتجات ديالنا. واش عندك سؤال آخر؟ 🙏`;
+          followUp = `سمح ليا خويا، ما لقيتش "${effectiveMentionedProduct}" فالمنتجات ديالنا. واش عندك سؤال آخر؟ 🙏`;
         }
 
-        await queueWhatsApp(storeId, customerPhone, followUp);
-        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: followUp });
-        await storage.updateAiConversationLastMessage(conv.id, followUp);
-        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: followUp, ts: Date.now() });
-        console.log(`[AI] mentioned_product="${decision.mentionedProduct}" → matched=${found?.name ?? "none"} stock=${found?.stock ?? "n/a"}`);
+        try {
+          await queueWhatsApp(storeId, customerPhone, followUp);
+          await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: followUp });
+          await storage.updateAiConversationLastMessage(conv.id, followUp);
+          broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: followUp, ts: Date.now() });
+          console.log(`[AI] mentioned_product="${effectiveMentionedProduct}" → matched=${found?.name ?? "none"} stock=${found?.stock ?? "n/a"}`);
 
-        // Send media as actual WhatsApp files, never as raw text URLs
-        if (sendImageUrl) await sendWhatsAppImage(customerPhone, sendImageUrl, found!.name, storeId).catch(() => {});
-        if (sendAudioUrl) await sendWhatsAppFile(customerPhone, sendAudioUrl, "audio.opus", "", storeId).catch(() => {});
-        if (sendVideoUrl) await sendWhatsAppFile(customerPhone, sendVideoUrl, "video.mp4", "", storeId).catch(() => {});
+          // Send media as actual WhatsApp files, never as raw text URLs
+          if (sendImageUrl) await sendWhatsAppImage(customerPhone, sendImageUrl, found!.name, storeId).catch(() => {});
+          if (sendAudioUrl) await sendWhatsAppFile(customerPhone, sendAudioUrl, "audio.opus", "", storeId).catch(() => {});
+          if (sendVideoUrl) await sendWhatsAppFile(customerPhone, sendVideoUrl, "video.mp4", "", storeId).catch(() => {});
 
-        // Switch the conversation's own product to the one just discussed —
-        // otherwise the customer gets accurate info here, but the very next
-        // reply falls back to whatever the order was originally about,
-        // confusing the whole conversation.
-        if (found && (found.stock ?? 0) > 0 && conv.orderId) {
-          const [existingItem] = await db.select({ id: orderItems.id, quantity: orderItems.quantity })
-            .from(orderItems).where(eq(orderItems.orderId, conv.orderId)).limit(1);
-          const qty = existingItem?.quantity || 1;
-          const newPriceCents = (found.sellingPrice || 0) * qty;
-          if (existingItem) {
-            await db.update(orderItems).set({
-              productId: found.id, rawProductName: found.name, price: found.sellingPrice || 0,
-            } as any).where(eq(orderItems.id, existingItem.id));
-          } else {
-            await db.insert(orderItems).values({
-              orderId: conv.orderId, productId: found.id, rawProductName: found.name,
-              quantity: 1, price: found.sellingPrice || 0,
-            } as any);
+          // Switch the conversation's own product to the one just discussed —
+          // otherwise the customer gets accurate info here, but the very next
+          // reply falls back to whatever the order was originally about,
+          // confusing the whole conversation.
+          if (found && (found.stock ?? 0) > 0 && conv.orderId) {
+            const [existingItem] = await db.select({ id: orderItems.id, quantity: orderItems.quantity })
+              .from(orderItems).where(eq(orderItems.orderId, conv.orderId)).limit(1);
+            const qty = existingItem?.quantity || 1;
+            const newPriceCents = (found.sellingPrice || 0) * qty;
+            if (existingItem) {
+              await db.update(orderItems).set({
+                productId: found.id, rawProductName: found.name, price: found.sellingPrice || 0,
+              } as any).where(eq(orderItems.id, existingItem.id));
+            } else {
+              await db.insert(orderItems).values({
+                orderId: conv.orderId, productId: found.id, rawProductName: found.name,
+                quantity: 1, price: found.sellingPrice || 0,
+              } as any);
+            }
+            await db.update(orders).set({ totalPrice: newPriceCents } as any).where(eq(orders.id, conv.orderId));
+            console.log(`[AI] Conv ${conv.id} order #${conv.orderId} switched to product "${found.name}" (id=${found.id})`);
           }
-          await db.update(orders).set({ totalPrice: newPriceCents } as any).where(eq(orders.id, conv.orderId));
-          console.log(`[AI] Conv ${conv.id} order #${conv.orderId} switched to product "${found.name}" (id=${found.id})`);
+        } catch (mpErr: any) {
+          // Never let a failure here silently swallow the customer's question —
+          // log it loudly so it's visible instead of leaving them with just
+          // the LLM's "checking..." placeholder and no real answer.
+          console.error(`[AI] mentioned_product follow-up FAILED for conv ${conv.id}:`, mpErr?.message || mpErr);
         }
       }
 
