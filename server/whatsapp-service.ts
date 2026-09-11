@@ -171,28 +171,33 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
 
 /* ── Image send via per-store Baileys instance, Green API fallback ──── */
 export async function sendWhatsAppImage(phone: string, imageUrl: string, caption: string, storeId = 1): Promise<boolean> {
+  return sendWhatsAppFile(phone, imageUrl, "produit.jpg", caption, storeId);
+}
+
+/* ── Generic file send (audio/video/image) via Baileys, Green API fallback ── */
+export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName: string, caption: string, storeId = 1): Promise<boolean> {
   const formatted = formatPhoneForWhatsApp(phone);
 
   try {
     const { getBaileysInstance } = await import("./baileys-service");
     const instance = getBaileysInstance(storeId);
-    if (instance.isConnected()) {
-      const ok = await instance.sendImage(phone, imageUrl, caption);
+    if (instance.isConnected() && typeof (instance as any).sendImage === "function" && fileName.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
+      const ok = await (instance as any).sendImage(phone, fileUrl, caption);
       if (ok) {
-        console.log(`[WA Transport:${storeId}] ✅ Image sent via Baileys → ${phone}`);
+        console.log(`[WA Transport:${storeId}] ✅ File sent via Baileys → ${phone}`);
         return true;
       }
     } else {
-      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected — trying Green API for image`);
+      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected/unsupported — trying Green API for file`);
     }
   } catch (err: any) {
-    console.error(`[WA Transport:${storeId}] Baileys image exception: ${err.message}`);
+    console.error(`[WA Transport:${storeId}] Baileys file exception: ${err.message}`);
   }
 
   /* ── Green API fallback — PER-STORE credentials ──────────────── */
   const creds = await getGreenApiCredentials(storeId);
   if (!creds) {
-    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config for this store — image DROPPED`);
+    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config for this store — file DROPPED`);
     return false;
   }
   const { instanceId, apiToken } = creds;
@@ -202,17 +207,17 @@ export async function sendWhatsAppImage(phone: string, imageUrl: string, caption
     const res = await fetch(`https://api.green-api.com/waInstance${instanceId}/sendFileByUrl/${apiToken}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chatId, urlFile: imageUrl, fileName: "produit.jpg", caption }),
-      signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({ chatId, urlFile: fileUrl, fileName, caption }),
+      signal: AbortSignal.timeout(25000),
     });
     if (res.ok) {
-      console.log(`[WA Transport:${storeId}] ✅ Image sent via Green API → ${chatId}`);
+      console.log(`[WA Transport:${storeId}] ✅ File sent via Green API → ${chatId}`);
       return true;
     }
-    console.error(`[WA Transport:${storeId}] ❌ Green API image error: ${res.status}`);
+    console.error(`[WA Transport:${storeId}] ❌ Green API file error: ${res.status}`);
     return false;
   } catch (err: any) {
-    console.error(`[WA Transport:${storeId}] ❌ Green API image exception: ${err.message}`);
+    console.error(`[WA Transport:${storeId}] ❌ Green API file exception: ${err.message}`);
     return false;
   }
 }

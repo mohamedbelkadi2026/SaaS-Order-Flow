@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { broadcastToStore } from "./sse";
-import { sendWhatsAppMessage, sendWhatsAppImage } from "./whatsapp-service";
+import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile } from "./whatsapp-service";
 import { db } from "./db";
 import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
 import { eq } from "drizzle-orm";
@@ -910,12 +910,11 @@ export async function handleIncomingMessage(
           await queueWhatsApp(storeId, customerPhone, matchedProduct.whatsappDescription);
           await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: matchedProduct.whatsappDescription });
         }
-        // Audio/video are sent as raw links for now — Green API's dedicated
-        // audio/video send methods aren't wired yet (whatsapp-service.ts only
-        // has sendWhatsAppMessage/sendWhatsAppImage today).
-        const extraLinks = [matchedProduct.whatsappAudioUrl, matchedProduct.whatsappVideoUrl].filter(Boolean);
-        if (extraLinks.length > 0) {
-          await queueWhatsApp(storeId, customerPhone, extraLinks.join("\n"));
+        if (matchedProduct.whatsappAudioUrl) {
+          await sendWhatsAppFile(customerPhone, matchedProduct.whatsappAudioUrl, "audio.opus", "", storeId).catch(() => {});
+        }
+        if (matchedProduct.whatsappVideoUrl) {
+          await sendWhatsAppFile(customerPhone, matchedProduct.whatsappVideoUrl, "video.mp4", "", storeId).catch(() => {});
         }
 
         const introMsg = "واش بغيتي نأكدو ليك الطلب؟ عطيني سميتك الكاملة والمدينة ديالك 🙏";
@@ -1180,17 +1179,18 @@ export async function handleIncomingMessage(
         ));
 
         let followUp: string;
+        let sendImageUrl: string | null = null;
+        let sendAudioUrl: string | null = null;
+        let sendVideoUrl: string | null = null;
         if (found) {
           const inStock = (found.stock ?? 0) > 0;
           followUp = inStock
             ? (found.whatsappDescription || `إيوا خويا، "${found.name}" كاين فالستوك ✅`)
             : `سمح ليا خويا، "${found.name}" ما كاينش فالستوك دابا. إيلا بغيتي، نعلمك ملي يرجع.`;
-          if (inStock && found.whatsappImageUrl) {
-            await sendWhatsAppImage(customerPhone, found.whatsappImageUrl, found.name, storeId).catch(() => {});
-          }
           if (inStock) {
-            const extraLinks = [found.whatsappAudioUrl, found.whatsappVideoUrl].filter(Boolean);
-            if (extraLinks.length > 0) followUp += "\n" + extraLinks.join("\n");
+            sendImageUrl = found.whatsappImageUrl;
+            sendAudioUrl = found.whatsappAudioUrl;
+            sendVideoUrl = found.whatsappVideoUrl;
           }
         } else {
           followUp = `سمح ليا خويا، ما لقيتش "${decision.mentionedProduct}" فالمنتجات ديالنا. واش عندك سؤال آخر؟ 🙏`;
@@ -1201,6 +1201,11 @@ export async function handleIncomingMessage(
         await storage.updateAiConversationLastMessage(conv.id, followUp);
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: followUp, ts: Date.now() });
         console.log(`[AI] mentioned_product="${decision.mentionedProduct}" → matched=${found?.name ?? "none"} stock=${found?.stock ?? "n/a"}`);
+
+        // Send media as actual WhatsApp files, never as raw text URLs
+        if (sendImageUrl) await sendWhatsAppImage(customerPhone, sendImageUrl, found!.name, storeId).catch(() => {});
+        if (sendAudioUrl) await sendWhatsAppFile(customerPhone, sendAudioUrl, "audio.opus", "", storeId).catch(() => {});
+        if (sendVideoUrl) await sendWhatsAppFile(customerPhone, sendVideoUrl, "video.mp4", "", storeId).catch(() => {});
       }
 
       // ── JSON-driven confirmation / cancellation sync ──────────────
