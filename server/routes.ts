@@ -18735,15 +18735,15 @@ function ensureHeaders(sheet) {
   // ── WhatsApp AI content uploads (Automation & AI → Produits WhatsApp) ──────
   app.post("/api/upload/whatsapp-image", requireAuth, waImageUpload.single("file"), (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
-    res.json({ url: `/uploads/whatsapp-content/${req.file.filename}` });
+    res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
   });
   app.post("/api/upload/whatsapp-audio", requireAuth, waAudioUpload.single("file"), (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
-    res.json({ url: `/uploads/whatsapp-content/${req.file.filename}` });
+    res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
   });
   app.post("/api/upload/whatsapp-video", requireAuth, waVideoUpload.single("file"), (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
-    res.json({ url: `/uploads/whatsapp-content/${req.file.filename}` });
+    res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
   });
 
   // GET all products with their WhatsApp AI content (for the product selector + current values)
