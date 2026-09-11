@@ -19666,7 +19666,19 @@ function ensureHeaders(sheet) {
       if (!senderData || !messageData) return;
 
       const phone = senderData.sender?.replace("@c.us", "").replace(/^212/, "0");
-      const text = messageData.textMessageData?.textMessage || messageData.extendedTextMessageData?.text || "";
+
+      // Button click (Green API sendInteractiveButtonsReply flow, beta) —
+      // map known button IDs to the exact Darija words the existing
+      // is_confirmed/is_cancelled prompt rules already recognize, so this
+      // reuses all downstream confirm/cancel logic instead of duplicating it.
+      let text = messageData.textMessageData?.textMessage || messageData.extendedTextMessageData?.text || "";
+      const btnReply = messageData.templateButtonReplyMessage;
+      if (!text && btnReply?.selectedId) {
+        if (btnReply.selectedId === "confirm") text = "واخا";
+        else if (btnReply.selectedId === "cancel") text = "بلاش";
+        else text = btnReply.selectedDisplayText || "";
+        console.log(`[WA Webhook] Button click: selectedId=${btnReply.selectedId} → text="${text}"`);
+      }
       if (!phone || !text) return;
 
       // Identify which store this message belongs to — Green API is now

@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { broadcastToStore } from "./sse";
-import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile } from "./whatsapp-service";
+import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile, sendWhatsAppButtons } from "./whatsapp-service";
 import { db } from "./db";
 import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
 import { eq } from "drizzle-orm";
@@ -1206,6 +1206,26 @@ export async function handleIncomingMessage(
         }
       }
 
+      // ── Offer real Confirme/Annule buttons the moment we have everything ──
+      // Only once per conversation (confirmButtonsSent), right when name+city
+      // both become known — before this, wait for the missing piece(s).
+      const wasCityKnown = !!(conv.collectedCity ?? ctx?.customerCity);
+      const wasNameKnown = !!(conv.collectedName ?? conv.customerName);
+      const isCityKnownNow = wasCityKnown || !!decision.collectedCity;
+      const isNameKnownNow = wasNameKnown || !!decision.collectedName;
+      if (isCityKnownNow && isNameKnownNow && !conv.confirmButtonsSent && conv.orderId && liveOrderStatus === "nouveau" && !decision.isConfirmed && !decision.isCancelled) {
+        const buttonsSent = await sendWhatsAppButtons(
+          customerPhone,
+          "واش نأكدو الطلب ديالك؟ 🙏",
+          [{ id: "confirm", text: "✅ نأكد الطلب" }, { id: "cancel", text: "❌ لا، بلاش" }],
+          storeId,
+        ).catch(() => false);
+        if (buttonsSent) {
+          await db.update(aiConversations).set({ confirmButtonsSent: 1 }).where(eq(aiConversations.id, conv.id)).catch(() => {});
+          console.log(`[AI] Conv ${conv.id} — sent Confirme/Annule buttons (name+city now complete)`);
+        }
+      }
+
       // ── Log + broadcast reply to admin dashboard immediately ─────
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: aiReply });
       await storage.updateAiConversationLastMessage(conv.id, aiReply);
@@ -1222,8 +1242,20 @@ export async function handleIncomingMessage(
       // and send accurate info as a follow-up, instead of trusting the LLM's guess.
       // (effectiveMentionedProduct was already computed above, before step
       // advancement, so the city/variant heuristic could skip it too.)
-      if (effectiveMentionedProduct) {
-        const mentionedNorm = normalizeForMatch(effectiveMentionedProduct);
+      // ── Numbered catalog selection: customer replies with just a number ──
+      // after being shown a list (e.g. "2") — resolve directly against the
+      // list shown, since browsing a full catalog can't use real clickable
+      // buttons (Green API caps interactive buttons at 3 per message).
+      let numberSelectionProductId: number | null = null;
+      const bareNumberMatch = customerMessage.trim().match(/^(\d+)$/);
+      if (bareNumberMatch && conv.lastShownProductList?.length) {
+        const idx = parseInt(bareNumberMatch[1], 10) - 1;
+        if (idx >= 0 && idx < conv.lastShownProductList.length) {
+          numberSelectionProductId = conv.lastShownProductList[idx];
+        }
+      }
+
+      if (effectiveMentionedProduct || numberSelectionProductId) {
         const catalogProducts = await db.select({
           id: products.id, name: products.name, stock: products.stock, sellingPrice: products.sellingPrice,
           whatsappDescription: products.whatsappDescription,
@@ -1232,9 +1264,14 @@ export async function handleIncomingMessage(
           whatsappVideoUrl: products.whatsappVideoUrl,
         }).from(products).where(eq(products.storeId, storeId));
 
-        const found = catalogProducts.find(p => p.name && (
-          mentionedNorm.includes(normalizeForMatch(p.name)) || normalizeForMatch(p.name).includes(mentionedNorm)
-        ));
+        const found = numberSelectionProductId
+          ? catalogProducts.find(p => p.id === numberSelectionProductId)
+          : (() => {
+              const mentionedNorm = normalizeForMatch(effectiveMentionedProduct!);
+              return catalogProducts.find(p => p.name && (
+                mentionedNorm.includes(normalizeForMatch(p.name)) || normalizeForMatch(p.name).includes(mentionedNorm)
+              ));
+            })();
 
         let followUp: string;
         let sendImageUrl: string | null = null;
@@ -1250,8 +1287,20 @@ export async function handleIncomingMessage(
             sendAudioUrl = found.whatsappAudioUrl;
             sendVideoUrl = found.whatsappVideoUrl;
           }
+        } else if (numberSelectionProductId) {
+          followUp = `سمح ليا خويا، ماكاينش هاد الرقم فاللائحة. عاود دير ليا الرقم الصحيح 🙏`;
         } else {
-          followUp = `سمح ليا خويا، ما لقيتش "${effectiveMentionedProduct}" فالمنتجات ديالنا. واش عندك سؤال آخر؟ 🙏`;
+          // Not found by name — send the numbered catalog list so the
+          // customer can browse and pick by number instead.
+          const allProducts = catalogProducts.filter(p => (p.stock ?? 0) > 0).slice(0, 15);
+          if (allProducts.length > 0) {
+            const listText = allProducts.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
+            followUp = `سمح ليا خويا، ما لقيتش "${effectiveMentionedProduct}" بالضبط. هاد المنتجات لي عندنا — بعث ليا الرقم لي يعجبك:\n\n${listText}`;
+            await db.update(aiConversations).set({ lastShownProductList: allProducts.map(p => p.id) })
+              .where(eq(aiConversations.id, conv.id)).catch(() => {});
+          } else {
+            followUp = `سمح ليا خويا، ما لقيتش "${effectiveMentionedProduct}" فالمنتجات ديالنا. واش عندك سؤال آخر؟ 🙏`;
+          }
         }
 
         try {

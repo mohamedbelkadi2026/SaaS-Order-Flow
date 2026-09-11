@@ -226,3 +226,47 @@ export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName:
 export async function isGreenApiConfigured(storeId: number): Promise<boolean> {
   return !!(await getGreenApiCredentials(storeId));
 }
+
+/* ── Interactive reply buttons (Green API only — Baileys has no equivalent) ──
+ * Max 3 buttons, 25 chars per button text, per Green API's docs
+ * (sendInteractiveButtonsReply). Beta endpoint on their side — can change.  */
+export async function sendWhatsAppButtons(
+  phone: string,
+  body: string,
+  buttons: { id: string; text: string }[],
+  storeId = 1,
+  header?: string,
+  footer?: string,
+): Promise<boolean> {
+  const formatted = formatPhoneForWhatsApp(phone);
+  const creds = await getGreenApiCredentials(storeId);
+  if (!creds) {
+    console.warn(`[WA Transport:${storeId}] No Green API config for this store — buttons DROPPED`);
+    return false;
+  }
+  const { instanceId, apiToken } = creds;
+  try {
+    const chatId = `${formatted}@c.us`;
+    const res = await fetch(`https://api.green-api.com/waInstance${instanceId}/sendInteractiveButtonsReply/${apiToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chatId,
+        ...(header ? { header } : {}),
+        body,
+        ...(footer ? { footer } : {}),
+        buttons: buttons.slice(0, 3).map(b => ({ buttonId: b.id, buttonText: b.text.slice(0, 25) })),
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) {
+      console.log(`[WA Transport:${storeId}] ✅ Buttons sent via Green API → ${chatId}`);
+      return true;
+    }
+    console.error(`[WA Transport:${storeId}] ❌ Green API buttons error: ${res.status}`);
+    return false;
+  } catch (err: any) {
+    console.error(`[WA Transport:${storeId}] ❌ Green API buttons exception: ${err.message}`);
+    return false;
+  }
+}
