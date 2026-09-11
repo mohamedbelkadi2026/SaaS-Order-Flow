@@ -899,7 +899,7 @@ export async function handleIncomingMessage(
         const normalize = normalizeForMatch;
         const msgNorm = normalize(customerMessage);
         const candidateProducts = await db.select({
-          id: products.id, name: products.name, sellingPrice: products.sellingPrice,
+          id: products.id, name: products.name, sellingPrice: products.sellingPrice, whatsappPrice: products.whatsappPrice,
           whatsappDescription: products.whatsappDescription,
           whatsappImageUrl: products.whatsappImageUrl,
           whatsappAudioUrl: products.whatsappAudioUrl,
@@ -919,7 +919,7 @@ export async function handleIncomingMessage(
         }
 
         console.log(`[AI] Cold lead from ${customerPhone} — matched product "${matchedProduct.name}" (id=${matchedProduct.id}), creating order`);
-        const priceCents = matchedProduct.sellingPrice || 0; // already in cents
+        const priceCents = matchedProduct.whatsappPrice ?? matchedProduct.sellingPrice ?? 0; // already in cents
         const newOrder = await storage.createOrder({
           storeId,
           orderNumber: `WA-${Date.now()}`,
@@ -957,9 +957,12 @@ export async function handleIncomingMessage(
         if (matchedProduct.whatsappImageUrl) {
           await sendWhatsAppImage(customerPhone, matchedProduct.whatsappImageUrl, matchedProduct.whatsappDescription || matchedProduct.name, storeId).catch(() => {});
         }
-        if (matchedProduct.whatsappDescription) {
-          await queueWhatsApp(storeId, customerPhone, matchedProduct.whatsappDescription);
-          await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: matchedProduct.whatsappDescription });
+        const priceDh = (matchedProduct.whatsappPrice ?? matchedProduct.sellingPrice ?? 0) / 100;
+        const priceLine = priceDh > 0 ? `💰 الثمن: ${priceDh} درهم` : "";
+        const descWithPrice = [matchedProduct.whatsappDescription, priceLine].filter(Boolean).join("\n\n");
+        if (descWithPrice) {
+          await queueWhatsApp(storeId, customerPhone, descWithPrice);
+          await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: descWithPrice });
         }
         if (matchedProduct.whatsappAudioUrl) {
           await sendWhatsAppFile(customerPhone, matchedProduct.whatsappAudioUrl, "audio.opus", "", storeId).catch(() => {});
@@ -1329,7 +1332,7 @@ export async function handleIncomingMessage(
 
       if (effectiveMentionedProduct || numberSelectionProductId) {
         const catalogProducts = await db.select({
-          id: products.id, name: products.name, stock: products.stock, sellingPrice: products.sellingPrice,
+          id: products.id, name: products.name, stock: products.stock, sellingPrice: products.sellingPrice, whatsappPrice: products.whatsappPrice,
           whatsappDescription: products.whatsappDescription,
           whatsappImageUrl: products.whatsappImageUrl,
           whatsappAudioUrl: products.whatsappAudioUrl,
@@ -1351,13 +1354,15 @@ export async function handleIncomingMessage(
         let sendVideoUrl: string | null = null;
         if (found) {
           const inStock = (found.stock ?? 0) > 0;
-          followUp = inStock
-            ? (found.whatsappDescription || `إيوا خويا، "${found.name}" كاين فالستوك ✅`)
-            : `سمح ليا خويا، "${found.name}" ما كاينش فالستوك دابا. إيلا بغيتي، نعلمك ملي يرجع.`;
           if (inStock) {
+            const priceDh = (found.whatsappPrice ?? found.sellingPrice ?? 0) / 100;
+            const priceLine = priceDh > 0 ? `💰 الثمن: ${priceDh} درهم` : "";
+            followUp = [found.whatsappDescription || `إيوا خويا، "${found.name}" كاين فالستوك ✅`, priceLine].filter(Boolean).join("\n\n");
             sendImageUrl = found.whatsappImageUrl;
             sendAudioUrl = found.whatsappAudioUrl;
             sendVideoUrl = found.whatsappVideoUrl;
+          } else {
+            followUp = `سمح ليا خويا، "${found.name}" ما كاينش فالستوك دابا. إيلا بغيتي، نعلمك ملي يرجع.`;
           }
         } else if (numberSelectionProductId) {
           followUp = `سمح ليا خويا، ماكاينش هاد الرقم فاللائحة. عاود دير ليا الرقم الصحيح 🙏`;
@@ -1395,15 +1400,16 @@ export async function handleIncomingMessage(
             const [existingItem] = await db.select({ id: orderItems.id, quantity: orderItems.quantity })
               .from(orderItems).where(eq(orderItems.orderId, conv.orderId)).limit(1);
             const qty = existingItem?.quantity || 1;
-            const newPriceCents = (found.sellingPrice || 0) * qty;
+            const effectivePrice = found.whatsappPrice ?? found.sellingPrice ?? 0;
+            const newPriceCents = effectivePrice * qty;
             if (existingItem) {
               await db.update(orderItems).set({
-                productId: found.id, rawProductName: found.name, price: found.sellingPrice || 0,
+                productId: found.id, rawProductName: found.name, price: effectivePrice,
               } as any).where(eq(orderItems.id, existingItem.id));
             } else {
               await db.insert(orderItems).values({
                 orderId: conv.orderId, productId: found.id, rawProductName: found.name,
-                quantity: 1, price: found.sellingPrice || 0,
+                quantity: 1, price: effectivePrice,
               } as any);
             }
             await db.update(orders).set({ totalPrice: newPriceCents, rawProductName: found.name } as any).where(eq(orders.id, conv.orderId));

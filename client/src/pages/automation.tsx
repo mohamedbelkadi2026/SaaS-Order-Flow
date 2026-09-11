@@ -2104,12 +2104,15 @@ type WaProduct = {
   whatsappAudioUrl: string | null;
   whatsappVideoUrl: string | null;
   whatsappDescription: string | null;
+  whatsappPrice: number | null; // cents
+  sellingPrice: number; // cents, general product price (fallback/reference)
 };
 
 function WhatsappProductsTab() {
   const { toast } = useToast();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [description, setDescription] = useState("");
+  const [priceInput, setPriceInput] = useState("");
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -2131,8 +2134,10 @@ function WhatsappProductsTab() {
       setImageUrl(selected.whatsappImageUrl || null);
       setAudioUrl(selected.whatsappAudioUrl || null);
       setVideoUrl(selected.whatsappVideoUrl || null);
+      const priceCents = selected.whatsappPrice ?? selected.sellingPrice;
+      setPriceInput(priceCents != null ? String(priceCents / 100) : "");
     } else {
-      setDescription(""); setImageUrl(null); setAudioUrl(null); setVideoUrl(null);
+      setDescription(""); setImageUrl(null); setAudioUrl(null); setVideoUrl(null); setPriceInput("");
     }
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2145,6 +2150,7 @@ function WhatsappProductsTab() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           whatsappDescription: description || null,
+          whatsappPriceDh: priceInput.trim() ? Number(priceInput) : null,
           whatsappImageUrl: imageUrl,
           whatsappAudioUrl: audioUrl,
           whatsappVideoUrl: videoUrl,
@@ -2206,6 +2212,21 @@ function WhatsappProductsTab() {
 
       {selected && (
         <div className="bg-white rounded-2xl border border-zinc-100 p-5 space-y-5">
+          {/* Price */}
+          <div className="space-y-1.5">
+            <label className="text-zinc-500 text-xs font-medium">Prix envoyé par l'IA (DH)</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={priceInput}
+              onChange={e => setPriceInput(e.target.value)}
+              placeholder={String((selected.sellingPrice || 0) / 100)}
+              className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-300"
+              data-testid="input-whatsapp-price"
+            />
+            <p className="text-[11px] text-zinc-400">Laissez vide pour utiliser le prix de vente normal ({(selected.sellingPrice || 0) / 100} DH).</p>
+          </div>
+
           {/* Description */}
           <div className="space-y-1.5">
             <label className="text-zinc-500 text-xs font-medium">Description (envoyée par l'IA)</label>

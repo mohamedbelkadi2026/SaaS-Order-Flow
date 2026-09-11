@@ -18756,6 +18756,8 @@ function ensureHeaders(sheet) {
         whatsappAudioUrl: products.whatsappAudioUrl,
         whatsappVideoUrl: products.whatsappVideoUrl,
         whatsappDescription: products.whatsappDescription,
+        whatsappPrice: products.whatsappPrice,
+        sellingPrice: products.sellingPrice,
       }).from(products).where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`));
       res.json(rows);
     } catch (err: any) {
@@ -18772,9 +18774,14 @@ function ensureHeaders(sheet) {
       whatsappAudioUrl: z.string().trim().max(500).nullable().optional(),
       whatsappVideoUrl: z.string().trim().max(500).nullable().optional(),
       whatsappDescription: z.string().trim().max(2000).nullable().optional(),
+      whatsappPriceDh: z.number().nullable().optional(), // DH from the form, converted to cents below
     });
     try {
-      const data = schema.parse(req.body);
+      const { whatsappPriceDh, ...rest } = schema.parse(req.body);
+      const data: Record<string, unknown> = { ...rest };
+      if (whatsappPriceDh !== undefined) {
+        data.whatsappPrice = whatsappPriceDh === null ? null : Math.round(whatsappPriceDh * 100);
+      }
       const [updated] = await db.update(products).set(data as any)
         .where(and(eq(products.id, productId), eq(products.storeId, storeId)))
         .returning();

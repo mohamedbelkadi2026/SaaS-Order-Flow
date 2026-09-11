@@ -130,6 +130,7 @@ export const products = pgTable("products", {
   whatsappAudioUrl: text("whatsapp_audio_url"),
   whatsappVideoUrl: text("whatsapp_video_url"),
   whatsappDescription: text("whatsapp_description"),
+  whatsappPrice: integer("whatsapp_price"), // in cents, like sellingPrice — falls back to sellingPrice when null
   // ── TajerDrop marketplace (Phase 1) ──
   // isMarketplaceProduct: produit du catalogue centralisé partagé avec les
   // Sellers TajerDrop. marketplaceOwnerStoreId: le store admin qui possède
