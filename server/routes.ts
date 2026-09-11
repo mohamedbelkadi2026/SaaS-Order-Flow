@@ -19404,6 +19404,34 @@ function ensureHeaders(sheet) {
         ...(gaInstanceToSave !== undefined || greenApiInstanceId === "" ? { greenApiInstanceId: gaInstanceToSave } : {}),
         ...(gaTokenToSave    !== undefined || greenApiApiToken === ""   ? { greenApiApiToken: gaTokenToSave }       : {}),
       } as any);
+      // Auto-configure Green API's webhookUrl to point at our incoming
+      // webhook — without this, Green API never pushes incoming messages to
+      // us at all (confirmed: this was never done automatically anywhere in
+      // this codebase, and is the most likely reason a test message got no
+      // reply and never appeared in Live Chat). Fire-and-forget: the save
+      // itself should never fail because of this external call.
+      const finalInstanceId = (s as any).greenApiInstanceId;
+      const finalApiToken   = (s as any).greenApiApiToken;
+      if (finalInstanceId && finalApiToken) {
+        const webhookUrl = `${req.protocol}://${req.get("host")}/api/webhooks/whatsapp-incoming`;
+        fetch(`https://api.green-api.com/waInstance${finalInstanceId}/setSettings/${finalApiToken}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            webhookUrl,
+            incomingWebhook: "yes",
+            outgoingMessageWebhook: "no",
+            outgoingAPIMessageWebhook: "no",
+            stateWebhook: "no",
+          }),
+          signal: AbortSignal.timeout(15000),
+        }).then(r => {
+          console.log(`[GREEN-API] webhookUrl auto-configured for store ${req.user!.storeId} (instance ${finalInstanceId}): HTTP ${r.status}`);
+        }).catch(err => {
+          console.error(`[GREEN-API] Failed to auto-configure webhookUrl for store ${req.user!.storeId}:`, err.message);
+        });
+      }
+
       res.json({
         ...s,
         hasOpenRouterKey: !!(s.openrouterApiKey),
@@ -19428,6 +19456,18 @@ function ensureHeaders(sheet) {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) return res.json({ ok: false, message: `Erreur Green API (HTTP ${r.status})` });
       if (data.stateInstance === "authorized") {
+        // Also (re)configure the webhook URL here — covers stores that saved
+        // their credentials before this auto-config existed, by re-testing.
+        const webhookUrl = `${req.protocol}://${req.get("host")}/api/webhooks/whatsapp-incoming`;
+        fetch(`https://api.green-api.com/waInstance${instanceId}/setSettings/${apiToken}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            webhookUrl, incomingWebhook: "yes",
+            outgoingMessageWebhook: "no", outgoingAPIMessageWebhook: "no", stateWebhook: "no",
+          }),
+          signal: AbortSignal.timeout(15000),
+        }).catch(err => console.error(`[GREEN-API] webhookUrl config on test failed:`, err.message));
         return res.json({ ok: true, message: "✅ Connecté et autorisé." });
       }
       return res.json({ ok: false, message: `Statut: ${data.stateInstance || "inconnu"} — scannez le QR code sur green-api.com pour autoriser.` });
