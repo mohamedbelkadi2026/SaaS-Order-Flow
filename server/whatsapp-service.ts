@@ -178,10 +178,21 @@ export async function sendWhatsAppImage(phone: string, imageUrl: string, caption
 export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName: string, caption: string, storeId = 1): Promise<boolean> {
   const formatted = formatPhoneForWhatsApp(phone);
 
+  // Green API determines the outgoing file type from the fileName field's
+  // extension (their docs: "By the extension specified in the file name, in
+  // the fileName field"). Trust the REAL uploaded file's extension (from the
+  // URL) over whatever generic name the caller passed in — a mismatch here
+  // (e.g. an uploaded .mp3 sent as "audio.opus") is exactly what was causing
+  // audio/video to silently fail to send.
+  const urlExtMatch = fileUrl.match(/\.([a-zA-Z0-9]+)(?:\?.*)?$/);
+  const realExt = urlExtMatch ? urlExtMatch[1].toLowerCase() : null;
+  const fallbackBase = fileName.replace(/\.[^.]+$/, "") || "file";
+  const resolvedFileName = realExt ? `${fallbackBase}.${realExt}` : fileName;
+
   try {
     const { getBaileysInstance } = await import("./baileys-service");
     const instance = getBaileysInstance(storeId);
-    if (instance.isConnected() && typeof (instance as any).sendImage === "function" && fileName.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
+    if (instance.isConnected() && typeof (instance as any).sendImage === "function" && resolvedFileName.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
       const ok = await (instance as any).sendImage(phone, fileUrl, caption);
       if (ok) {
         console.log(`[WA Transport:${storeId}] ✅ File sent via Baileys → ${phone}`);
@@ -204,17 +215,19 @@ export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName:
 
   try {
     const chatId = `${formatted}@c.us`;
+    console.log(`[WA Transport:${storeId}] Sending file via Green API: url=${fileUrl} fileName=${resolvedFileName}`);
     const res = await fetch(`https://api.green-api.com/waInstance${instanceId}/sendFileByUrl/${apiToken}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chatId, urlFile: fileUrl, fileName, caption }),
+      body: JSON.stringify({ chatId, urlFile: fileUrl, fileName: resolvedFileName, caption }),
       signal: AbortSignal.timeout(25000),
     });
     if (res.ok) {
       console.log(`[WA Transport:${storeId}] ✅ File sent via Green API → ${chatId}`);
       return true;
     }
-    console.error(`[WA Transport:${storeId}] ❌ Green API file error: ${res.status}`);
+    const errBody = await res.text().catch(() => "");
+    console.error(`[WA Transport:${storeId}] ❌ Green API file error: ${res.status} — ${errBody.slice(0, 300)}`);
     return false;
   } catch (err: any) {
     console.error(`[WA Transport:${storeId}] ❌ Green API file exception: ${err.message}`);
