@@ -191,8 +191,13 @@ function looksLikeDirectAnswer(msg: string): boolean {
   return wordCount <= 8 && !isQuestion;
 }
 
+/* ── Normalize text for product-name matching (shared) ───────── */
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+
 /* ── JSON decision parser (robust, never throws) ────────────── */
-interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; }
+interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; mentionedProduct: string | null; }
 
 function parseAIDecision(raw: string): AIDecision {
   // Strip markdown code fences if present
@@ -207,11 +212,12 @@ function parseAIDecision(raw: string): AIDecision {
         reply: reply || stripped,
         isConfirmed: !!(parsed.is_confirmed ?? parsed.isConfirmed ?? false),
         isCancelled: !!(parsed.is_cancelled ?? parsed.isCancelled ?? false),
+        mentionedProduct: (parsed.mentioned_product ?? parsed.mentionedProduct ?? null) || null,
       };
     }
   } catch { /* ignore JSON parse error, fall through */ }
   // Fallback: treat the whole response as the reply text, no decision signals
-  return { reply: stripped || raw, isConfirmed: false, isCancelled: false };
+  return { reply: stripped || raw, isConfirmed: false, isCancelled: false, mentionedProduct: null };
 }
 
 /* ── WhatsApp message queue (per-store rate limiter) ─────────── */
@@ -384,14 +390,19 @@ const JSON_OUTPUT_RULE = `
 ━━━ MANDATORY JSON OUTPUT FORMAT ━━━
 You MUST respond with ONLY a valid JSON object — NO markdown, NO code fences, NO extra text before or after.
 Format:
-{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false}
+{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false,"mentioned_product":null}
 
 Rules for the flags:
 - Set "is_confirmed": true ONLY when the customer explicitly agrees to receive the order (e.g. "واخا", "صيفطوه", "ok", "موافق", "نعم").
 - Set "is_cancelled": true ONLY when the customer explicitly says they no longer want it (e.g. "بلاش", "ما بقيتش", "ما بغيتش").
 - For ALL other messages (questions, hesitation, chatting): set BOTH to false and keep the conversation going.
 - NEVER set is_confirmed=true just because the customer asked a question.
-- After confirmation, keep responding helpfully — the conversation does not end.`;
+- After confirmation, keep responding helpfully — the conversation does not end.
+- "mentioned_product": if the customer asks about, or clearly wants, a DIFFERENT product than the one currently
+  being discussed (not the one already in this order/conversation), put the product name they mentioned here
+  EXACTLY as they wrote it (e.g. "شاحن العجيب 5 في 1"). Otherwise leave it null. Do NOT guess whether it's in
+  stock or make up details about it in your reply yet — the system will look up the real product and give you
+  its actual info for your NEXT reply. For THIS reply, just acknowledge you're checking (e.g. "نتأكد ليك دابا 🙏").`;
 
 /* ── Step-specific system prompts ────────────────────────────── */
 function buildStepPrompt(
@@ -834,7 +845,7 @@ export async function handleIncomingMessage(
           return;
         }
 
-        const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+        const normalize = normalizeForMatch;
         const msgNorm = normalize(customerMessage);
         const candidateProducts = await db.select({
           id: products.id, name: products.name, sellingPrice: products.sellingPrice,
@@ -1145,6 +1156,50 @@ export async function handleIncomingMessage(
       broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: aiReply, ts: Date.now(), model, provider, step: currentStep });
       console.log(`[SOCKET_EMIT] message (assistant) → conv ${conv.id} | "${aiReply.substring(0, 60)}"`);
+
+      // ── Customer asked about a DIFFERENT product than the current context ──
+      // The AI has no real data about any product outside the conversation's
+      // own order, so it was hallucinating answers (e.g. "not in stock" for a
+      // product that IS in stock, and never sending its image/audio/video even
+      // when configured in Produits WhatsApp). Look up the REAL product here
+      // and send accurate info as a follow-up, instead of trusting the LLM's guess.
+      if (decision.mentionedProduct) {
+        const mentionedNorm = normalizeForMatch(decision.mentionedProduct);
+        const catalogProducts = await db.select({
+          id: products.id, name: products.name, stock: products.stock,
+          whatsappDescription: products.whatsappDescription,
+          whatsappImageUrl: products.whatsappImageUrl,
+          whatsappAudioUrl: products.whatsappAudioUrl,
+          whatsappVideoUrl: products.whatsappVideoUrl,
+        }).from(products).where(eq(products.storeId, storeId));
+
+        const found = catalogProducts.find(p => p.name && (
+          mentionedNorm.includes(normalizeForMatch(p.name)) || normalizeForMatch(p.name).includes(mentionedNorm)
+        ));
+
+        let followUp: string;
+        if (found) {
+          const inStock = (found.stock ?? 0) > 0;
+          followUp = inStock
+            ? (found.whatsappDescription || `إيوا خويا، "${found.name}" كاين فالستوك ✅`)
+            : `سمح ليا خويا، "${found.name}" ما كاينش فالستوك دابا. إيلا بغيتي، نعلمك ملي يرجع.`;
+          if (inStock && found.whatsappImageUrl) {
+            await sendWhatsAppImage(customerPhone, found.whatsappImageUrl, found.name, storeId).catch(() => {});
+          }
+          if (inStock) {
+            const extraLinks = [found.whatsappAudioUrl, found.whatsappVideoUrl].filter(Boolean);
+            if (extraLinks.length > 0) followUp += "\n" + extraLinks.join("\n");
+          }
+        } else {
+          followUp = `سمح ليا خويا، ما لقيتش "${decision.mentionedProduct}" فالمنتجات ديالنا. واش عندك سؤال آخر؟ 🙏`;
+        }
+
+        await queueWhatsApp(storeId, customerPhone, followUp);
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: followUp });
+        await storage.updateAiConversationLastMessage(conv.id, followUp);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: followUp, ts: Date.now() });
+        console.log(`[AI] mentioned_product="${decision.mentionedProduct}" → matched=${found?.name ?? "none"} stock=${found?.stock ?? "n/a"}`);
+      }
 
       // ── JSON-driven confirmation / cancellation sync ──────────────
       // PRIMARY: rely on AI's structured JSON decision
