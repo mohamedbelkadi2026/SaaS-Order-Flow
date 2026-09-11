@@ -1167,7 +1167,7 @@ export async function handleIncomingMessage(
       if (decision.mentionedProduct) {
         const mentionedNorm = normalizeForMatch(decision.mentionedProduct);
         const catalogProducts = await db.select({
-          id: products.id, name: products.name, stock: products.stock,
+          id: products.id, name: products.name, stock: products.stock, sellingPrice: products.sellingPrice,
           whatsappDescription: products.whatsappDescription,
           whatsappImageUrl: products.whatsappImageUrl,
           whatsappAudioUrl: products.whatsappAudioUrl,
@@ -1206,6 +1206,29 @@ export async function handleIncomingMessage(
         if (sendImageUrl) await sendWhatsAppImage(customerPhone, sendImageUrl, found!.name, storeId).catch(() => {});
         if (sendAudioUrl) await sendWhatsAppFile(customerPhone, sendAudioUrl, "audio.opus", "", storeId).catch(() => {});
         if (sendVideoUrl) await sendWhatsAppFile(customerPhone, sendVideoUrl, "video.mp4", "", storeId).catch(() => {});
+
+        // Switch the conversation's own product to the one just discussed —
+        // otherwise the customer gets accurate info here, but the very next
+        // reply falls back to whatever the order was originally about,
+        // confusing the whole conversation.
+        if (found && (found.stock ?? 0) > 0 && conv.orderId) {
+          const [existingItem] = await db.select({ id: orderItems.id, quantity: orderItems.quantity })
+            .from(orderItems).where(eq(orderItems.orderId, conv.orderId)).limit(1);
+          const qty = existingItem?.quantity || 1;
+          const newPriceCents = (found.sellingPrice || 0) * qty;
+          if (existingItem) {
+            await db.update(orderItems).set({
+              productId: found.id, rawProductName: found.name, price: found.sellingPrice || 0,
+            } as any).where(eq(orderItems.id, existingItem.id));
+          } else {
+            await db.insert(orderItems).values({
+              orderId: conv.orderId, productId: found.id, rawProductName: found.name,
+              quantity: 1, price: found.sellingPrice || 0,
+            } as any);
+          }
+          await db.update(orders).set({ totalPrice: newPriceCents } as any).where(eq(orders.id, conv.orderId));
+          console.log(`[AI] Conv ${conv.id} order #${conv.orderId} switched to product "${found.name}" (id=${found.id})`);
+        }
       }
 
       // ── JSON-driven confirmation / cancellation sync ──────────────
