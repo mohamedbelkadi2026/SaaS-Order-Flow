@@ -877,10 +877,12 @@ export async function handleIncomingMessage(
         const matchedProduct = candidateProducts.find(p => p.name && msgNorm.includes(normalize(p.name)));
 
         if (!matchedProduct) {
-          // Can't tell which product — ask, don't create anything yet.
-          const askMsg = "السلام عليكم! ياك لاباس، بغيتي معلومات على شنو بالضبط؟ 🙏 عطينا سميت المنتج باش نعاونوك.";
-          await queueWhatsApp(storeId, customerPhone, askMsg);
-          console.log(`[AI] Cold lead from ${customerPhone} — no product match in "${customerMessage.slice(0, 80)}", asked for clarification, no order created`);
+          // Not a product-related first message — most likely a personal
+          // contact (friend, family) rather than a Facebook-ad lead, since a
+          // real ad-driven wa.me message always has the product name
+          // pre-filled. Stay silent rather than replying like a bot to
+          // someone who isn't a customer at all — do NOT create a lead/order.
+          console.log(`[AI] First message from ${customerPhone} has no product mention — not treating as a lead, staying silent: "${customerMessage.slice(0, 80)}"`);
           return;
         }
 
@@ -1283,7 +1285,7 @@ export async function handleIncomingMessage(
                 quantity: 1, price: found.sellingPrice || 0,
               } as any);
             }
-            await db.update(orders).set({ totalPrice: newPriceCents } as any).where(eq(orders.id, conv.orderId));
+            await db.update(orders).set({ totalPrice: newPriceCents, rawProductName: found.name } as any).where(eq(orders.id, conv.orderId));
             console.log(`[AI] Conv ${conv.id} order #${conv.orderId} switched to product "${found.name}" (id=${found.id})`);
           }
         } catch (mpErr: any) {
