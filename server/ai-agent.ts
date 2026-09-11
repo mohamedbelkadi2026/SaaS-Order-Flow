@@ -197,7 +197,7 @@ function normalizeForMatch(s: string): string {
 }
 
 /* ── JSON decision parser (robust, never throws) ────────────── */
-interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; mentionedProduct: string | null; }
+interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; mentionedProduct: string | null; collectedName: string | null; collectedCity: string | null; }
 
 function parseAIDecision(raw: string): AIDecision {
   // Strip markdown code fences if present
@@ -213,11 +213,13 @@ function parseAIDecision(raw: string): AIDecision {
         isConfirmed: !!(parsed.is_confirmed ?? parsed.isConfirmed ?? false),
         isCancelled: !!(parsed.is_cancelled ?? parsed.isCancelled ?? false),
         mentionedProduct: (parsed.mentioned_product ?? parsed.mentionedProduct ?? null) || null,
+        collectedName: (parsed.collected_name ?? parsed.collectedName ?? null) || null,
+        collectedCity: (parsed.collected_city ?? parsed.collectedCity ?? null) || null,
       };
     }
   } catch { /* ignore JSON parse error, fall through */ }
   // Fallback: treat the whole response as the reply text, no decision signals
-  return { reply: stripped || raw, isConfirmed: false, isCancelled: false, mentionedProduct: null };
+  return { reply: stripped || raw, isConfirmed: false, isCancelled: false, mentionedProduct: null, collectedName: null, collectedCity: null };
 }
 
 /* ── WhatsApp message queue (per-store rate limiter) ─────────── */
@@ -390,7 +392,7 @@ const JSON_OUTPUT_RULE = `
 ━━━ MANDATORY JSON OUTPUT FORMAT ━━━
 You MUST respond with ONLY a valid JSON object — NO markdown, NO code fences, NO extra text before or after.
 Format:
-{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false,"mentioned_product":null}
+{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false,"mentioned_product":null,"collected_name":null,"collected_city":null}
 
 Rules for the flags:
 - Set "is_confirmed": true ONLY when the customer explicitly agrees to receive the order (e.g. "واخا", "صيفطوه", "ok", "موافق", "نعم").
@@ -402,7 +404,21 @@ Rules for the flags:
   being discussed (not the one already in this order/conversation), put the product name they mentioned here
   EXACTLY as they wrote it (e.g. "شاحن العجيب 5 في 1"). Otherwise leave it null. Do NOT guess whether it's in
   stock or make up details about it in your reply yet — the system will look up the real product and give you
-  its actual info for your NEXT reply. For THIS reply, just acknowledge you're checking (e.g. "نتأكد ليك دابا 🙏").`;
+  its actual info for your NEXT reply. For THIS reply, just acknowledge you're checking (e.g. "نتأكد ليك دابا 🙏").
+- "collected_name": if the customer just told you their full name in THIS message, put it here exactly as they
+  wrote it. Otherwise leave it null. NEVER fill this with a guess.
+- "collected_city": if the customer just told you their city in THIS message, put it here exactly as they wrote
+  it. Otherwise leave it null. NEVER fill this with a guess.
+
+━━━ NEVER INVENT CUSTOMER DETAILS (CRITICAL) ━━━
+- NEVER invent, guess, or assume the customer's name, city, or address. If you don't have it, ASK for it — do
+  not write a name or city into your reply that the customer never actually told you.
+- If "Customer name" below is marked UNKNOWN, you do not know their name. Ask for it naturally before or while
+  confirming the order. Do not address them by an invented name, and do not write a confirmation message that
+  states a specific name or city unless it was actually provided in this conversation.
+- Do NOT set is_confirmed=true until you have BOTH a real city and a real name for this order — either already
+  known from before, or collected from the customer in this conversation. If either is still missing when they
+  say "واخا"/"ok", ask for the missing piece(s) first instead of confirming.`;
 
 /* ── Step-specific system prompts ────────────────────────────── */
 function buildStepPrompt(
@@ -419,8 +435,9 @@ function buildStepPrompt(
     ? `${_baseProductLabel} - ${_orderVariant}`
     : _baseProductLabel;
   const city = conv.collectedCity ?? ctx?.customerCity ?? null;
+  const customerName = conv.collectedName ?? conv.customerName ?? null;
   const variant = conv.collectedVariant ?? ctx?.productVariant ?? null;
-  const gender = detectGender(conv.customerName ?? "");
+  const gender = detectGender(customerName ?? "");
   const address = getGenderAddress(gender);
 
   const stockNote = ctx?.stockQty !== null
@@ -450,7 +467,7 @@ function buildStepPrompt(
   const base = `You are "أمين", a patient and helpful human customer service agent at "${storeName}" (Moroccan e-commerce store). You are a trusted Moroccan salesperson — never pushy, always supportive.
 
 GENDER RULE (MANDATORY):
-- Customer name: "${conv.customerName ?? "unknown"}" → ${genderNote}
+- Customer name: "${customerName ?? "UNKNOWN — not provided yet"}" → ${genderNote}
 - ALWAYS use the correct gender address throughout the ENTIRE conversation
 
 LANGUAGE & STYLE:
@@ -478,9 +495,9 @@ HUMAN REQUEST RULE (CRITICAL — NEVER BREAK):
 - You are the ONLY agent. There is no human team. Solve everything yourself in Darija.
 
 ORDER DETAILS:
-- Customer: ${conv.customerName ?? "Unknown"} (${genderNote})
+- Customer: ${customerName ?? "⚠️ NAME NOT PROVIDED — you must ask for their full name"} (${genderNote})
 - Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}
-${city ? `- City: ${city}` : ""}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
+- City: ${city ?? "⚠️ CITY NOT PROVIDED — you must ask for their city"}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
 ${knowledgeBlock}
 ${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}
 ${JSON_OUTPUT_RULE}`;
@@ -1119,6 +1136,28 @@ export async function handleIncomingMessage(
       console.log(`[REPLY] AI sending back to ${customerPhone}: "${aiReply.substring(0, 100)}"`);
       console.log(`[REPLY] confirmed=${decision.isConfirmed} | cancelled=${decision.isCancelled} | conv=${conv.id}`);
 
+      // ── Detect early whether this message is about a DIFFERENT product ──
+      // Computed here (before step advancement) so the city/variant capture
+      // below can skip it — otherwise a short, non-question message like
+      // "بغيت شاحن العجيب" (3 words, not a question) would blindly get
+      // stored as the customer's city/variant via looksLikeDirectAnswer,
+      // which is exactly what was happening (confirmed live: an invented-
+      // looking city that was actually the customer's product question).
+      let effectiveMentionedProduct = decision.mentionedProduct;
+      const currentProductNorm = ctx?.productName ? normalizeForMatch(ctx.productName) : null;
+      if (!effectiveMentionedProduct) {
+        const msgNorm = normalizeForMatch(customerMessage);
+        const quickCatalog = await db.select({ name: products.name })
+          .from(products).where(eq(products.storeId, storeId));
+        const textMatch = quickCatalog.find(p => {
+          if (!p.name || p.name.length < 3) return false;
+          const pNorm = normalizeForMatch(p.name);
+          if (currentProductNorm && pNorm === currentProductNorm) return false;
+          return msgNorm.includes(pNorm);
+        });
+        if (textMatch) effectiveMentionedProduct = textMatch.name;
+      }
+
       // ── Advance step based on what the customer just said ────────
       // Skip step advancement when in delivery companion mode (order already confirmed)
       const isDeliveryMode = ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours" || ctx?.orderStatus === "Attente De Ramassage";
@@ -1132,13 +1171,13 @@ export async function handleIncomingMessage(
             stepData.city = detectedCity;
             nextStep = 2;
             if (ctx?.productVariant) { stepData.variant = ctx.productVariant; nextStep = 3; }
-          } else if (looksLikeDirectAnswer(customerMessage) && customerMessage.length > 3) {
+          } else if (!effectiveMentionedProduct && looksLikeDirectAnswer(customerMessage) && customerMessage.length > 3) {
             stepData.city = customerMessage.trim();
             nextStep = 2;
             if (ctx?.productVariant) { stepData.variant = ctx.productVariant; nextStep = 3; }
           }
         } else if (currentStep === 2) {
-          if (looksLikeDirectAnswer(customerMessage) && customerMessage.length > 1) {
+          if (!effectiveMentionedProduct && looksLikeDirectAnswer(customerMessage) && customerMessage.length > 1) {
             stepData.variant = customerMessage.trim();
             nextStep = 3;
           }
@@ -1147,6 +1186,21 @@ export async function handleIncomingMessage(
         if (nextStep !== currentStep) {
           await storage.updateConversationStep(conv.id, nextStep, stepData);
           console.log(`[AI] Conv ${conv.id} advanced: step ${currentStep} → ${nextStep}`, stepData);
+        }
+      }
+
+      // ── Save name/city the customer just stated (from the LLM's own
+      // extraction) — separate from the step-based heuristic above, this is
+      // the LLM reading what the customer actually wrote and echoing it back
+      // verbatim, only when it says so explicitly (never inferred/guessed).
+      if (decision.collectedCity || decision.collectedName) {
+        try {
+          const update: Record<string, unknown> = {};
+          if (decision.collectedCity) update.collectedCity = decision.collectedCity;
+          if (decision.collectedName) update.collectedName = decision.collectedName;
+          await db.update(aiConversations).set(update).where(eq(aiConversations.id, conv.id));
+        } catch (e: any) {
+          console.error(`[AI] Failed to save collected name/city for conv ${conv.id}:`, e.message);
         }
       }
 
@@ -1164,28 +1218,8 @@ export async function handleIncomingMessage(
       // product that IS in stock, and never sending its image/audio/video even
       // when configured in Produits WhatsApp). Look up the REAL product here
       // and send accurate info as a follow-up, instead of trusting the LLM's guess.
-      //
-      // Don't rely solely on decision.mentionedProduct — the LLM doesn't always
-      // reliably populate it even when its own reply text implies it should
-      // (confirmed live: AI said "نتأكد ليك دابا..." but never followed up).
-      // Also scan the customer's raw message directly against the catalog as
-      // a fallback, skipping the conversation's own current product so normal
-      // chat about the same item doesn't keep re-triggering this.
-      let effectiveMentionedProduct = decision.mentionedProduct;
-      const currentProductNorm = ctx?.productName ? normalizeForMatch(ctx.productName) : null;
-      if (!effectiveMentionedProduct) {
-        const msgNorm = normalizeForMatch(customerMessage);
-        const quickCatalog = await db.select({ name: products.name })
-          .from(products).where(eq(products.storeId, storeId));
-        const textMatch = quickCatalog.find(p => {
-          if (!p.name || p.name.length < 3) return false;
-          const pNorm = normalizeForMatch(p.name);
-          if (currentProductNorm && pNorm === currentProductNorm) return false;
-          return msgNorm.includes(pNorm);
-        });
-        if (textMatch) effectiveMentionedProduct = textMatch.name;
-      }
-
+      // (effectiveMentionedProduct was already computed above, before step
+      // advancement, so the city/variant heuristic could skip it too.)
       if (effectiveMentionedProduct) {
         const mentionedNorm = normalizeForMatch(effectiveMentionedProduct);
         const catalogProducts = await db.select({
@@ -1263,7 +1297,26 @@ export async function handleIncomingMessage(
       // ── JSON-driven confirmation / cancellation sync ──────────────
       // PRIMARY: rely on AI's structured JSON decision
       // FALLBACK: fast-path keyword detection (catches simple "واخا" before AI call runs below)
-      const needsConfirm = decision.isConfirmed && conv.orderId && liveOrderStatus === "nouveau";
+      //
+      // Hard code-level gate — never trust the LLM's is_confirmed alone: it's
+      // a prompt instruction, and prompt instructions aren't 100% reliable
+      // (confirmed live: the model has invented names/cities before). Only
+      // actually confirm when both a real name and city are known, either
+      // already on the order or collected during this conversation.
+      const effectiveCityForConfirm = conv.collectedCity ?? ctx?.customerCity ?? decision.collectedCity ?? null;
+      const effectiveNameForConfirm = conv.collectedName ?? conv.customerName ?? decision.collectedName ?? null;
+      const missingForConfirm = decision.isConfirmed && (!effectiveCityForConfirm || !effectiveNameForConfirm);
+      const needsConfirm = decision.isConfirmed && conv.orderId && liveOrderStatus === "nouveau" && !missingForConfirm;
+      if (missingForConfirm) {
+        console.warn(`[AI] Blocked premature confirm for conv ${conv.id} — name=${effectiveNameForConfirm ?? "MISSING"} city=${effectiveCityForConfirm ?? "MISSING"}`);
+        const missingParts = [];
+        if (!effectiveNameForConfirm) missingParts.push("سميتك الكاملة");
+        if (!effectiveCityForConfirm) missingParts.push("المدينة ديالك");
+        const askMsg = `قبل نأكدو الطلب، عطيني ${missingParts.join(" و")} 🙏`;
+        await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: askMsg, ts: Date.now() });
+      }
       const needsCancel  = decision.isCancelled && conv.orderId;
 
       if (needsConfirm) {

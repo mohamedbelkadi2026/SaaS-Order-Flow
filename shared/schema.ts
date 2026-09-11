@@ -141,16 +141,7 @@ export const products = pgTable("products", {
   marketplacePackagingFee: integer("marketplace_packaging_fee"), // centimes; NULL → platform default 600
   marketplaceActive: boolean("marketplace_active").default(true),
   settings: jsonb("settings"),
-  // Ameex catalog product UUID for "stock-managed" Ameex accounts — merchants
-  // whose physical stock is held AT Ameex's own warehouse. When set, every
-  // shipment for this product includes products[0][id] in the Ameex create-
-  // package payload (buildAmeexPayload, carrier-service.ts), which makes
-  // Ameex decrement THEIR OWN inventory automatically as part of creating
-  // the parcel — no separate API call needed. Previously this only existed
-  // as a per-ORDER override (orders.ameexProductId) populated exclusively by
-  // the Google Sheets webhook; this product-level field lets it apply to
-  // every order regardless of source.
-  ameexProductId: text("ameex_product_id"),
+  // (ameexProductId already declared above, near imageUrl/reference)
   createdAt: timestamp("created_at").defaultNow(),
   archivedAt: timestamp("archived_at"),
 });
@@ -959,6 +950,7 @@ export const aiConversations = pgTable("ai_conversations", {
   needsAttention: integer("needs_attention").default(0), // 1 = admin attention required
   conversationStep: integer("conversation_step").default(1), // 1=city 2=variant 3=confirm
   collectedCity: text("collected_city"),    // city confirmed by customer
+  collectedName: text("collected_name"),    // full name confirmed by customer
   collectedVariant: text("collected_variant"), // size/color confirmed by customer
   lastMessage: text("last_message"),
   lastMessageAt: timestamp("last_message_at").defaultNow(),
