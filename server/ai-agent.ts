@@ -115,6 +115,19 @@ const IMAGE_KEYWORDS = [
   "بنيتي نشوفها", "بغيت نشوف", "مممكن تعطيني صورة",
 ];
 
+// ── Video request keywords — customer wants to see a video of the product ──
+const VIDEO_KEYWORDS = [
+  "صيفط ليا فيديو", "صيفط فيديو", "غا صفت ليا فيديو", "صفتو ليا فيديو",
+  "عندك فيديو", "كاين فيديو", "بغيت نشوف فيديو", "بغيت الفيديو",
+  "send video", "send me video", "video stp", "video svp", "فيديو",
+];
+
+// ── Audio request keywords — customer wants a voice note about the product ──
+const AUDIO_KEYWORDS = [
+  "صيفط ليا صوت", "صيفط صوت", "بغيت نسمع", "تسجيل صوتي", "note vocale",
+  "voice note", "send audio", "send voice", "صوتية", "رسالة صوتية",
+];
+
 const ATTENTION_KEYWORDS = [
   "بغيت واحد", "human", "admin", "مدير", "إنسان", "شخص حقيقي",
   "واحد حقيقي", "تكلم معاي", "تكلموا معايا", "بشر", "مسؤول",
@@ -147,8 +160,13 @@ const MOROCCAN_CITIES = [
   "tinghir", "kelaa sraghna", "beni mellal",
 ];
 
-function detectIntent(msg: string): "confirm" | "cancel" | "image" | null {
+function detectIntent(msg: string): "confirm" | "cancel" | "image" | "video" | "audio" | null {
   const lower = msg.toLowerCase().trim();
+
+  // Video/audio request check — check before image so "فيديو" doesn't
+  // accidentally fall through to the image path via a shared substring
+  if (VIDEO_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "video";
+  if (AUDIO_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "audio";
 
   // Image request check — check before confirm to catch "وريني" which can overlap
   if (IMAGE_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "image";
@@ -261,6 +279,8 @@ interface OrderContext {
   trackNumber: string | null;
   shippingProvider: string | null;
   productImageUrl: string | null;
+  productVideoUrl: string | null;
+  productAudioUrl: string | null;
 }
 
 export async function getOrderContextForRoute(orderId: number): Promise<OrderContext> {
@@ -291,6 +311,8 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
     let descriptionDarija: string | null = null;
     let aiFeatures: string[] | null = null;
     let productImageUrl: string | null = null;
+    let productVideoUrl: string | null = null;
+    let productAudioUrl: string | null = null;
 
     if (items.length > 0) {
       const item = items[0];
@@ -305,13 +327,21 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
           descriptionDarija: products.descriptionDarija,
           aiFeatures: products.aiFeatures,
           imageUrl: products.imageUrl,
+          whatsappImageUrl: products.whatsappImageUrl,
+          whatsappVideoUrl: products.whatsappVideoUrl,
+          whatsappAudioUrl: products.whatsappAudioUrl,
+          whatsappDescription: products.whatsappDescription,
         }).from(products).where(eq(products.id, item.productId));
         if (p) {
           if (!productName) productName = p.name ?? null;
           stockQty = p.stock ?? null;
-          // Use descriptionDarija first, fall back to regular description
-          descriptionDarija = p.descriptionDarija || p.description || null;
-          productImageUrl = p.imageUrl ?? null;
+          // Prefer the dedicated WhatsApp content (Produits WhatsApp) over the
+          // general product-page fields when set — that's what's actually
+          // curated for the AI to send, e.g. a Darija-specific description.
+          descriptionDarija = p.whatsappDescription || p.descriptionDarija || p.description || null;
+          productImageUrl = p.whatsappImageUrl || p.imageUrl || null;
+          productVideoUrl = p.whatsappVideoUrl ?? null;
+          productAudioUrl = p.whatsappAudioUrl ?? null;
           if (p.aiFeatures) {
             try { aiFeatures = JSON.parse(p.aiFeatures); } catch { aiFeatures = null; }
           }
@@ -340,9 +370,11 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       trackNumber: order?.trackNumber ?? null,
       shippingProvider: order?.shippingProvider ?? null,
       productImageUrl,
+      productVideoUrl,
+      productAudioUrl,
     };
   } catch {
-    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null, productImageUrl: null };
+    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null, productImageUrl: null, productVideoUrl: null, productAudioUrl: null };
   }
 }
 
@@ -1001,11 +1033,51 @@ export async function handleIncomingMessage(
         console.log(`[AI] 📸 Sending product image to ${customerPhone}: ${ctx.productImageUrl.substring(0, 60)}...`);
         await sendWhatsAppImage(customerPhone, ctx.productImageUrl, caption, storeId);
       } else {
-        const noImgReply = `عفواً ${addr.casual}، ما عنديش تصويرة للمنتج دابا 🙏`;
+        const noImgReply = `عفواً ${addr.friendly}، ما عنديش تصويرة للمنتج دابا 🙏`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: noImgReply });
         await storage.updateAiConversationLastMessage(conv.id, noImgReply);
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: noImgReply, ts: Date.now() });
         await queueWhatsApp(storeId, customerPhone, noImgReply);
+      }
+      return;
+    }
+
+    // ── Video request fast-path ─────────────────────────────────────
+    if (intent === "video" && conv.orderId) {
+      const ctx = await getOrderContext(conv.orderId);
+      if (ctx.productVideoUrl) {
+        const videoLogMsg = `[VIDEO] ${ctx.productVideoUrl}`;
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: videoLogMsg });
+        await storage.updateAiConversationLastMessage(conv.id, videoLogMsg);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: videoLogMsg, ts: Date.now() });
+        console.log(`[AI] 🎥 Sending product video to ${customerPhone}: ${ctx.productVideoUrl.substring(0, 60)}...`);
+        await sendWhatsAppFile(customerPhone, ctx.productVideoUrl, "video.mp4", ctx.productName ? `فيديو ${ctx.productName}` : "", storeId);
+      } else {
+        const noVidReply = `عفواً ${addr.friendly}، ما عنديش فيديو للمنتج دابا 🙏. بغيتي نبعث ليك تصويرة ولا وصف كامل؟`;
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: noVidReply });
+        await storage.updateAiConversationLastMessage(conv.id, noVidReply);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: noVidReply, ts: Date.now() });
+        await queueWhatsApp(storeId, customerPhone, noVidReply);
+      }
+      return;
+    }
+
+    // ── Audio request fast-path ─────────────────────────────────────
+    if (intent === "audio" && conv.orderId) {
+      const ctx = await getOrderContext(conv.orderId);
+      if (ctx.productAudioUrl) {
+        const audioLogMsg = `[AUDIO] ${ctx.productAudioUrl}`;
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: audioLogMsg });
+        await storage.updateAiConversationLastMessage(conv.id, audioLogMsg);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: audioLogMsg, ts: Date.now() });
+        console.log(`[AI] 🎙️ Sending product audio to ${customerPhone}: ${ctx.productAudioUrl.substring(0, 60)}...`);
+        await sendWhatsAppFile(customerPhone, ctx.productAudioUrl, "audio.opus", "", storeId);
+      } else {
+        const noAudioReply = `عفواً ${addr.friendly}، ما عنديش تسجيل صوتي للمنتج دابا 🙏`;
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: noAudioReply });
+        await storage.updateAiConversationLastMessage(conv.id, noAudioReply);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: noAudioReply, ts: Date.now() });
+        await queueWhatsApp(storeId, customerPhone, noAudioReply);
       }
       return;
     }
