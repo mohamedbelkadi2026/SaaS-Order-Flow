@@ -976,7 +976,7 @@ export async function handleIncomingMessage(
           await sendWhatsAppFile(customerPhone, matchedProduct.whatsappVideoUrl, "video.mp4", "", storeId).catch(() => {});
         }
 
-        const introMsg = "واش بغيتي نأكدو ليك الطلب؟ عطيني سميتك الكاملة والمدينة ديالك 🙏";
+        const introMsg = "واش بغيتي نأكدو ليك الطلب؟ عطيني سميتك الكاملة، المدينة، والعنوان بالتفصيل (الحي/الشارع) 🙏";
         await queueWhatsApp(storeId, customerPhone, introMsg);
         await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: introMsg });
         await storage.updateAiConversationLastMessage(newConv.id, introMsg);
