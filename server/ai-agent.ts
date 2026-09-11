@@ -215,7 +215,7 @@ function normalizeForMatch(s: string): string {
 }
 
 /* ── JSON decision parser (robust, never throws) ────────────── */
-interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; mentionedProduct: string | null; collectedName: string | null; collectedCity: string | null; }
+interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; mentionedProduct: string | null; collectedName: string | null; collectedCity: string | null; collectedAddress: string | null; }
 
 function parseAIDecision(raw: string): AIDecision {
   // Strip markdown code fences if present
@@ -233,11 +233,12 @@ function parseAIDecision(raw: string): AIDecision {
         mentionedProduct: (parsed.mentioned_product ?? parsed.mentionedProduct ?? null) || null,
         collectedName: (parsed.collected_name ?? parsed.collectedName ?? null) || null,
         collectedCity: (parsed.collected_city ?? parsed.collectedCity ?? null) || null,
+        collectedAddress: (parsed.collected_address ?? parsed.collectedAddress ?? null) || null,
       };
     }
   } catch { /* ignore JSON parse error, fall through */ }
   // Fallback: treat the whole response as the reply text, no decision signals
-  return { reply: stripped || raw, isConfirmed: false, isCancelled: false, mentionedProduct: null, collectedName: null, collectedCity: null };
+  return { reply: stripped || raw, isConfirmed: false, isCancelled: false, mentionedProduct: null, collectedName: null, collectedCity: null, collectedAddress: null };
 }
 
 /* ── WhatsApp message queue (per-store rate limiter) ─────────── */
@@ -424,7 +425,7 @@ const JSON_OUTPUT_RULE = `
 ━━━ MANDATORY JSON OUTPUT FORMAT ━━━
 You MUST respond with ONLY a valid JSON object — NO markdown, NO code fences, NO extra text before or after.
 Format:
-{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false,"mentioned_product":null,"collected_name":null,"collected_city":null}
+{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false,"mentioned_product":null,"collected_name":null,"collected_city":null,"collected_address":null}
 
 Rules for the flags:
 - Set "is_confirmed": true ONLY when the customer explicitly agrees to receive the order (e.g. "واخا", "صيفطوه", "ok", "موافق", "نعم").
@@ -441,15 +442,17 @@ Rules for the flags:
   wrote it. Otherwise leave it null. NEVER fill this with a guess.
 - "collected_city": if the customer just told you their city in THIS message, put it here exactly as they wrote
   it. Otherwise leave it null. NEVER fill this with a guess.
+- "collected_address": if the customer just told you their street address / neighborhood / detailed location in
+  THIS message, put it here exactly as they wrote it. Otherwise leave it null. NEVER fill this with a guess.
 
 ━━━ NEVER INVENT CUSTOMER DETAILS (CRITICAL) ━━━
 - NEVER invent, guess, or assume the customer's name, city, or address. If you don't have it, ASK for it — do
-  not write a name or city into your reply that the customer never actually told you.
+  not write a name, city, or address into your reply that the customer never actually told you.
 - If "Customer name" below is marked UNKNOWN, you do not know their name. Ask for it naturally before or while
   confirming the order. Do not address them by an invented name, and do not write a confirmation message that
-  states a specific name or city unless it was actually provided in this conversation.
-- Do NOT set is_confirmed=true until you have BOTH a real city and a real name for this order — either already
-  known from before, or collected from the customer in this conversation. If either is still missing when they
+  states a specific name, city, or address unless it was actually provided in this conversation.
+- Do NOT set is_confirmed=true until you have a real city, a real name, AND a real address for this order —
+  either already known from before, or collected from the customer in this conversation. If any is still missing when they
   say "واخا"/"ok", ask for the missing piece(s) first instead of confirming.`;
 
 /* ── Step-specific system prompts ────────────────────────────── */
@@ -467,6 +470,7 @@ function buildStepPrompt(
     ? `${_baseProductLabel} - ${_orderVariant}`
     : _baseProductLabel;
   const city = conv.collectedCity ?? ctx?.customerCity ?? null;
+  const streetAddress = conv.collectedAddress ?? null;
   const customerName = conv.collectedName ?? conv.customerName ?? null;
   const variant = conv.collectedVariant ?? ctx?.productVariant ?? null;
   const gender = detectGender(customerName ?? "");
@@ -529,7 +533,8 @@ HUMAN REQUEST RULE (CRITICAL — NEVER BREAK):
 ORDER DETAILS:
 - Customer: ${customerName ?? "⚠️ NAME NOT PROVIDED — you must ask for their full name"} (${genderNote})
 - Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}
-- City: ${city ?? "⚠️ CITY NOT PROVIDED — you must ask for their city"}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
+- City: ${city ?? "⚠️ CITY NOT PROVIDED — you must ask for their city"}
+- Address: ${streetAddress ?? "⚠️ ADDRESS NOT PROVIDED — you must ask for their street address/neighborhood"}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
 ${knowledgeBlock}
 ${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}
 ${JSON_OUTPUT_RULE}`;
@@ -1089,15 +1094,17 @@ export async function handleIncomingMessage(
       // Only auto-confirm if order is still in "nouveau" state (not already confirmed)
       if (liveOrderStatus === "nouveau" || liveOrderStatus === null) {
         // Same safety gate as the JSON-based confirmation path below — never
-        // confirm blind without a real name and city, either known already
-        // or collected during this conversation.
+        // confirm blind without a real name, city, and address, either known
+        // already or collected during this conversation.
         const ctxForGate = await getOrderContext(conv.orderId);
         const fastPathCity = conv.collectedCity ?? ctxForGate?.customerCity ?? null;
         const fastPathName = conv.collectedName ?? conv.customerName ?? null;
-        if (!fastPathCity || !fastPathName) {
+        const fastPathAddress = conv.collectedAddress ?? null;
+        if (!fastPathCity || !fastPathName || !fastPathAddress) {
           const missingParts = [];
           if (!fastPathName) missingParts.push("سميتك الكاملة");
           if (!fastPathCity) missingParts.push("المدينة ديالك");
+          if (!fastPathAddress) missingParts.push("العنوان بالتفصيل (الحي/الشارع)");
           const askMsg = `قبل نأكدو الطلب، عطيني ${missingParts.join(" و")} 🙏`;
           await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
           await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
@@ -1106,6 +1113,10 @@ export async function handleIncomingMessage(
         }
         const confirmedAt = new Date();
         await storage.updateOrderStatus(conv.orderId, "confirme");
+        // Sync the collected info into the real order record — not just aiConversations
+        await db.update(orders).set({
+          customerName: fastPathName, customerCity: fastPathCity, customerAddress: fastPathAddress,
+        } as any).where(eq(orders.id, conv.orderId)).catch(() => {});
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
         const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غادي توصلك من 24 لـ 48 ساعة إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
@@ -1282,29 +1293,33 @@ export async function handleIncomingMessage(
         }
       }
 
-      // ── Save name/city the customer just stated (from the LLM's own
-      // extraction) — separate from the step-based heuristic above, this is
-      // the LLM reading what the customer actually wrote and echoing it back
-      // verbatim, only when it says so explicitly (never inferred/guessed).
-      if (decision.collectedCity || decision.collectedName) {
+      // ── Save name/city/address the customer just stated (from the LLM's
+      // own extraction) — separate from the step-based heuristic above, this
+      // is the LLM reading what the customer actually wrote and echoing it
+      // back verbatim, only when it says so explicitly (never inferred/guessed).
+      if (decision.collectedCity || decision.collectedName || decision.collectedAddress) {
         try {
           const update: Record<string, unknown> = {};
           if (decision.collectedCity) update.collectedCity = decision.collectedCity;
           if (decision.collectedName) update.collectedName = decision.collectedName;
+          if (decision.collectedAddress) update.collectedAddress = decision.collectedAddress;
           await db.update(aiConversations).set(update).where(eq(aiConversations.id, conv.id));
         } catch (e: any) {
-          console.error(`[AI] Failed to save collected name/city for conv ${conv.id}:`, e.message);
+          console.error(`[AI] Failed to save collected name/city/address for conv ${conv.id}:`, e.message);
         }
       }
 
       // ── Offer real Confirme/Annule buttons the moment we have everything ──
-      // Only once per conversation (confirmButtonsSent), right when name+city
-      // both become known — before this, wait for the missing piece(s).
+      // Only once per conversation (confirmButtonsSent), right when
+      // name+city+address all become known — before this, wait for the
+      // missing piece(s).
       const wasCityKnown = !!(conv.collectedCity ?? ctx?.customerCity);
       const wasNameKnown = !!(conv.collectedName ?? conv.customerName);
+      const wasAddressKnown = !!conv.collectedAddress;
       const isCityKnownNow = wasCityKnown || !!decision.collectedCity;
       const isNameKnownNow = wasNameKnown || !!decision.collectedName;
-      if (isCityKnownNow && isNameKnownNow && !conv.confirmButtonsSent && conv.orderId && liveOrderStatus === "nouveau" && !decision.isConfirmed && !decision.isCancelled) {
+      const isAddressKnownNow = wasAddressKnown || !!decision.collectedAddress;
+      if (isCityKnownNow && isNameKnownNow && isAddressKnownNow && !conv.confirmButtonsSent && conv.orderId && liveOrderStatus === "nouveau" && !decision.isConfirmed && !decision.isCancelled) {
         const buttonsSent = await sendWhatsAppButtons(
           customerPhone,
           "واش نأكدو الطلب ديالك؟ 🙏",
@@ -1313,7 +1328,7 @@ export async function handleIncomingMessage(
         ).catch(() => false);
         if (buttonsSent) {
           await db.update(aiConversations).set({ confirmButtonsSent: 1 }).where(eq(aiConversations.id, conv.id)).catch(() => {});
-          console.log(`[AI] Conv ${conv.id} — sent Confirme/Annule buttons (name+city now complete)`);
+          console.log(`[AI] Conv ${conv.id} — sent Confirme/Annule buttons (name+city+address now complete)`);
         }
       }
 
@@ -1446,17 +1461,19 @@ export async function handleIncomingMessage(
       // Hard code-level gate — never trust the LLM's is_confirmed alone: it's
       // a prompt instruction, and prompt instructions aren't 100% reliable
       // (confirmed live: the model has invented names/cities before). Only
-      // actually confirm when both a real name and city are known, either
-      // already on the order or collected during this conversation.
+      // actually confirm when a real name, city, AND address are known,
+      // either already on the order or collected during this conversation.
       const effectiveCityForConfirm = conv.collectedCity ?? ctx?.customerCity ?? decision.collectedCity ?? null;
       const effectiveNameForConfirm = conv.collectedName ?? conv.customerName ?? decision.collectedName ?? null;
-      const missingForConfirm = decision.isConfirmed && (!effectiveCityForConfirm || !effectiveNameForConfirm);
+      const effectiveAddressForConfirm = conv.collectedAddress ?? decision.collectedAddress ?? null;
+      const missingForConfirm = decision.isConfirmed && (!effectiveCityForConfirm || !effectiveNameForConfirm || !effectiveAddressForConfirm);
       const needsConfirm = decision.isConfirmed && conv.orderId && liveOrderStatus === "nouveau" && !missingForConfirm;
       if (missingForConfirm) {
-        console.warn(`[AI] Blocked premature confirm for conv ${conv.id} — name=${effectiveNameForConfirm ?? "MISSING"} city=${effectiveCityForConfirm ?? "MISSING"}`);
+        console.warn(`[AI] Blocked premature confirm for conv ${conv.id} — name=${effectiveNameForConfirm ?? "MISSING"} city=${effectiveCityForConfirm ?? "MISSING"} address=${effectiveAddressForConfirm ?? "MISSING"}`);
         const missingParts = [];
         if (!effectiveNameForConfirm) missingParts.push("سميتك الكاملة");
         if (!effectiveCityForConfirm) missingParts.push("المدينة ديالك");
+        if (!effectiveAddressForConfirm) missingParts.push("العنوان بالتفصيل (الحي/الشارع)");
         const askMsg = `قبل نأكدو الطلب، عطيني ${missingParts.join(" و")} 🙏`;
         await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
@@ -1467,6 +1484,10 @@ export async function handleIncomingMessage(
       if (needsConfirm) {
         const confirmedAt = new Date();
         await storage.updateOrderStatus(conv.orderId!, "confirme");
+        // Sync the collected info into the real order record — not just aiConversations
+        await db.update(orders).set({
+          customerName: effectiveNameForConfirm, customerCity: effectiveCityForConfirm, customerAddress: effectiveAddressForConfirm,
+        } as any).where(eq(orders.id, conv.orderId!)).catch(() => {});
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
         const convAgeMs = confirmedAt.getTime() - new Date(conv.createdAt!).getTime();

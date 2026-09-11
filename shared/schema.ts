@@ -952,6 +952,7 @@ export const aiConversations = pgTable("ai_conversations", {
   conversationStep: integer("conversation_step").default(1), // 1=city 2=variant 3=confirm
   collectedCity: text("collected_city"),    // city confirmed by customer
   collectedName: text("collected_name"),    // full name confirmed by customer
+  collectedAddress: text("collected_address"), // street address confirmed by customer
   confirmButtonsSent: integer("confirm_buttons_sent").default(0), // avoid re-sending Confirme/Annule buttons every message
   lastShownProductList: jsonb("last_shown_product_list").$type<number[]>(), // product IDs, in the order last listed to this customer (for numbered selection)
   collectedVariant: text("collected_variant"), // size/color confirmed by customer
