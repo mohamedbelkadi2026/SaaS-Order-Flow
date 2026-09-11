@@ -631,7 +631,7 @@ CURRENT TASK — Step 3/3: Get final confirmation.
 Order summary to present: ${summaryParts.length ? summaryParts.join("، ") : productLabel}
 
 - Summarize warmly: "صافي ${address.formal}، الطلبية ديالك: [summary]. واش نؤكد ليك؟"
-- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate! "صافي ${address.formal}، الكوموند ديالك غتخرج اليوم إن شاء الله. شكراً بزاف! 🎉"
+- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate! "صافي ${address.formal}، الكوموند ديالك تأكدات ✅. غادي توصلك من 24 لـ 48 ساعة إن شاء الله. شكراً بزاف على ثقتك فينا! 🎉"
 - If they hesitate: emphasize free shipping + "قلب عاد خلص"
 - If they have questions: answer using product knowledge then re-confirm
 - Once confirmed say the success message then the conversation is DONE`;
@@ -1088,11 +1088,27 @@ export async function handleIncomingMessage(
     if (intent === "confirm" && conv.orderId) {
       // Only auto-confirm if order is still in "nouveau" state (not already confirmed)
       if (liveOrderStatus === "nouveau" || liveOrderStatus === null) {
+        // Same safety gate as the JSON-based confirmation path below — never
+        // confirm blind without a real name and city, either known already
+        // or collected during this conversation.
+        const ctxForGate = await getOrderContext(conv.orderId);
+        const fastPathCity = conv.collectedCity ?? ctxForGate?.customerCity ?? null;
+        const fastPathName = conv.collectedName ?? conv.customerName ?? null;
+        if (!fastPathCity || !fastPathName) {
+          const missingParts = [];
+          if (!fastPathName) missingParts.push("سميتك الكاملة");
+          if (!fastPathCity) missingParts.push("المدينة ديالك");
+          const askMsg = `قبل نأكدو الطلب، عطيني ${missingParts.join(" و")} 🙏`;
+          await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
+          await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
+          broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: askMsg, ts: Date.now() });
+          return;
+        }
         const confirmedAt = new Date();
         await storage.updateOrderStatus(conv.orderId, "confirme");
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
-        const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
+        const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غادي توصلك من 24 لـ 48 ساعة إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
         await storage.updateAiConversationLastMessage(conv.id, msg);
         const convAgeMs = confirmedAt.getTime() - new Date(conv.createdAt!).getTime();
