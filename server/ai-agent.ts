@@ -295,9 +295,6 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       productVariant = item.variantInfo ?? null;
       resolvedProductId = item.productId ?? null;
 
-      if (item.rawProductName) {
-        productName = item.rawProductName;
-      }
       if (item.productId) {
         const [p] = await db.select({
           name: products.name,
@@ -320,7 +317,10 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       }
     }
 
-    // Fallback: use rawProductName from orders table if still no product name
+    // Fallback chain: verified catalog name (set above) > item's raw label > order's raw label
+    if (!productName && items.length > 0 && items[0].rawProductName) {
+      productName = items[0].rawProductName;
+    }
     if (!productName && order?.rawProductName) {
       productName = order.rawProductName;
     }
@@ -429,7 +429,9 @@ function buildStepPrompt(
         : ctx!.stockQty! <= 5
           ? ` (URGENCY: Only ${ctx!.stockQty} units left — use scarcity to close the sale faster)`
           : "")
-    : "";
+    : (ctx?.productName
+        ? " (WARNING: this product name is not linked to a verified catalog entry — real-time stock is unknown. Discuss it ONLY as this specific customer's own order item. NEVER offer or recommend it to answer a general \"what do you have\" question, since we cannot confirm it's actually sellable.)"
+        : "");
 
   // Product knowledge section
   const productKnowledge: string[] = [];
