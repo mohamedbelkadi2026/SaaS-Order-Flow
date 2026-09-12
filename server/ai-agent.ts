@@ -4,7 +4,7 @@ import { broadcastToStore } from "./sse";
 import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile, sendWhatsAppButtons } from "./whatsapp-service";
 import { db } from "./db";
 import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import type { AiConversation } from "@shared/schema";
 
 /* ── OpenRouter config ───────────────────────────────────────── */
@@ -41,6 +41,136 @@ async function resolveAIClient(storeId: number): Promise<ResolvedClient> {
     return { client: new OpenAI({ apiKey: oaiKey, timeout: 12000, maxRetries: 1 }), model: "gpt-4o-mini", provider: "OpenAI" };
   }
   throw new Error("Veuillez configurer votre clé API OpenRouter pour activer la confirmation automatique.");
+}
+
+/**
+ * Dedicated product-matching classifier — deliberately separate from the
+ * main conversational reply generation. Asking one LLM call to (a) write a
+ * natural Darija reply, (b) decide is_confirmed/is_cancelled, AND (c)
+ * reliably flag which of 40+ catalog products the customer just described
+ * turned out to be unreliable in practice (confirmed live multiple times:
+ * the model would answer about another product directly from the catalog
+ * list without ever setting mentioned_product, or set it inconsistently).
+ * This function does ONE thing only — temperature=0, minimal output format,
+ * and the result is verified against the REAL catalog before being trusted
+ * (guards against hallucinated product names).
+ */
+async function detectProductMentionAI(
+  customerMessage: string,
+  catalogNames: string[],
+  currentProductName: string | null,
+  storeId: number,
+): Promise<string | null> {
+  if (catalogNames.length === 0) return null;
+  try {
+    const { client, model } = await resolveAIClient(storeId);
+    const prompt = `You are a precise product-matching classifier for a Moroccan e-commerce WhatsApp bot. Nothing else — just classify.
+
+CURRENT PRODUCT (already being discussed — do NOT match to this, even if mentioned): ${currentProductName ?? "none"}
+
+CATALOG (other available products, exact names):
+${catalogNames.map(n => `- ${n}`).join("\n")}
+
+CUSTOMER MESSAGE (Darija/Arabic/French — may be a question, a description, or use the exact name):
+"${customerMessage}"
+
+Does the customer's message refer to ANY product in the catalog above — by exact name, partial name, OR by
+describing it conceptually (e.g. "ساعة وسماعات في جهاز واحد" matching "ساعة ذكية بسماعات مدمجة") — and is it
+DIFFERENT from the current product? If yes, respond with ONLY that product's name, copied EXACTLY
+character-for-character from the catalog list above. If no (message isn't about any catalog product, refers to
+the current product, or is a generic question/greeting/confirmation/cancellation), respond with ONLY the single
+word NONE. No explanation. No punctuation. No quotes. Output ONLY the exact catalog name or NONE.`;
+
+    const completion = await client.chat.completions.create({
+      model, messages: [{ role: "user", content: prompt }], max_tokens: 60, temperature: 0,
+    });
+    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
+    if (!raw || raw.toUpperCase().includes("NONE")) return null;
+    // Verify against the REAL catalog — never trust the raw output directly,
+    // guards against the model paraphrasing or inventing a name.
+    const rawNorm = normalizeForMatch(raw);
+    const matched = catalogNames.find(n => normalizeForMatch(n) === rawNorm)
+      ?? catalogNames.find(n => rawNorm.includes(normalizeForMatch(n)) || normalizeForMatch(n).includes(rawNorm));
+    if (matched) console.log(`[AI] detectProductMentionAI: "${customerMessage.slice(0, 60)}" → "${matched}"`);
+    return matched ?? null;
+  } catch (err: any) {
+    console.error(`[AI] detectProductMentionAI failed (non-fatal, falls back to in-reply detection):`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Given an EXACT catalog product name (already verified by
+ * detectProductMentionAI), looks it up, sends its real WhatsApp content
+ * (description/price/image/audio/video), and switches the conversation's
+ * order to it. Returns true if handled (content sent either way — in-stock
+ * info or an honest "not in stock" message), false only on unexpected error.
+ */
+async function applyProductSwitch(
+  storeId: number,
+  customerPhone: string,
+  conv: AiConversation,
+  exactProductName: string,
+): Promise<boolean> {
+  try {
+    const [found] = await db.select({
+      id: products.id, name: products.name, stock: products.stock, sellingPrice: products.sellingPrice, whatsappPrice: products.whatsappPrice,
+      whatsappDescription: products.whatsappDescription,
+      whatsappImageUrls: products.whatsappImageUrls,
+      whatsappAudioUrls: products.whatsappAudioUrls,
+      whatsappVideoUrls: products.whatsappVideoUrls,
+    }).from(products).where(and(eq(products.storeId, storeId), eq(products.name, exactProductName))).limit(1);
+
+    if (!found) {
+      console.warn(`[AI] applyProductSwitch: "${exactProductName}" not found in catalog (race condition?) — skipping`);
+      return false;
+    }
+
+    const inStock = (found.stock ?? 0) > 0;
+    let followUp: string;
+    if (inStock) {
+      const priceDh = (found.whatsappPrice ?? found.sellingPrice ?? 0) / 100;
+      const priceLine = priceDh > 0 ? `💰 الثمن: ${priceDh} درهم` : "";
+      followUp = [found.whatsappDescription || `إيوا خويا، "${found.name}" كاين فالستوك ✅`, priceLine].filter(Boolean).join("\n\n");
+    } else {
+      followUp = `سمح ليا خويا، "${found.name}" ما كاينش فالستوك دابا. إيلا بغيتي، نعلمك ملي يرجع.`;
+    }
+
+    await queueWhatsApp(storeId, customerPhone, followUp);
+    await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: followUp });
+    await storage.updateAiConversationLastMessage(conv.id, followUp);
+    broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: followUp, ts: Date.now() });
+    console.log(`[AI] applyProductSwitch: sent info for "${found.name}" (stock=${found.stock ?? 0}) to ${customerPhone}`);
+
+    if (inStock) {
+      for (const url of (found.whatsappImageUrls as string[]) || []) await sendWhatsAppImage(customerPhone, url, found.name, storeId).catch(() => {});
+      for (const url of (found.whatsappAudioUrls as string[]) || []) await sendWhatsAppFile(customerPhone, url, "audio.opus", "", storeId).catch(() => {});
+      for (const url of (found.whatsappVideoUrls as string[]) || []) await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId).catch(() => {});
+    }
+
+    // Switch the conversation's own order to this product so subsequent
+    // messages (and the main conversational reply about to be generated)
+    // correctly reflect it, instead of staying on the old product.
+    if (inStock && conv.orderId) {
+      const [existingItem] = await db.select({ id: orderItems.id, quantity: orderItems.quantity })
+        .from(orderItems).where(eq(orderItems.orderId, conv.orderId)).limit(1);
+      const qty = existingItem?.quantity || 1;
+      const effectivePrice = found.whatsappPrice ?? found.sellingPrice ?? 0;
+      const newPriceCents = effectivePrice * qty;
+      if (existingItem) {
+        await db.update(orderItems).set({ productId: found.id, rawProductName: found.name, price: effectivePrice } as any)
+          .where(eq(orderItems.id, existingItem.id));
+      } else {
+        await db.insert(orderItems).values({ orderId: conv.orderId, productId: found.id, rawProductName: found.name, quantity: 1, price: effectivePrice } as any);
+      }
+      await db.update(orders).set({ totalPrice: newPriceCents, rawProductName: found.name } as any).where(eq(orders.id, conv.orderId));
+      console.log(`[AI] applyProductSwitch: order #${conv.orderId} switched to "${found.name}" (id=${found.id})`);
+    }
+    return true;
+  } catch (err: any) {
+    console.error(`[AI] applyProductSwitch FAILED for "${exactProductName}":`, err.message);
+    return false;
+  }
 }
 
 /** Wrap AI errors with clearer diagnostics */
@@ -128,6 +258,17 @@ const AUDIO_KEYWORDS = [
   "voice note", "send audio", "send voice", "صوتية", "رسالة صوتية",
 ];
 
+// ── Catalog browse keywords — customer wants to see ALL/OTHER products,
+// not a specific one. Handled as a deterministic fast-path (no LLM
+// judgment call needed) since this is exactly the kind of intent that was
+// unreliably falling through to a stalled "checking..." reply with no
+// follow-up (confirmed live).
+const CATALOG_KEYWORDS = [
+  "منتجاتكم", "شنو عندكم", "واش عندكم", "شنو كاين عندكم", "شنو منتجات",
+  "شنو كاين", "اش عندكم", "عندكم شنو", "لائحة المنتجات", "شنو تبيعو",
+  "montajet", "produits", "catalogue", "قائمة المنتجات",
+];
+
 const ATTENTION_KEYWORDS = [
   "بغيت واحد", "human", "admin", "مدير", "إنسان", "شخص حقيقي",
   "واحد حقيقي", "تكلم معاي", "تكلموا معايا", "بشر", "مسؤول",
@@ -160,8 +301,13 @@ const MOROCCAN_CITIES = [
   "tinghir", "kelaa sraghna", "beni mellal",
 ];
 
-function detectIntent(msg: string): "confirm" | "cancel" | "image" | "video" | "audio" | null {
+function detectIntent(msg: string): "confirm" | "cancel" | "image" | "video" | "audio" | "catalog" | null {
   const lower = msg.toLowerCase().trim();
+
+  // Catalog browse check — "شنو عندكم" etc. Checked first since it's the
+  // most general ask; more specific media requests below take priority if
+  // the message ALSO names a specific product/media type.
+  if (CATALOG_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "catalog";
 
   // Video/audio request check — check before image so "فيديو" doesn't
   // accidentally fall through to the image path via a shared substring
@@ -1056,6 +1202,33 @@ export async function handleIncomingMessage(
     const addr = getGenderAddress(gender);
 
     // ── Image request fast-path ────────────────────────────────────
+    // ── Catalog browse fast-path ──────────────────────────────────────
+    if (intent === "catalog" && conv.orderId) {
+      const ctxForCatalog = await getOrderContext(conv.orderId);
+      const currentNorm = ctxForCatalog?.productName ? normalizeForMatch(ctxForCatalog.productName) : null;
+      const catalogRows = await db.select({ id: products.id, name: products.name, stock: products.stock })
+        .from(products).where(eq(products.storeId, storeId));
+      const availableProducts = catalogRows
+        .filter(p => p.name && (p.stock ?? 0) > 0 && normalizeForMatch(p.name) !== currentNorm)
+        .slice(0, 15);
+
+      let catalogMsg: string;
+      if (availableProducts.length > 0) {
+        const listText = availableProducts.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
+        catalogMsg = `هاد المنتجات لي عندنا دابا 👇 بعث ليا الرقم لي يعجبك باش نعطيك المعلومات كاملة:\n\n${listText}`;
+        await db.update(aiConversations).set({ lastShownProductList: availableProducts.map(p => p.id) })
+          .where(eq(aiConversations.id, conv.id)).catch(() => {});
+      } else {
+        catalogMsg = `عندنا حاليا ${ctxForCatalog?.productName ?? "هاد المنتج"} لي كنتكلمو عليه. واش بغيتي معلومات زيادة عليه؟ 🙏`;
+      }
+      await queueWhatsApp(storeId, customerPhone, catalogMsg);
+      await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: catalogMsg });
+      await storage.updateAiConversationLastMessage(conv.id, catalogMsg);
+      broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: catalogMsg, ts: Date.now() });
+      console.log(`[AI] Catalog browse fast-path → sent ${availableProducts.length} product(s) to ${customerPhone}`);
+      return;
+    }
+
     if (intent === "image" && conv.orderId) {
       const ctx = await getOrderContext(conv.orderId);
       if (ctx.productImageUrls.length > 0) {
@@ -1233,7 +1406,7 @@ export async function handleIncomingMessage(
         isRecovery = (orderRow?.wasAbandoned ?? 0) === 1;
       }
 
-      const ctx = conv.orderId ? await getOrderContext(conv.orderId) : null;
+      let ctx = conv.orderId ? await getOrderContext(conv.orderId) : null;
       const storeName = await getStoreName(storeId);
       console.log(`[AI] Searching context for ${customerPhone}... Context found: ${ctx?.productName ?? "no product"} | Price: ${ctx?.totalPrice ? (ctx.totalPrice/100).toFixed(0)+"DH" : "N/A"} | Status: ${ctx?.orderStatus ?? "N/A"}`);
 
@@ -1252,6 +1425,27 @@ export async function handleIncomingMessage(
           .map(p => p.name!)
           .slice(0, 40);
       } catch { /* non-fatal — prompt just won't include the catalog list */ }
+
+      // ── Dedicated, early product-mention check (before the main
+      // conversational reply) ─────────────────────────────────────────
+      // Runs a SEPARATE, focused classifier call instead of relying on the
+      // main LLM to reliably self-report a product switch amid everything
+      // else it's doing (confirmed live, repeatedly: unreliable). If a real
+      // catalog product is detected, apply the switch and content-send NOW,
+      // then refresh ctx so the main reply below reflects it correctly —
+      // this is what fixes "asked about product B, still got info/media for
+      // product A" once and for all.
+      let earlyProductSwitchHandled = false;
+      if (conv.orderId && catalogNamesForPrompt.length > 0) {
+        const earlyMatch = await detectProductMentionAI(customerMessage, catalogNamesForPrompt, ctx?.productName ?? null, storeId);
+        if (earlyMatch) {
+          earlyProductSwitchHandled = await applyProductSwitch(storeId, customerPhone, conv, earlyMatch);
+          if (earlyProductSwitchHandled) {
+            ctx = await getOrderContext(conv.orderId); // refresh — now reflects the switch
+            console.log(`[AI] Early product switch applied → ctx refreshed, now: ${ctx?.productName}`);
+          }
+        }
+      }
 
       // Build step-specific system prompt
       const systemPrompt = isRecovery
@@ -1299,9 +1493,9 @@ export async function handleIncomingMessage(
       // stored as the customer's city/variant via looksLikeDirectAnswer,
       // which is exactly what was happening (confirmed live: an invented-
       // looking city that was actually the customer's product question).
-      let effectiveMentionedProduct = decision.mentionedProduct;
+      let effectiveMentionedProduct = earlyProductSwitchHandled ? null : decision.mentionedProduct;
       const currentProductNorm = ctx?.productName ? normalizeForMatch(ctx.productName) : null;
-      if (!effectiveMentionedProduct) {
+      if (!effectiveMentionedProduct && !earlyProductSwitchHandled) {
         const msgNorm = normalizeForMatch(customerMessage);
         const quickCatalog = await db.select({ name: products.name })
           .from(products).where(eq(products.storeId, storeId));
