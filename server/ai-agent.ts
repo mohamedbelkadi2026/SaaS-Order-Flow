@@ -100,6 +100,51 @@ word NONE. No explanation. No punctuation. No quotes. Output ONLY the exact cata
 }
 
 /**
+ * Dedicated confirm/cancel classifier — same principle as
+ * detectProductMentionAI: a single-purpose call instead of relying on the
+ * main conversational LLM to reliably self-report is_confirmed/is_cancelled
+ * in the same response where it's also writing a natural reply and
+ * extracting 4 pieces of customer info. Confirmed live: casual affirmatives
+ * like "ah" got a reply that SOUNDED like a confirmation, but the order
+ * never actually updated — the JSON flag wasn't reliably set in that same
+ * overloaded call. This runs cheap (few tokens, temperature=0) and only
+ * when the message is short enough to plausibly be a yes/no-type reply,
+ * to avoid firing on genuine product questions.
+ */
+async function detectConfirmCancelAI(
+  customerMessage: string,
+  storeId: number,
+): Promise<"confirm" | "cancel" | null> {
+  const trimmed = customerMessage.trim();
+  // Only worth a dedicated call for short, ambiguous-looking replies —
+  // long messages are almost always something else (questions, descriptions).
+  if (trimmed.length === 0 || trimmed.length > 40) return null;
+  try {
+    const { client, model } = await resolveAIClient(storeId);
+    const prompt = `Classify this short customer reply in a Moroccan Darija/Arabic WhatsApp sales chat, where the seller just asked if they want to confirm an order.
+
+CUSTOMER REPLY: "${trimmed}"
+
+Does this reply mean YES (confirm the order — e.g. "ah", "واخا", "ايوا", "ok", "نعم", "ماشي", "ديير", any casual affirmative)?
+Does it mean NO (cancel — e.g. "لا", "بلاش", "ماشي هي", "ما بغيتش")?
+Or is it neither (a question, unrelated statement, unclear)?
+
+Respond with ONLY one word: CONFIRM or CANCEL or NEITHER. No explanation, no punctuation.`;
+
+    const completion = await client.chat.completions.create({
+      model, messages: [{ role: "user", content: prompt }], max_tokens: 10, temperature: 0,
+    });
+    const raw = (completion.choices[0]?.message?.content ?? "").trim().toUpperCase();
+    if (raw.includes("CONFIRM")) { console.log(`[AI] detectConfirmCancelAI: "${trimmed}" → CONFIRM`); return "confirm"; }
+    if (raw.includes("CANCEL")) { console.log(`[AI] detectConfirmCancelAI: "${trimmed}" → CANCEL`); return "cancel"; }
+    return null;
+  } catch (err: any) {
+    console.error(`[AI] detectConfirmCancelAI failed (non-fatal):`, err.message);
+    return null;
+  }
+}
+
+/**
  * Given an EXACT catalog product name (already verified by
  * detectProductMentionAI), looks it up, sends its real WhatsApp content
  * (description/price/image/audio/video), and switches the conversation's
@@ -1272,7 +1317,17 @@ export async function handleIncomingMessage(
     }
 
     // ── Fast intent detection — works at any step ─────────────────
-    const intent = detectIntent(customerMessage);
+    let intent = detectIntent(customerMessage);
+
+    // If keyword detection didn't catch it, but we're specifically AT a
+    // confirm/cancel decision point (buttons were already offered), run the
+    // dedicated classifier — this is what catches casual affirmatives like
+    // "ah" that the main conversational LLM's own reply implied were
+    // understood, but didn't reliably set is_confirmed for.
+    if (!intent && conv.confirmButtonsSent) {
+      const dedicated = await detectConfirmCancelAI(customerMessage, storeId);
+      if (dedicated) intent = dedicated;
+    }
 
     // ── "Order for someone else" — create a SEPARATE order, don't overwrite
     // the customer's own order with the friend's delivery info ────────────
