@@ -1682,7 +1682,7 @@ export async function handleIncomingMessage(
         const buttonsSent = await sendWhatsAppButtons(
           customerPhone,
           "واش نأكدو الطلب ديالك؟ 🙏",
-          [{ id: "confirm", text: "✅ نأكد الطلب" }, { id: "cancel", text: "❌ لا، بلاش" }],
+          [{ id: "confirm", text: "✅ تأكيد الطلبية" }, { id: "cancel", text: "❌ إلغاء الطلبية" }],
           storeId,
         ).catch(() => false);
         if (buttonsSent) {
