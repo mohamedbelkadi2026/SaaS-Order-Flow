@@ -148,23 +148,62 @@ async function applyProductSwitch(
       for (const url of (found.whatsappVideoUrls as string[]) || []) await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId).catch(() => {});
     }
 
-    // Switch the conversation's own order to this product so subsequent
-    // messages (and the main conversational reply about to be generated)
-    // correctly reflect it, instead of staying on the old product.
     if (inStock && conv.orderId) {
-      const [existingItem] = await db.select({ id: orderItems.id, quantity: orderItems.quantity })
-        .from(orderItems).where(eq(orderItems.orderId, conv.orderId)).limit(1);
-      const qty = existingItem?.quantity || 1;
-      const effectivePrice = found.whatsappPrice ?? found.sellingPrice ?? 0;
-      const newPriceCents = effectivePrice * qty;
-      if (existingItem) {
-        await db.update(orderItems).set({ productId: found.id, rawProductName: found.name, price: effectivePrice } as any)
-          .where(eq(orderItems.id, existingItem.id));
+      const [currentOrder] = await db.select({ status: orders.status })
+        .from(orders).where(eq(orders.id, conv.orderId)).limit(1);
+      const isLockedIn = currentOrder && currentOrder.status !== "nouveau";
+
+      if (isLockedIn) {
+        // The current order is already confirmed/shipped/etc — don't
+        // silently repurpose it for a different product (confirmed live:
+        // exactly this happened, and the new recipient's delivery info had
+        // nowhere valid to go since the sync-to-order step only runs at
+        // confirmation time, which an already-confirmed order never re-enters).
+        // Create a brand new order and switch the conversation to it instead —
+        // same outcome as the explicit "order for a friend" pathway, but
+        // triggered generically by order lock state rather than keyword
+        // matching (covers "لولدي", "لبنتي", "لزوجتي", or simply reordering
+        // something else after the first order already went through).
+        const effectivePrice = found.whatsappPrice ?? found.sellingPrice ?? 0;
+        const newOrder = await storage.createOrder({
+          storeId,
+          orderNumber: `WA-${Date.now()}`,
+          customerName: "Client WhatsApp",
+          customerPhone,
+          customerCity: "",
+          customerAddress: "",
+          status: "nouveau",
+          source: "whatsapp",
+          totalPrice: effectivePrice,
+        } as any, [{
+          productId: found.id, quantity: 1, price: effectivePrice,
+          rawProductName: found.name, sku: "", variantInfo: "",
+        }] as any);
+
+        await db.update(aiConversations).set({
+          orderId: newOrder.id,
+          collectedName: null, collectedPhone: null, collectedCity: null, collectedAddress: null,
+          confirmButtonsSent: 0,
+        }).where(eq(aiConversations.id, conv.id));
+        conv.orderId = newOrder.id;
+        conv.collectedName = null; conv.collectedPhone = null; conv.collectedCity = null; conv.collectedAddress = null;
+        conv.confirmButtonsSent = 0;
+        console.log(`[AI] applyProductSwitch: order #${conv.orderId} was locked (status=${currentOrder!.status}) — created NEW order #${newOrder.id} for "${found.name}" instead, conv ${conv.id} switched to it`);
       } else {
-        await db.insert(orderItems).values({ orderId: conv.orderId, productId: found.id, rawProductName: found.name, quantity: 1, price: effectivePrice } as any);
+        const [existingItem] = await db.select({ id: orderItems.id, quantity: orderItems.quantity })
+          .from(orderItems).where(eq(orderItems.orderId, conv.orderId)).limit(1);
+        const qty = existingItem?.quantity || 1;
+        const effectivePrice = found.whatsappPrice ?? found.sellingPrice ?? 0;
+        const newPriceCents = effectivePrice * qty;
+        if (existingItem) {
+          await db.update(orderItems).set({ productId: found.id, rawProductName: found.name, price: effectivePrice } as any)
+            .where(eq(orderItems.id, existingItem.id));
+        } else {
+          await db.insert(orderItems).values({ orderId: conv.orderId, productId: found.id, rawProductName: found.name, quantity: 1, price: effectivePrice } as any);
+        }
+        await db.update(orders).set({ totalPrice: newPriceCents, rawProductName: found.name } as any).where(eq(orders.id, conv.orderId));
+        console.log(`[AI] applyProductSwitch: order #${conv.orderId} switched to "${found.name}" (id=${found.id})`);
       }
-      await db.update(orders).set({ totalPrice: newPriceCents, rawProductName: found.name } as any).where(eq(orders.id, conv.orderId));
-      console.log(`[AI] applyProductSwitch: order #${conv.orderId} switched to "${found.name}" (id=${found.id})`);
     }
     return true;
   } catch (err: any) {
@@ -1787,6 +1826,30 @@ export async function handleIncomingMessage(
           // reply falls back to whatever the order was originally about,
           // confusing the whole conversation.
           if (found && (found.stock ?? 0) > 0 && conv.orderId) {
+            const [currentOrderForSwitch] = await db.select({ status: orders.status })
+              .from(orders).where(eq(orders.id, conv.orderId)).limit(1);
+            const isLockedIn = currentOrderForSwitch && currentOrderForSwitch.status !== "nouveau";
+
+            if (isLockedIn) {
+              const effectivePrice = found.whatsappPrice ?? found.sellingPrice ?? 0;
+              const newOrderForSwitch = await storage.createOrder({
+                storeId, orderNumber: `WA-${Date.now()}`, customerName: "Client WhatsApp",
+                customerPhone, customerCity: "", customerAddress: "", status: "nouveau",
+                source: "whatsapp", totalPrice: effectivePrice,
+              } as any, [{
+                productId: found.id, quantity: 1, price: effectivePrice,
+                rawProductName: found.name, sku: "", variantInfo: "",
+              }] as any);
+              await db.update(aiConversations).set({
+                orderId: newOrderForSwitch.id,
+                collectedName: null, collectedPhone: null, collectedCity: null, collectedAddress: null,
+                confirmButtonsSent: 0,
+              }).where(eq(aiConversations.id, conv.id));
+              conv.orderId = newOrderForSwitch.id;
+              conv.collectedName = null; conv.collectedPhone = null; conv.collectedCity = null; conv.collectedAddress = null;
+              conv.confirmButtonsSent = 0;
+              console.log(`[AI] Conv ${conv.id} — order was locked (status=${currentOrderForSwitch!.status}) — created NEW order #${newOrderForSwitch.id} for "${found.name}" instead`);
+            } else {
             const [existingItem] = await db.select({ id: orderItems.id, quantity: orderItems.quantity })
               .from(orderItems).where(eq(orderItems.orderId, conv.orderId)).limit(1);
             const qty = existingItem?.quantity || 1;
@@ -1804,6 +1867,7 @@ export async function handleIncomingMessage(
             }
             await db.update(orders).set({ totalPrice: newPriceCents, rawProductName: found.name } as any).where(eq(orders.id, conv.orderId));
             console.log(`[AI] Conv ${conv.id} order #${conv.orderId} switched to product "${found.name}" (id=${found.id})`);
+            }
           }
         } catch (mpErr: any) {
           // Never let a failure here silently swallow the customer's question —
