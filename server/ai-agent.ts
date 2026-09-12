@@ -360,6 +360,19 @@ function normalizeForMatch(s: string): string {
   return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
 
+/** Builds a structured, line-by-line request for whichever fields are
+ * missing — easier for the customer to fill in clearly, and easier to
+ * parse reliably than a free-flowing sentence asking for several things
+ * at once. */
+function buildMissingInfoMessage(missing: { name: boolean; phone: boolean; city: boolean; address: boolean }): string {
+  const lines: string[] = [];
+  if (missing.name) lines.push("الاسم الكامل: ");
+  if (missing.phone) lines.push("رقم الهاتف: ");
+  if (missing.city) lines.push("المدينة: ");
+  if (missing.address) lines.push("العنوان بالتفصيل (الحي/الشارع): ");
+  return `قبل نأكدو الطلب، عطيني المعلومات هادي، كل واحدة فسطر:\n\n${lines.join("\n")}\n\n🙏`;
+}
+
 /* ── JSON decision parser (robust, never throws) ────────────── */
 interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; mentionedProduct: string | null; collectedName: string | null; collectedCity: string | null; collectedAddress: string | null; collectedPhone: string | null; }
 
@@ -620,7 +633,17 @@ Rules for the flags:
   states a specific name, city, address, or phone unless it was actually provided in this conversation.
 - Do NOT set is_confirmed=true until you have a real name, city, address, AND phone number for this order —
   either already known from before, or collected from the customer in this conversation. If any is still missing when they
-  say "واخا"/"ok", ask for the missing piece(s) first instead of confirming.`;
+  say "واخا"/"ok", ask for the missing piece(s) first instead of confirming.
+- When you ask for missing info (name/phone/city/address), ALWAYS use this exact structured format — one label
+  per line, so the customer's reply is easy to read back correctly — do not ask for several things in one
+  free-flowing sentence:
+  "عطيني المعلومات هادي، كل واحدة فسطر:
+
+  الاسم الكامل:
+  رقم الهاتف:
+  المدينة:
+  العنوان بالتفصيل (الحي/الشارع):"
+  (only include the lines for what's actually still missing — skip any already known.)`;
 
 /* ── Step-specific system prompts ────────────────────────────── */
 function buildStepPrompt(
@@ -1150,7 +1173,7 @@ export async function handleIncomingMessage(
           await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId).catch(() => {});
         }
 
-        const introMsg = "واش بغيتي نأكدو ليك الطلب؟ عطيني سميتك الكاملة، رقم الهاتف، المدينة، والعنوان بالتفصيل (الحي/الشارع) 🙏";
+        const introMsg = "واش بغيتي نأكدو ليك الطلب؟ عطيني المعلومات ديالك بهاد الترتيب، كل واحدة فسطر:\n\nالاسم الكامل: \nرقم الهاتف: \nالمدينة: \nالعنوان بالتفصيل (الحي/الشارع): \n\n🙏";
         await queueWhatsApp(storeId, customerPhone, introMsg);
         await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: introMsg });
         await storage.updateAiConversationLastMessage(newConv.id, introMsg);
@@ -1309,12 +1332,7 @@ export async function handleIncomingMessage(
         const fastPathAddress = conv.collectedAddress ?? null;
         const fastPathPhone = conv.collectedPhone ?? null;
         if (!fastPathCity || !fastPathName || !fastPathAddress || !fastPathPhone) {
-          const missingParts = [];
-          if (!fastPathName) missingParts.push("سميتك الكاملة");
-          if (!fastPathCity) missingParts.push("المدينة ديالك");
-          if (!fastPathAddress) missingParts.push("العنوان بالتفصيل (الحي/الشارع)");
-          if (!fastPathPhone) missingParts.push("رقم الهاتف لي نتواصلو بيه معاك");
-          const askMsg = `قبل نأكدو الطلب، عطيني ${missingParts.join(" و")} 🙏`;
+          const askMsg = buildMissingInfoMessage({ name: !fastPathName, phone: !fastPathPhone, city: !fastPathCity, address: !fastPathAddress });
           await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
           await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
           broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: askMsg, ts: Date.now() });
@@ -1722,12 +1740,7 @@ export async function handleIncomingMessage(
       const needsConfirm = decision.isConfirmed && conv.orderId && liveOrderStatus === "nouveau" && !missingForConfirm;
       if (missingForConfirm) {
         console.warn(`[AI] Blocked premature confirm for conv ${conv.id} — name=${effectiveNameForConfirm ?? "MISSING"} city=${effectiveCityForConfirm ?? "MISSING"} address=${effectiveAddressForConfirm ?? "MISSING"} phone=${effectivePhoneForConfirm ?? "MISSING"}`);
-        const missingParts = [];
-        if (!effectiveNameForConfirm) missingParts.push("سميتك الكاملة");
-        if (!effectiveCityForConfirm) missingParts.push("المدينة ديالك");
-        if (!effectiveAddressForConfirm) missingParts.push("العنوان بالتفصيل (الحي/الشارع)");
-        if (!effectivePhoneForConfirm) missingParts.push("رقم الهاتف لي نتواصلو بيه معاك");
-        const askMsg = `قبل نأكدو الطلب، عطيني ${missingParts.join(" و")} 🙏`;
+        const askMsg = buildMissingInfoMessage({ name: !effectiveNameForConfirm, phone: !effectivePhoneForConfirm, city: !effectiveCityForConfirm, address: !effectiveAddressForConfirm });
         await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: askMsg, ts: Date.now() });
