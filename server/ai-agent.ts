@@ -807,7 +807,7 @@ CURRENT TASK — Step 3/3: Get final confirmation.
 Order summary to present: ${summaryParts.length ? summaryParts.join("، ") : productLabel}
 
 - Summarize warmly: "صافي ${address.formal}، الطلبية ديالك: [summary]. واش نؤكد ليك؟"
-- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate! "صافي ${address.formal}، الكوموند ديالك تأكدات ✅. غادي توصلك من 24 لـ 48 ساعة إن شاء الله. شكراً بزاف على ثقتك فينا! 🎉"
+- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate! "صافي ${address.formal}، الكوموند ديالك تأكدات ✅. غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا! 🎉"
 - If they hesitate: emphasize free shipping + "قلب عاد خلص"
 - If they have questions: answer using product knowledge then re-confirm
 - Once confirmed say the success message then the conversation is DONE`;
@@ -1328,7 +1328,7 @@ export async function handleIncomingMessage(
         } as any).where(eq(orders.id, conv.orderId)).catch(() => {});
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
-        const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غادي توصلك من 24 لـ 48 ساعة إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
+        const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا 🎉🚀`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
         await storage.updateAiConversationLastMessage(conv.id, msg);
         const convAgeMs = confirmedAt.getTime() - new Date(conv.createdAt!).getTime();
