@@ -269,6 +269,18 @@ const CATALOG_KEYWORDS = [
   "montajet", "produits", "catalogue", "قائمة المنتجات",
 ];
 
+// ── "Order for someone else" keywords — the customer already has their own
+// order/conversation, but now wants a SEPARATE order for a friend/family
+// member. Detected so the system creates a NEW order instead of silently
+// overwriting the customer's own order with the friend's delivery info
+// (confirmed live: exactly this happened — "طلبية لصحبي" got attached to
+// the customer's own existing order).
+const FRIEND_ORDER_KEYWORDS = [
+  "لصحبي", "لصاحبي", "لصديقي", "لخويا", "لأختي", "لصاحبتي", "لواحد صاحبي",
+  "طلبية لصحبي", "طلبية لصاحبي", "commande لصحبي", "pour un ami", "pour une amie",
+  "لواحد من الأصحاب", "بغيت ندوز طلبية لـ", "بغيت نطلب لـ",
+];
+
 const ATTENTION_KEYWORDS = [
   "بغيت واحد", "human", "admin", "مدير", "إنسان", "شخص حقيقي",
   "واحد حقيقي", "تكلم معاي", "تكلموا معايا", "بشر", "مسؤول",
@@ -1222,6 +1234,76 @@ export async function handleIncomingMessage(
 
     // ── Fast intent detection — works at any step ─────────────────
     const intent = detectIntent(customerMessage);
+
+    // ── "Order for someone else" — create a SEPARATE order, don't overwrite
+    // the customer's own order with the friend's delivery info ────────────
+    // Confirmed live: customer already had an order, said "بغيت ندوز طلبية
+    // لصحبي" (order for my friend), and the friend's name/phone/city/address
+    // silently got attached to the CUSTOMER's own existing order instead of
+    // a new one. Only triggers when there's an existing order to protect —
+    // a brand new conversation with no order yet already goes through the
+    // normal cold-lead pathway.
+    const isFriendOrderRequest = FRIEND_ORDER_KEYWORDS.some(kw => customerMessage.includes(kw));
+    if (isFriendOrderRequest && conv.orderId) {
+      const currentCtx = await getOrderContext(conv.orderId);
+      // Try to find a specific product mentioned in the SAME message; fall
+      // back to whatever product the conversation is currently about, since
+      // "order for my friend" without naming a different item usually means
+      // the same product just discussed.
+      let friendProductId = currentCtx?.productId ?? null;
+      let friendProductName = currentCtx?.productName ?? null;
+      const catalogForFriend = await db.select({ id: products.id, name: products.name, sellingPrice: products.sellingPrice, whatsappPrice: products.whatsappPrice })
+        .from(products).where(eq(products.storeId, storeId));
+      const msgNormFriend = normalizeForMatch(customerMessage);
+      const directMatch = catalogForFriend.find(p => p.name && msgNormFriend.includes(normalizeForMatch(p.name)));
+      if (directMatch) { friendProductId = directMatch.id; friendProductName = directMatch.name; }
+
+      if (friendProductId && friendProductName) {
+        const matchedForPrice = catalogForFriend.find(p => p.id === friendProductId);
+        const priceCents = matchedForPrice?.whatsappPrice ?? matchedForPrice?.sellingPrice ?? currentCtx?.totalPrice ?? 0;
+        const newFriendOrder = await storage.createOrder({
+          storeId,
+          orderNumber: `WA-${Date.now()}`,
+          customerName: "Client WhatsApp (ami)",
+          customerPhone, // same WhatsApp sender — this is who we're chatting with
+          customerCity: "",
+          customerAddress: "",
+          status: "nouveau",
+          source: "whatsapp",
+          totalPrice: priceCents,
+        } as any, [{
+          productId: friendProductId,
+          quantity: 1,
+          price: priceCents,
+          rawProductName: friendProductName,
+          sku: "",
+          variantInfo: "",
+        }] as any);
+
+        // Switch this conversation to the new order — from here on, info
+        // collected (name/phone/city/address) belongs to the FRIEND's order,
+        // not the customer's own original order (left untouched).
+        await db.update(aiConversations).set({
+          orderId: newFriendOrder.id,
+          collectedName: null, collectedPhone: null, collectedCity: null, collectedAddress: null,
+          confirmButtonsSent: 0,
+        }).where(eq(aiConversations.id, conv.id));
+        conv.orderId = newFriendOrder.id;
+        conv.collectedName = null; conv.collectedPhone = null; conv.collectedCity = null; conv.collectedAddress = null;
+        conv.confirmButtonsSent = 0;
+
+        console.log(`[AI] Friend-order request detected — created NEW order #${newFriendOrder.id} for "${friendProductName}", conv ${conv.id} switched to it`);
+
+        const friendIntroMsg = `مزيان خويا! غادي نديرو طلبية منفصلة ديال "${friendProductName}" لصاحبك. عطيني المعلومات ديالو، كل واحدة فسطر:\n\nالاسم الكامل: \nرقم الهاتف: \nالمدينة: \nالعنوان بالتفصيل (الحي/الشارع): \n\n🙏`;
+        await queueWhatsApp(storeId, customerPhone, friendIntroMsg);
+        await storage.createAiLog({ storeId, orderId: newFriendOrder.id, customerPhone, role: "assistant", message: friendIntroMsg });
+        await storage.updateAiConversationLastMessage(conv.id, friendIntroMsg);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: friendIntroMsg, ts: Date.now() });
+        return;
+      }
+      // No product identifiable at all — let the normal flow handle it
+      // (will likely ask which product, or fall through to catalog browse).
+    }
 
     // Fetch live order status from DB to determine current phase
     let liveOrderStatus: string | null = null;
