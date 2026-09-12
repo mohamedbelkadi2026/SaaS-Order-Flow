@@ -559,7 +559,7 @@ ORDER DETAILS:
 - City: ${city ?? "⚠️ CITY NOT PROVIDED — you must ask for their city"}
 - Address: ${streetAddress ?? "⚠️ ADDRESS NOT PROVIDED — you must ask for their street address/neighborhood"}
 - Delivery phone: ${deliveryPhone ?? "⚠️ PHONE NOT CONFIRMED — you must ask them to confirm a delivery phone number (may differ from the WhatsApp number)"}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
-${catalogNames.length > 0 ? `\nOTHER PRODUCTS AVAILABLE (for matching mentioned_product — see JSON rules below):\n${catalogNames.map(n => `- ${n}`).join("\n")}` : ""}
+${catalogNames.length > 0 ? `\nOTHER PRODUCTS AVAILABLE (names ONLY, for matching mentioned_product — you know NOTHING else about these: no price, no stock, no description, no media. NEVER confirm, describe, or discuss any of these directly from this list — if the customer's message is about ANY of them, you MUST set mentioned_product and say only that you're checking. Answering from this list without setting mentioned_product means the system never actually looks up real info or sends real content — exactly the bug being fixed):\n${catalogNames.map(n => `- ${n}`).join("\n")}` : ""}
 ${knowledgeBlock}
 ${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}
 ${JSON_OUTPUT_RULE}`;
