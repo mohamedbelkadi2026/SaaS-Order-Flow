@@ -513,6 +513,18 @@ function normalizeForMatch(s: string): string {
   return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
 
+/** Placeholder names auto-assigned at order creation (cold-lead pathway,
+ * friend-order pathway) that must NOT count as a real customer-provided
+ * name for the "name known" confirmation gate — only an ACTUAL name the
+ * customer typed should satisfy it. */
+function isRealCustomerName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  const placeholders = ["client whatsapp", "client whatsapp (ami)"];
+  return !placeholders.includes(trimmed.toLowerCase());
+}
+
 /** Builds a structured, line-by-line request for whichever fields are
  * missing — easier for the customer to fill in clearly, and easier to
  * parse reliably than a free-flowing sentence asking for several things
@@ -1575,7 +1587,7 @@ export async function handleIncomingMessage(
         // phone, either known already or collected during this conversation.
         const ctxForGate = await getOrderContext(conv.orderId);
         const fastPathCity = conv.collectedCity ?? ctxForGate?.customerCity ?? null;
-        const fastPathName = conv.collectedName ?? conv.customerName ?? null;
+        const fastPathName = conv.collectedName ?? (isRealCustomerName(conv.customerName) ? conv.customerName : null);
         const fastPathAddress = conv.collectedAddress ?? ctxForGate?.customerAddress ?? null;
         const fastPathPhone = conv.collectedPhone ?? (ctxForGate?.orderSource !== "whatsapp" ? ctxForGate?.customerPhone : null) ?? null;
         if (!fastPathCity || !fastPathName || !fastPathAddress || !fastPathPhone) {
@@ -1819,7 +1831,7 @@ export async function handleIncomingMessage(
       let mergedCity = decision.collectedCity;
       let mergedAddress = decision.collectedAddress;
       let mergedPhone = decision.collectedPhone;
-      const stillMissing = !(mergedName || conv.collectedName || conv.customerName)
+      const stillMissing = !(mergedName || conv.collectedName || isRealCustomerName(conv.customerName))
         || !(mergedCity || conv.collectedCity)
         || !(mergedAddress || conv.collectedAddress)
         || !(mergedPhone || conv.collectedPhone);
@@ -1857,7 +1869,7 @@ export async function handleIncomingMessage(
       // name+city+address+phone all become known — before this, wait for the
       // missing piece(s).
       const wasCityKnown = !!(conv.collectedCity ?? ctx?.customerCity);
-      const wasNameKnown = !!(conv.collectedName ?? conv.customerName);
+      const wasNameKnown = !!(conv.collectedName ?? (isRealCustomerName(conv.customerName) ? conv.customerName : null));
       const wasAddressKnown = !!(conv.collectedAddress ?? ctx?.customerAddress);
       const wasPhoneKnown = !!(conv.collectedPhone ?? (ctx?.orderSource !== "whatsapp" ? ctx?.customerPhone : null));
       const isCityKnownNow = wasCityKnown || !!decision.collectedCity;
@@ -2035,7 +2047,7 @@ export async function handleIncomingMessage(
       // phone are known, either already on the order or collected during
       // this conversation.
       const effectiveCityForConfirm = conv.collectedCity ?? ctx?.customerCity ?? decision.collectedCity ?? null;
-      const effectiveNameForConfirm = conv.collectedName ?? conv.customerName ?? decision.collectedName ?? null;
+      const effectiveNameForConfirm = conv.collectedName ?? (isRealCustomerName(conv.customerName) ? conv.customerName : null) ?? decision.collectedName ?? null;
       const effectiveAddressForConfirm = conv.collectedAddress ?? ctx?.customerAddress ?? decision.collectedAddress ?? null;
       const effectivePhoneForConfirm = conv.collectedPhone ?? (ctx?.orderSource !== "whatsapp" ? ctx?.customerPhone : null) ?? decision.collectedPhone ?? null;
       const missingForConfirm = decision.isConfirmed && (!effectiveCityForConfirm || !effectiveNameForConfirm || !effectiveAddressForConfirm || !effectivePhoneForConfirm);
