@@ -215,7 +215,7 @@ function normalizeForMatch(s: string): string {
 }
 
 /* ── JSON decision parser (robust, never throws) ────────────── */
-interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; mentionedProduct: string | null; collectedName: string | null; collectedCity: string | null; collectedAddress: string | null; }
+interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; mentionedProduct: string | null; collectedName: string | null; collectedCity: string | null; collectedAddress: string | null; collectedPhone: string | null; }
 
 function parseAIDecision(raw: string): AIDecision {
   // Strip markdown code fences if present
@@ -234,11 +234,12 @@ function parseAIDecision(raw: string): AIDecision {
         collectedName: (parsed.collected_name ?? parsed.collectedName ?? null) || null,
         collectedCity: (parsed.collected_city ?? parsed.collectedCity ?? null) || null,
         collectedAddress: (parsed.collected_address ?? parsed.collectedAddress ?? null) || null,
+        collectedPhone: (parsed.collected_phone ?? parsed.collectedPhone ?? null) || null,
       };
     }
   } catch { /* ignore JSON parse error, fall through */ }
   // Fallback: treat the whole response as the reply text, no decision signals
-  return { reply: stripped || raw, isConfirmed: false, isCancelled: false, mentionedProduct: null, collectedName: null, collectedCity: null, collectedAddress: null };
+  return { reply: stripped || raw, isConfirmed: false, isCancelled: false, mentionedProduct: null, collectedName: null, collectedCity: null, collectedAddress: null, collectedPhone: null };
 }
 
 /* ── WhatsApp message queue (per-store rate limiter) ─────────── */
@@ -282,6 +283,9 @@ interface OrderContext {
   productImageUrl: string | null;
   productVideoUrl: string | null;
   productAudioUrl: string | null;
+  productImageUrls: string[];
+  productVideoUrls: string[];
+  productAudioUrls: string[];
 }
 
 export async function getOrderContextForRoute(orderId: number): Promise<OrderContext> {
@@ -314,6 +318,9 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
     let productImageUrl: string | null = null;
     let productVideoUrl: string | null = null;
     let productAudioUrl: string | null = null;
+    let productImageUrls: string[] = [];
+    let productVideoUrls: string[] = [];
+    let productAudioUrls: string[] = [];
 
     if (items.length > 0) {
       const item = items[0];
@@ -328,9 +335,9 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
           descriptionDarija: products.descriptionDarija,
           aiFeatures: products.aiFeatures,
           imageUrl: products.imageUrl,
-          whatsappImageUrl: products.whatsappImageUrl,
-          whatsappVideoUrl: products.whatsappVideoUrl,
-          whatsappAudioUrl: products.whatsappAudioUrl,
+          whatsappImageUrls: products.whatsappImageUrls,
+          whatsappVideoUrls: products.whatsappVideoUrls,
+          whatsappAudioUrls: products.whatsappAudioUrls,
           whatsappDescription: products.whatsappDescription,
         }).from(products).where(eq(products.id, item.productId));
         if (p) {
@@ -340,9 +347,12 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
           // general product-page fields when set — that's what's actually
           // curated for the AI to send, e.g. a Darija-specific description.
           descriptionDarija = p.whatsappDescription || p.descriptionDarija || p.description || null;
-          productImageUrl = p.whatsappImageUrl || p.imageUrl || null;
-          productVideoUrl = p.whatsappVideoUrl ?? null;
-          productAudioUrl = p.whatsappAudioUrl ?? null;
+          productImageUrls = (p.whatsappImageUrls as string[]) || [];
+          productVideoUrls = (p.whatsappVideoUrls as string[]) || [];
+          productAudioUrls = (p.whatsappAudioUrls as string[]) || [];
+          productImageUrl = productImageUrls[0] || p.imageUrl || null;
+          productVideoUrl = productVideoUrls[0] ?? null;
+          productAudioUrl = productAudioUrls[0] ?? null;
           if (p.aiFeatures) {
             try { aiFeatures = JSON.parse(p.aiFeatures); } catch { aiFeatures = null; }
           }
@@ -373,9 +383,12 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       productImageUrl,
       productVideoUrl,
       productAudioUrl,
+      productImageUrls,
+      productVideoUrls,
+      productAudioUrls,
     };
   } catch {
-    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null, productImageUrl: null, productVideoUrl: null, productAudioUrl: null };
+    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null, productImageUrl: null, productVideoUrl: null, productAudioUrl: null, productImageUrls: [], productVideoUrls: [], productAudioUrls: [] };
   }
 }
 
@@ -425,7 +438,7 @@ const JSON_OUTPUT_RULE = `
 ━━━ MANDATORY JSON OUTPUT FORMAT ━━━
 You MUST respond with ONLY a valid JSON object — NO markdown, NO code fences, NO extra text before or after.
 Format:
-{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false,"mentioned_product":null,"collected_name":null,"collected_city":null,"collected_address":null}
+{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false,"mentioned_product":null,"collected_name":null,"collected_city":null,"collected_address":null,"collected_phone":null}
 
 Rules for the flags:
 - Set "is_confirmed": true ONLY when the customer explicitly agrees to receive the order (e.g. "واخا", "صيفطوه", "ok", "موافق", "نعم").
@@ -444,14 +457,18 @@ Rules for the flags:
   it. Otherwise leave it null. NEVER fill this with a guess.
 - "collected_address": if the customer just told you their street address / neighborhood / detailed location in
   THIS message, put it here exactly as they wrote it. Otherwise leave it null. NEVER fill this with a guess.
+- "collected_phone": if the customer just told you a phone number to deliver/contact them on in THIS message
+  (may differ from the number they're messaging from — e.g. ordering for someone else), put it here exactly as
+  they wrote it. Otherwise leave it null. NEVER fill this with a guess or assume it's the same as the WhatsApp
+  sender's number — always ask explicitly.
 
 ━━━ NEVER INVENT CUSTOMER DETAILS (CRITICAL) ━━━
-- NEVER invent, guess, or assume the customer's name, city, or address. If you don't have it, ASK for it — do
-  not write a name, city, or address into your reply that the customer never actually told you.
+- NEVER invent, guess, or assume the customer's name, city, address, or phone number. If you don't have it, ASK
+  for it — do not write a name, city, address, or phone into your reply that the customer never actually told you.
 - If "Customer name" below is marked UNKNOWN, you do not know their name. Ask for it naturally before or while
   confirming the order. Do not address them by an invented name, and do not write a confirmation message that
-  states a specific name, city, or address unless it was actually provided in this conversation.
-- Do NOT set is_confirmed=true until you have a real city, a real name, AND a real address for this order —
+  states a specific name, city, address, or phone unless it was actually provided in this conversation.
+- Do NOT set is_confirmed=true until you have a real name, city, address, AND phone number for this order —
   either already known from before, or collected from the customer in this conversation. If any is still missing when they
   say "واخا"/"ok", ask for the missing piece(s) first instead of confirming.`;
 
@@ -471,6 +488,7 @@ function buildStepPrompt(
     : _baseProductLabel;
   const city = conv.collectedCity ?? ctx?.customerCity ?? null;
   const streetAddress = conv.collectedAddress ?? null;
+  const deliveryPhone = conv.collectedPhone ?? null;
   const customerName = conv.collectedName ?? conv.customerName ?? null;
   const variant = conv.collectedVariant ?? ctx?.productVariant ?? null;
   const gender = detectGender(customerName ?? "");
@@ -534,7 +552,8 @@ ORDER DETAILS:
 - Customer: ${customerName ?? "⚠️ NAME NOT PROVIDED — you must ask for their full name"} (${genderNote})
 - Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}
 - City: ${city ?? "⚠️ CITY NOT PROVIDED — you must ask for their city"}
-- Address: ${streetAddress ?? "⚠️ ADDRESS NOT PROVIDED — you must ask for their street address/neighborhood"}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
+- Address: ${streetAddress ?? "⚠️ ADDRESS NOT PROVIDED — you must ask for their street address/neighborhood"}
+- Delivery phone: ${deliveryPhone ?? "⚠️ PHONE NOT CONFIRMED — you must ask them to confirm a delivery phone number (may differ from the WhatsApp number)"}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
 ${knowledgeBlock}
 ${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}
 ${JSON_OUTPUT_RULE}`;
@@ -906,9 +925,9 @@ export async function handleIncomingMessage(
         const candidateProducts = await db.select({
           id: products.id, name: products.name, sellingPrice: products.sellingPrice, whatsappPrice: products.whatsappPrice,
           whatsappDescription: products.whatsappDescription,
-          whatsappImageUrl: products.whatsappImageUrl,
-          whatsappAudioUrl: products.whatsappAudioUrl,
-          whatsappVideoUrl: products.whatsappVideoUrl,
+          whatsappImageUrls: products.whatsappImageUrls,
+          whatsappAudioUrls: products.whatsappAudioUrls,
+          whatsappVideoUrls: products.whatsappVideoUrls,
         }).from(products).where(eq(products.storeId, storeId));
 
         const matchedProduct = candidateProducts.find(p => p.name && msgNorm.includes(normalize(p.name)));
@@ -959,8 +978,11 @@ export async function handleIncomingMessage(
 
         // Send the dedicated WhatsApp content for this product before the
         // normal conversation flow continues below (asking city/address).
-        if (matchedProduct.whatsappImageUrl) {
-          await sendWhatsAppImage(customerPhone, matchedProduct.whatsappImageUrl, matchedProduct.whatsappDescription || matchedProduct.name, storeId).catch(() => {});
+        const coldLeadImages = (matchedProduct.whatsappImageUrls as string[]) || [];
+        const coldLeadAudios = (matchedProduct.whatsappAudioUrls as string[]) || [];
+        const coldLeadVideos = (matchedProduct.whatsappVideoUrls as string[]) || [];
+        for (const url of coldLeadImages) {
+          await sendWhatsAppImage(customerPhone, url, matchedProduct.whatsappDescription || matchedProduct.name, storeId).catch(() => {});
         }
         const priceDh = (matchedProduct.whatsappPrice ?? matchedProduct.sellingPrice ?? 0) / 100;
         const priceLine = priceDh > 0 ? `💰 الثمن: ${priceDh} درهم` : "";
@@ -969,14 +991,14 @@ export async function handleIncomingMessage(
           await queueWhatsApp(storeId, customerPhone, descWithPrice);
           await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: descWithPrice });
         }
-        if (matchedProduct.whatsappAudioUrl) {
-          await sendWhatsAppFile(customerPhone, matchedProduct.whatsappAudioUrl, "audio.opus", "", storeId).catch(() => {});
+        for (const url of coldLeadAudios) {
+          await sendWhatsAppFile(customerPhone, url, "audio.opus", "", storeId).catch(() => {});
         }
-        if (matchedProduct.whatsappVideoUrl) {
-          await sendWhatsAppFile(customerPhone, matchedProduct.whatsappVideoUrl, "video.mp4", "", storeId).catch(() => {});
+        for (const url of coldLeadVideos) {
+          await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId).catch(() => {});
         }
 
-        const introMsg = "واش بغيتي نأكدو ليك الطلب؟ عطيني سميتك الكاملة، المدينة، والعنوان بالتفصيل (الحي/الشارع) 🙏";
+        const introMsg = "واش بغيتي نأكدو ليك الطلب؟ عطيني سميتك الكاملة، رقم الهاتف، المدينة، والعنوان بالتفصيل (الحي/الشارع) 🙏";
         await queueWhatsApp(storeId, customerPhone, introMsg);
         await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "assistant", message: introMsg });
         await storage.updateAiConversationLastMessage(newConv.id, introMsg);
@@ -1030,16 +1052,18 @@ export async function handleIncomingMessage(
     // ── Image request fast-path ────────────────────────────────────
     if (intent === "image" && conv.orderId) {
       const ctx = await getOrderContext(conv.orderId);
-      if (ctx.productImageUrl) {
+      if (ctx.productImageUrls.length > 0) {
         const caption = ctx.productName
           ? `هذي هي صورة ${ctx.productName} 📸`
           : "هذي هي صورة المنتج 📸";
-        const imageLogMsg = `[IMAGE] ${ctx.productImageUrl}`;
+        const imageLogMsg = `[IMAGE] ${ctx.productImageUrls.join(", ")}`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: imageLogMsg });
         await storage.updateAiConversationLastMessage(conv.id, imageLogMsg);
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: imageLogMsg, ts: Date.now() });
-        console.log(`[AI] 📸 Sending product image to ${customerPhone}: ${ctx.productImageUrl.substring(0, 60)}...`);
-        await sendWhatsAppImage(customerPhone, ctx.productImageUrl, caption, storeId);
+        console.log(`[AI] 📸 Sending ${ctx.productImageUrls.length} product image(s) to ${customerPhone}`);
+        for (const url of ctx.productImageUrls) {
+          await sendWhatsAppImage(customerPhone, url, caption, storeId).catch(() => {});
+        }
       } else {
         const noImgReply = `عفواً ${addr.friendly}، ما عنديش تصويرة للمنتج دابا 🙏`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: noImgReply });
@@ -1053,13 +1077,15 @@ export async function handleIncomingMessage(
     // ── Video request fast-path ─────────────────────────────────────
     if (intent === "video" && conv.orderId) {
       const ctx = await getOrderContext(conv.orderId);
-      if (ctx.productVideoUrl) {
-        const videoLogMsg = `[VIDEO] ${ctx.productVideoUrl}`;
+      if (ctx.productVideoUrls.length > 0) {
+        const videoLogMsg = `[VIDEO] ${ctx.productVideoUrls.join(", ")}`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: videoLogMsg });
         await storage.updateAiConversationLastMessage(conv.id, videoLogMsg);
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: videoLogMsg, ts: Date.now() });
-        console.log(`[AI] 🎥 Sending product video to ${customerPhone}: ${ctx.productVideoUrl.substring(0, 60)}...`);
-        await sendWhatsAppFile(customerPhone, ctx.productVideoUrl, "video.mp4", ctx.productName ? `فيديو ${ctx.productName}` : "", storeId);
+        console.log(`[AI] 🎥 Sending ${ctx.productVideoUrls.length} product video(s) to ${customerPhone}`);
+        for (const url of ctx.productVideoUrls) {
+          await sendWhatsAppFile(customerPhone, url, "video.mp4", ctx.productName ? `فيديو ${ctx.productName}` : "", storeId).catch(() => {});
+        }
       } else {
         const noVidReply = `عفواً ${addr.friendly}، ما عنديش فيديو للمنتج دابا 🙏. بغيتي نبعث ليك تصويرة ولا وصف كامل؟`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: noVidReply });
@@ -1073,13 +1099,15 @@ export async function handleIncomingMessage(
     // ── Audio request fast-path ─────────────────────────────────────
     if (intent === "audio" && conv.orderId) {
       const ctx = await getOrderContext(conv.orderId);
-      if (ctx.productAudioUrl) {
-        const audioLogMsg = `[AUDIO] ${ctx.productAudioUrl}`;
+      if (ctx.productAudioUrls.length > 0) {
+        const audioLogMsg = `[AUDIO] ${ctx.productAudioUrls.join(", ")}`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: audioLogMsg });
         await storage.updateAiConversationLastMessage(conv.id, audioLogMsg);
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: audioLogMsg, ts: Date.now() });
-        console.log(`[AI] 🎙️ Sending product audio to ${customerPhone}: ${ctx.productAudioUrl.substring(0, 60)}...`);
-        await sendWhatsAppFile(customerPhone, ctx.productAudioUrl, "audio.opus", "", storeId);
+        console.log(`[AI] 🎙️ Sending ${ctx.productAudioUrls.length} product audio(s) to ${customerPhone}`);
+        for (const url of ctx.productAudioUrls) {
+          await sendWhatsAppFile(customerPhone, url, "audio.opus", "", storeId).catch(() => {});
+        }
       } else {
         const noAudioReply = `عفواً ${addr.friendly}، ما عنديش تسجيل صوتي للمنتج دابا 🙏`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: noAudioReply });
@@ -1094,17 +1122,19 @@ export async function handleIncomingMessage(
       // Only auto-confirm if order is still in "nouveau" state (not already confirmed)
       if (liveOrderStatus === "nouveau" || liveOrderStatus === null) {
         // Same safety gate as the JSON-based confirmation path below — never
-        // confirm blind without a real name, city, and address, either known
-        // already or collected during this conversation.
+        // confirm blind without a real name, city, address, and delivery
+        // phone, either known already or collected during this conversation.
         const ctxForGate = await getOrderContext(conv.orderId);
         const fastPathCity = conv.collectedCity ?? ctxForGate?.customerCity ?? null;
         const fastPathName = conv.collectedName ?? conv.customerName ?? null;
         const fastPathAddress = conv.collectedAddress ?? null;
-        if (!fastPathCity || !fastPathName || !fastPathAddress) {
+        const fastPathPhone = conv.collectedPhone ?? null;
+        if (!fastPathCity || !fastPathName || !fastPathAddress || !fastPathPhone) {
           const missingParts = [];
           if (!fastPathName) missingParts.push("سميتك الكاملة");
           if (!fastPathCity) missingParts.push("المدينة ديالك");
           if (!fastPathAddress) missingParts.push("العنوان بالتفصيل (الحي/الشارع)");
+          if (!fastPathPhone) missingParts.push("رقم الهاتف لي نتواصلو بيه معاك");
           const askMsg = `قبل نأكدو الطلب، عطيني ${missingParts.join(" و")} 🙏`;
           await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
           await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
@@ -1115,7 +1145,7 @@ export async function handleIncomingMessage(
         await storage.updateOrderStatus(conv.orderId, "confirme");
         // Sync the collected info into the real order record — not just aiConversations
         await db.update(orders).set({
-          customerName: fastPathName, customerCity: fastPathCity, customerAddress: fastPathAddress,
+          customerName: fastPathName, customerCity: fastPathCity, customerAddress: fastPathAddress, customerPhone: fastPathPhone,
         } as any).where(eq(orders.id, conv.orderId)).catch(() => {});
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
@@ -1293,33 +1323,37 @@ export async function handleIncomingMessage(
         }
       }
 
-      // ── Save name/city/address the customer just stated (from the LLM's
-      // own extraction) — separate from the step-based heuristic above, this
-      // is the LLM reading what the customer actually wrote and echoing it
-      // back verbatim, only when it says so explicitly (never inferred/guessed).
-      if (decision.collectedCity || decision.collectedName || decision.collectedAddress) {
+      // ── Save name/city/address/phone the customer just stated (from the
+      // LLM's own extraction) — separate from the step-based heuristic
+      // above, this is the LLM reading what the customer actually wrote and
+      // echoing it back verbatim, only when it says so explicitly (never
+      // inferred/guessed).
+      if (decision.collectedCity || decision.collectedName || decision.collectedAddress || decision.collectedPhone) {
         try {
           const update: Record<string, unknown> = {};
           if (decision.collectedCity) update.collectedCity = decision.collectedCity;
           if (decision.collectedName) update.collectedName = decision.collectedName;
           if (decision.collectedAddress) update.collectedAddress = decision.collectedAddress;
+          if (decision.collectedPhone) update.collectedPhone = decision.collectedPhone;
           await db.update(aiConversations).set(update).where(eq(aiConversations.id, conv.id));
         } catch (e: any) {
-          console.error(`[AI] Failed to save collected name/city/address for conv ${conv.id}:`, e.message);
+          console.error(`[AI] Failed to save collected name/city/address/phone for conv ${conv.id}:`, e.message);
         }
       }
 
       // ── Offer real Confirme/Annule buttons the moment we have everything ──
       // Only once per conversation (confirmButtonsSent), right when
-      // name+city+address all become known — before this, wait for the
+      // name+city+address+phone all become known — before this, wait for the
       // missing piece(s).
       const wasCityKnown = !!(conv.collectedCity ?? ctx?.customerCity);
       const wasNameKnown = !!(conv.collectedName ?? conv.customerName);
       const wasAddressKnown = !!conv.collectedAddress;
+      const wasPhoneKnown = !!conv.collectedPhone;
       const isCityKnownNow = wasCityKnown || !!decision.collectedCity;
       const isNameKnownNow = wasNameKnown || !!decision.collectedName;
       const isAddressKnownNow = wasAddressKnown || !!decision.collectedAddress;
-      if (isCityKnownNow && isNameKnownNow && isAddressKnownNow && !conv.confirmButtonsSent && conv.orderId && liveOrderStatus === "nouveau" && !decision.isConfirmed && !decision.isCancelled) {
+      const isPhoneKnownNow = wasPhoneKnown || !!decision.collectedPhone;
+      if (isCityKnownNow && isNameKnownNow && isAddressKnownNow && isPhoneKnownNow && !conv.confirmButtonsSent && conv.orderId && liveOrderStatus === "nouveau" && !decision.isConfirmed && !decision.isCancelled) {
         const buttonsSent = await sendWhatsAppButtons(
           customerPhone,
           "واش نأكدو الطلب ديالك؟ 🙏",
@@ -1328,7 +1362,7 @@ export async function handleIncomingMessage(
         ).catch(() => false);
         if (buttonsSent) {
           await db.update(aiConversations).set({ confirmButtonsSent: 1 }).where(eq(aiConversations.id, conv.id)).catch(() => {});
-          console.log(`[AI] Conv ${conv.id} — sent Confirme/Annule buttons (name+city+address now complete)`);
+          console.log(`[AI] Conv ${conv.id} — sent Confirme/Annule buttons (name+city+address+phone now complete)`);
         }
       }
 
@@ -1365,9 +1399,9 @@ export async function handleIncomingMessage(
         const catalogProducts = await db.select({
           id: products.id, name: products.name, stock: products.stock, sellingPrice: products.sellingPrice, whatsappPrice: products.whatsappPrice,
           whatsappDescription: products.whatsappDescription,
-          whatsappImageUrl: products.whatsappImageUrl,
-          whatsappAudioUrl: products.whatsappAudioUrl,
-          whatsappVideoUrl: products.whatsappVideoUrl,
+          whatsappImageUrls: products.whatsappImageUrls,
+          whatsappAudioUrls: products.whatsappAudioUrls,
+          whatsappVideoUrls: products.whatsappVideoUrls,
         }).from(products).where(eq(products.storeId, storeId));
 
         const found = numberSelectionProductId
@@ -1380,18 +1414,18 @@ export async function handleIncomingMessage(
             })();
 
         let followUp: string;
-        let sendImageUrl: string | null = null;
-        let sendAudioUrl: string | null = null;
-        let sendVideoUrl: string | null = null;
+        let sendImageUrls: string[] = [];
+        let sendAudioUrls: string[] = [];
+        let sendVideoUrls: string[] = [];
         if (found) {
           const inStock = (found.stock ?? 0) > 0;
           if (inStock) {
             const priceDh = (found.whatsappPrice ?? found.sellingPrice ?? 0) / 100;
             const priceLine = priceDh > 0 ? `💰 الثمن: ${priceDh} درهم` : "";
             followUp = [found.whatsappDescription || `إيوا خويا، "${found.name}" كاين فالستوك ✅`, priceLine].filter(Boolean).join("\n\n");
-            sendImageUrl = found.whatsappImageUrl;
-            sendAudioUrl = found.whatsappAudioUrl;
-            sendVideoUrl = found.whatsappVideoUrl;
+            sendImageUrls = (found.whatsappImageUrls as string[]) || [];
+            sendAudioUrls = (found.whatsappAudioUrls as string[]) || [];
+            sendVideoUrls = (found.whatsappVideoUrls as string[]) || [];
           } else {
             followUp = `سمح ليا خويا، "${found.name}" ما كاينش فالستوك دابا. إيلا بغيتي، نعلمك ملي يرجع.`;
           }
@@ -1419,9 +1453,9 @@ export async function handleIncomingMessage(
           console.log(`[AI] mentioned_product="${effectiveMentionedProduct}" → matched=${found?.name ?? "none"} stock=${found?.stock ?? "n/a"}`);
 
           // Send media as actual WhatsApp files, never as raw text URLs
-          if (sendImageUrl) await sendWhatsAppImage(customerPhone, sendImageUrl, found!.name, storeId).catch(() => {});
-          if (sendAudioUrl) await sendWhatsAppFile(customerPhone, sendAudioUrl, "audio.opus", "", storeId).catch(() => {});
-          if (sendVideoUrl) await sendWhatsAppFile(customerPhone, sendVideoUrl, "video.mp4", "", storeId).catch(() => {});
+          for (const url of sendImageUrls) await sendWhatsAppImage(customerPhone, url, found!.name, storeId).catch(() => {});
+          for (const url of sendAudioUrls) await sendWhatsAppFile(customerPhone, url, "audio.opus", "", storeId).catch(() => {});
+          for (const url of sendVideoUrls) await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId).catch(() => {});
 
           // Switch the conversation's own product to the one just discussed —
           // otherwise the customer gets accurate info here, but the very next
@@ -1461,19 +1495,22 @@ export async function handleIncomingMessage(
       // Hard code-level gate — never trust the LLM's is_confirmed alone: it's
       // a prompt instruction, and prompt instructions aren't 100% reliable
       // (confirmed live: the model has invented names/cities before). Only
-      // actually confirm when a real name, city, AND address are known,
-      // either already on the order or collected during this conversation.
+      // actually confirm when a real name, city, address, AND delivery
+      // phone are known, either already on the order or collected during
+      // this conversation.
       const effectiveCityForConfirm = conv.collectedCity ?? ctx?.customerCity ?? decision.collectedCity ?? null;
       const effectiveNameForConfirm = conv.collectedName ?? conv.customerName ?? decision.collectedName ?? null;
       const effectiveAddressForConfirm = conv.collectedAddress ?? decision.collectedAddress ?? null;
-      const missingForConfirm = decision.isConfirmed && (!effectiveCityForConfirm || !effectiveNameForConfirm || !effectiveAddressForConfirm);
+      const effectivePhoneForConfirm = conv.collectedPhone ?? decision.collectedPhone ?? null;
+      const missingForConfirm = decision.isConfirmed && (!effectiveCityForConfirm || !effectiveNameForConfirm || !effectiveAddressForConfirm || !effectivePhoneForConfirm);
       const needsConfirm = decision.isConfirmed && conv.orderId && liveOrderStatus === "nouveau" && !missingForConfirm;
       if (missingForConfirm) {
-        console.warn(`[AI] Blocked premature confirm for conv ${conv.id} — name=${effectiveNameForConfirm ?? "MISSING"} city=${effectiveCityForConfirm ?? "MISSING"} address=${effectiveAddressForConfirm ?? "MISSING"}`);
+        console.warn(`[AI] Blocked premature confirm for conv ${conv.id} — name=${effectiveNameForConfirm ?? "MISSING"} city=${effectiveCityForConfirm ?? "MISSING"} address=${effectiveAddressForConfirm ?? "MISSING"} phone=${effectivePhoneForConfirm ?? "MISSING"}`);
         const missingParts = [];
         if (!effectiveNameForConfirm) missingParts.push("سميتك الكاملة");
         if (!effectiveCityForConfirm) missingParts.push("المدينة ديالك");
         if (!effectiveAddressForConfirm) missingParts.push("العنوان بالتفصيل (الحي/الشارع)");
+        if (!effectivePhoneForConfirm) missingParts.push("رقم الهاتف لي نتواصلو بيه معاك");
         const askMsg = `قبل نأكدو الطلب، عطيني ${missingParts.join(" و")} 🙏`;
         await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
@@ -1486,7 +1523,7 @@ export async function handleIncomingMessage(
         await storage.updateOrderStatus(conv.orderId!, "confirme");
         // Sync the collected info into the real order record — not just aiConversations
         await db.update(orders).set({
-          customerName: effectiveNameForConfirm, customerCity: effectiveCityForConfirm, customerAddress: effectiveAddressForConfirm,
+          customerName: effectiveNameForConfirm, customerCity: effectiveCityForConfirm, customerAddress: effectiveAddressForConfirm, customerPhone: effectivePhoneForConfirm,
         } as any).where(eq(orders.id, conv.orderId!)).catch(() => {});
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);

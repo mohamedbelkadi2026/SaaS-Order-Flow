@@ -126,9 +126,12 @@ export const products = pgTable("products", {
   // (Modifier le produit) so the AI confirmation agent has a self-contained
   // set of assets to send, without depending on what's set elsewhere. Set
   // from Automation & AI → Produits WhatsApp.
-  whatsappImageUrl: text("whatsapp_image_url"),
-  whatsappAudioUrl: text("whatsapp_audio_url"),
-  whatsappVideoUrl: text("whatsapp_video_url"),
+  whatsappImageUrl: text("whatsapp_image_url"), // legacy single field — kept for backward compat, superseded by whatsappImageUrls
+  whatsappAudioUrl: text("whatsapp_audio_url"), // legacy single field
+  whatsappVideoUrl: text("whatsapp_video_url"), // legacy single field
+  whatsappImageUrls: jsonb("whatsapp_image_urls").$type<string[]>().default([]), // multiple images
+  whatsappAudioUrls: jsonb("whatsapp_audio_urls").$type<string[]>().default([]), // multiple audio notes
+  whatsappVideoUrls: jsonb("whatsapp_video_urls").$type<string[]>().default([]), // multiple videos
   whatsappDescription: text("whatsapp_description"),
   whatsappPrice: integer("whatsapp_price"), // in cents, like sellingPrice — falls back to sellingPrice when null
   // ── TajerDrop marketplace (Phase 1) ──
@@ -953,6 +956,7 @@ export const aiConversations = pgTable("ai_conversations", {
   collectedCity: text("collected_city"),    // city confirmed by customer
   collectedName: text("collected_name"),    // full name confirmed by customer
   collectedAddress: text("collected_address"), // street address confirmed by customer
+  collectedPhone: text("collected_phone"), // delivery phone confirmed by customer (may differ from the WhatsApp sender's number)
   confirmButtonsSent: integer("confirm_buttons_sent").default(0), // avoid re-sending Confirme/Annule buttons every message
   lastShownProductList: jsonb("last_shown_product_list").$type<number[]>(), // product IDs, in the order last listed to this customer (for numbered selection)
   collectedVariant: text("collected_variant"), // size/color confirmed by customer

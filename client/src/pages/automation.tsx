@@ -2100,9 +2100,9 @@ function WhatsappTab() {
 ════════════════════════════════════════════════════════════════ */
 type WaProduct = {
   id: number; name: string; sku: string | null;
-  whatsappImageUrl: string | null;
-  whatsappAudioUrl: string | null;
-  whatsappVideoUrl: string | null;
+  whatsappImageUrls: string[] | null;
+  whatsappAudioUrls: string[] | null;
+  whatsappVideoUrls: string[] | null;
   whatsappDescription: string | null;
   whatsappPrice: number | null; // cents
   sellingPrice: number; // cents, general product price (fallback/reference)
@@ -2113,9 +2113,9 @@ function WhatsappProductsTab() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [description, setDescription] = useState("");
   const [priceInput, setPriceInput] = useState("");
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [audioUrls, setAudioUrls] = useState<string[]>([]);
+  const [videoUrls, setVideoUrls] = useState<string[]>([]);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [uploadingAudio, setUploadingAudio] = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState(false);
@@ -2131,13 +2131,13 @@ function WhatsappProductsTab() {
   useEffect(() => {
     if (selected) {
       setDescription(selected.whatsappDescription || "");
-      setImageUrl(selected.whatsappImageUrl || null);
-      setAudioUrl(selected.whatsappAudioUrl || null);
-      setVideoUrl(selected.whatsappVideoUrl || null);
+      setImageUrls(selected.whatsappImageUrls || []);
+      setAudioUrls(selected.whatsappAudioUrls || []);
+      setVideoUrls(selected.whatsappVideoUrls || []);
       const priceCents = selected.whatsappPrice ?? selected.sellingPrice;
       setPriceInput(priceCents != null ? String(priceCents / 100) : "");
     } else {
-      setDescription(""); setImageUrl(null); setAudioUrl(null); setVideoUrl(null); setPriceInput("");
+      setDescription(""); setImageUrls([]); setAudioUrls([]); setVideoUrls([]); setPriceInput("");
     }
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2151,9 +2151,9 @@ function WhatsappProductsTab() {
         body: JSON.stringify({
           whatsappDescription: description || null,
           whatsappPriceDh: priceInput.trim() ? Number(priceInput) : null,
-          whatsappImageUrl: imageUrl,
-          whatsappAudioUrl: audioUrl,
-          whatsappVideoUrl: videoUrl,
+          whatsappImageUrls: imageUrls,
+          whatsappAudioUrls: audioUrls,
+          whatsappVideoUrls: videoUrls,
         }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || "Erreur d'enregistrement");
@@ -2166,7 +2166,7 @@ function WhatsappProductsTab() {
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
-  async function uploadFile(file: File, kind: "image" | "audio" | "video", setUrl: (u: string) => void, setBusy: (b: boolean) => void) {
+  async function uploadFile(file: File, kind: "image" | "audio" | "video", addUrl: (u: string) => void, setBusy: (b: boolean) => void) {
     setBusy(true);
     try {
       const fd = new FormData();
@@ -2174,7 +2174,7 @@ function WhatsappProductsTab() {
       const res = await fetch(`/api/upload/whatsapp-${kind}`, { method: "POST", credentials: "include", body: fd });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || "Échec de l'envoi");
       const data = await res.json();
-      setUrl(data.url);
+      addUrl(data.url);
     } catch (e: any) {
       toast({ title: "Erreur d'envoi", description: e.message, variant: "destructive" });
     } finally {
@@ -2203,7 +2203,7 @@ function WhatsappProductsTab() {
           <option value="">— Sélectionner —</option>
           {waProducts.map(p => (
             <option key={p.id} value={p.id}>
-              {p.name}{p.sku ? ` (${p.sku})` : ""}{(p.whatsappImageUrl || p.whatsappAudioUrl || p.whatsappVideoUrl || p.whatsappDescription) ? " ✓" : ""}
+              {p.name}{p.sku ? ` (${p.sku})` : ""}{((p.whatsappImageUrls?.length || p.whatsappAudioUrls?.length || p.whatsappVideoUrls?.length || p.whatsappDescription)) ? " ✓" : ""}
             </option>
           ))}
         </select>
@@ -2240,40 +2240,40 @@ function WhatsappProductsTab() {
             />
           </div>
 
-          {/* Image */}
-          <MediaUploadRow
-            label="Image"
+          {/* Images (multiple) */}
+          <MultiMediaSection
+            label="Images"
             icon={<Image className="w-4 h-4" />}
-            url={imageUrl}
+            urls={imageUrls}
             busy={uploadingImage}
             accept="image/*"
-            preview={imageUrl ? <img src={imageUrl} alt="" className="w-16 h-16 object-cover rounded-lg border border-zinc-100" /> : null}
-            onPick={file => uploadFile(file, "image", setImageUrl, setUploadingImage)}
-            onRemove={() => setImageUrl(null)}
+            renderPreview={(url) => <img src={url} alt="" className="w-14 h-14 object-cover rounded-lg border border-zinc-100" />}
+            onPick={file => uploadFile(file, "image", u => setImageUrls(prev => [...prev, u]), setUploadingImage)}
+            onRemove={idx => setImageUrls(prev => prev.filter((_, i) => i !== idx))}
           />
 
-          {/* Audio */}
-          <MediaUploadRow
-            label="Audio (note vocale)"
+          {/* Audio (multiple) */}
+          <MultiMediaSection
+            label="Audio (notes vocales)"
             icon={<Music className="w-4 h-4" />}
-            url={audioUrl}
+            urls={audioUrls}
             busy={uploadingAudio}
             accept="audio/*"
-            preview={audioUrl ? <audio src={audioUrl} controls className="h-8 max-w-[220px]" /> : null}
-            onPick={file => uploadFile(file, "audio", setAudioUrl, setUploadingAudio)}
-            onRemove={() => setAudioUrl(null)}
+            renderPreview={(url) => <audio src={url} controls className="h-8 max-w-[220px]" />}
+            onPick={file => uploadFile(file, "audio", u => setAudioUrls(prev => [...prev, u]), setUploadingAudio)}
+            onRemove={idx => setAudioUrls(prev => prev.filter((_, i) => i !== idx))}
           />
 
-          {/* Video */}
-          <MediaUploadRow
-            label="Vidéo"
+          {/* Video (multiple) */}
+          <MultiMediaSection
+            label="Vidéos"
             icon={<Video className="w-4 h-4" />}
-            url={videoUrl}
+            urls={videoUrls}
             busy={uploadingVideo}
             accept="video/*"
-            preview={videoUrl ? <video src={videoUrl} controls className="h-16 rounded-lg border border-zinc-100" /> : null}
-            onPick={file => uploadFile(file, "video", setVideoUrl, setUploadingVideo)}
-            onRemove={() => setVideoUrl(null)}
+            renderPreview={(url) => <video src={url} controls className="h-16 rounded-lg border border-zinc-100" />}
+            onPick={file => uploadFile(file, "video", u => setVideoUrls(prev => [...prev, u]), setUploadingVideo)}
+            onRemove={idx => setVideoUrls(prev => prev.filter((_, i) => i !== idx))}
           />
 
           <button
@@ -2287,6 +2287,48 @@ function WhatsappProductsTab() {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function MultiMediaSection({ label, icon, urls, busy, accept, renderPreview, onPick, onRemove }: {
+  label: string; icon: React.ReactNode; urls: string[]; busy: boolean; accept: string;
+  renderPreview: (url: string) => React.ReactNode; onPick: (file: File) => void; onRemove: (index: number) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <div className="space-y-1.5">
+      <label className="text-zinc-500 text-xs font-medium flex items-center gap-1.5">{icon} {label} {urls.length > 0 && <span className="text-zinc-300">({urls.length})</span>}</label>
+      <div className="flex flex-wrap items-center gap-3">
+        {urls.map((url, idx) => (
+          <div key={idx} className="relative group">
+            {renderPreview(url)}
+            <button
+              type="button"
+              onClick={() => onRemove(idx)}
+              className="absolute -top-1.5 -right-1.5 bg-red-500 hover:bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
+        ))}
+        <input
+          ref={inputRef}
+          type="file"
+          accept={accept}
+          className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) onPick(f); e.target.value = ""; }}
+        />
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          className="flex items-center gap-1.5 bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-700 text-xs font-medium rounded-lg px-3 py-2 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+          {urls.length > 0 ? "Ajouter un autre" : "Choisir un fichier"}
+        </button>
+      </div>
     </div>
   );
 }

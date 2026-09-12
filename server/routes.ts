@@ -18752,9 +18752,9 @@ function ensureHeaders(sheet) {
     try {
       const rows = await db.select({
         id: products.id, name: products.name, sku: products.sku,
-        whatsappImageUrl: products.whatsappImageUrl,
-        whatsappAudioUrl: products.whatsappAudioUrl,
-        whatsappVideoUrl: products.whatsappVideoUrl,
+        whatsappImageUrls: products.whatsappImageUrls,
+        whatsappAudioUrls: products.whatsappAudioUrls,
+        whatsappVideoUrls: products.whatsappVideoUrls,
         whatsappDescription: products.whatsappDescription,
         whatsappPrice: products.whatsappPrice,
         sellingPrice: products.sellingPrice,
@@ -18765,14 +18765,14 @@ function ensureHeaders(sheet) {
     }
   });
 
-  // PATCH WhatsApp AI content for one product
+  // PATCH WhatsApp AI content for one product — now supports multiple images/audio/video
   app.patch("/api/whatsapp-content/products/:id", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const productId = Number(req.params.id);
     const schema = z.object({
-      whatsappImageUrl: z.string().trim().max(500).nullable().optional(),
-      whatsappAudioUrl: z.string().trim().max(500).nullable().optional(),
-      whatsappVideoUrl: z.string().trim().max(500).nullable().optional(),
+      whatsappImageUrls: z.array(z.string().trim().max(500)).max(10).optional(),
+      whatsappAudioUrls: z.array(z.string().trim().max(500)).max(10).optional(),
+      whatsappVideoUrls: z.array(z.string().trim().max(500)).max(10).optional(),
       whatsappDescription: z.string().trim().max(2000).nullable().optional(),
       whatsappPriceDh: z.number().nullable().optional(), // DH from the form, converted to cents below
     });
@@ -18782,6 +18782,11 @@ function ensureHeaders(sheet) {
       if (whatsappPriceDh !== undefined) {
         data.whatsappPrice = whatsappPriceDh === null ? null : Math.round(whatsappPriceDh * 100);
       }
+      // Keep the legacy single-URL fields loosely in sync (first item), in
+      // case anything old still reads them
+      if (rest.whatsappImageUrls) data.whatsappImageUrl = rest.whatsappImageUrls[0] ?? null;
+      if (rest.whatsappAudioUrls) data.whatsappAudioUrl = rest.whatsappAudioUrls[0] ?? null;
+      if (rest.whatsappVideoUrls) data.whatsappVideoUrl = rest.whatsappVideoUrls[0] ?? null;
       const [updated] = await db.update(products).set(data as any)
         .where(and(eq(products.id, productId), eq(products.storeId, storeId)))
         .returning();
