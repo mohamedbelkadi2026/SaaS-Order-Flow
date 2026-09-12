@@ -2182,6 +2182,25 @@ function WhatsappProductsTab() {
     }
   }
 
+  // Uploads several files one after another (sequential, not parallel, to
+  // avoid overwhelming the upload route) — keeps busy=true for the whole batch.
+  async function uploadFiles(files: File[], kind: "image" | "audio" | "video", addUrl: (u: string) => void, setBusy: (b: boolean) => void) {
+    setBusy(true);
+    for (const file of files) {
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch(`/api/upload/whatsapp-${kind}`, { method: "POST", credentials: "include", body: fd });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || "Échec de l'envoi");
+        const data = await res.json();
+        addUrl(data.url);
+      } catch (e: any) {
+        toast({ title: `Erreur d'envoi (${file.name})`, description: e.message, variant: "destructive" });
+      }
+    }
+    setBusy(false);
+  }
+
   return (
     <div className="space-y-5">
       <div className="bg-white rounded-2xl border border-zinc-100 p-5">
@@ -2248,7 +2267,7 @@ function WhatsappProductsTab() {
             busy={uploadingImage}
             accept="image/*"
             renderPreview={(url) => <img src={url} alt="" className="w-14 h-14 object-cover rounded-lg border border-zinc-100" />}
-            onPick={file => uploadFile(file, "image", u => setImageUrls(prev => [...prev, u]), setUploadingImage)}
+            onPickFiles={files => uploadFiles(files, "image", u => setImageUrls(prev => [...prev, u]), setUploadingImage)}
             onRemove={idx => setImageUrls(prev => prev.filter((_, i) => i !== idx))}
           />
 
@@ -2260,7 +2279,7 @@ function WhatsappProductsTab() {
             busy={uploadingAudio}
             accept="audio/*"
             renderPreview={(url) => <audio src={url} controls className="h-8 max-w-[220px]" />}
-            onPick={file => uploadFile(file, "audio", u => setAudioUrls(prev => [...prev, u]), setUploadingAudio)}
+            onPickFiles={files => uploadFiles(files, "audio", u => setAudioUrls(prev => [...prev, u]), setUploadingAudio)}
             onRemove={idx => setAudioUrls(prev => prev.filter((_, i) => i !== idx))}
           />
 
@@ -2272,7 +2291,7 @@ function WhatsappProductsTab() {
             busy={uploadingVideo}
             accept="video/*"
             renderPreview={(url) => <video src={url} controls className="h-16 rounded-lg border border-zinc-100" />}
-            onPick={file => uploadFile(file, "video", u => setVideoUrls(prev => [...prev, u]), setUploadingVideo)}
+            onPickFiles={files => uploadFiles(files, "video", u => setVideoUrls(prev => [...prev, u]), setUploadingVideo)}
             onRemove={idx => setVideoUrls(prev => prev.filter((_, i) => i !== idx))}
           />
 
@@ -2291,9 +2310,9 @@ function WhatsappProductsTab() {
   );
 }
 
-function MultiMediaSection({ label, icon, urls, busy, accept, renderPreview, onPick, onRemove }: {
+function MultiMediaSection({ label, icon, urls, busy, accept, renderPreview, onPickFiles, onRemove }: {
   label: string; icon: React.ReactNode; urls: string[]; busy: boolean; accept: string;
-  renderPreview: (url: string) => React.ReactNode; onPick: (file: File) => void; onRemove: (index: number) => void;
+  renderPreview: (url: string) => React.ReactNode; onPickFiles: (files: File[]) => void; onRemove: (index: number) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   return (
@@ -2316,8 +2335,9 @@ function MultiMediaSection({ label, icon, urls, busy, accept, renderPreview, onP
           ref={inputRef}
           type="file"
           accept={accept}
+          multiple
           className="hidden"
-          onChange={e => { const f = e.target.files?.[0]; if (f) onPick(f); e.target.value = ""; }}
+          onChange={e => { const files = Array.from(e.target.files || []); if (files.length) onPickFiles(files); e.target.value = ""; }}
         />
         <button
           type="button"
@@ -2326,7 +2346,7 @@ function MultiMediaSection({ label, icon, urls, busy, accept, renderPreview, onP
           className="flex items-center gap-1.5 bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-700 text-xs font-medium rounded-lg px-3 py-2 disabled:opacity-50"
         >
           {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-          {urls.length > 0 ? "Ajouter un autre" : "Choisir un fichier"}
+          {urls.length > 0 ? "Ajouter d'autres (plusieurs à la fois)" : "Choisir un ou plusieurs fichiers"}
         </button>
       </div>
     </div>
