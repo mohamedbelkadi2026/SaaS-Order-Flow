@@ -447,10 +447,14 @@ Rules for the flags:
 - NEVER set is_confirmed=true just because the customer asked a question.
 - After confirmation, keep responding helpfully — the conversation does not end.
 - "mentioned_product": if the customer asks about, or clearly wants, a DIFFERENT product than the one currently
-  being discussed (not the one already in this order/conversation), put the product name they mentioned here
-  EXACTLY as they wrote it (e.g. "شاحن العجيب 5 في 1"). Otherwise leave it null. Do NOT guess whether it's in
-  stock or make up details about it in your reply yet — the system will look up the real product and give you
-  its actual info for your NEXT reply. For THIS reply, just acknowledge you're checking (e.g. "نتأكد ليك دابا 🙏").
+  being discussed (not the one already in this order/conversation), figure out which real product from the
+  "OTHER PRODUCTS AVAILABLE" list above they mean — even if they describe it in their own words instead of using
+  its exact name (e.g. customer says "ساعة وسماعات في جهاز واحد" and the real catalog name is "ساعة ذكية بسماعات
+  مدمجة" — match the DESCRIPTION to the right catalog item and put the EXACT name from the list here). If you
+  genuinely can't tell which product from the list they mean, put their own words here instead so the system can
+  still try a text search. Otherwise leave it null. Do NOT guess whether it's in stock or make up details about
+  it in your reply yet — the system will look up the real product and give you its actual info for your NEXT
+  reply. For THIS reply, just acknowledge you're checking (e.g. "نتأكد ليك دابا 🙏").
 - "collected_name": if the customer just told you their full name in THIS message, put it here exactly as they
   wrote it. Otherwise leave it null. NEVER fill this with a guess.
 - "collected_city": if the customer just told you their city in THIS message, put it here exactly as they wrote
@@ -479,6 +483,7 @@ function buildStepPrompt(
   storeName: string,
   conv: AiConversation,
   customSystemPrompt?: string | null,
+  catalogNames: string[] = [],
 ): string {
   const priceDh = ctx?.totalPrice ? `${(ctx.totalPrice / 100).toFixed(0)} درهم` : null;
   const _baseProductLabel = ctx?.productName ?? "المنتج";
@@ -554,6 +559,7 @@ ORDER DETAILS:
 - City: ${city ?? "⚠️ CITY NOT PROVIDED — you must ask for their city"}
 - Address: ${streetAddress ?? "⚠️ ADDRESS NOT PROVIDED — you must ask for their street address/neighborhood"}
 - Delivery phone: ${deliveryPhone ?? "⚠️ PHONE NOT CONFIRMED — you must ask them to confirm a delivery phone number (may differ from the WhatsApp number)"}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
+${catalogNames.length > 0 ? `\nOTHER PRODUCTS AVAILABLE (for matching mentioned_product — see JSON rules below):\n${catalogNames.map(n => `- ${n}`).join("\n")}` : ""}
 ${knowledgeBlock}
 ${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}
 ${JSON_OUTPUT_RULE}`;
@@ -1231,10 +1237,26 @@ export async function handleIncomingMessage(
       const storeName = await getStoreName(storeId);
       console.log(`[AI] Searching context for ${customerPhone}... Context found: ${ctx?.productName ?? "no product"} | Price: ${ctx?.totalPrice ? (ctx.totalPrice/100).toFixed(0)+"DH" : "N/A"} | Status: ${ctx?.orderStatus ?? "N/A"}`);
 
+      // Real catalog names for the LLM to match against when the customer
+      // describes a product in their own words (e.g. "ساعة وسماعات في جهاز
+      // واحد") rather than using its exact name — without this, mentioned_product
+      // matching relied on the customer's phrasing literally containing the
+      // real product name as a substring, which fails for paraphrases/descriptions.
+      let catalogNamesForPrompt: string[] = [];
+      try {
+        const currentNorm = ctx?.productName ? normalizeForMatch(ctx.productName) : null;
+        const catalogRows = await db.select({ name: products.name, stock: products.stock })
+          .from(products).where(eq(products.storeId, storeId));
+        catalogNamesForPrompt = catalogRows
+          .filter(p => p.name && (p.stock ?? 0) > 0 && normalizeForMatch(p.name) !== currentNorm)
+          .map(p => p.name!)
+          .slice(0, 40);
+      } catch { /* non-fatal — prompt just won't include the catalog list */ }
+
       // Build step-specific system prompt
       const systemPrompt = isRecovery
         ? RECOVERY_SYSTEM_PROMPT
-        : buildStepPrompt(currentStep, ctx, storeName, conv, settings?.systemPrompt);
+        : buildStepPrompt(currentStep, ctx, storeName, conv, settings?.systemPrompt, catalogNamesForPrompt);
 
       // Build message history — filter null/empty messages to avoid OpenAI rejection
       const recentLogs = conv.orderId
