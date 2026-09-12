@@ -432,6 +432,9 @@ interface OrderContext {
   productVariant: string | null;
   totalPrice: number | null;
   customerCity: string | null;
+  customerAddress: string | null;
+  customerPhone: string | null;
+  orderSource: string | null;
   stockQty: number | null;
   productId: number | null;
   descriptionDarija: string | null;
@@ -456,6 +459,9 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
     const [order] = await db.select({
       totalPrice: orders.totalPrice,
       customerCity: orders.customerCity,
+      customerAddress: orders.customerAddress,
+      customerPhone: orders.customerPhone,
+      source: orders.source,
       rawProductName: orders.rawProductName,
       status: orders.status,
       trackNumber: orders.trackNumber,
@@ -532,6 +538,9 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       productVariant,
       totalPrice: order?.totalPrice ?? null,
       customerCity: order?.customerCity ?? null,
+      customerAddress: order?.customerAddress ?? null,
+      customerPhone: order?.customerPhone ?? null,
+      orderSource: order?.source ?? null,
       stockQty,
       productId: resolvedProductId,
       descriptionDarija,
@@ -547,7 +556,7 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       productAudioUrls,
     };
   } catch {
-    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null, productImageUrl: null, productVideoUrl: null, productAudioUrl: null, productImageUrls: [], productVideoUrls: [], productAudioUrls: [] };
+    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, customerAddress: null, customerPhone: null, orderSource: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null, productImageUrl: null, productVideoUrl: null, productAudioUrl: null, productImageUrls: [], productVideoUrls: [], productAudioUrls: [] };
   }
 }
 
@@ -1329,8 +1338,8 @@ export async function handleIncomingMessage(
         const ctxForGate = await getOrderContext(conv.orderId);
         const fastPathCity = conv.collectedCity ?? ctxForGate?.customerCity ?? null;
         const fastPathName = conv.collectedName ?? conv.customerName ?? null;
-        const fastPathAddress = conv.collectedAddress ?? null;
-        const fastPathPhone = conv.collectedPhone ?? null;
+        const fastPathAddress = conv.collectedAddress ?? ctxForGate?.customerAddress ?? null;
+        const fastPathPhone = conv.collectedPhone ?? (ctxForGate?.orderSource !== "whatsapp" ? ctxForGate?.customerPhone : null) ?? null;
         if (!fastPathCity || !fastPathName || !fastPathAddress || !fastPathPhone) {
           const askMsg = buildMissingInfoMessage({ name: !fastPathName, phone: !fastPathPhone, city: !fastPathCity, address: !fastPathAddress });
           await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
@@ -1581,8 +1590,8 @@ export async function handleIncomingMessage(
       // missing piece(s).
       const wasCityKnown = !!(conv.collectedCity ?? ctx?.customerCity);
       const wasNameKnown = !!(conv.collectedName ?? conv.customerName);
-      const wasAddressKnown = !!conv.collectedAddress;
-      const wasPhoneKnown = !!conv.collectedPhone;
+      const wasAddressKnown = !!(conv.collectedAddress ?? ctx?.customerAddress);
+      const wasPhoneKnown = !!(conv.collectedPhone ?? (ctx?.orderSource !== "whatsapp" ? ctx?.customerPhone : null));
       const isCityKnownNow = wasCityKnown || !!decision.collectedCity;
       const isNameKnownNow = wasNameKnown || !!decision.collectedName;
       const isAddressKnownNow = wasAddressKnown || !!decision.collectedAddress;
@@ -1734,8 +1743,8 @@ export async function handleIncomingMessage(
       // this conversation.
       const effectiveCityForConfirm = conv.collectedCity ?? ctx?.customerCity ?? decision.collectedCity ?? null;
       const effectiveNameForConfirm = conv.collectedName ?? conv.customerName ?? decision.collectedName ?? null;
-      const effectiveAddressForConfirm = conv.collectedAddress ?? decision.collectedAddress ?? null;
-      const effectivePhoneForConfirm = conv.collectedPhone ?? decision.collectedPhone ?? null;
+      const effectiveAddressForConfirm = conv.collectedAddress ?? ctx?.customerAddress ?? decision.collectedAddress ?? null;
+      const effectivePhoneForConfirm = conv.collectedPhone ?? (ctx?.orderSource !== "whatsapp" ? ctx?.customerPhone : null) ?? decision.collectedPhone ?? null;
       const missingForConfirm = decision.isConfirmed && (!effectiveCityForConfirm || !effectiveNameForConfirm || !effectiveAddressForConfirm || !effectivePhoneForConfirm);
       const needsConfirm = decision.isConfirmed && conv.orderId && liveOrderStatus === "nouveau" && !missingForConfirm;
       if (missingForConfirm) {
