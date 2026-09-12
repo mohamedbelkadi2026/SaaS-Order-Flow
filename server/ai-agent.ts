@@ -145,6 +145,63 @@ Respond with ONLY one word: CONFIRM or CANCEL or NEITHER. No explanation, no pun
 }
 
 /**
+ * Dedicated customer-info extractor — same principle as the other two
+ * classifiers above. Confirmed live: the main conversational LLM call
+ * (writing a reply + deciding confirm/cancel + extracting 4 fields all at
+ * once) sometimes fails to populate collected_name/phone/city/address even
+ * when the customer clearly provided them in one message (e.g. "0788996655
+ * عمر rabat 3asiima") — which then blocks the Confirme/Annule buttons from
+ * ever being offered, since that trigger requires all four to be known.
+ * This runs a focused, single-purpose extraction as a supplement, so a
+ * failure in the main call doesn't silently stall the whole flow.
+ */
+async function detectCustomerInfoAI(
+  customerMessage: string,
+  storeId: number,
+): Promise<{ name: string | null; phone: string | null; city: string | null; address: string | null } | null> {
+  const trimmed = customerMessage.trim();
+  if (trimmed.length === 0 || trimmed.length > 300) return null;
+  try {
+    const { client, model } = await resolveAIClient(storeId);
+    const prompt = `Extract delivery information from this customer message in a Moroccan Darija/Arabic WhatsApp sales chat. The customer may write everything in one line, in any order, possibly mixing Arabic/French/English/numbers.
+
+CUSTOMER MESSAGE: "${trimmed}"
+
+Extract, if clearly present:
+- name: a person's full name (e.g. "عمر", "Mohamed Alami", "خديجة")
+- phone: a Moroccan phone number (e.g. 06XXXXXXXX, 07XXXXXXXX, or with +212)
+- city: a Moroccan city name (e.g. "Rabat", "الدار البيضاء", "طنجة", "Sale")
+- address: a street/neighborhood/district name (e.g. "Hay Riad", "3asiima", "الحي المحمدي")
+
+Respond with ONLY a JSON object, nothing else, no markdown:
+{"name": "<exact text or null>", "phone": "<exact text or null>", "city": "<exact text or null>", "address": "<exact text or null>"}
+
+Use null for anything not clearly present. Never guess or invent a value.`;
+
+    const completion = await client.chat.completions.create({
+      model, messages: [{ role: "user", content: prompt }], max_tokens: 150, temperature: 0,
+    });
+    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[0]);
+    const result = {
+      name: (parsed.name && parsed.name !== "null") ? String(parsed.name) : null,
+      phone: (parsed.phone && parsed.phone !== "null") ? String(parsed.phone) : null,
+      city: (parsed.city && parsed.city !== "null") ? String(parsed.city) : null,
+      address: (parsed.address && parsed.address !== "null") ? String(parsed.address) : null,
+    };
+    if (result.name || result.phone || result.city || result.address) {
+      console.log(`[AI] detectCustomerInfoAI: "${trimmed.slice(0, 60)}" → ${JSON.stringify(result)}`);
+    }
+    return result;
+  } catch (err: any) {
+    console.error(`[AI] detectCustomerInfoAI failed (non-fatal):`, err.message);
+    return null;
+  }
+}
+
+/**
  * Given an EXACT catalog product name (already verified by
  * detectProductMentionAI), looks it up, sends its real WhatsApp content
  * (description/price/image/audio/video), and switches the conversation's
@@ -1324,7 +1381,12 @@ export async function handleIncomingMessage(
     // dedicated classifier — this is what catches casual affirmatives like
     // "ah" that the main conversational LLM's own reply implied were
     // understood, but didn't reliably set is_confirmed for.
-    if (!intent && conv.confirmButtonsSent) {
+    // Run whenever there's an active order and no keyword already matched —
+    // NOT gated on confirmButtonsSent, since the button-trigger itself
+    // depends on the same overloaded name/phone/city/address extraction
+    // that can fail, meaning buttons sometimes never fire at all (confirmed
+    // live) — this safety net needs to work independently of that.
+    if (!intent && conv.orderId) {
       const dedicated = await detectConfirmCancelAI(customerMessage, storeId);
       if (dedicated) intent = dedicated;
     }
@@ -1747,14 +1809,44 @@ export async function handleIncomingMessage(
       // above, this is the LLM reading what the customer actually wrote and
       // echoing it back verbatim, only when it says so explicitly (never
       // inferred/guessed).
-      if (decision.collectedCity || decision.collectedName || decision.collectedAddress || decision.collectedPhone) {
+      //
+      // Supplement with the dedicated extractor whenever the main call left
+      // something missing that the conversation doesn't already have —
+      // confirmed live: the main overloaded call sometimes misses fields
+      // even when the customer clearly provided everything in one message,
+      // which then silently blocks the Confirme/Annule buttons forever.
+      let mergedName = decision.collectedName;
+      let mergedCity = decision.collectedCity;
+      let mergedAddress = decision.collectedAddress;
+      let mergedPhone = decision.collectedPhone;
+      const stillMissing = !(mergedName || conv.collectedName || conv.customerName)
+        || !(mergedCity || conv.collectedCity)
+        || !(mergedAddress || conv.collectedAddress)
+        || !(mergedPhone || conv.collectedPhone);
+      if (stillMissing) {
+        const dedicatedInfo = await detectCustomerInfoAI(customerMessage, storeId);
+        if (dedicatedInfo) {
+          mergedName = mergedName || dedicatedInfo.name;
+          mergedCity = mergedCity || dedicatedInfo.city;
+          mergedAddress = mergedAddress || dedicatedInfo.address;
+          mergedPhone = mergedPhone || dedicatedInfo.phone;
+        }
+      }
+
+      if (mergedCity || mergedName || mergedAddress || mergedPhone) {
         try {
           const update: Record<string, unknown> = {};
-          if (decision.collectedCity) update.collectedCity = decision.collectedCity;
-          if (decision.collectedName) update.collectedName = decision.collectedName;
-          if (decision.collectedAddress) update.collectedAddress = decision.collectedAddress;
-          if (decision.collectedPhone) update.collectedPhone = decision.collectedPhone;
+          if (mergedCity) update.collectedCity = mergedCity;
+          if (mergedName) update.collectedName = mergedName;
+          if (mergedAddress) update.collectedAddress = mergedAddress;
+          if (mergedPhone) update.collectedPhone = mergedPhone;
           await db.update(aiConversations).set(update).where(eq(aiConversations.id, conv.id));
+          // Keep the in-memory conv object in sync too, so the button-trigger
+          // check right below sees the update in this same pass.
+          if (mergedCity) conv.collectedCity = mergedCity;
+          if (mergedName) conv.collectedName = mergedName;
+          if (mergedAddress) conv.collectedAddress = mergedAddress;
+          if (mergedPhone) conv.collectedPhone = mergedPhone;
         } catch (e: any) {
           console.error(`[AI] Failed to save collected name/city/address/phone for conv ${conv.id}:`, e.message);
         }
