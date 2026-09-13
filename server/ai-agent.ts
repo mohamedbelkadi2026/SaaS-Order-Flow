@@ -1763,6 +1763,27 @@ export async function handleIncomingMessage(
       console.log(`[REPLY] AI sending back to ${customerPhone}: "${aiReply.substring(0, 100)}"`);
       console.log(`[REPLY] confirmed=${decision.isConfirmed} | cancelled=${decision.isCancelled} | conv=${conv.id}`);
 
+      // ── Reply/JSON consistency self-correction ──────────────────────
+      // Confirmed live: the LLM's reply text stated the order was
+      // confirmed ("الكوموند ديالك تأكدات ✅") while is_confirmed stayed
+      // false in the SAME JSON response — the customer was told it's
+      // confirmed while the order silently stayed "nouveau" forever. Only
+      // matches strong, unambiguous STATEMENTS that confirmation already
+      // happened (never matches questions like "واش نؤكد ليك؟", which ask
+      // rather than declare).
+      if (!decision.isConfirmed && !decision.isCancelled) {
+        const strongConfirmPhrases = [
+          "تأكدات ✅", "الكوموند ديالك تأكدات", "الطلبية ديالك تأكدات",
+          "الكومند ديالك تأكدات", "طلبيتك تأكدات", "commande.*confirmée",
+        ];
+        const replyLower = aiReply;
+        const looksConfirmed = strongConfirmPhrases.some(p => replyLower.includes(p));
+        if (looksConfirmed) {
+          console.warn(`[AI] Reply/JSON mismatch detected for conv ${conv.id} — reply states confirmed but is_confirmed=false, self-correcting`);
+          decision.isConfirmed = true;
+        }
+      }
+
       // ── Detect early whether this message is about a DIFFERENT product ──
       // Computed here (before step advancement) so the city/variant capture
       // below can skip it — otherwise a short, non-question message like
