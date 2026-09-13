@@ -19,4 +19,4 @@ replit.nix
 .local/
 
 # Logs
-*.log
+*.logbackup.sql
