@@ -19746,6 +19746,21 @@ function ensureHeaders(sheet) {
       }
 
       if (!targetStoreId) {
+        // Final safety net: if exactly ONE store on the whole platform has
+        // Green API configured, it's almost certainly the right one — use
+        // it rather than silently dropping a genuine new cold-lead message
+        // just because that store's instance ID wasn't saved/matched yet.
+        // Confirmed live: this exact silent-drop path was losing real leads.
+        const configuredStores = await db.select({ storeId: aiSettings.storeId })
+          .from(aiSettings)
+          .where(sql`${aiSettings.greenApiInstanceId} IS NOT NULL AND ${aiSettings.greenApiInstanceId} != ''`);
+        if (configuredStores.length === 1) {
+          targetStoreId = configuredStores[0].storeId;
+          console.warn(`[WA Webhook] instanceId=${incomingInstanceId || "none"} didn't match any store, but only one store has Green API configured (storeId=${targetStoreId}) — using it as a safety-net fallback instead of dropping`);
+        }
+      }
+
+      if (!targetStoreId) {
         console.warn(`[WA Webhook] Could not identify store for instanceId=${incomingInstanceId || "none"}, phone=${phone} — message dropped`);
         return;
       }
