@@ -189,7 +189,7 @@ const waVideoUpload = multer({
       cb(null, `wa_video_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
     },
   }),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 80 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = ["video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/3gpp"];
     if (allowed.includes(file.mimetype)) cb(null, true);
@@ -18733,15 +18733,33 @@ function ensureHeaders(sheet) {
   });
 
   // ── WhatsApp AI content uploads (Automation & AI → Produits WhatsApp) ──────
-  app.post("/api/upload/whatsapp-image", requireAuth, waImageUpload.single("file"), (req: any, res: any) => {
+  // Wraps a multer .single(field) middleware so upload errors (file too
+  // large, wrong type) return a clear JSON message instead of a generic
+  // failure — multer throws before reaching the route handler, so this
+  // needs to be caught explicitly rather than left to Express defaults.
+  function handleWaUpload(uploader: any, maxLabel: string) {
+    return (req: any, res: any, next: any) => {
+      uploader.single("file")(req, res, (err: any) => {
+        if (err) {
+          if (err.code === "LIMIT_FILE_SIZE") {
+            return res.status(400).json({ message: `Le fichier est trop volumineux (max ${maxLabel}).` });
+          }
+          return res.status(400).json({ message: err.message || "Échec de l'envoi du fichier." });
+        }
+        next();
+      });
+    };
+  }
+
+  app.post("/api/upload/whatsapp-image", requireAuth, handleWaUpload(waImageUpload, "10 Mo"), (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
     res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
   });
-  app.post("/api/upload/whatsapp-audio", requireAuth, waAudioUpload.single("file"), (req: any, res: any) => {
+  app.post("/api/upload/whatsapp-audio", requireAuth, handleWaUpload(waAudioUpload, "20 Mo"), (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
     res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
   });
-  app.post("/api/upload/whatsapp-video", requireAuth, waVideoUpload.single("file"), (req: any, res: any) => {
+  app.post("/api/upload/whatsapp-video", requireAuth, handleWaUpload(waVideoUpload, "80 Mo"), (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
     res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
   });
