@@ -1279,15 +1279,60 @@ export async function handleIncomingMessage(
           whatsappVideoUrls: products.whatsappVideoUrls,
         }).from(products).where(eq(products.storeId, storeId));
 
-        const matchedProduct = candidateProducts.find(p => p.name && msgNorm.includes(normalize(p.name)));
+        let matchedProduct = candidateProducts.find(p => p.name && msgNorm.includes(normalize(p.name)));
 
         if (!matchedProduct) {
-          // Not a product-related first message — most likely a personal
-          // contact (friend, family) rather than a Facebook-ad lead, since a
-          // real ad-driven wa.me message always has the product name
-          // pre-filled. Stay silent rather than replying like a bot to
-          // someone who isn't a customer at all — do NOT create a lead/order.
-          console.log(`[AI] First message from ${customerPhone} has no product mention — not treating as a lead, staying silent: "${customerMessage.slice(0, 80)}"`);
+          // Try a fuzzy/descriptive match via the dedicated classifier
+          // before giving up — catches "بغيت شاحن ديال سيارة" type messages
+          // that don't literally contain the product's exact name.
+          const fuzzyName = await detectProductMentionAI(customerMessage, candidateProducts.map(p => p.name!), null, storeId);
+          if (fuzzyName) {
+            matchedProduct = candidateProducts.find(p => p.name === fuzzyName);
+          }
+        }
+
+        if (!matchedProduct) {
+          // Still couldn't identify a specific product — per explicit
+          // decision, NEVER silently drop a possible lead. Create a minimal
+          // order/conversation anyway (visible in Live Chat, "Produit non
+          // précisé") and ask which product they're interested in, rather
+          // than going silent (which was losing genuine leads whose message
+          // just didn't happen to match a catalog name exactly).
+          console.log(`[AI] First message from ${customerPhone} — no product matched even fuzzily, creating minimal lead and asking: "${customerMessage.slice(0, 80)}"`);
+          const coldLeadSettingsForAsk = await storage.getAiSettings(storeId);
+          if (!coldLeadSettingsForAsk?.enabled) return;
+
+          const minimalOrder = await storage.createOrder({
+            storeId,
+            orderNumber: `WA-${Date.now()}`,
+            customerName: "Client WhatsApp",
+            customerPhone,
+            customerCity: "",
+            customerAddress: "",
+            status: "nouveau",
+            source: "whatsapp",
+            totalPrice: 0,
+          } as any, [{
+            productId: null,
+            quantity: 1,
+            price: 0,
+            rawProductName: "Produit non précisé",
+            sku: "",
+            variantInfo: "",
+          }] as any);
+
+          const askConv = await storage.createAiConversation({
+            storeId, orderId: minimalOrder.id, customerPhone, customerName: null,
+            status: "active", isManual: 0, conversationStep: 1,
+          });
+          conv = askConv;
+
+          await storage.createAiLog({ storeId, orderId: minimalOrder.id, customerPhone, role: "user", message: customerMessage });
+          const askProductMsg = "السلام عليكم! 😊 على أي منتوج بغيتي معلومات؟ عطيني سميتو باش نعاونوك.";
+          await queueWhatsApp(storeId, customerPhone, askProductMsg);
+          await storage.createAiLog({ storeId, orderId: minimalOrder.id, customerPhone, role: "assistant", message: askProductMsg });
+          await storage.updateAiConversationLastMessage(askConv.id, askProductMsg);
+          broadcastToStore(storeId, "message", { conversationId: askConv.id, role: "assistant", content: askProductMsg, ts: Date.now() });
           return;
         }
 
