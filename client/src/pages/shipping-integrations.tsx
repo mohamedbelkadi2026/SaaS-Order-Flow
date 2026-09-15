@@ -206,6 +206,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const isAmeex  = providerId === "ameex";
   const [ameexStoreName, setAmeexStoreName] = useState<string>(existingAccount?.carrierStoreName || "");
   const [ameexApiId,     setAmeexApiId]     = useState<string>("");
+  const [ameexProductKey, setAmeexProductKey] = useState<string>((existingAccount?.settings as any)?.ameexProductKey || "id");
   const [showAmeexKey,   setShowAmeexKey]   = useState(false);
 
   // ── Sendit-specific fields ────────────────────────────────────────────────
@@ -460,6 +461,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           if (apiKey.trim())        body.apiKey          = apiKey;
           if (ameexApiId.trim())    body.apiSecret       = ameexApiId;
           body.carrierStoreName = ameexStoreName.trim() || null;
+          body.settings = { ...((existingAccount?.settings as object) || {}), ameexProductKey };
         } else if (isExpressCoursier) {
           const ecStoreIdNum = Number(ecStoreId.trim());
           if (!ecStoreIdNum || ecStoreIdNum <= 0) {
@@ -502,6 +504,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           payload.apiSecret       = ameexApiId.trim() || undefined;
           payload.carrierStoreName = ameexStoreName.trim() || undefined;
           payload.storeName       = resolvedStoreName;
+          payload.settings        = { ameexProductKey };
         } else if (isExpressCoursier) {
           const ecStoreIdNum = Number(ecStoreId.trim());
           if (!ecStoreIdNum || ecStoreIdNum <= 0) {
@@ -876,6 +879,27 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     />
                     <p className="text-[10px] text-muted-foreground">Laissez vide pour conserver l'actuel</p>
                   </div>
+                </div>
+
+                {/* Ameex stock-managed: id vs ref key for products[0][X] */}
+                <div className="space-y-1.5 mt-3">
+                  <Label htmlFor="ameex_product_key_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Clé produit Ameex (stock géré)
+                  </Label>
+                  <select
+                    id="ameex_product_key_edit"
+                    data-testid="select-ameex-product-key"
+                    value={ameexProductKey}
+                    onChange={e => setAmeexProductKey(e.target.value)}
+                    className="h-10 w-full text-xs rounded-md border border-input bg-background px-3"
+                  >
+                    <option value="id">id (UUID Ameex — par défaut)</option>
+                    <option value="ref">ref (référence courte Ameex)</option>
+                  </select>
+                  <p className="text-[10px] text-muted-foreground">
+                    Uniquement utilisé pour les produits "stock géré par Ameex" (champ 🚚 ID produit Ameex dans
+                    Inventaire). Demandez à Ameex laquelle des deux clés correspond au format que vous utilisez.
+                  </p>
                 </div>
               </>
             ) : (
