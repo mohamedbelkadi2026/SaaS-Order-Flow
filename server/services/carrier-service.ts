@@ -321,6 +321,13 @@ export interface CarrierShipInput {
   cityId?: string;
   // Ameex-specific: product catalog UUID for stock-managed Ameex accounts.
   ameexProductId?: string;
+  // Ameex-specific: which key name Ameex's API expects for the products[0][X]
+  // parameter — "id" (default, per their documented Postman examples, UUID
+  // format) or "ref" (per direct guidance from an Ameex contact — unconfirmed
+  // which is actually correct, made configurable per-store via
+  // store_integrations.credentials.ameexProductKey rather than guessing).
+  // Defaults to "id" so existing stock-managed accounts see no change.
+  ameexProductKey?: string;
   // Experimental: the platform product's own "Référence" field, appended to
   // Ameex's free-text 'product' field. Ameex's official documented API has
   // NO structured way to reference their internal "Entrepôt" stock catalog
@@ -588,8 +595,10 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
 
   // Product quantity: Ameex uses the array notation products[0][qty]
   if (input.ameexProductId) {
-    payload['products[0][id]']  = input.ameexProductId;
+    const productKey = input.ameexProductKey || 'id'; // "id" (default) or "ref" — see CarrierShipInput.ameexProductKey
+    payload[`products[0][${productKey}]`] = input.ameexProductId;
     payload['products[0][qty]'] = String(input.quantity ?? 1);
+    console.log(`[AMEEX-STOCK-MODE] Order ${input.orderNumber} — sending products[0][${productKey}]=${input.ameexProductId}`);
   } else {
     payload['products[0][qty]'] = String(input.quantity ?? 1);
   }
