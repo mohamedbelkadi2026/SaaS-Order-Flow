@@ -1582,6 +1582,27 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   />
                 </div>
               </div>
+
+              {/* Ameex stock-managed: id vs ref key for products[0][X] */}
+              <div className="space-y-1.5">
+                <Label htmlFor="ameex_product_key_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                  Clé produit Ameex (stock géré)
+                </Label>
+                <select
+                  id="ameex_product_key_create"
+                  data-testid="select-ameex-product-key-create"
+                  value={ameexProductKey}
+                  onChange={e => setAmeexProductKey(e.target.value)}
+                  className="h-10 w-full text-xs rounded-md border border-input bg-background px-3"
+                >
+                  <option value="id">id (UUID Ameex — par défaut)</option>
+                  <option value="ref">ref (référence courte Ameex)</option>
+                </select>
+                <p className="text-[10px] text-muted-foreground">
+                  Uniquement utilisé pour les produits "stock géré par Ameex" (champ 🚚 ID produit Ameex dans
+                  Inventaire). Demandez à Ameex laquelle des deux clés correspond au format que vous utilisez.
+                </p>
+              </div>
             </>
           ) : isCustom ? (
             <>
