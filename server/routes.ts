@@ -2816,7 +2816,7 @@ export async function registerRoutes(
                   ecSettings,
                   ozonSettings,
                   ameexProductId:   orderAmeexProductId,
-                  ameexProductKey:  (orderCreds as any).ameexProductKey || 'id',
+                  ameexProductKey:  (orderCreds as any).settings?.ameexProductKey || 'id',
                   productReference: orderProductReference,
                 });
               })
@@ -17964,7 +17964,7 @@ function ensureHeaders(sheet) {
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
         ameexProductId:   singleOrderAmeexProductId,
-        ameexProductKey:  (creds as any).ameexProductKey || 'id',
+        ameexProductKey:  (creds as any).settings?.ameexProductKey || 'id',
         productReference: singleOrderProductReference,
       });
 
