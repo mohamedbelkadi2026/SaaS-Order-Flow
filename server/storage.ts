@@ -2875,6 +2875,7 @@ export class DatabaseStorage implements IStorage {
         settings: p.settings,
         descriptionDarija: p.descriptionDarija,
         aiFeatures: p.aiFeatures,
+        ameexProductId: p.ameexProductId,
         stock: totalStock,
         variantCount: variants.length || 1,
         recu,
