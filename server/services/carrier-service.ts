@@ -328,6 +328,26 @@ export interface CarrierShipInput {
   // store_integrations.credentials.ameexProductKey rather than guessing).
   // Defaults to "id" so existing stock-managed accounts see no change.
   ameexProductKey?: string;
+  // ── Ameex SIMPLE vs STOCK ─────────────────────────────────────────────────
+  // ameexProductKey above decides WHICH key identifies the article; this
+  // decides whether Ameex looks at the products[] array at all. Their API's
+  // `type` field is documented as "SIMPLE / STOCK":
+  //   simple — the merchant holds the goods; Ameex only delivers the parcel.
+  //   stock  — the goods sit in Ameex's warehouse; they pick, pack and
+  //            decrement THEIR stock from the products[] lines.
+  // Sending a catalog key under type=SIMPLE is a no-op: Ameex ignores the
+  // array, their stock never moves and the parcel shows as STD in their
+  // portal rather than STOCK. Configured per connection via
+  // carrier_accounts.settings.ameexFulfillmentMode; defaults to 'simple' so
+  // existing connections are untouched.
+  ameexFulfillmentMode?: 'simple' | 'stock';
+  // Per-line catalog keys. Ameex accepts products[0], products[1]… — a
+  // two-article order previously decremented only the first one from their
+  // warehouse. Falls back to the single ameexProductId above when empty.
+  ameexItems?: Array<{ key: string; qty: number; name?: string }>;
+  // Order lines with NO Ameex key, used by validateAmeexInput to refuse a
+  // STOCK shipment rather than send a parcel Ameex cannot fulfil.
+  ameexMissingRefs?: string[];
   // Experimental: the platform product's own "Référence" field, appended to
   // Ameex's free-text 'product' field. Ameex's official documented API has
   // NO structured way to reference their internal "Entrepôt" stock catalog
@@ -520,6 +540,18 @@ function validateAmeexInput(input: CarrierShipInput): string[] {
   if (!product)                            issues.push('Nom du produit manquant');
   if (!input.totalPrice || input.totalPrice <= 0) issues.push('Prix total manquant ou nul');
 
+  // STOCK accounts: Ameex pulls the goods from their own warehouse, so every
+  // line must carry a catalog key. Without it they create an empty parcel and
+  // their stock never moves — fail here instead, with the product named.
+  if (input.ameexFulfillmentMode === 'stock') {
+    const missing = input.ameexMissingRefs ?? [];
+    if (missing.length) {
+      issues.push(`Compte Ameex en mode STOCK — référence Ameex manquante sur : ${missing.join(', ')}`);
+    } else if (!input.ameexItems?.length && !input.ameexProductId) {
+      issues.push('Compte Ameex en mode STOCK — aucune référence Ameex sur cette commande');
+    }
+  }
+
   return issues;
 }
 
@@ -535,6 +567,49 @@ function validateAmeexInput(input: CarrierShipInput): string[] {
  * NOT French (destinataire, telephone, ville, adresse, produit, note).
  * The 'city' field is a NUMERIC ID, not a city name string.
  */
+/**
+ * Resolve the Ameex STOCK-mode context for one order.
+ *
+ * Shared by BOTH ship handlers (bulk and single) in server/routes.ts, which
+ * have drifted apart before — a mismatch here means the same order ships
+ * differently depending on which button was pressed.
+ *
+ * Reads carrier_accounts.settings.ameexFulfillmentMode, the same bag that
+ * already holds ameexProductKey, digylogStoreName, ozonExpressCustomerId…
+ *
+ * Per-line key precedence matches the existing fallback chain:
+ *   1. orders.ameexProductId    (per-order override, Google Sheets webhook)
+ *   2. products.ameexProductId  (catalog default, any order source)
+ */
+export function resolveAmeexStockLines(order: any, creds: any): {
+  ameexFulfillmentMode: 'simple' | 'stock';
+  ameexItems: Array<{ key: string; qty: number; name?: string }>;
+  ameexMissingRefs: string[];
+} {
+  const s = creds?.settings ?? {};
+  const mode: 'simple' | 'stock' =
+    (s.ameexFulfillmentMode ?? creds?.ameexFulfillmentMode) === 'stock' ? 'stock' : 'simple';
+
+  const orderOverride = order?.ameexProductId || undefined;
+  const items: any[]  = Array.isArray(order?.items) ? order.items : [];
+
+  const ameexItems: Array<{ key: string; qty: number; name?: string }> = [];
+  const ameexMissingRefs: string[] = [];
+
+  for (const it of items) {
+    const key  = it?.ameexProductId || it?.product?.ameexProductId || orderOverride;
+    const name = it?.product?.name || it?.productName || 'Produit sans nom';
+    if (key) ameexItems.push({ key: String(key), qty: Number(it?.quantity) || 1, name });
+    else     ameexMissingRefs.push(String(name));
+  }
+
+  if (mode === 'stock' && !items.length && !orderOverride) {
+    ameexMissingRefs.push('commande sans ligne de produit');
+  }
+
+  return { ameexFulfillmentMode: mode, ameexItems, ameexMissingRefs };
+}
+
 function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const receiver = cleanText(input.customerName);
   const phone    = sanitizePhone(input.phone);
@@ -562,8 +637,14 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const note     = cleanText(input.note);
   const priceDH  = +(input.totalPrice / 100).toFixed(2);
 
+  // SIMPLE = merchant holds the goods, Ameex only delivers.
+  // STOCK   = goods held in Ameex's warehouse; they pick, pack and decrement
+  //           their own stock from the products[] lines below. Without this the
+  //           whole products[] array is ignored — see ameexFulfillmentMode.
+  const stockMode = input.ameexFulfillmentMode === 'stock';
+
   const payload: Record<string, unknown> = {
-    type:      "SIMPLE",
+    type:      stockMode ? "STOCK" : "SIMPLE",
     business:  String(input.apiSecret || input.apiId || ""),
 
     // ── Our order reference — sent under every known field name ───────────
@@ -593,12 +674,22 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
     cod:       String(priceDH),
   };
 
-  // Product quantity: Ameex uses the array notation products[0][qty]
-  if (input.ameexProductId) {
-    const productKey = input.ameexProductKey || 'id'; // "id" (default) or "ref" — see CarrierShipInput.ameexProductKey
-    payload[`products[0][${productKey}]`] = input.ameexProductId;
-    payload['products[0][qty]'] = String(input.quantity ?? 1);
-    console.log(`[AMEEX-STOCK-MODE] Order ${input.orderNumber} — sending products[0][${productKey}]=${input.ameexProductId}`);
+  // Catalog lines: Ameex uses the array notation products[i][key].
+  // Every line is sent, not just the first — a two-article order used to
+  // decrement a single article from their warehouse.
+  const productKey = input.ameexProductKey || 'id'; // "id" (default) or "ref" — see CarrierShipInput.ameexProductKey
+  const lines = input.ameexItems?.length
+    ? input.ameexItems
+    : (input.ameexProductId
+        ? [{ key: input.ameexProductId, qty: input.quantity ?? 1 }]
+        : []);
+
+  if (lines.length) {
+    lines.forEach((line, i) => {
+      payload[`products[${i}][${productKey}]`] = line.key;
+      payload[`products[${i}][qty]`]           = String(line.qty ?? 1);
+    });
+    console.log(`[AMEEX-STOCK-MODE] Order ${input.orderNumber} — type=${stockMode ? 'STOCK' : 'SIMPLE'}, ${lines.length} line(s) as products[i][${productKey}]`);
   } else {
     payload['products[0][qty]'] = String(input.quantity ?? 1);
   }

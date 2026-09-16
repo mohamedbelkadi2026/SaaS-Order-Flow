@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
+import { shipOrderToCarrier, resolveAmeexStockLines, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -2817,6 +2817,7 @@ export async function registerRoutes(
                   ozonSettings,
                   ameexProductId:   orderAmeexProductId,
                   ameexProductKey:  (orderCreds as any).settings?.ameexProductKey || 'id',
+                  ...resolveAmeexStockLines(order, orderCreds),
                   productReference: orderProductReference,
                 });
               })
@@ -17965,6 +17966,7 @@ function ensureHeaders(sheet) {
         ozonSettings:     singleOzonSettings,
         ameexProductId:   singleOrderAmeexProductId,
         ameexProductKey:  (creds as any).settings?.ameexProductKey || 'id',
+        ...resolveAmeexStockLines(order, creds),
         productReference: singleOrderProductReference,
       });
 

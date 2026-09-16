@@ -207,6 +207,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [ameexStoreName, setAmeexStoreName] = useState<string>(existingAccount?.carrierStoreName || "");
   const [ameexApiId,     setAmeexApiId]     = useState<string>("");
   const [ameexProductKey, setAmeexProductKey] = useState<string>((existingAccount?.settings as any)?.ameexProductKey || "id");
+  // Ameex SIMPLE vs STOCK. ameexProductKey decides WHICH key names the article;
+  // this decides whether Ameex reads the products[] array at all. Under SIMPLE
+  // the key is ignored, their stock never moves and the parcel shows as STD.
+  const [ameexFulfillmentMode, setAmeexFulfillmentMode] = useState<string>(
+    (existingAccount?.settings as any)?.ameexFulfillmentMode === "stock" ? "stock" : "simple"
+  );
   const [showAmeexKey,   setShowAmeexKey]   = useState(false);
 
   // ── Sendit-specific fields ────────────────────────────────────────────────
@@ -461,7 +467,11 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           if (apiKey.trim())        body.apiKey          = apiKey;
           if (ameexApiId.trim())    body.apiSecret       = ameexApiId;
           body.carrierStoreName = ameexStoreName.trim() || null;
-          body.settings = { ...((existingAccount?.settings as object) || {}), ameexProductKey };
+          body.settings = {
+            ...((existingAccount?.settings as object) || {}),
+            ameexProductKey,
+            ameexFulfillmentMode: ameexFulfillmentMode === "stock" ? "stock" : "simple",
+          };
         } else if (isExpressCoursier) {
           const ecStoreIdNum = Number(ecStoreId.trim());
           if (!ecStoreIdNum || ecStoreIdNum <= 0) {
@@ -504,7 +514,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           payload.apiSecret       = ameexApiId.trim() || undefined;
           payload.carrierStoreName = ameexStoreName.trim() || undefined;
           payload.storeName       = resolvedStoreName;
-          payload.settings        = { ameexProductKey };
+          payload.settings        = {
+            ameexProductKey,
+            ameexFulfillmentMode: ameexFulfillmentMode === "stock" ? "stock" : "simple",
+          };
         } else if (isExpressCoursier) {
           const ecStoreIdNum = Number(ecStoreId.trim());
           if (!ecStoreIdNum || ecStoreIdNum <= 0) {
@@ -881,7 +894,45 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   </div>
                 </div>
 
-                {/* Ameex stock-managed: id vs ref key for products[0][X] */}
+                {/* Ameex SIMPLE vs STOCK — decides whether products[] is read at all */}
+                <div className="space-y-2 mt-3">
+                  <Label className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Mode d'expédition Ameex
+                  </Label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ameexFulfillmentMode !== "stock" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                    <input
+                      type="radio"
+                      name="ameexFulfillmentModeEdit"
+                      value="simple"
+                      checked={ameexFulfillmentMode !== "stock"}
+                      onChange={() => setAmeexFulfillmentMode("simple")}
+                      data-testid="radio-ameex-mode-simple"
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-semibold text-sm text-gray-800">📦 Ramassage (SIMPLE)</div>
+                      <div className="text-xs text-gray-500 mt-0.5">La marchandise est chez vous. Ameex passe récupérer le colis et le livre.</div>
+                    </div>
+                  </label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ameexFulfillmentMode === "stock" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                    <input
+                      type="radio"
+                      name="ameexFulfillmentModeEdit"
+                      value="stock"
+                      checked={ameexFulfillmentMode === "stock"}
+                      onChange={() => setAmeexFulfillmentMode("stock")}
+                      data-testid="radio-ameex-mode-stock"
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Ameex (STOCK)</div>
+                      <div className="text-xs text-gray-500 mt-0.5">Votre marchandise est entreposée chez Ameex. Chaque expédition décrémente leur stock. Chaque produit doit porter sa référence Ameex.</div>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Ameex stock-managed: id vs ref key for products[i][X] */}
+                {ameexFulfillmentMode === "stock" && (
                 <div className="space-y-1.5 mt-3">
                   <Label htmlFor="ameex_product_key_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
                     Clé produit Ameex (stock géré)
@@ -901,6 +952,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     Inventaire). Demandez à Ameex laquelle des deux clés correspond au format que vous utilisez.
                   </p>
                 </div>
+                )}
               </>
             ) : (
               <>
@@ -1583,7 +1635,35 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 </div>
               </div>
 
-              {/* Ameex stock-managed: id vs ref key for products[0][X] */}
+              {/* Ameex SIMPLE vs STOCK — decides whether products[] is read at all */}
+              <div className="space-y-2">
+                <Label className="font-semibold text-sm" style={{ color: NAVY }}>
+                  Mode d'expédition Ameex
+                </Label>
+                <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ameexFulfillmentMode !== "stock" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                  <input type="radio" name="ameexFulfillmentModeCreate" value="simple"
+                    checked={ameexFulfillmentMode !== "stock"}
+                    onChange={() => setAmeexFulfillmentMode("simple")}
+                    data-testid="radio-ameex-mode-simple-create" className="mt-1" />
+                  <div>
+                    <div className="font-semibold text-sm text-gray-800">📦 Ramassage (SIMPLE)</div>
+                    <div className="text-xs text-gray-500 mt-0.5">La marchandise est chez vous. Ameex passe récupérer le colis et le livre.</div>
+                  </div>
+                </label>
+                <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ameexFulfillmentMode === "stock" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                  <input type="radio" name="ameexFulfillmentModeCreate" value="stock"
+                    checked={ameexFulfillmentMode === "stock"}
+                    onChange={() => setAmeexFulfillmentMode("stock")}
+                    data-testid="radio-ameex-mode-stock-create" className="mt-1" />
+                  <div>
+                    <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Ameex (STOCK)</div>
+                    <div className="text-xs text-gray-500 mt-0.5">Votre marchandise est entreposée chez Ameex. Chaque expédition décrémente leur stock. Chaque produit doit porter sa référence Ameex.</div>
+                  </div>
+                </label>
+              </div>
+
+              {/* Ameex stock-managed: id vs ref key for products[i][X] */}
+              {ameexFulfillmentMode === "stock" && (
               <div className="space-y-1.5">
                 <Label htmlFor="ameex_product_key_create" className="font-semibold text-sm" style={{ color: NAVY }}>
                   Clé produit Ameex (stock géré)
@@ -1603,6 +1683,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   Inventaire). Demandez à Ameex laquelle des deux clés correspond au format que vous utilisez.
                 </p>
               </div>
+              )}
             </>
           ) : isCustom ? (
             <>
