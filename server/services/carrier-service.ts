@@ -4245,9 +4245,15 @@ export async function fetchNearyaRegions(
       timeout: 20000,
       validateStatus: () => true,
     });
+    // Their docs publish no schema for this endpoint either, so log the body
+    // verbatim — without it a failure is indistinguishable from an empty list.
+    const rawBody = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
     console.log(`[NEARYA] GET /region → HTTP ${res.status}`);
+    console.log(`[NEARYA] RAW REGIONS BODY (first 1500 chars):\n${(rawBody || '').slice(0, 1500)}`);
+
     if (res.status < 200 || res.status >= 300) {
-      return { regions: [], error: `HTTP ${res.status}` };
+      const apiMsg = (res.data as any)?.message || (res.data as any)?.error;
+      return { regions: [], error: apiMsg ? `HTTP ${res.status} — ${apiMsg}` : `HTTP ${res.status} — ${(rawBody || '').slice(0, 200)}` };
     }
     // Accept the common envelope shapes; their docs don't specify one.
     const raw = Array.isArray(res.data) ? res.data
@@ -4256,6 +4262,13 @@ export async function fetchNearyaRegions(
       id:   String(r?._id ?? r?.id ?? r?.regionId ?? ''),
       name: String(r?.name ?? r?.region ?? r?.label ?? ''),
     })).filter(r => r.id && r.name);
+    if (!regions.length) {
+      // Reached Nearya fine but nothing matched the shapes we try — surface the
+      // top-level keys so the real shape can be added without another round trip.
+      const keys = res.data && typeof res.data === 'object' ? Object.keys(res.data).join(', ') : typeof res.data;
+      console.warn(`[NEARYA] 0 regions parsed. Top-level response keys: ${keys}`);
+      return { regions: [], error: `réponse reçue mais aucune région reconnue (clés: ${keys}). Voir [NEARYA] RAW REGIONS BODY dans les logs.` };
+    }
     console.log(`[NEARYA] ${regions.length} region(s) parsed`);
     return { regions };
   } catch (err: any) {
