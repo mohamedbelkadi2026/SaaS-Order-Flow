@@ -4212,11 +4212,48 @@ export async function createNearyaParcel(
       return { error: `Nearya: ${msg}`, permanent: res.status === 401 || res.status === 403 || res.status === 422 };
     }
 
-    const trackingNumber = extractTracking(res.data);
+    // /region turned out to nest its payload two levels under { status,
+    // results, data }, so don't assume the tracking code sits at the top
+    // level either — walk the response for a tracking-shaped field.
+    const TRACK_KEY = /^(code|parcel|parcelCode|tracking|trackingCode|trackingNumber|codeSuivi|code_suivi|barcode|reference|ref|_id|id)$/i;
+    const findTracking = (node: any, depth = 0): string | null => {
+      if (!node || depth > 6) return null;
+      if (Array.isArray(node)) {
+        for (const item of node) {
+          const hit = findTracking(item, depth + 1);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      if (typeof node === 'object') {
+        // Prefer the explicitly tracking-named keys at this level before
+        // descending, so a nested id doesn't win over the real code.
+        for (const [k, v] of Object.entries(node)) {
+          if (TRACK_KEY.test(k) && typeof v === 'string' && v.trim().length >= 4) return v.trim();
+          if (TRACK_KEY.test(k) && typeof v === 'number') return String(v);
+        }
+        for (const v of Object.values(node)) {
+          const hit = findTracking(v, depth + 1);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    };
+
+    const trackingNumber = extractTracking(res.data) || findTracking(res.data);
     if (!trackingNumber) {
-      console.warn(`${tag} ⚠️ Parcel created but no tracking code found in the response — see the raw body above.`);
-      return { error: "Colis créé chez Nearya mais aucun code de suivi n'a été renvoyé. Vérifiez le colis dans votre compte Nearya.", permanent: false };
+      // Put the shape in the error itself: hunting for this in the Railway logs
+      // costs a round trip, and the same problem on /region was solved the
+      // moment the keys were visible in the message.
+      const keys = res.data && typeof res.data === 'object' ? Object.keys(res.data).join(', ') : typeof res.data;
+      const snippet = (typeof res.data === 'string' ? res.data : JSON.stringify(res.data) || '').slice(0, 300);
+      console.warn(`${tag} ⚠️ Parcel created but no tracking code found. Keys: ${keys}`);
+      return {
+        error: `Colis créé chez Nearya mais aucun code de suivi reconnu. Réponse (clés: ${keys}) : ${snippet}`,
+        permanent: false,
+      };
     }
+    console.log(`${tag} tracking resolved from response: ${trackingNumber}`);
 
     const feeRaw = (res.data as any)?.deliveryFee ?? (res.data as any)?.price ?? (res.data as any)?.fee;
     const deliveryFee = feeRaw != null && !Number.isNaN(Number(feeRaw))
