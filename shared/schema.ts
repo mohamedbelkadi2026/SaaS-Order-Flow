@@ -209,6 +209,9 @@ export const orders = pgTable("orders", {
   carrierId: integer("carrier_id"),
   carrierName: text("carrier_name"),
   waselexCityId: integer("waselex_city_id"),
+  // Nearya Express: their `region` id for the destination, resolved from the
+  // customer city at ship time (see nearyaRegions).
+  nearyaRegionId: text("nearya_region_id"),
   driverName:  text("driver_name").default(""),
   driverPhone: text("driver_phone").default(""),
   offerName:       text("offer_name"),        // enrichment from Google Sheets / forms
@@ -467,6 +470,19 @@ export const waselexCities = pgTable("waselex_cities", {
   createdAt:   timestamp("created_at").defaultNow(),
 });
 export type WaselexCity = typeof waselexCities.$inferSelect;
+
+// Nearya Express regions (GET /api/region). Their ids are opaque strings
+// (Mongo-style), not integers like the other carriers — hence text().
+export const nearyaRegions = pgTable("nearya_regions", {
+  id:          serial("id").primaryKey(),
+  externalId:  text("external_id").notNull().unique(), // region id Nearya
+  name:        text("name").notNull(),
+  nameNorm:    text("name_norm").notNull(),            // lowercase, accents stripped
+  deliveryFee: integer("delivery_fee").notNull().default(0), // centimes
+  refusalFee:  integer("refusal_fee").notNull().default(0),  // centimes
+  createdAt:   timestamp("created_at").defaultNow(),
+});
+export type NearyaRegion = typeof nearyaRegions.$inferSelect;
 
 // ─── Per-city delivery pricing (per carrier) ────────────────────────────────
 // Fills orders.shippingCost automatically for carriers that don't return a

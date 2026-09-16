@@ -45,7 +45,25 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   codinafrica:    "https://api.codinafrica.ma/api/v1/orders",
   waselex:        "https://waselex.ma/api/vendor/v1/orders",
   olivraison:     "https://partners.olivraison.com",
+  // Nearya picks its endpoint at runtime (simple vs store) — see NEARYA_API.
+  nearya:         "https://nearya.express/api/parcelTrash/v1/simple",
 };
+
+// ── Nearya Express ───────────────────────────────────────────────────────────
+// Auth is a header pair (x-api-id = Client/Compte ID, x-api-key = API key) and
+// every call also carries the Business ID as `company` in the body.
+// Two separate endpoints instead of a type flag: /simple when the merchant
+// holds the goods, /store when Nearya warehouses them and must decrement their
+// own stock from the expectedStore[] lines.
+export const NEARYA_API = {
+  base:      "https://nearya.express/api",
+  simple:    "https://nearya.express/api/parcelTrash/v1/simple",
+  store:     "https://nearya.express/api/parcelTrash/v1/store",
+  regions:   "https://nearya.express/api/region",
+  status:    "https://nearya.express/api/docParcelStatus/v1",
+  pickup:    "https://nearya.express/api/pickup/v1",
+  inventory: "https://nearya.express/api/storeState/v1",
+} as const;
 
 // ── Waselex API base (vendor v1) ─────────────────────────────────────────────
 export const WASELEX_API_BASE = "https://waselex.ma/api/vendor/v1";
@@ -1285,6 +1303,20 @@ export async function shipOrderToCarrier(
       return { success: false, error, carrierMessage: error, httpStatus: 0, rawResponse: null };
     }
     return { success: true, trackingNumber: trackingNumber!, labelUrl: labelUrl ?? undefined, deliveryFee: deliveryFee ?? undefined };
+  }
+
+  // ── Nearya Express: x-api-id / x-api-key headers, dedicated handler ──────
+  if (providerKey === 'nearya') {
+    const nKey    = (creds as any).apiKey || '';
+    const nId     = (creds as any).apiSecret || '';
+    const nSet    = (creds as any).settings || {};
+    const nBiz    = nSet.nearyaBusinessId || (creds as any).carrierStoreName || '';
+    const nMode   = nSet.nearyaFulfillmentMode === 'store' ? 'store' : 'simple';
+    const r = await createNearyaParcel(input, { apiKey: nKey, apiSecret: nId, businessId: nBiz, mode: nMode });
+    if (r.error) {
+      return { success: false, error: r.error, carrierMessage: r.error, httpStatus: 0, rawResponse: null, permanent: r.permanent };
+    }
+    return { success: true, trackingNumber: r.trackingNumber!, deliveryFee: r.deliveryFee ?? undefined };
   }
 
   // ── Olivraison: apiKey+secretKey → Bearer JWT, dedicated createOlivraisonPackage() ──
@@ -4095,6 +4127,142 @@ export async function syncSenditDistricts(
  * POST /deliveries
  * Retourne { trackingNumber, deliveryFee, labelUrl } en cas de succès.
  */
+/**
+ * Nearya Express — create a parcel.
+ *
+ * Deliberately a dedicated handler (like Sendit and Olivraison) rather than a
+ * branch of the generic path: nothing here can affect the other carriers.
+ *
+ * Two endpoints instead of a type flag:
+ *   /parcelTrash/v1/simple — the merchant holds the goods.
+ *   /parcelTrash/v1/store  — Nearya warehouses them and decrements their own
+ *                            stock from expectedStore[{sku, quantity}].
+ * Their stock lines key on SKU, so products.sku is used directly — no extra
+ * per-product field to fill in, unlike Ameex.
+ *
+ * NOTE: their docs publish no response schema, so the raw body is logged in
+ * full on every call and the tracking code is pulled with the shared
+ * extractTracking() heuristics. Once a real response is captured, tighten this.
+ */
+export async function createNearyaParcel(
+  input: CarrierShipInput,
+  creds: { apiKey: string; apiSecret: string; businessId: string; mode?: 'simple' | 'store' },
+): Promise<{ trackingNumber?: string; deliveryFee?: number; error?: string; permanent?: boolean }> {
+  const tag = '[NEARYA]';
+
+  if (!creds.apiKey || !creds.apiSecret) {
+    return { error: "Client ID (x-api-id) et clé API (x-api-key) Nearya requis. Vérifiez Intégrations → Transporteurs.", permanent: true };
+  }
+  if (!creds.businessId) {
+    return { error: "Business ID Nearya manquant. Copiez-le depuis votre compte Nearya (section Business IDs).", permanent: true };
+  }
+
+  const region = (input as any).nearyaRegionId || input.cityId;
+  if (!region) {
+    return { error: `Ville « ${input.city} » non reconnue par Nearya. Associez-la à une région dans le mapping des villes.`, permanent: true };
+  }
+
+  const stockMode = creds.mode === 'store';
+  const url = stockMode ? NEARYA_API.store : NEARYA_API.simple;
+
+  const body: Record<string, unknown> = {
+    company:          creds.businessId,
+    orderId:          input.orderNumber,
+    region:           String(region),
+    recipient:        input.customerName,
+    recipientAddress: input.address,
+    recipientPhone:   sanitizePhone(input.phone),
+    comment:          (input as any).comment ?? input.note ?? '',
+    // Their examples send price as a string, in dirhams.
+    price:            String(+(input.totalPrice / 100).toFixed(2)),
+  };
+
+  if (stockMode) {
+    // Every line, not just the first — same lesson as the Ameex fix.
+    const lines = (((input as any).items ?? []) as any[])
+      .map((it: any) => ({ sku: it?.sku || it?.product?.sku, quantity: Number(it?.quantity) || 1 }))
+      .filter((l: any) => l.sku);
+    if (!lines.length) {
+      return { error: "Mode « Stock chez Nearya » : aucun SKU sur les produits de cette commande. Renseignez le SKU dans Inventaire.", permanent: true };
+    }
+    body.expectedStore = lines.map(l => ({ sku: String(l.sku), quantity: String(l.quantity) }));
+  }
+
+  console.log(`${tag} POST ${url}`);
+  console.log(`${tag} PAYLOAD:\n${JSON.stringify(body, null, 2)}`);
+
+  try {
+    const res = await axios.post(url, body, {
+      headers: {
+        'x-api-id':     creds.apiSecret,   // Compte / Client ID
+        'x-api-key':    creds.apiKey,
+        'Content-Type': 'application/json',
+        'Accept':       'application/json',
+      },
+      timeout: 30000,
+      validateStatus: () => true,
+    });
+
+    // Their docs document no response body — log it verbatim so the exact shape
+    // can be confirmed from production before this is tightened.
+    console.log(`${tag} HTTP ${res.status} RAW RESPONSE:\n${JSON.stringify(res.data, null, 2)}`);
+
+    if (res.status < 200 || res.status >= 300) {
+      const msg = (res.data as any)?.message || (res.data as any)?.error || `HTTP ${res.status}`;
+      return { error: `Nearya: ${msg}`, permanent: res.status === 401 || res.status === 403 || res.status === 422 };
+    }
+
+    const trackingNumber = extractTracking(res.data);
+    if (!trackingNumber) {
+      console.warn(`${tag} ⚠️ Parcel created but no tracking code found in the response — see the raw body above.`);
+      return { error: "Colis créé chez Nearya mais aucun code de suivi n'a été renvoyé. Vérifiez le colis dans votre compte Nearya.", permanent: false };
+    }
+
+    const feeRaw = (res.data as any)?.deliveryFee ?? (res.data as any)?.price ?? (res.data as any)?.fee;
+    const deliveryFee = feeRaw != null && !Number.isNaN(Number(feeRaw))
+      ? Math.round(Number(feeRaw) * 100)
+      : undefined;
+
+    console.log(`${tag} ✅ tracking=${trackingNumber}${deliveryFee != null ? ` fee=${deliveryFee}c` : ''}`);
+    return { trackingNumber, deliveryFee };
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.message || String(err);
+    console.error(`${tag} ❌ ${msg}`);
+    return { error: `Nearya: ${msg}` };
+  }
+}
+
+/**
+ * Nearya regions (GET /api/region) — the list used to map customer cities onto
+ * their `region` ids.
+ */
+export async function fetchNearyaRegions(
+  creds: { apiKey: string; apiSecret: string },
+): Promise<{ regions: Array<{ id: string; name: string }>; error?: string }> {
+  try {
+    const res = await axios.get(NEARYA_API.regions, {
+      headers: { 'x-api-id': creds.apiSecret, 'x-api-key': creds.apiKey, 'Accept': 'application/json' },
+      timeout: 20000,
+      validateStatus: () => true,
+    });
+    console.log(`[NEARYA] GET /region → HTTP ${res.status}`);
+    if (res.status < 200 || res.status >= 300) {
+      return { regions: [], error: `HTTP ${res.status}` };
+    }
+    // Accept the common envelope shapes; their docs don't specify one.
+    const raw = Array.isArray(res.data) ? res.data
+      : (res.data?.data ?? res.data?.regions ?? res.data?.result ?? []);
+    const regions = (Array.isArray(raw) ? raw : []).map((r: any) => ({
+      id:   String(r?._id ?? r?.id ?? r?.regionId ?? ''),
+      name: String(r?.name ?? r?.region ?? r?.label ?? ''),
+    })).filter(r => r.id && r.name);
+    console.log(`[NEARYA] ${regions.length} region(s) parsed`);
+    return { regions };
+  } catch (err: any) {
+    return { regions: [], error: err?.message || String(err) };
+  }
+}
+
 export async function createSenditParcel(
   input: CarrierShipInput,
   account: { id?: number; apiKey: string; apiSecret: string; settings?: any },
