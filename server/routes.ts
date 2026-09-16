@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, resolveAmeexStockLines, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
+import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -2751,6 +2751,27 @@ export async function registerRoutes(
                   }
                 }
 
+                // Nearya: resolve the city onto their `region` id. Unlike the
+                // carriers above there is NO text fallback — their API takes an
+                // id only, so an unresolved city must fail loudly here rather
+                // than create a parcel with an empty destination.
+                let nearyaRegionId: string | undefined;
+                if (provider.toLowerCase() === 'nearya') {
+                  const resolvedN = await storage.resolveNearyaRegion(resolvedCity);
+                  if (!resolvedN) {
+                    return {
+                      success:        false,
+                      error:          `Ville « ${resolvedCity} » non reconnue par Nearya. Synchronisez les villes dans Intégrations → Transporteurs, puis réessayez.`,
+                      carrierMessage: 'City not found in nearya_regions',
+                      httpStatus:     0,
+                      rawResponse:    null,
+                      permanent:      true,
+                    };
+                  }
+                  nearyaRegionId = resolvedN.regionId;
+                  console.log(`[NEARYA-CITY] order=${order.id} city="${resolvedCity}" → region=${nearyaRegionId} ("${resolvedN.name}")`);
+                }
+
                 let vitipsCityAbbr: string | undefined;
                 if (provider.toLowerCase() === 'vitipsexpress') {
                   const resolved = await getVitipsCityAbbrWithTimeout(storeId, resolvedCity, order.id);
@@ -2826,6 +2847,7 @@ export async function registerRoutes(
                   ameexProductId:   orderAmeexProductId,
                   ameexProductKey:  (orderCreds as any).settings?.ameexProductKey || 'id',
                   ...resolveAmeexStockLines(order, orderCreds),
+                  nearyaRegionId,
                   productReference: orderProductReference,
                 });
               })
@@ -5036,6 +5058,27 @@ export async function registerRoutes(
         await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, senditCityNames);
         console.log(`[Sendit-SyncCities] ✅ ${result.count} districts → ${senditCityNames.length} unique cities for account #${accountId}`);
         return res.json({ count: senditCityNames.length, cities: senditCityNames, syncedAt: new Date().toISOString() });
+      } else if (acct.carrierName === 'nearya') {
+        // Nearya calls them "regions", not cities. Their ids are opaque strings,
+        // so they live in their own table rather than carrier_cities — which is
+        // still refreshed afterwards so the provider card shows a count.
+        const nCreds = { apiKey: acct.apiKey || '', apiSecret: acct.apiSecret || '' };
+        if (!nCreds.apiKey || !nCreds.apiSecret) {
+          return res.status(422).json({ message: "Clé API et Compte ID Nearya requis avant la synchronisation." });
+        }
+        const { regions, error } = await fetchNearyaRegions(nCreds);
+        if (error) {
+          console.error(`[Nearya-SyncCities] ❌ ${error}`);
+          return res.status(502).json({ message: `Nearya: ${error}` });
+        }
+        if (!regions.length) {
+          return res.status(502).json({ message: "Nearya n'a renvoyé aucune région. Vérifiez vos identifiants." });
+        }
+        const saved = await storage.upsertNearyaRegions(regions);
+        const nearyaCityNames = regions.map(r => r.name).sort();
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, nearyaCityNames);
+        console.log(`[Nearya-SyncCities] ✅ ${saved} region(s) for account #${accountId}`);
+        return res.json({ count: saved, cities: nearyaCityNames, syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }

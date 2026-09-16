@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, orderDeletionBatches, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, waselexCities, carrierCityPricing,
+  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, waselexCities, nearyaRegions, carrierCityPricing,
   pushSubscriptions, aiLogs, aiConversations,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
@@ -2090,6 +2090,52 @@ export class DatabaseStorage implements IStorage {
   // Retourne { cityId, deliveryFee (centimes) } ou null si aucun match fiable.
   // En cas de non-match, le caller envoie `city` (nom texte) en fallback —
   // ne JAMAIS bloquer la commande sur la résolution de ville Waselex.
+  /**
+   * Replace the Nearya region table with a freshly fetched list.
+   * Their region ids are opaque strings, so externalId is text.
+   */
+  async upsertNearyaRegions(regions: Array<{ id: string; name: string }>): Promise<number> {
+    if (!regions.length) return 0;
+    const norm = (v: string) => (v || "").toLowerCase().trim()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    let n = 0;
+    for (const r of regions) {
+      if (!r.id || !r.name) continue;
+      await db.insert(nearyaRegions)
+        .values({ externalId: r.id, name: r.name, nameNorm: norm(r.name) })
+        .onConflictDoUpdate({
+          target: nearyaRegions.externalId,
+          set: { name: r.name, nameNorm: norm(r.name) },
+        });
+      n++;
+    }
+    return n;
+  }
+
+  /**
+   * Resolve a customer city onto a Nearya region id. Strict matching only —
+   * with a fuzzy match a parcel would simply be delivered to the wrong city.
+   * Unresolved returns null and the caller refuses the shipment with a clear
+   * message rather than guessing.
+   */
+  async resolveNearyaRegion(cityName: string): Promise<{ regionId: string; name: string } | null> {
+    if (!(cityName || "").trim()) return null;
+    const norm = (cityName || "").toLowerCase().trim()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const rows = await db.select().from(nearyaRegions).where(eq(nearyaRegions.nameNorm, norm));
+    if (rows.length === 1) return { regionId: rows[0].externalId, name: rows[0].name };
+
+    const key = normalizeCityKey(cityName);
+    if (!key) return null;
+    const aliasKey = resolveCityAlias(key);
+    const all = await db.select().from(nearyaRegions);
+    const exact = all.find(c =>
+      normalizeCityKey(c.name) === key || normalizeCityKey(c.name) === aliasKey ||
+      c.nameNorm === key || c.nameNorm === aliasKey
+    );
+    return exact ? { regionId: exact.externalId, name: exact.name } : null;
+  }
+
   async resolveWaselexCity(cityName: string): Promise<{ cityId: number; name: string; deliveryFee: number } | null> {
     if (!(cityName || "").trim()) return null;
     const norm = (cityName || "").toLowerCase().trim()
