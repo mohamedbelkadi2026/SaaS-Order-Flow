@@ -4208,7 +4208,21 @@ export async function createNearyaParcel(
     console.log(`${tag} HTTP ${res.status} RAW RESPONSE:\n${JSON.stringify(res.data, null, 2)}`);
 
     if (res.status < 200 || res.status >= 300) {
-      const msg = (res.data as any)?.message || (res.data as any)?.error || `HTTP ${res.status}`;
+      const msg = String((res.data as any)?.message || (res.data as any)?.error || `HTTP ${res.status}`);
+
+      // Nearya refuses a duplicate orderId. It means the parcel WAS created on
+      // an earlier attempt — retrying can never succeed, so don't offer it as a
+      // transient failure, and say what to do instead. Their API exposes no
+      // lookup by orderId (docParcelStatus takes the parcel code), so the code
+      // has to come from the merchant's Nearya account.
+      if (/already exists/i.test(msg)) {
+        console.warn(`${tag} order ${input.orderNumber} already has a parcel at Nearya — tracking code must be entered manually.`);
+        return {
+          error: `Un colis existe déjà chez Nearya pour la commande ${input.orderNumber}. Récupérez son code de suivi dans votre compte Nearya et saisissez-le sur la commande — ne réexpédiez pas, cela créerait un doublon.`,
+          permanent: true,
+        };
+      }
+
       return { error: `Nearya: ${msg}`, permanent: res.status === 401 || res.status === 403 || res.status === 422 };
     }
 
