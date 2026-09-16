@@ -4255,12 +4255,48 @@ export async function fetchNearyaRegions(
       const apiMsg = (res.data as any)?.message || (res.data as any)?.error;
       return { regions: [], error: apiMsg ? `HTTP ${res.status} — ${apiMsg}` : `HTTP ${res.status} — ${(rawBody || '').slice(0, 200)}` };
     }
-    // Accept the common envelope shapes; their docs don't specify one.
-    const raw = Array.isArray(res.data) ? res.data
-      : (res.data?.data ?? res.data?.regions ?? res.data?.result ?? []);
-    const regions = (Array.isArray(raw) ? raw : []).map((r: any) => ({
-      id:   String(r?._id ?? r?.id ?? r?.regionId ?? ''),
-      name: String(r?.name ?? r?.region ?? r?.label ?? ''),
+    // Their docs specify no envelope, and the real one nests the array under
+    // { status, results, data: { … } }. Rather than hardcode that shape, walk
+    // the response and take the first array whose objects carry both an
+    // id-like and a name-like field.
+    const ID_KEY   = /^(_id|id|regionId|region_id|code)$/i;
+    const NAME_KEY = /^(name|region|ville|city|label|title|libelle|designation)$/i;
+
+    const findRegionArray = (node: any, depth = 0): any[] | null => {
+      if (!node || depth > 6) return null;
+      if (Array.isArray(node)) {
+        const first = node.find(x => x && typeof x === 'object');
+        if (first) {
+          const keys = Object.keys(first);
+          if (keys.some(k => ID_KEY.test(k)) && keys.some(k => NAME_KEY.test(k))) return node;
+        }
+        // An array of wrappers can still hold the real list deeper down.
+        for (const item of node) {
+          const hit = findRegionArray(item, depth + 1);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      if (typeof node === 'object') {
+        for (const v of Object.values(node)) {
+          const hit = findRegionArray(v, depth + 1);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    };
+
+    const raw = findRegionArray(res.data) ?? [];
+    if (raw.length) {
+      console.log(`[NEARYA] region item keys: ${Object.keys(raw[0] ?? {}).join(', ')}`);
+    }
+    const pick = (o: any, re: RegExp) => {
+      const k = Object.keys(o || {}).find(kk => re.test(kk));
+      return k ? o[k] : undefined;
+    };
+    const regions = raw.map((r: any) => ({
+      id:   String(pick(r, ID_KEY)   ?? ''),
+      name: String(pick(r, NAME_KEY) ?? ''),
     })).filter(r => r.id && r.name);
     if (!regions.length) {
       // Reached Nearya fine but nothing matched the shapes we try — surface the
