@@ -883,7 +883,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     id="nearya_client_id_edit"
                     value={nearyaClientId}
                     onChange={e => setNearyaClientId(e.target.value)}
-                    placeholder="6aaaaaa1241f4689ac67bfa4"
+                    placeholder="Compte ID — section « Clé API » de votre compte Nearya"
                     data-testid="input-nearya-client-id"
                     className="h-10 text-xs font-mono"
                   />
@@ -896,7 +896,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     id="nearya_business_id_edit"
                     value={nearyaBusinessId}
                     onChange={e => setNearyaBusinessId(e.target.value)}
-                    placeholder="6aaaaaa9241f4689ac67c09c"
+                    placeholder="Business ID — section « Business IDs »"
                     data-testid="input-nearya-business-id"
                     className="h-10 text-xs font-mono"
                   />
@@ -1708,7 +1708,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     id="nearya_client_id_create"
                     value={nearyaClientId}
                     onChange={e => setNearyaClientId(e.target.value)}
-                    placeholder="6aaaaaa1241f4689ac67bfa4"
+                    placeholder="Compte ID — section « Clé API » de votre compte Nearya"
                     data-testid="input-nearya-client-id"
                     className="h-10 text-xs font-mono"
                   />
@@ -1721,7 +1721,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     id="nearya_business_id_create"
                     value={nearyaBusinessId}
                     onChange={e => setNearyaBusinessId(e.target.value)}
-                    placeholder="6aaaaaa9241f4689ac67c09c"
+                    placeholder="Business ID — section « Business IDs »"
                     data-testid="input-nearya-business-id"
                     className="h-10 text-xs font-mono"
                   />

@@ -5063,8 +5063,13 @@ export async function registerRoutes(
         // so they live in their own table rather than carrier_cities — which is
         // still refreshed afterwards so the provider card shows a count.
         const nCreds = { apiKey: acct.apiKey || '', apiSecret: acct.apiSecret || '' };
-        if (!nCreds.apiKey || !nCreds.apiSecret) {
-          return res.status(422).json({ message: "Clé API et Compte ID Nearya requis avant la synchronisation." });
+        // Name the missing field: an empty Compte ID used to reach Nearya as a
+        // blank x-api-id header and come back as an opaque 502.
+        const missing: string[] = [];
+        if (!nCreds.apiKey)    missing.push("Clé API (x-api-key)");
+        if (!nCreds.apiSecret) missing.push("Compte ID (x-api-id)");
+        if (missing.length) {
+          return res.status(422).json({ message: `${missing.join(' et ')} manquant(s). Ouvrez Modifier et renseignez-les, puis réessayez.` });
         }
         const { regions, error } = await fetchNearyaRegions(nCreds);
         if (error) {
