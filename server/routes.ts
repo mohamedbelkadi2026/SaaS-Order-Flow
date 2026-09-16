@@ -12862,7 +12862,23 @@ function ensureHeaders(sheet) {
     if (!agent) return res.status(404).json({ message: "Agent non trouvé" });
     if (agent.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
     if (agent.role === 'owner') return res.status(400).json({ message: "Impossible de supprimer le propriétaire" });
-    await storage.deleteUser(agentId);
+    if (agentId === req.user!.id) return res.status(400).json({ message: "Vous ne pouvez pas supprimer votre propre compte." });
+
+    // No try/catch here meant any database failure surfaced as a bare
+    // "Une erreur s'est produite" with nothing to act on.
+    try {
+      await storage.deleteUser(agentId);
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      console.error(`[AGENT-DELETE] agent ${agentId} failed: ${msg}`);
+      if (/foreign key|violates/i.test(msg)) {
+        return res.status(409).json({
+          message: `Impossible de supprimer ${agent.username} : des données y sont encore rattachées. Signalez-le au support avec ce détail : ${msg.slice(0, 200)}`,
+        });
+      }
+      return res.status(500).json({ message: `Suppression impossible : ${msg.slice(0, 200)}` });
+    }
+
     // Removing an agent changes the eligible pool — reset windows on affected magasins.
     const n = await bumpAgentRelatedEpochs(req.user!.id, agentId);
     console.log(`[DIST-EPOCH] agent ${agentId} deleted → bumped ${n} magasin(s)`);

@@ -3182,8 +3182,35 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteUser(id: number): Promise<void> {
-    await db.update(orders).set({ assignedToId: null }).where(eq(orders.assignedToId, id));
-    await db.delete(users).where(eq(users.id, id));
+    // Twelve tables reference users.id. Only orders.assigned_to_id used to be
+    // cleared here, so deleting anyone who had touched an order, logged a
+    // follow-up or been given product rights failed on a foreign key and the
+    // route — which has no try/catch — answered with a bare 500.
+    //
+    // History is preserved wherever the column is nullable: a follow-up log or
+    // a stock movement keeps its row with the author detached, because losing
+    // the audit trail is worse than losing the name. Rows that only exist to
+    // configure the agent (their product rights, their store settings, their
+    // pending email codes) are deleted with them.
+    await db.transaction(async (tx) => {
+      // Nullable references — detach, keep the row.
+      await tx.update(orders).set({ assignedToId: null }).where(eq(orders.assignedToId, id));
+      await tx.update(orders).set({ mediaBuyerId: null }).where(eq(orders.mediaBuyerId, id));
+      await tx.update(orders).set({ returnConfirmedBy: null }).where(eq(orders.returnConfirmedBy, id));
+      await tx.update(orders).set({ lastActionBy: null }).where(eq(orders.lastActionBy, id));
+      await tx.update(adSpendTracking).set({ mediaBuyerId: null }).where(eq(adSpendTracking.mediaBuyerId, id));
+      await tx.update(adSpend).set({ userId: null }).where(eq(adSpend.userId, id));
+      await tx.update(orderFollowUpLogs).set({ agentId: null }).where(eq(orderFollowUpLogs.agentId, id));
+      await tx.update(csvProfitReports).set({ userId: null }).where(eq(csvProfitReports.userId, id));
+      await tx.update(stockMovements).set({ userId: null }).where(eq(stockMovements.userId, id));
+
+      // NOT NULL references — these rows describe the agent, so they go too.
+      await tx.delete(agentProducts).where(eq(agentProducts.agentId, id));
+      await tx.delete(storeAgentSettings).where(eq(storeAgentSettings.agentId, id));
+      await tx.delete(emailVerificationCodes).where(eq(emailVerificationCodes.userId, id));
+
+      await tx.delete(users).where(eq(users.id, id));
+    });
   }
 
   async getCustomersByStore(storeId: number): Promise<Customer[]> {
