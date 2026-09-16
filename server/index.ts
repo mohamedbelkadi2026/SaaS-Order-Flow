@@ -887,6 +887,78 @@ app.use((req, res, next) => {
   const autoWaselexSync = setInterval(() => runWaselexSync('interval'), 20 * 60 * 1000);
   intervals.push(autoWaselexSync);
 
+  // ── Nearya Express: poll GET /docParcelStatus/v1 per parcel ───────────────
+  // No bulk endpoint and no documented webhook, so parcels are polled one by
+  // one. Only non-terminal orders are touched, and the calls are spaced out so
+  // a merchant with a few hundred open parcels doesn't hammer their API.
+  async function runNearyaSync(label: string) {
+    try {
+      const { db: dbInst } = await import('./db');
+      const { carrierAccounts: caTable } = await import('@shared/schema');
+      const { eq: eqFn } = await import('drizzle-orm');
+      const { trackNearyaParcel } = await import('./services/carrier-service');
+      const { storage: st } = await import("./storage");
+
+      const accounts = await dbInst.select().from(caTable)
+        .where(eqFn(caTable.carrierName, 'nearya'));
+
+      for (const account of accounts) {
+        const storeId   = (account as any).storeId;
+        const apiKey    = (account as any).apiKey;
+        const apiSecret = (account as any).apiSecret;
+        if (!apiKey || !apiSecret) continue;
+
+        const allOrders = await st.getOrdersByStore(storeId);
+        const toSync = allOrders.filter((o: any) =>
+          o.shippingProvider === 'nearya' &&
+          o.trackNumber &&
+          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
+        );
+        if (!toSync.length) continue;
+
+        console.log(`[NEARYA-AUTO-SYNC][${label}] store=${storeId}: polling ${toSync.length} parcel(s)`);
+        for (const order of toSync) {
+          try {
+            const r = await trackNearyaParcel((order as any).trackNumber!, { apiKey, apiSecret });
+            if (r.error === 'NEARYA_401') {
+              console.error(`[NEARYA-AUTO-SYNC][${label}] store=${storeId}: identifiants invalides — reconnectez Nearya.`);
+              break;
+            }
+            if (r.label && r.label !== (order as any).commentStatus) {
+              await st.updateOrder(order.id, { commentStatus: r.label });
+            }
+            // r.status is null for a status we don't recognise: leave the order
+            // alone rather than guess. mapNearyaStatus() logs the raw value.
+            if (r.status && r.status !== order.status) {
+              await st.updateOrderStatus(order.id, r.status);
+              await st.createOrderFollowUpLog({
+                orderId:   order.id,
+                agentId:   null,
+                agentName: 'Nearya Auto-Sync',
+                note:      `📦 Statut mis à jour automatiquement: ${r.label} → ${r.status}`,
+              });
+              console.log(`[NEARYA-AUTO-SYNC][${label}] Order #${(order as any).orderNumber} → ${r.label} (${r.status})`);
+              try {
+                const { broadcastToStore } = await import('./sse');
+                broadcastToStore(storeId, 'order_updated', {
+                  orderId: order.id, status: r.status, commentStatus: r.label,
+                });
+              } catch {}
+            }
+          } catch (e: any) {
+            console.error(`[NEARYA-AUTO-SYNC][${label}] Error for order ${(order as any).orderNumber}: ${e?.message}`);
+          }
+          await new Promise(res => setTimeout(res, 250));
+        }
+      }
+    } catch (err: any) {
+      console.error(`[NEARYA-AUTO-SYNC][${label}] Error:`, err?.message);
+    }
+  }
+  setTimeout(() => runNearyaSync('initial'), 5 * 60 * 1000);
+  const autoNearyaSync = setInterval(() => runNearyaSync('interval'), 20 * 60 * 1000);
+  intervals.push(autoNearyaSync);
+
   // Ozon Express delivers status via WEBHOOK only — polling endpoints return auth errors.
   // No polling job registered; statuses update automatically via
   // POST /api/webhooks/shipping/ozonexpress/:storeId.

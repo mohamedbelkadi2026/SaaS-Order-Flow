@@ -4312,6 +4312,97 @@ export async function fetchNearyaRegions(
   }
 }
 
+/**
+ * Map a Nearya status onto a platform status.
+ *
+ * Their docs publish no status vocabulary, so this covers the vocabulary every
+ * Moroccan COD carrier uses, in French, English and Arabic, and matches on a
+ * normalised substring. Anything unrecognised is logged with its raw value and
+ * left alone — a wrong mapping would mark an undelivered parcel as delivered
+ * and feed a false number straight into the profit report.
+ */
+export function mapNearyaStatus(raw: string | null | undefined): { status: string | null; label: string } {
+  const label = String(raw ?? '').trim();
+  if (!label) return { status: null, label: '' };
+
+  const n = label.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[_-]+/g, ' ').trim();
+
+  const has = (...needles: string[]) => needles.some(x => n.includes(x));
+
+  // Terminal states first: "retour livre" must not be read as delivered.
+  if (has('retour', 'returned', 'rejete', 'مرتجع', 'راجع'))            return { status: 'Retour Recu', label };
+  if (has('refus', 'refused', 'annul', 'cancel', 'مرفوض', 'ملغي'))      return { status: 'refused',      label };
+  if (has('livre', 'delivered', 'delivre', 'مسلم', 'تم التسليم'))       return { status: 'delivered',    label };
+
+  // In flight.
+  if (has('distribution', 'out for delivery', 'sorti', 'en cours de livraison', 'خرج')) return { status: 'En cours de livraison', label };
+  if (has('transit', 'hub', 'transfert', 'en route', 'في الطريق'))      return { status: 'En Transit',   label };
+  // 'attente' is tested first: "En attente de ramassage" contains "ramass"
+  // and would otherwise be read as already picked up — the opposite state.
+  if (has('attente', 'pending', 'nouveau', 'cree', 'created', 'قيد'))   return { status: 'Attente De Ramassage', label };
+  if (has('ramass', 'picked', 'collect', 'recupere', 'تم الاستلام'))    return { status: 'Ramassé',      label };
+
+  console.warn(`[NEARYA] unmapped status "${label}" — order left unchanged. Add it to mapNearyaStatus().`);
+  return { status: null, label };
+}
+
+/**
+ * Poll Nearya for one parcel's status.
+ * GET /docParcelStatus/v1?parcel={code}
+ */
+export async function trackNearyaParcel(
+  parcelCode: string,
+  creds: { apiKey: string; apiSecret: string },
+): Promise<{ status: string | null; label: string; error?: string }> {
+  try {
+    const res = await axios.get(NEARYA_API.status, {
+      params:  { parcel: parcelCode },
+      headers: { 'x-api-id': creds.apiSecret, 'x-api-key': creds.apiKey, 'Accept': 'application/json' },
+      timeout: 20000,
+      validateStatus: () => true,
+    });
+    if (res.status === 401 || res.status === 403) return { status: null, label: '', error: 'NEARYA_401' };
+    if (res.status < 200 || res.status >= 300)    return { status: null, label: '', error: `HTTP ${res.status}` };
+
+    // Same envelope problem as /region: dig for the status string rather than
+    // assuming a shape.
+    const findStatus = (node: any, depth = 0): string | null => {
+      if (!node || depth > 6) return null;
+      if (typeof node === 'string') return null;
+      if (Array.isArray(node)) {
+        // A history array: the last entry is the current state.
+        for (let i = node.length - 1; i >= 0; i--) {
+          const hit = findStatus(node[i], depth + 1);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      if (typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) {
+          if (/^(status|state|statut|etat|situation)$/i.test(k) && typeof v === 'string' && v.trim()) return v;
+        }
+        for (const v of Object.values(node)) {
+          const hit = findStatus(v, depth + 1);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    };
+
+    const rawStatus = findStatus(res.data);
+    if (!rawStatus) {
+      console.warn(`[NEARYA-TRACK] ${parcelCode}: no status found. Body: ${JSON.stringify(res.data).slice(0, 400)}`);
+      return { status: null, label: '' };
+    }
+    const mapped = mapNearyaStatus(rawStatus);
+    return { status: mapped.status, label: mapped.label };
+  } catch (err: any) {
+    return { status: null, label: '', error: err?.message || String(err) };
+  }
+}
+
 export async function createSenditParcel(
   input: CarrierShipInput,
   account: { id?: number; apiKey: string; apiSecret: string; settings?: any },
