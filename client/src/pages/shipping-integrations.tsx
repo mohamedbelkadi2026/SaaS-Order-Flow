@@ -926,74 +926,6 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   </label>
                 </div>
               </>
-            ) : isNearya ? (
-              <>
-                <div className="space-y-1.5">
-                  <Label htmlFor="nearya_api_key_create" className="font-semibold text-sm" style={{ color: NAVY }}>
-                    Clé API (x-api-key)
-                  </Label>
-                  <Input
-                    id="nearya_api_key_create"
-                    type="password"
-                    value={apiKey}
-                    onChange={e => setApiKey(e.target.value)}
-                    placeholder="Votre clé API Nearya"
-                    data-testid="input-nearya-api-key"
-                    className="h-10 text-xs font-mono"
-                  />
-                  
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="nearya_client_id_create" className="font-semibold text-sm" style={{ color: NAVY }}>
-                    Compte ID (x-api-id)
-                  </Label>
-                  <Input
-                    id="nearya_client_id_create"
-                    value={nearyaClientId}
-                    onChange={e => setNearyaClientId(e.target.value)}
-                    placeholder="6aaaaaa1241f4689ac67bfa4"
-                    data-testid="input-nearya-client-id"
-                    className="h-10 text-xs font-mono"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="nearya_business_id_create" className="font-semibold text-sm" style={{ color: NAVY }}>
-                    Business ID
-                  </Label>
-                  <Input
-                    id="nearya_business_id_create"
-                    value={nearyaBusinessId}
-                    onChange={e => setNearyaBusinessId(e.target.value)}
-                    placeholder="6aaaaaa9241f4689ac67c09c"
-                    data-testid="input-nearya-business-id"
-                    className="h-10 text-xs font-mono"
-                  />
-                  <p className="text-[10px] text-muted-foreground">
-                    Dans votre compte Nearya, section « Business IDs ». Envoyé comme « company » à chaque requête.
-                  </p>
-                </div>
-                <div className="space-y-2 mt-3">
-                  <Label className="font-semibold text-sm" style={{ color: NAVY }}>Mode d'expédition Nearya</Label>
-                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${nearyaMode !== "store" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
-                    <input type="radio" name="nearyaModecreate" value="simple"
-                      checked={nearyaMode !== "store"} onChange={() => setNearyaMode("simple")}
-                      data-testid="radio-nearya-mode-simple" className="mt-1" />
-                    <div>
-                      <div className="font-semibold text-sm text-gray-800">📦 Colis simple</div>
-                      <div className="text-xs text-gray-500 mt-0.5">La marchandise est chez vous. Nearya vient la récupérer et la livre.</div>
-                    </div>
-                  </label>
-                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${nearyaMode === "store" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
-                    <input type="radio" name="nearyaModecreate" value="store"
-                      checked={nearyaMode === "store"} onChange={() => setNearyaMode("store")}
-                      data-testid="radio-nearya-mode-store" className="mt-1" />
-                    <div>
-                      <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Nearya</div>
-                      <div className="text-xs text-gray-500 mt-0.5">Votre marchandise est entreposée chez Nearya. Leur stock est décrémenté par SKU — le SKU de chaque produit doit correspondre au leur.</div>
-                    </div>
-                  </label>
-                </div>
-              </>
             ) : isAmeex ? (
               <>
                 {/* Store Name */}
@@ -1751,6 +1683,74 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 )}
               </div>
             </>
+          ) : isNearya ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="nearya_api_key_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Clé API (x-api-key)
+                  </Label>
+                  <Input
+                    id="nearya_api_key_create"
+                    type="password"
+                    value={apiKey}
+                    onChange={e => setApiKey(e.target.value)}
+                    placeholder="Votre clé API Nearya"
+                    data-testid="input-nearya-api-key"
+                    className="h-10 text-xs font-mono"
+                  />
+                  
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="nearya_client_id_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Compte ID (x-api-id)
+                  </Label>
+                  <Input
+                    id="nearya_client_id_create"
+                    value={nearyaClientId}
+                    onChange={e => setNearyaClientId(e.target.value)}
+                    placeholder="6aaaaaa1241f4689ac67bfa4"
+                    data-testid="input-nearya-client-id"
+                    className="h-10 text-xs font-mono"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="nearya_business_id_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Business ID
+                  </Label>
+                  <Input
+                    id="nearya_business_id_create"
+                    value={nearyaBusinessId}
+                    onChange={e => setNearyaBusinessId(e.target.value)}
+                    placeholder="6aaaaaa9241f4689ac67c09c"
+                    data-testid="input-nearya-business-id"
+                    className="h-10 text-xs font-mono"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Dans votre compte Nearya, section « Business IDs ». Envoyé comme « company » à chaque requête.
+                  </p>
+                </div>
+                <div className="space-y-2 mt-3">
+                  <Label className="font-semibold text-sm" style={{ color: NAVY }}>Mode d'expédition Nearya</Label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${nearyaMode !== "store" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                    <input type="radio" name="nearyaModecreate" value="simple"
+                      checked={nearyaMode !== "store"} onChange={() => setNearyaMode("simple")}
+                      data-testid="radio-nearya-mode-simple" className="mt-1" />
+                    <div>
+                      <div className="font-semibold text-sm text-gray-800">📦 Colis simple</div>
+                      <div className="text-xs text-gray-500 mt-0.5">La marchandise est chez vous. Nearya vient la récupérer et la livre.</div>
+                    </div>
+                  </label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${nearyaMode === "store" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                    <input type="radio" name="nearyaModecreate" value="store"
+                      checked={nearyaMode === "store"} onChange={() => setNearyaMode("store")}
+                      data-testid="radio-nearya-mode-store" className="mt-1" />
+                    <div>
+                      <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Nearya</div>
+                      <div className="text-xs text-gray-500 mt-0.5">Votre marchandise est entreposée chez Nearya. Leur stock est décrémenté par SKU — le SKU de chaque produit doit correspondre au leur.</div>
+                    </div>
+                  </label>
+                </div>
+              </>
           ) : isAmeex ? (
             <>
               {/* Store Name */}
