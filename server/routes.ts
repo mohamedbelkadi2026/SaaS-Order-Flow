@@ -2138,17 +2138,25 @@ export async function registerRoutes(
       const storeId = req.user!.storeId!;
       const sub = await storage.getSubscription(storeId);
       const now = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-      const [monthlyCount] = await db.select({ count: count() }).from(orders)
-        .where(and(eq(orders.storeId, storeId), gte(orders.createdAt, monthStart), lt(orders.createdAt, monthEnd)));
+      // The subscription is counted over the merchant's OWN period (their
+      // anniversary day), not the calendar month. Dashboard filters are
+      // unrelated and stay on calendar months — see shared/billing.ts.
+      const usage = await storage.getBillingUsage(storeId);
       const teamMembers = await db.select().from(users).where(eq(users.storeId, storeId));
       res.json({
         plan: sub?.plan ?? 'starter',
-        monthlyLimit: sub?.monthlyLimit ?? 1500,
+        monthlyLimit: usage.limit,
         billingCycleStart: sub?.billingCycleStart,
         isActive: sub?.isActive ?? 1,
-        currentMonthOrders: Number(monthlyCount?.count ?? 0),
+        // Orders inside the current billing period.
+        currentMonthOrders: usage.used,
+        periodStart:  usage.period.start.toISOString(),
+        periodEnd:    usage.period.end.toISOString(),
+        daysLeft:     usage.period.daysLeft,
+        anchorDay:    usage.period.anchorDay,
+        remaining:    usage.remaining,
+        isOverLimit:  usage.isOverLimit,
+        isExpired:    usage.isExpired,
         teamCount: teamMembers.length,
         storeCount: 1,
         month: `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`,
@@ -6575,7 +6583,7 @@ export async function registerRoutes(
             ? `Abonnement expiré. Commande ${parsed.orderNumber} refusée.`
             : `Limite de commandes atteinte (${paywallCheck.current}/${paywallCheck.limit}). Commande ${parsed.orderNumber} refusée.`,
         });
-        return res.status(402).json({ message: paywallCheck.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
+        // No 402: the order is still created. See the Shopify handler above.
       }
 
       const rawProductName = parsed.lineItems.length > 0
@@ -6864,7 +6872,7 @@ export async function registerRoutes(
 
       // Paywall check
       const paywallCheck = await storage.checkPaywall(storeId);
-      if (paywallCheck.isBlocked) return res.status(402).json({ message: paywallCheck.reason === "expired" ? "Subscription expired" : "Order limit reached" });
+      if (paywallCheck.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${paywallCheck.current}/${paywallCheck.limit}) — order accepted anyway`);
 
       const customerName = [payload.customer?.first_name, payload.customer?.last_name].filter(Boolean).join(" ") || payload.customer?.full_name || "Client YouCan";
       const customerPhone = payload.customer?.phone || payload.shipping_address?.phone || "";
@@ -7076,8 +7084,11 @@ export async function registerRoutes(
         return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       }
 
+      // Quota/expiry never refuses an incoming order: a 402 here makes Shopify
+      // retry a few times and then drop the lead for good. The wall lives in the
+      // UI (checkPaywall) — ingestion stays open.
       const webhookPaywall = await storage.checkPaywall(storeId);
-      if (webhookPaywall.isBlocked) return res.status(402).json({ message: webhookPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
+      if (webhookPaywall.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${webhookPaywall.current}/${webhookPaywall.limit}) — order accepted anyway`);
 
       const storeProducts = await storage.getProductsByStore(storeId);
       let productCost = 0;
@@ -7338,7 +7349,7 @@ export async function registerRoutes(
           message: `❌ ${wpPaywall.reason === 'expired' ? "Abonnement expiré" : "Limite de commandes atteinte"}`,
           payload: JSON.stringify(data).slice(0, 1000),
         });
-        return res.status(402).json({ message: wpPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
+        // No 402: the order is still created. See the Shopify handler above.
       }
       const storeProducts = await storage.getProductsByStore(storeId);
       const allVariantsWP = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
@@ -7420,7 +7431,7 @@ export async function registerRoutes(
       const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       const gsheetsPaywall = await storage.checkPaywall(storeId);
-      if (gsheetsPaywall.isBlocked) return res.status(402).json({ message: gsheetsPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
+      if (gsheetsPaywall.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${gsheetsPaywall.current}/${gsheetsPaywall.limit}) — order accepted anyway`);
       const storeProducts = await storage.getProductsByStore(storeId);
       const allVariantsGS1 = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
       const vByProdGS1 = new Map<number, { name: string }[]>();
@@ -7535,7 +7546,7 @@ export async function registerRoutes(
       const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       const paywall = await storage.checkPaywall(storeId);
-      if (paywall.isBlocked) return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
+      if (paywall.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${paywall.current}/${paywall.limit}) — order accepted anyway`);
       const storeProducts = await storage.getProductsByStore(storeId);
       const allVariantsGS2 = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
       const vByProdGS2 = new Map<number, { name: string }[]>();
@@ -20952,9 +20963,7 @@ function submitOrder(e){
       }
 
       const paywall = await storage.checkPaywall(storeId);
-      if (paywall.isBlocked) {
-        return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
-      }
+      if (paywall.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${paywall.current}/${paywall.limit}) — orders accepted anyway`);
 
       const allIntegrations = await db.select().from(storeIntegrations)
         .where(and(

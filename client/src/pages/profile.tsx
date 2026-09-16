@@ -797,10 +797,22 @@ export default function Profile() {
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6">
                   <div>
                     <h3 className="font-bold text-lg">Plan actuel : {planLabel}</h3>
-                    {sub?.billingCycleStart && (
+                    {/* The server sends the merchant's own period (anniversary
+                        day), so no date maths here — the old setMonth(+1) turned
+                        31 Jan into 3 March. */}
+                    {(sub as any)?.periodStart && (sub as any)?.periodEnd && (
                       <p className="text-sm text-muted-foreground">
-                        Du {new Date(sub.billingCycleStart).toLocaleDateString('fr-MA')} au{" "}
-                        {new Date(new Date(sub.billingCycleStart).setMonth(new Date(sub.billingCycleStart).getMonth() + 1)).toLocaleDateString('fr-MA')}
+                        Période du {new Date((sub as any).periodStart).toLocaleDateString('fr-MA')} au{" "}
+                        {new Date((sub as any).periodEnd).toLocaleDateString('fr-MA')}
+                        {typeof (sub as any).daysLeft === 'number' && (
+                          <> · {(sub as any).daysLeft} jour{(sub as any).daysLeft > 1 ? 's' : ''} restant{(sub as any).daysLeft > 1 ? 's' : ''}</>
+                        )}
+                      </p>
+                    )}
+                    {(sub as any)?.isOverLimit && (
+                      <p className="mt-2 text-sm rounded-lg border border-amber-300 bg-amber-50 text-amber-800 px-3 py-2">
+                        Vous avez dépassé votre forfait ({(sub as any).currentMonthOrders} / {(sub as any).monthlyLimit} commandes).
+                        Vos commandes continuent d'arriver normalement — renouvelez votre abonnement pour continuer à utiliser la plateforme.
                       </p>
                     )}
                   </div>

@@ -18,6 +18,7 @@ import {
   csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
   type PushSubscription, type InsertPushSubscription,
 } from "@shared/schema";
+import { getBillingPeriod, type BillingPeriod } from "@shared/billing";
 import { DELIVERED_STATUSES, isConfirmedCumulative, isDeliveredStatus, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, ilike, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
@@ -3531,67 +3532,94 @@ export class DatabaseStorage implements IStorage {
   }
 
   async incrementMonthlyOrders(storeId: number): Promise<void> {
+    // Kept for callers that still bump the legacy counter. The counter is no
+    // longer what gates anything — getBillingUsage() counts real orders inside
+    // the merchant's own billing window, so a deleted order or a double-fired
+    // webhook can't leave the quota permanently wrong.
     await db.update(subscriptions).set({
       currentMonthOrders: sql`${subscriptions.currentMonthOrders} + 1`,
     }).where(eq(subscriptions.storeId, storeId));
-    const sub = await this.getSubscription(storeId);
-    if (sub && sub.plan === 'trial' && sub.currentMonthOrders >= 60) {
-      await db.update(subscriptions).set({ isBlocked: 1 }).where(eq(subscriptions.storeId, storeId));
-    }
   }
 
   async resetMonthlyOrders(storeId: number): Promise<void> {
+    // Manual reset (super-admin). Note this does NOT move billingCycleStart:
+    // the period is derived from planStartDate so the merchant's anniversary
+    // day never drifts. Rewriting it on every renewal is what used to push a
+    // merchant who started on the 25th onto the 1st.
     await db.update(subscriptions).set({
       currentMonthOrders: 0,
-      billingCycleStart: new Date(),
       isBlocked: 0,
     }).where(eq(subscriptions.storeId, storeId));
   }
 
-  async checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }> {
+  /**
+   * Everything about a store's subscription usage, computed from the
+   * merchant's own billing window rather than the calendar month.
+   *
+   * The order count is a live COUNT over the window — not the stored
+   * currentMonthOrders counter, which drifts.
+   */
+  async getBillingUsage(storeId: number): Promise<{
+    period: BillingPeriod;
+    used: number;
+    limit: number;
+    plan: string;
+    isExpired: boolean;
+    isOverLimit: boolean;
+    remaining: number;
+  }> {
     const sub = await this.getSubscription(storeId);
-    if (!sub) {
-      return { allowed: true, current: 0, limit: 60, plan: 'trial', isBlocked: false };
-    }
-
-    const isTrial = sub.plan === 'trial';
-    const trialLimit = 60;
-    const effectiveLimit = isTrial ? trialLimit : sub.monthlyLimit;
-
     const now = new Date();
-    const cycleStart = sub.billingCycleStart || sub.createdAt || now;
-    const monthsSinceCycle = (now.getFullYear() - cycleStart.getFullYear()) * 12 + (now.getMonth() - cycleStart.getMonth());
 
-    if (!isTrial && monthsSinceCycle >= 1) {
-      await this.resetMonthlyOrders(storeId);
-      return { allowed: true, current: 0, limit: effectiveLimit, plan: sub.plan, isBlocked: false };
-    }
+    // Anchor on the real plan start; fall back to the legacy cycle field, then
+    // to account creation, so existing merchants keep a sensible day.
+    const anchorSource = sub?.planStartDate ?? sub?.billingCycleStart ?? sub?.createdAt ?? now;
+    const period = getBillingPeriod(anchorSource, now);
 
-    const isBlocked = sub.isBlocked === 1;
-    if (isBlocked) {
-      return { allowed: false, current: sub.currentMonthOrders, limit: effectiveLimit, plan: sub.plan, isBlocked: true };
-    }
+    const plan  = sub?.plan ?? 'trial';
+    const limit = plan === 'trial' ? 60 : (sub?.monthlyLimit ?? 0);
 
-    const allowed = sub.plan === 'pro' || sub.currentMonthOrders < effectiveLimit;
-    return { allowed, current: sub.currentMonthOrders, limit: effectiveLimit, plan: sub.plan, isBlocked: false };
+    const [row] = await db.select({ count: count() }).from(orders).where(and(
+      eq(orders.storeId, storeId),
+      gte(orders.createdAt, period.start),
+      lt(orders.createdAt, period.end),
+    ));
+    const used = Number(row?.count ?? 0);
+
+    const isExpired   = !!sub?.planExpiryDate && new Date(sub.planExpiryDate) < now;
+    // 'pro' and any plan with limit 0 are unmetered.
+    const isOverLimit = plan !== 'pro' && limit > 0 && used >= limit;
+
+    return {
+      period, used, limit, plan, isExpired, isOverLimit,
+      remaining: limit > 0 ? Math.max(0, limit - used) : -1,
+    };
   }
 
+  async checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }> {
+    const u = await this.getBillingUsage(storeId);
+    // Orders are never refused on quota — a refused webhook is a lead lost for
+    // good, since Shopify and friends give up after a few retries. The quota is
+    // surfaced in the UI instead, via checkPaywall().
+    return { allowed: true, current: u.used, limit: u.limit, plan: u.plan, isBlocked: u.isOverLimit || u.isExpired };
+  }
+
+  /**
+   * Whether the merchant should be shown the "renew your plan" wall.
+   *
+   * isBlocked here means "block the UI", never "drop the order" — order
+   * ingestion must stay open regardless.
+   */
   async checkPaywall(storeId: number): Promise<{ isExpired: boolean; isLimitReached: boolean; isBlocked: boolean; reason: 'expired' | 'limit' | null; current: number; limit: number; plan: string }> {
-    const sub = await this.getSubscription(storeId);
-    if (!sub) {
-      return { isExpired: false, isLimitReached: false, isBlocked: false, reason: null, current: 0, limit: 60, plan: 'trial' };
-    }
-    const isTrial = sub.plan === 'trial';
-    const effectiveLimit = isTrial ? 60 : sub.monthlyLimit;
-    const now = new Date();
-
-    const isExpired = !!sub.planExpiryDate && new Date(sub.planExpiryDate) < now;
-
-    const isLimitReached = sub.isBlocked === 1 || (effectiveLimit > 0 && sub.currentMonthOrders >= effectiveLimit);
-
-    const isBlocked = isExpired || isLimitReached;
-    const reason: 'expired' | 'limit' | null = isExpired ? 'expired' : isLimitReached ? 'limit' : null;
-    return { isExpired, isLimitReached, isBlocked, reason, current: sub.currentMonthOrders, limit: effectiveLimit, plan: sub.plan };
+    const u = await this.getBillingUsage(storeId);
+    const isBlocked = u.isExpired || u.isOverLimit;
+    return {
+      isExpired: u.isExpired,
+      isLimitReached: u.isOverLimit,
+      isBlocked,
+      reason: u.isExpired ? 'expired' : u.isOverLimit ? 'limit' : null,
+      current: u.used, limit: u.limit, plan: u.plan,
+    };
   }
 
   async getAgentPerformance(
