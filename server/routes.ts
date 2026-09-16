@@ -5079,9 +5079,24 @@ export async function registerRoutes(
         if (!regions.length) {
           return res.status(502).json({ message: "Nearya n'a renvoyé aucune région. Vérifiez vos identifiants." });
         }
-        const saved = await storage.upsertNearyaRegions(regions);
+        // Persist separately from the fetch: if the nearya_regions table is
+        // missing (migration not run) the throw used to escape the handler and
+        // Railway answered with an HTML 502, which tells the merchant nothing.
+        let saved = 0;
         const nearyaCityNames = regions.map(r => r.name).sort();
-        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, nearyaCityNames);
+        try {
+          saved = await storage.upsertNearyaRegions(regions);
+          await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, nearyaCityNames);
+        } catch (dbErr: any) {
+          const msg = String(dbErr?.message || dbErr);
+          console.error(`[Nearya-SyncCities] ❌ DB error: ${msg}`);
+          if (/nearya_regions/i.test(msg) && /exist/i.test(msg)) {
+            return res.status(500).json({
+              message: "La table nearya_regions n'existe pas. Exécutez la migration migrations/2026_09_16_nearya_express.sql sur la base, puis réessayez.",
+            });
+          }
+          return res.status(500).json({ message: `Enregistrement des régions Nearya impossible : ${msg}` });
+        }
         console.log(`[Nearya-SyncCities] ✅ ${saved} region(s) for account #${accountId}`);
         return res.json({ count: saved, cities: nearyaCityNames, syncedAt: new Date().toISOString() });
       } else {
