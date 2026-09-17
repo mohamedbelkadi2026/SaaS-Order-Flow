@@ -2290,7 +2290,8 @@ export async function registerRoutes(
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 25,
     };
-    const agentOnly = user.role === 'agent' ? user.id : undefined;
+    // A team lead sees their whole team; a plain agent only themselves.
+    const agentOnly = await storage.getVisibleAgentIds(user as any);
     // Media buyers only see their own attributed orders (by ID or UTM pattern CODE*%)
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
@@ -2324,7 +2325,7 @@ export async function registerRoutes(
       page:  1,
       limit: 100_000, // no pagination for export — return everything matching the filters
     };
-    const agentOnly      = user.role === 'agent'       ? user.id : undefined;
+    const agentOnly      = await storage.getVisibleAgentIds(user as any);
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
       const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
@@ -2382,7 +2383,7 @@ export async function registerRoutes(
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 25,
     };
-    const agentOnly = user.role === 'agent' ? user.id : undefined;
+    const agentOnly = await storage.getVisibleAgentIds(user as any);
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
       const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
@@ -12789,6 +12790,7 @@ function ensureHeaders(sheet) {
         distributionMethod: z.enum(["auto", "pourcentage", "produit", "region"]).optional(),
         isActive: z.number().int().min(0).max(1).optional(),
         roleInStore: z.enum(["confirmation", "suivi", "both"]).optional(),
+        isTeamLead: z.union([z.boolean(), z.number()]).optional(),
         leadPercentage: z.number().min(0).max(100).optional(),
         allowedProductIds: z.array(z.number()).optional(),
         allowedRegions: z.array(z.string()).optional(),
@@ -12919,6 +12921,7 @@ function ensureHeaders(sheet) {
       if (!agent || agent.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
       const schema = z.object({
         roleInStore: z.enum(["confirmation", "suivi", "both"]).optional(),
+        isTeamLead: z.union([z.boolean(), z.number()]).optional(),
         leadPercentage: z.number().min(0).max(100).optional(),
         allowedProductIds: z.array(z.number()).optional(),
         allowedRegions: z.array(z.string()).optional(),
@@ -12927,6 +12930,7 @@ function ensureHeaders(sheet) {
       const data = schema.parse(req.body);
       const payload: any = {};
       if (data.roleInStore !== undefined) payload.roleInStore = data.roleInStore;
+      if ((data as any).isTeamLead !== undefined) payload.isTeamLead = ((data as any).isTeamLead === true || (data as any).isTeamLead === 1) ? 1 : 0;
       if (data.leadPercentage !== undefined) payload.leadPercentage = data.leadPercentage;
       if (data.allowedProductIds !== undefined) payload.allowedProductIds = JSON.stringify(data.allowedProductIds);
       if (data.allowedRegions !== undefined) payload.allowedRegions = JSON.stringify(data.allowedRegions);

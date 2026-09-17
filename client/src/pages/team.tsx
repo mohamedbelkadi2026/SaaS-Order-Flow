@@ -93,6 +93,7 @@ const defaultForm = {
   paymentAmount: "",
   distributionMethod: "auto" as DistMethod,
   roleInStore: "confirmation",
+  isTeamLead: false,
   isActive: true,
   leadPercentage: "50",
   allowedProductIds: [] as number[],
@@ -494,6 +495,7 @@ export default function Team() {
       paymentAmount: agent.paymentAmount ? String(agent.paymentAmount / 100) : "",
       distributionMethod: (agent.distributionMethod || "auto") as DistMethod,
       roleInStore: setting?.roleInStore || "confirmation",
+      isTeamLead: (setting as any)?.isTeamLead === 1,
       isActive: agent.isActive === 1 || agent.isActive === true,
       leadPercentage: String(setting?.leadPercentage || 50),
       allowedProductIds: parsedProductIds,
@@ -529,6 +531,7 @@ export default function Team() {
       // We still send the per-agent rule values so they can be used by whichever
       // magasin chooses that strategy.
       payload.roleInStore = editForm.roleInStore;
+      payload.isTeamLead = editForm.isTeamLead ? 1 : 0;
       payload.commissionRate = editForm.commissionRate ? parseInt(editForm.commissionRate) : 0;
       // leadPercentage is now per-magasin and saved via a separate endpoint
       // below — no longer sent in the user PATCH payload.
@@ -1617,6 +1620,27 @@ export default function Team() {
                           <SelectItem value="both">Les deux</SelectItem>
                         </SelectContent>
                       </Select>
+                      {/* Scoped by the specialty above: a confirmation lead
+                          supervises the confirmation team, not the whole store. */}
+                      <label className="flex items-start gap-2.5 mt-2.5 p-2.5 rounded-lg border cursor-pointer hover:bg-muted/40">
+                        <input
+                          type="checkbox"
+                          checked={!!editForm.isTeamLead}
+                          onChange={e => setEditForm(d => ({ ...d, isTeamLead: e.target.checked }))}
+                          data-testid="checkbox-edit-team-lead"
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold text-foreground">Chef d'équipe</span>
+                          <span className="block text-xs text-muted-foreground mt-0.5">
+                            {editForm.roleInStore === "both"
+                              ? "Voit les commandes des équipes Confirmation et Suivi."
+                              : editForm.roleInStore === "suivi"
+                                ? "Voit les commandes de toute l'équipe Suivi, pas seulement les siennes."
+                                : "Voit les commandes de toute l'équipe Confirmation, pas seulement les siennes."}
+                          </span>
+                        </span>
+                      </label>
                     </div>
                     <div className="space-y-1.5">
                       <Label className="text-sm font-semibold text-foreground">Type de Paiement</Label>

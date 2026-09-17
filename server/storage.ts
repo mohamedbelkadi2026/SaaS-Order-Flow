@@ -85,7 +85,7 @@ export interface IStorage {
     utmSource?: string; utmCampaign?: string; magasinId?: number;
     productId?: number;
     dateFrom?: string; dateTo?: string; dateType?: string; search?: string; page?: number; limit?: number;
-  }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
+  }, agentOnly?: number | number[], mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
   bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]>;
   getOrdersByIds(orderIds: number[], storeId: number): Promise<Order[]>;
@@ -912,11 +912,18 @@ export class DatabaseStorage implements IStorage {
     utmSource?: string; utmCampaign?: string; magasinId?: number;
     productId?: number;
     dateFrom?: string; dateTo?: string; dateType?: string; search?: string; page?: number; limit?: number;
-  }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
+  }, agentOnly?: number | number[], mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
     const conditions: any[] = [eq(orders.storeId, storeId)];
 
     if (agentOnly) {
-      conditions.push(eq(orders.assignedToId, agentOnly));
+      // A number is one agent; an array is a team lead's team. An empty array
+      // is NOT "no filter" — it means a lead with nobody under them, so it must
+      // still match nothing rather than fall through to the whole store.
+      if (Array.isArray(agentOnly)) {
+        conditions.push(agentOnly.length ? inArray(orders.assignedToId, agentOnly) : sql`false`);
+      } else {
+        conditions.push(eq(orders.assignedToId, agentOnly));
+      }
     }
 
     // Media buyer scoping: show only orders attributed to this buyer (by ID or UTM pattern)
@@ -3179,6 +3186,41 @@ export class DatabaseStorage implements IStorage {
           : eq(orders.mediaBuyerId, mediaBuyerId)
       ))
       .orderBy(desc(orders.createdAt));
+  }
+
+  /**
+   * The agent ids a user is allowed to see orders for.
+   *
+   * - owner / admin / media_buyer → undefined (no agent restriction; the
+   *   caller applies its own rules)
+   * - a plain agent               → their own id
+   * - a team lead                 → themselves plus every agent on the team
+   *                                 matching their roleInStore
+   *
+   * A 'both' lead supervises both teams. A confirmation lead also sees 'both'
+   * agents, since those handle confirmation too.
+   */
+  async getVisibleAgentIds(user: { id: number; role: string; storeId: number | null }): Promise<number | number[] | undefined> {
+    if (user.role !== 'agent') return undefined;
+    if (!user.storeId) return user.id;
+
+    const [own] = await db.select().from(storeAgentSettings)
+      .where(and(eq(storeAgentSettings.agentId, user.id), eq(storeAgentSettings.storeId, user.storeId)))
+      .limit(1);
+
+    if (!own || own.isTeamLead !== 1) return user.id;
+
+    const leadScope = own.roleInStore || 'confirmation';
+    const teamRows = await db.select().from(storeAgentSettings)
+      .where(eq(storeAgentSettings.storeId, user.storeId));
+
+    const ids = new Set<number>([user.id]);
+    for (const row of teamRows) {
+      const r = row.roleInStore || 'confirmation';
+      // 'both' on either side overlaps everything.
+      if (leadScope === 'both' || r === 'both' || r === leadScope) ids.add(row.agentId);
+    }
+    return Array.from(ids);
   }
 
   async deleteUser(id: number): Promise<void> {

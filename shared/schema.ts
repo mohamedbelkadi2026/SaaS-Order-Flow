@@ -595,6 +595,12 @@ export const storeAgentSettings = pgTable("store_agent_settings", {
   magasinId: integer("magasin_id").references(() => stores.id),
   // 'confirmation' | 'suivi' | 'both'
   roleInStore: text("role_in_store").notNull().default("confirmation"),
+  // Team lead: an agent who also supervises the team matching their
+  // roleInStore. A confirmation lead sees the orders of every confirmation
+  // agent, a suivi lead those of the suivi agents, and a 'both' lead sees both
+  // teams. They stay role='agent' — this grants visibility over their team's
+  // orders, not admin rights over the store.
+  isTeamLead: integer("is_team_lead").notNull().default(0),
   // 0-100, used for weighted lead distribution (per-magasin when magasinId is set)
   leadPercentage: integer("lead_percentage").notNull().default(100),
   // JSON array of product IDs, e.g. '[1,2,3]'. Empty array means all products allowed.
