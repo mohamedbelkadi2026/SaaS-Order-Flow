@@ -3223,6 +3223,35 @@ export class DatabaseStorage implements IStorage {
     return Array.from(ids);
   }
 
+  /** True when this user is a team lead (an agent supervising their team). */
+  async isTeamLead(user: { id: number; role: string; storeId: number | null }): Promise<boolean> {
+    if (user.role !== 'agent' || !user.storeId) return false;
+    const [row] = await db.select().from(storeAgentSettings)
+      .where(and(eq(storeAgentSettings.agentId, user.id), eq(storeAgentSettings.storeId, user.storeId)))
+      .limit(1);
+    return row?.isTeamLead === 1;
+  }
+
+  /**
+   * Guard for a team lead acting on orders: every order must belong to the
+   * store AND be assigned to someone on their team. Without the second check a
+   * lead could pass any order id in the request body and reassign or ship an
+   * order they can't even see.
+   */
+  async assertOrdersInAgentScope(orderIds: number[], storeId: number, allowedAgentIds: number[]): Promise<{ ok: boolean; offending: number[] }> {
+    if (!orderIds.length) return { ok: true, offending: [] };
+    const rows = await db.select({ id: orders.id, assignedToId: orders.assignedToId, storeId: orders.storeId })
+      .from(orders).where(inArray(orders.id, orderIds));
+    const allowed = new Set(allowedAgentIds);
+    const offending = rows
+      .filter(r => r.storeId !== storeId || !r.assignedToId || !allowed.has(r.assignedToId))
+      .map(r => r.id);
+    // An id that doesn't exist at all is also out of scope.
+    const found = new Set(rows.map(r => r.id));
+    for (const id of orderIds) if (!found.has(id)) offending.push(id);
+    return { ok: offending.length === 0, offending };
+  }
+
   async deleteUser(id: number): Promise<void> {
     // Twelve tables reference users.id. Only orders.assigned_to_id used to be
     // cleared here, so deleting anyone who had touched an order, logged a

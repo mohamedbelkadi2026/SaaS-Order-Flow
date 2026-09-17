@@ -2427,7 +2427,10 @@ export async function registerRoutes(
   app.post("/api/orders/bulk-assign", requireAuth, async (req, res) => {
     try {
       const user = req.user!;
-      if (user.role === 'agent') {
+      // A team lead may reassign, but only orders already belonging to their
+      // team — an agent could otherwise pass any id in the request body.
+      const leadAssign = await storage.isTeamLead(user as any);
+      if (user.role === 'agent' && !leadAssign) {
         return res.status(403).json({ message: "Agents cannot bulk assign orders" });
       }
       const { orderIds, agentId } = req.body;
@@ -2437,6 +2440,17 @@ export async function registerRoutes(
       const targetAgent = await storage.getUserById(Number(agentId));
       if (!targetAgent || targetAgent.storeId !== user.storeId) {
         return res.status(400).json({ message: "Agent not found in your store" });
+      }
+      if (leadAssign) {
+        const scope = await storage.getVisibleAgentIds(user as any);
+        const team = Array.isArray(scope) ? scope : [user.id];
+        const check = await storage.assertOrdersInAgentScope(orderIds.map(Number), user.storeId!, team);
+        if (!check.ok) {
+          return res.status(403).json({ message: `Certaines commandes ne font pas partie de votre équipe (${check.offending.slice(0, 5).join(', ')}).` });
+        }
+        if (!team.includes(Number(agentId))) {
+          return res.status(403).json({ message: "Vous ne pouvez affecter qu'à un agent de votre équipe." });
+        }
       }
       const updated = await storage.bulkAssignOrders(orderIds, Number(agentId), user.storeId!);
       res.json({ updated });
@@ -2450,7 +2464,8 @@ export async function registerRoutes(
     res.setTimeout(60000);
     try {
       const user = req.user!;
-      if (user.role === 'agent') {
+      const leadShip = await storage.isTeamLead(user as any);
+      if (user.role === 'agent' && !leadShip) {
         return res.status(403).json({ message: "Les agents ne peuvent pas expédier en masse" });
       }
 
@@ -2460,6 +2475,17 @@ export async function registerRoutes(
       }
 
       const storeId = user.storeId!;
+
+      // Same scope check as bulk-assign: shipping is irreversible at the
+      // carrier, so a lead must not be able to ship an order outside their team.
+      if (leadShip) {
+        const scope = await storage.getVisibleAgentIds(user as any);
+        const team = Array.isArray(scope) ? scope : [user.id];
+        const check = await storage.assertOrdersInAgentScope(orderIds.map(Number), storeId, team);
+        if (!check.ok) {
+          return res.status(403).json({ message: `Certaines commandes ne font pas partie de votre équipe (${check.offending.slice(0, 5).join(', ')}).` });
+        }
+      }
 
       // ── If user explicitly selected an account, pin all orders to it ──────
       let pinnedCreds: Record<string, any> | null = null;
