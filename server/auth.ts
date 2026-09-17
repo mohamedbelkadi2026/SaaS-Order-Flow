@@ -543,9 +543,18 @@ export function setupAuth(app: Express) {
       } catch { /* silent — storeType defaults to standard */ }
     }
 
+    // The team-lead flag lives in store_agent_settings, but the dashboard needs
+    // it on the session user to decide between the personal view and the team
+    // view. It is advisory for the UI only — every endpoint re-checks it.
+    let isTeamLead = false;
+    try {
+      isTeamLead = await storage.isTeamLead(req.user! as any);
+    } catch { /* silent — defaults to the personal view */ }
+
     res.json({
       ...safeUser,
       storeType,
+      isTeamLead,
       isImpersonating: !!originalSuperAdminId,
       originalSuperAdminId: originalSuperAdminId || null,
     });

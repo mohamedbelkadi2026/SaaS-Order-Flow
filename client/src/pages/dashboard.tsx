@@ -152,16 +152,22 @@ export default function Dashboard() {
   }, [filters]);
 
   const { user } = useAuth();
-  const isAgent = user?.role === 'agent';
+  const isTeamLead = !!(user as any)?.isTeamLead;
+  // A team lead is an agent, but the dashboard treats them like a manager: the
+  // full filter bar and the team-wide stats, not the personal view. The server
+  // scopes both to their team regardless of what the client asks for.
+  const isAgent = user?.role === 'agent' && !isTeamLead;
+  // Permission-gated panels still follow the agent rules for a lead.
+  const isAgentRole = user?.role === 'agent';
   const isMediaBuyer = user?.role === 'media_buyer';
   const isAdminUser = user?.role === 'owner' || user?.role === 'admin';
   const [adminView, setAdminView] = useState<'global' | 'personal'>('global');
   const perms = (user?.dashboardPermissions || {}) as Record<string, boolean>;
 
-  const canSeeRevenue = !isAgent || !!perms.show_revenue;
-  const canSeeProfit = !isAgent || !!perms.show_profit;
-  const canSeeCharts = !isAgent || !!perms.show_charts;
-  const canSeeTopProducts = !isAgent || !!perms.show_top_products;
+  const canSeeRevenue = !isAgentRole || !!perms.show_revenue;
+  const canSeeProfit = !isAgentRole || !!perms.show_profit;
+  const canSeeCharts = !isAgentRole || !!perms.show_charts;
+  const canSeeTopProducts = !isAgentRole || !!perms.show_top_products;
 
   // Agent-only UI state for the filter bar's date preset dropdown. All actual
   // date/city/product values now live in the unified `filters` state above so
@@ -175,7 +181,7 @@ export default function Dashboard() {
     paymentType: "fixed" | "commission"; paymentAmount: number; monthsCount: number; periodLabel: string;
   }>({
     queryKey: ['/api/agents/wallet', agentDateRange, filters.dateFrom, filters.dateTo],
-    enabled: isAgent,
+    enabled: isAgentRole,
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters.dateFrom) {
@@ -256,7 +262,7 @@ export default function Dashboard() {
       if (!r.ok) throw new Error('Failed to fetch');
       return r.json();
     },
-    enabled: isAgent,
+    enabled: isAgentRole,
     refetchInterval: 60_000,
   });
 
@@ -283,7 +289,7 @@ export default function Dashboard() {
       if (!r.ok) throw new Error('Failed to fetch agent chart data');
       return r.json();
     },
-    enabled: isAgent,
+    enabled: isAgentRole,
     refetchInterval: 60_000,
   });
 

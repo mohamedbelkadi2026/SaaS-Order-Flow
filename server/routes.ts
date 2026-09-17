@@ -705,7 +705,16 @@ export async function registerRoutes(
     // like matching an incoming order to a catalog product, may still need
     // archived rows).
     const storeProducts = (await storage.getProductsByStore(storeId)).filter((p: any) => !p.archivedAt);
-    const storeAgents = (await storage.getUsersByStore(storeId)).filter(u => u.role === 'agent');
+    // The agent dropdown is scoped like the orders themselves: a team lead gets
+    // their whole team so they can compare members, a plain agent only
+    // themselves, an owner/admin everyone. Returning every agent here would let
+    // a lead pick someone outside their team and read their numbers.
+    const agentScope = await storage.getVisibleAgentIds(req.user! as any);
+    let storeAgents = (await storage.getUsersByStore(storeId)).filter(u => u.role === 'agent');
+    if (agentScope !== undefined) {
+      const allowedIds = new Set(Array.isArray(agentScope) ? agentScope : [agentScope]);
+      storeAgents = storeAgents.filter(u => allowedIds.has(u.id));
+    }
 
     const cities = [...new Set(allOrders.map(o => o.customerCity).filter(Boolean))].sort();
     const sources = [...new Set(allOrders.map(o => o.source).filter(Boolean))].sort();
@@ -743,12 +752,29 @@ export async function registerRoutes(
     let agentPermissions: Record<string, boolean> = {};
     if (isAgent) {
       agentPermissions = await storage.getAgentPermissions(currentUser.id);
-      if (!agentPermissions.show_store_orders) {
-        agentId = String(currentUser.id);
-      }
+    }
+
+    // A team lead is scoped to their team rather than to themselves, and may
+    // narrow to any single member of it — that's the point of the role. The
+    // scope is re-applied to the order set below even when an agentId is
+    // passed, so a crafted request can't reach an agent outside the team.
+    const statsScope = await storage.getVisibleAgentIds(currentUser as any);
+    const teamIds = Array.isArray(statsScope) ? statsScope : null;
+
+    if (teamIds) {
+      // Pinning to self must NOT apply here: the lead's whole purpose is the
+      // team view. Anything outside the team falls back to the full team.
+      agentId = agentId && agentId !== 'all' && teamIds.includes(Number(agentId))
+        ? String(agentId)
+        : 'all';
+    } else if (isAgent && !agentPermissions.show_store_orders) {
+      agentId = String(currentUser.id);
     }
 
     let allOrders = await storage.getOrdersByStore(storeId);
+    if (teamIds) {
+      allOrders = allOrders.filter(o => o.assignedToId != null && teamIds.includes(o.assignedToId));
+    }
 
     if (city && city !== 'all') {
       allOrders = allOrders.filter(o => o.customerCity === city);
