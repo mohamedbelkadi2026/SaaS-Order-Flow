@@ -208,7 +208,7 @@ export interface IStorage {
 
   getStoreAgentSettings(storeId: number, magasinId?: number | null): Promise<StoreAgentSetting[]>;
   getAgentStoreSetting(agentId: number, storeId: number, magasinId?: number | null): Promise<StoreAgentSetting | undefined>;
-  upsertStoreAgentSetting(agentId: number, storeId: number, magasinId: number | null, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }): Promise<StoreAgentSetting>;
+  upsertStoreAgentSetting(agentId: number, storeId: number, magasinId: number | null, data: { roleInStore?: string; isTeamLead?: number; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }): Promise<StoreAgentSetting>;
   getAgentMagasinSettings(agentId: number, storeId: number): Promise<StoreAgentSetting[]>;
 
   getOrderFollowUpLogs(orderId: number): Promise<OrderFollowUpLog[]>;
@@ -4355,7 +4355,7 @@ export class DatabaseStorage implements IStorage {
     return setting;
   }
 
-  async upsertStoreAgentSetting(agentId: number, storeId: number, magasinId: number | null, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }): Promise<StoreAgentSetting> {
+  async upsertStoreAgentSetting(agentId: number, storeId: number, magasinId: number | null, data: { roleInStore?: string; isTeamLead?: number; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }): Promise<StoreAgentSetting> {
     const existing = await this.getAgentStoreSetting(agentId, storeId, magasinId);
     if (existing) {
       const [updated] = await db.update(storeAgentSettings)
