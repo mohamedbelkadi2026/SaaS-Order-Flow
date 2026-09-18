@@ -3354,7 +3354,14 @@ export async function registerRoutes(
 
   app.get(api.agents.list.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    const agentsList = await storage.getUsersByStore(storeId);
+    let agentsList = await storage.getUsersByStore(storeId);
+    // A team lead's Équipe dropdown lists their team, not the whole store —
+    // matching what they can actually filter on. Owners and admins see all.
+    const scope = await storage.getVisibleAgentIds(req.user! as any);
+    if (scope !== undefined) {
+      const allowed = new Set(Array.isArray(scope) ? scope : [scope]);
+      agentsList = agentsList.filter(u => allowed.has(u.id));
+    }
     res.json(agentsList.map(({ password, ...rest }) => rest));
   });
 
@@ -16592,7 +16599,17 @@ function ensureHeaders(sheet) {
   });
 
   app.get("/api/magasins", requireAuth, async (req, res) => {
-    res.json(await storage.getStoresByOwner(req.user!.id));
+    // Agents own no store, so asking for "stores owned by me" returned an empty
+    // list and the Magasin filter disappeared from their order list entirely.
+    // Resolve through their store's owner instead, so an agent — and a team
+    // lead in particular — sees the same magasins as the rest of the store.
+    const user = req.user!;
+    let ownerId = user.id;
+    if (user.role === 'agent' && user.storeId) {
+      const store = await storage.getStore(user.storeId);
+      if ((store as any)?.ownerId) ownerId = (store as any).ownerId;
+    }
+    res.json(await storage.getStoresByOwner(ownerId));
   });
 
   app.post("/api/magasins", requireAdmin, async (req, res) => {
