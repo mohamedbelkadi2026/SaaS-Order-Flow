@@ -4293,6 +4293,24 @@ export async function registerRoutes(
   // CARRIER ACCOUNTS (Multi-account per carrier)
   // ============================================================
 
+  /**
+   * Strip carrier secrets from a row before it leaves the server.
+   *
+   * GET /api/carrier-accounts already did this, but the create and update
+   * responses returned the row verbatim — so every save echoed the raw apiKey
+   * and apiSecret back into the browser, where anyone with access to the
+   * account could read them from the network tab. The shape matches the GET so
+   * the frontend needs no change.
+   */
+  const maskCarrierAccount = (row: any) => {
+    const { apiKey, apiSecret, ...rest } = row || {};
+    return {
+      ...rest,
+      hasApiKey:    !!(apiKey && apiKey.length > 0),
+      apiKeyMasked: apiKey ? (apiKey.slice(0, 4) + "•".repeat(Math.max(0, apiKey.length - 4))) : "",
+    };
+  };
+
   app.get("/api/carrier-accounts", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     const provider = req.query.provider as string | undefined;
@@ -4427,7 +4445,7 @@ export async function registerRoutes(
         message: `Compte transporteur "${name}" créé pour ${carrierName}`,
       }).catch(e => console.error('[LOG-ERROR] createIntegrationLog:', e));
 
-      res.json(acct);
+      res.json(maskCarrierAccount(acct));
 
       // Fire-and-forget: pull live status for every existing order shipped via this
       // carrier so historical (pre-integration) orders catch up automatically.
@@ -4538,7 +4556,7 @@ export async function registerRoutes(
       } else {
         console.log(`[CARRIER-UPDATE] Account #${id} updated (no token change) — fields: ${Object.keys(req.body).join(', ')}`);
       }
-      res.json({ ...updated, tokenUpdated });
+      res.json({ ...maskCarrierAccount(updated), tokenUpdated });
     } catch (error: any) {
       console.error('[DB-ERROR] PATCH /api/carrier-accounts:', error?.message || error);
       res.status(500).json({ message: error?.message || 'Erreur serveur lors de la mise à jour du compte' });
