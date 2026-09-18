@@ -3458,6 +3458,12 @@ export default function Orders() {
                               {acct.connectionName && acct.connectionName !== acct.carrierName && (
                                 <span className="text-muted-foreground text-[11px]">— {acct.connectionName}</span>
                               )}
+                              {/* The boutique matters here: with several shops
+                                  on one account, "Connection 1" alone doesn't
+                                  say which shop you're shipping from. */}
+                              {acct.storeName && (
+                                <span className="text-[11px] text-indigo-600">— {acct.storeName}</span>
+                              )}
                               {acct.isDefault === 1 && (
                                 <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">défaut</span>
                               )}
@@ -3478,7 +3484,9 @@ export default function Orders() {
                         {logo && <img src={logo} alt={acct.carrierName} style={{ height: 32, maxWidth: 90 }} className="object-contain shrink-0" />}
                         <div>
                           <p className="text-sm font-semibold capitalize">{acct.carrierName}</p>
-                          <p className="text-[11px] text-muted-foreground">{acct.connectionName}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {acct.connectionName}{acct.storeName ? ` — ${acct.storeName}` : ''}
+                          </p>
                         </div>
                       </div>
                     );

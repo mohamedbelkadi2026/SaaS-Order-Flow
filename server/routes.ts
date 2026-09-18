@@ -4342,6 +4342,11 @@ export async function registerRoutes(
         isDefault:      a.isDefault,
         isActive:       a.isActive,
         assignmentRule: a.assignmentRule,
+        // Which boutique this connection belongs to. With several shops on one
+        // account the connection name alone ("Connection 1") doesn't say which
+        // shop you're about to ship from.
+        storeName:      a.storeName || null,
+        magasinId:      a.magasinId ?? null,
       })));
     } catch (err: any) {
       console.error(`[DISPATCH-ERROR]: Exception in /api/shipping/active-accounts — ${err.message}`);
