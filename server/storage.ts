@@ -1549,6 +1549,26 @@ export class DatabaseStorage implements IStorage {
     if (items.length > 0) {
       console.log(`[Storage.createOrder] FIRST ITEM:`, JSON.stringify(items[0]));
     }
+
+    // Single point of city recovery, so every intake path benefits: Shopify,
+    // WooCommerce, Sheets, the LP builder, bulk import and manual entry.
+    // Some checkouts collect one free-text address and no city field, leaving
+    // the Ville column empty and the order unshippable. Only ever fills a
+    // blank — an existing city is never overwritten.
+    if (!((order as any).customerCity || '').trim() && (order as any).customerAddress && order.storeId) {
+      try {
+        const guessed = await this.guessCityFromAddress(order.storeId, (order as any).customerAddress);
+        if (guessed) {
+          (order as any).customerCity = guessed;
+          console.log(`[Storage.createOrder] city recovered from address: "${guessed}"`);
+        } else {
+          console.warn(`[Storage.createOrder] no city on order "${(order as any).orderNumber}" and none recognised in the address — Ville will be empty.`);
+        }
+      } catch (e: any) {
+        console.warn(`[Storage.createOrder] city recovery failed: ${e?.message}`);
+      }
+    }
+
     const [newOrder] = await db.insert(orders).values(order).returning();
     
     if (items.length > 0) {
@@ -3250,6 +3270,60 @@ export class DatabaseStorage implements IStorage {
     const found = new Set(rows.map(r => r.id));
     for (const id of orderIds) if (!found.has(id)) offending.push(id);
     return { ok: offending.length === 0, offending };
+  }
+
+  /**
+   * Last-resort city recovery for orders that arrive without one.
+   *
+   * Some checkouts collect a single free-text address and never populate a
+   * city field, so the Ville column ends up empty and no carrier can resolve a
+   * destination. The address is matched against the city names already synced
+   * from the carriers.
+   *
+   * Strict on purpose: a match must be a whole token, and an address naming
+   * two different known cities returns null rather than picking one. A wrong
+   * city here sends a parcel to the wrong place.
+   */
+  async guessCityFromAddress(storeId: number, address: string): Promise<string | null> {
+    const raw = (address || '').trim();
+    if (raw.length < 3) return null;
+
+    // No \p{L} here: the tsconfig target predates the unicode property escape,
+    // so strip accents then keep letters, digits and Arabic explicitly.
+    const norm = (v: string) => (v || '').toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\u0600-\u06FF]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const haystack = ` ${norm(raw)} `;
+    if (haystack.trim().length < 3) return null;
+
+    // carrier_cities stores one row per store+carrier with a JSON array of
+    // names, not a row per city.
+    const rows = await db.select({ cities: carrierCities.cities })
+      .from(carrierCities).where(eq(carrierCities.storeId, storeId));
+
+    const names = new Set<string>();
+    for (const r of rows) {
+      const list = Array.isArray(r.cities) ? r.cities : [];
+      for (const c of list) {
+        const name = typeof c === 'string' ? c : (c as any)?.name;
+        if (typeof name === 'string' && name.trim().length >= 3) names.add(name.trim());
+      }
+    }
+    if (!names.size) return null;
+
+    const hits = new Set<string>();
+    for (const name of Array.from(names)) {
+      const n = norm(name);
+      if (n.length < 3) continue;
+      if (haystack.includes(` ${n} `)) hits.add(name);
+    }
+    // Zero matches, or two different cities named in one address: return null
+    // rather than pick. A wrong city sends the parcel to the wrong place.
+    if (hits.size !== 1) return null;
+    return Array.from(hits)[0];
   }
 
   async deleteUser(id: number): Promise<void> {

@@ -486,7 +486,16 @@ function parseWebhookOrder(provider: string, payload: any) {
     const customerAddress = payload.shipping_address
       ? `${payload.shipping_address.address1 || ''} ${payload.shipping_address.address2 || ''}`.trim()
       : '';
-    const customerCity = payload.shipping_address?.city || '';
+    // Some checkouts never populate a city field — the whole destination
+    // arrives inside address1. Fall back through every place Shopify may put
+    // it before giving up; the free-text recovery happens later, once the
+    // store's carrier city list is available.
+    const customerCity = payload.shipping_address?.city
+      || payload.billing_address?.city
+      || payload.customer?.default_address?.city
+      || payload.shipping_address?.province
+      || payload.billing_address?.province
+      || '';
     const totalPrice = Math.round(parseFloat(payload.total_price || '0') * 100);
     const orderNumber = String(payload.order_number || payload.id);
     const lineItems = (payload.line_items || []).map((item: any) => ({
@@ -503,7 +512,16 @@ function parseWebhookOrder(provider: string, payload: any) {
     const customerName = payload.customer?.full_name || payload.customer?.first_name || 'Client YouCan';
     const customerPhone = payload.customer?.phone || payload.shipping_address?.phone || '';
     const customerAddress = payload.shipping_address?.address || '';
-    const customerCity = payload.shipping_address?.city || '';
+    // Some checkouts never populate a city field — the whole destination
+    // arrives inside address1. Fall back through every place Shopify may put
+    // it before giving up; the free-text recovery happens later, once the
+    // store's carrier city list is available.
+    const customerCity = payload.shipping_address?.city
+      || payload.billing_address?.city
+      || payload.customer?.default_address?.city
+      || payload.shipping_address?.province
+      || payload.billing_address?.province
+      || '';
     const totalPrice = Math.round(parseFloat(payload.total_price || payload.total || '0') * 100);
     const orderNumber = String(payload.ref || payload.id || Date.now());
     const lineItems = (payload.items || payload.line_items || []).map((item: any) => ({
