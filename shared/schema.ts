@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb, index, uniqueIndex, unique } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -334,6 +334,27 @@ export const adSpend = pgTable("ad_spend", {
 
 // ─── Multi-account carrier connections ──────────────────────────────────────
 // Supports multiple API keys per carrier per store (by city, by product, etc.)
+// ─── Meta Ads daily spend ───────────────────────────────────────────────────
+// One row per campaign per day. Amounts stay in the ad account's own currency:
+// converting on import would bake a single day's rate into historical rows.
+// Meta restates figures for up to 72h, so imports overwrite on the unique key
+// rather than adding — otherwise every re-sync would double the spend.
+export const metaAdSpend = pgTable("meta_ad_spend", {
+  id:           serial("id").primaryKey(),
+  storeId:      integer("store_id").notNull(),
+  date:         text("date").notNull(),          // YYYY-MM-DD, ad account timezone
+  campaignId:   text("campaign_id").notNull(),
+  campaignName: text("campaign_name").notNull().default(""),
+  amount:       integer("amount").notNull().default(0),
+  currency:     text("currency").notNull().default(""),
+  impressions:  integer("impressions").notNull().default(0),
+  clicks:       integer("clicks").notNull().default(0),
+  syncedAt:     timestamp("synced_at").defaultNow(),
+}, (t) => ({
+  uniq: unique("meta_ad_spend_unique").on(t.storeId, t.date, t.campaignId),
+}));
+export type MetaAdSpend = typeof metaAdSpend.$inferSelect;
+
 export const carrierAccounts = pgTable("carrier_accounts", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),

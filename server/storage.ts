@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, orderDeletionBatches, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, waselexCities, nearyaRegions, carrierCityPricing,
+  carrierAccounts, carrierCities, metaAdSpend, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, waselexCities, nearyaRegions, carrierCityPricing,
   pushSubscriptions, aiLogs, aiConversations,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
@@ -3324,6 +3324,43 @@ export class DatabaseStorage implements IStorage {
     // rather than pick. A wrong city sends the parcel to the wrong place.
     if (hits.size !== 1) return null;
     return Array.from(hits)[0];
+  }
+
+  /**
+   * Store a batch of Meta campaign-day rows.
+   *
+   * Overwrite, never add: Meta restates spend for up to 72h and the sync
+   * re-reads a trailing window every run, so adding would inflate the numbers
+   * a little more each day.
+   */
+  async upsertMetaAdSpend(storeId: number, rows: Array<{
+    date: string; campaignId: string; campaignName: string;
+    amount: number; currency: string; impressions: number; clicks: number;
+  }>): Promise<number> {
+    let n = 0;
+    for (const r of rows) {
+      if (!r.date || !r.campaignId) continue;
+      await db.insert(metaAdSpend).values({
+        storeId, date: r.date, campaignId: r.campaignId, campaignName: r.campaignName,
+        amount: r.amount, currency: r.currency, impressions: r.impressions, clicks: r.clicks,
+      }).onConflictDoUpdate({
+        target: [metaAdSpend.storeId, metaAdSpend.date, metaAdSpend.campaignId],
+        set: {
+          campaignName: r.campaignName, amount: r.amount, currency: r.currency,
+          impressions: r.impressions, clicks: r.clicks, syncedAt: new Date(),
+        },
+      });
+      n++;
+    }
+    return n;
+  }
+
+  /** Meta spend for a store over a date range, newest first. */
+  async getMetaAdSpend(storeId: number, since?: string, until?: string) {
+    const conds = [eq(metaAdSpend.storeId, storeId)];
+    if (since) conds.push(gte(metaAdSpend.date, since));
+    if (until) conds.push(lte(metaAdSpend.date, until));
+    return db.select().from(metaAdSpend).where(and(...conds)).orderBy(desc(metaAdSpend.date));
   }
 
   async deleteUser(id: number): Promise<void> {

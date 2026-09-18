@@ -20,6 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
+import { testMetaConnection, fetchMetaDailySpend, normalizeAdAccountId } from "./services/meta-ads";
 import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
@@ -4284,6 +4285,158 @@ export async function registerRoutes(
       }
       await storage.deleteIntegration(id);
       res.json({ message: "Supprimé" });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ============================================================
+  // META ADS — daily spend import
+  // ============================================================
+
+  /** Read the saved Meta credentials for a store, if any. */
+  const getMetaCreds = async (storeId: number): Promise<{ adAccountId: string; accessToken: string } | null> => {
+    const rows = await storage.getIntegrationsByStore(storeId, 'ads');
+    const meta = rows.find((i: any) => i.provider === 'meta' && i.isActive !== 0);
+    if (!meta) return null;
+    try {
+      const c = JSON.parse((meta as any).credentials || '{}');
+      if (!c.adAccountId || !c.accessToken) return null;
+      return { adAccountId: c.adAccountId, accessToken: c.accessToken };
+    } catch { return null; }
+  };
+
+  /**
+   * Remember the outcome of the last import on the integration row.
+   *
+   * A token that has been revoked makes the sync fail silently: the merchant
+   * keeps seeing yesterday's spend and a profit figure that quietly drifts. The
+   * last error is stored so the Publicités page can say so.
+   */
+  const recordMetaSyncResult = async (storeId: number, rowCount: number, error: string | null) => {
+    try {
+      const existing: any = (await storage.getIntegrationsByStore(storeId, 'ads'))
+        .find((i: any) => i.provider === 'meta');
+      if (!existing) return;
+      const c = JSON.parse(existing.credentials || '{}');
+      c.lastSyncAt = new Date().toISOString();
+      c.lastSyncRows = rowCount;
+      c.lastError = error;
+      await storage.updateIntegration(existing.id, { credentials: JSON.stringify(c) } as any);
+    } catch (e: any) {
+      console.warn(`[META] could not record sync result: ${e?.message}`);
+    }
+  };
+
+  // Status for the Publicités page. Never returns the token — only whether one
+  // is stored, matching how carrier credentials are handled.
+  app.get("/api/meta-ads/status", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const rows = await storage.getIntegrationsByStore(storeId, 'ads');
+      const meta: any = rows.find((i: any) => i.provider === 'meta');
+      if (!meta) return res.json({ connected: false });
+      let c: any = {};
+      try { c = JSON.parse(meta.credentials || '{}'); } catch {}
+      res.json({
+        connected:    !!(c.adAccountId && c.accessToken),
+        adAccountId:  c.adAccountId || '',
+        accountName:  c.accountName || null,
+        currency:     c.currency || null,
+        timezone:     c.timezone || null,
+        lastSyncAt:   c.lastSyncAt || null,
+        lastSyncRows: c.lastSyncRows ?? null,
+        lastError:    c.lastError || null,
+        isActive:     meta.isActive !== 0,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Save credentials. The pair is verified against Meta first: storing a bad
+  // token means a silent zero in the profit report days later.
+  app.post("/api/meta-ads/connect", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { adAccountId, accessToken } = req.body || {};
+      if (!adAccountId || !accessToken) {
+        return res.status(400).json({ message: "Identifiant de compte publicitaire et token requis." });
+      }
+
+      const test = await testMetaConnection(String(adAccountId), String(accessToken));
+      if (!test.ok) return res.status(400).json({ message: test.error });
+
+      const credentials = JSON.stringify({
+        adAccountId: normalizeAdAccountId(String(adAccountId)),
+        accessToken: String(accessToken),
+        accountName: test.accountName || null,
+        currency:    test.currency || null,
+        timezone:    test.timezone || null,
+      });
+
+      const existing = (await storage.getIntegrationsByStore(storeId, 'ads'))
+        .find((i: any) => i.provider === 'meta');
+
+      if (existing) {
+        await storage.updateIntegration((existing as any).id, { credentials, isActive: 1 } as any);
+      } else {
+        await storage.createIntegration({
+          storeId, type: 'ads', provider: 'meta', credentials, isActive: 1,
+        } as any);
+      }
+
+      res.json({ connected: true, accountName: test.accountName, currency: test.currency, timezone: test.timezone });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/meta-ads/disconnect", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const existing = (await storage.getIntegrationsByStore(storeId, 'ads'))
+        .find((i: any) => i.provider === 'meta');
+      if (existing) await storage.deleteIntegration((existing as any).id);
+      res.json({ disconnected: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Manual import. `days` defaults to 7; Meta restates figures for up to 72h,
+  // so re-reading a trailing window is deliberate and the upsert overwrites.
+  app.post("/api/meta-ads/sync", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const creds = await getMetaCreds(storeId);
+      if (!creds) return res.status(400).json({ message: "Meta Ads n'est pas connecté." });
+
+      const days = Math.min(90, Math.max(1, Number(req.body?.days) || 7));
+      const until = new Date();
+      const since = new Date(until.getTime() - (days - 1) * 86400000);
+      const fmt = (d: Date) => d.toISOString().slice(0, 10);
+
+      const { rows, error } = await fetchMetaDailySpend(creds.adAccountId, creds.accessToken, fmt(since), fmt(until));
+      if (error && !rows.length) {
+        await recordMetaSyncResult(storeId, 0, error);
+        return res.status(502).json({ message: error });
+      }
+
+      const saved = await storage.upsertMetaAdSpend(storeId, rows);
+      await recordMetaSyncResult(storeId, saved, error || null);
+      res.json({ synced: saved, since: fmt(since), until: fmt(until), warning: error || null });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Spend rows for the Publicités page.
+  app.get("/api/meta-ads/spend", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { since, until } = req.query as Record<string, string>;
+      res.json(await storage.getMetaAdSpend(storeId, since, until));
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }

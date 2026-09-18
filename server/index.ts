@@ -887,6 +887,63 @@ app.use((req, res, next) => {
   const autoWaselexSync = setInterval(() => runWaselexSync('interval'), 20 * 60 * 1000);
   intervals.push(autoWaselexSync);
 
+  // ── Meta Ads: import yesterday's spend once a day ─────────────────────────
+  // A trailing window is re-read every run on purpose: Meta restates spend for
+  // up to 72h, and the upsert overwrites on (store, date, campaign) so this
+  // corrects itself instead of accumulating.
+  async function runMetaAdsSync(label: string) {
+    try {
+      const { storage: st } = await import("./storage");
+      const { db: dbInst } = await import('./db');
+      const { storeIntegrations } = await import('@shared/schema');
+      const { eq: eqFn, and: andFn } = await import('drizzle-orm');
+      const { fetchMetaDailySpend } = await import('./services/meta-ads');
+
+      const rows = await dbInst.select().from(storeIntegrations)
+        .where(andFn(eqFn(storeIntegrations.type, 'ads'), eqFn(storeIntegrations.provider, 'meta')));
+
+      for (const row of rows as any[]) {
+        if (row.isActive === 0) continue;
+        let creds: any = {};
+        try { creds = JSON.parse(row.credentials || '{}'); } catch { continue; }
+        if (!creds.adAccountId || !creds.accessToken) continue;
+
+        const until = new Date();
+        const since = new Date(until.getTime() - 3 * 86400000);
+        const fmt = (d: Date) => d.toISOString().slice(0, 10);
+
+        const { rows: spend, error } = await fetchMetaDailySpend(
+          creds.adAccountId, creds.accessToken, fmt(since), fmt(until),
+        );
+
+        if (error && !spend.length) {
+          console.error(`[META-SYNC][${label}] store=${row.storeId}: ${error}`);
+        } else {
+          const saved = await st.upsertMetaAdSpend(row.storeId, spend);
+          console.log(`[META-SYNC][${label}] store=${row.storeId}: ${saved} campaign-day row(s)`);
+        }
+
+        // Record the outcome so the Publicités page can show a revoked token
+        // rather than quietly serving stale spend.
+        try {
+          creds.lastSyncAt = new Date().toISOString();
+          creds.lastSyncRows = spend.length;
+          creds.lastError = (error && !spend.length) ? error : null;
+          await dbInst.update(storeIntegrations)
+            .set({ credentials: JSON.stringify(creds) })
+            .where(eqFn(storeIntegrations.id, row.id));
+        } catch {}
+
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    } catch (err: any) {
+      console.error(`[META-SYNC][${label}] Error:`, err?.message);
+    }
+  }
+  setTimeout(() => runMetaAdsSync('initial'), 3 * 60 * 1000);
+  const autoMetaSync = setInterval(() => runMetaAdsSync('interval'), 6 * 60 * 60 * 1000);
+  intervals.push(autoMetaSync);
+
   // ── Nearya Express: poll GET /docParcelStatus/v1 per parcel ───────────────
   // No bulk endpoint and no documented webhook, so parcels are polled one by
   // one. Only non-terminal orders are touched, and the calls are spaced out so
