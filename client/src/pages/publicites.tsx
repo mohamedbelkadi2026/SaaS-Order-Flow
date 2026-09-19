@@ -525,7 +525,12 @@ export default function Publicites() {
                     {formatCurrency(e.amount)}
                   </TableCell>
                   <TableCell className="text-right">
-                    {(isAdmin || e.userId === user?.id) && (
+                    {/* Imported rows come from meta_ad_spend, not ad_spend:
+                        editing or deleting one does nothing, since the next
+                        import recreates it. Show where it came from instead. */}
+                    {e.readOnly ? (
+                      <span className="text-[10px] text-muted-foreground">Import auto</span>
+                    ) : (isAdmin || e.userId === user?.id) && (
                       <div className="flex items-center justify-end gap-1">
                         <Button variant="ghost" size="icon"
                           className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted/50"
@@ -596,7 +601,9 @@ export default function Publicites() {
                 </div>
                 <div className="flex flex-col items-end gap-2 shrink-0">
                   <span className="text-base font-bold" style={{ color: GOLD }}>{formatCurrency(e.amount)}</span>
-                  {(isAdmin || e.userId === user?.id) && (
+                  {e.readOnly ? (
+                    <span className="text-[10px] text-muted-foreground">Import auto</span>
+                  ) : (isAdmin || e.userId === user?.id) && (
                     <div className="flex items-center gap-1">
                       <Button variant="ghost" size="icon"
                         className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted/50"

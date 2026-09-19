@@ -3593,6 +3593,20 @@ export async function registerRoutes(
       opts.userId = user.id;
     }
     const entries = await storage.getAdSpendEntries(storeId, opts);
+
+    // Merge in the automatic Meta import so the page shows one list. Only for
+    // admins and only when the source filter allows it: a media buyer sees
+    // their own manual entries, not the store's whole ad account.
+    const wantsMeta = !source || source === 'all'
+      || source.toLowerCase() === 'meta' || source.toLowerCase() === 'facebook';
+    if (isAdmin && wantsMeta) {
+      const metaEntries = await storage.getMetaSpendAsEntries(storeId, {
+        productId: opts.productId,
+        dateFrom, dateTo,
+      });
+      return res.json([...metaEntries, ...entries]);
+    }
+
     res.json(entries);
   });
 

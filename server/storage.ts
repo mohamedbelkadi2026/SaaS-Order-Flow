@@ -3486,6 +3486,68 @@ export class DatabaseStorage implements IStorage {
     return { total, byProduct, unattributed };
   }
 
+  /**
+   * Meta spend shaped like manual Publicités entries, so the page can list
+   * both together.
+   *
+   * Read-only and synthetic: these rows live in meta_ad_spend, not ad_spend.
+   * They carry a negative id so the UI can tell them apart and refuse to edit
+   * or delete them — the next import would just recreate them.
+   *
+   * One row per product per day: a merchant reconciling a day's spend wants
+   * the day's figure, not a line per campaign.
+   */
+  async getMetaSpendAsEntries(storeId: number, opts: {
+    productId?: number | null; dateFrom?: string; dateTo?: string;
+  } = {}): Promise<any[]> {
+    const conds = [eq(metaAdSpend.storeId, storeId)];
+    if (opts.dateFrom) conds.push(gte(metaAdSpend.date, opts.dateFrom.substring(0, 10)));
+    if (opts.dateTo)   conds.push(lte(metaAdSpend.date, opts.dateTo.substring(0, 10)));
+
+    const rows = await db.select().from(metaAdSpend).where(and(...conds));
+    if (!rows.length) return [];
+
+    const store: any = await this.getStore(storeId);
+    const rate = (store?.usdToMadRate ?? 1000) / 100;
+
+    const maps = await db.select().from(adCampaignProductMap)
+      .where(and(eq(adCampaignProductMap.storeId, storeId), eq(adCampaignProductMap.source, 'meta')));
+    const byId   = new Map(maps.filter(m => m.campaignId).map(m => [m.campaignId as string, m.productId]));
+    const byName = new Map(maps.map(m => [m.campaignName, m.productId]));
+
+    const prods = await db.select({ id: products.id, name: products.name })
+      .from(products).where(eq(products.storeId, storeId));
+    const prodName = new Map(prods.map(p => [p.id, p.name]));
+
+    const grouped = new Map<string, any>();
+    for (const r of rows) {
+      const pid = byId.get(r.campaignId) ?? byName.get(r.campaignName) ?? null;
+      // 'all' or absent: everything. A specific product: only its own rows.
+      if (opts.productId !== undefined && opts.productId !== null && pid !== opts.productId) continue;
+      if (opts.productId === null && pid !== null) continue;
+
+      const key = `${r.date}|${pid ?? 'none'}`;
+      const mad = r.currency === 'MAD' ? r.amount : Math.round(r.amount * rate);
+      const cur = grouped.get(key);
+      if (cur) {
+        cur.amount += mad;
+        cur.campaignCount += 1;
+      } else {
+        grouped.set(key, {
+          // Negative ids mark synthetic rows the UI must not offer to edit.
+          id: -(grouped.size + 1),
+          storeId, date: r.date, amount: mad,
+          source: 'Meta', productId: pid,
+          productName: pid ? (prodName.get(pid) ?? null) : null,
+          addedByName: 'Import Meta Ads',
+          readOnly: true,
+          campaignCount: 1,
+        });
+      }
+    }
+    return Array.from(grouped.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
+  }
+
   async deleteUser(id: number): Promise<void> {
     // Twelve tables reference users.id. Only orders.assigned_to_id used to be
     // cleared here, so deleting anyone who had touched an order, logged a
