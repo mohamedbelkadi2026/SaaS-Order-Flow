@@ -6,13 +6,19 @@
  * lookup on an ObjectId returns "Colis itrouvable!", so they are frozen.
  * Re-shipping is not an option either — Nearya answers "Already exists".
  *
- * Input: a CSV or TSV exported from Nearya's Colis screen, or pasted from it,
- * with one line per parcel containing both the parcel code and our order
- * number, in any column order:
+ * Input: anything copied out of Nearya's Colis screen, or exported from it.
+ * Each line needs the parcel code and our order number, in any order and with
+ * any separator — the Colis screen shows them one above the other, so a plain
+ * copy-paste works:
  *
  *     EJD1789722545603,11301
  *     CFN1789589247342;11256
  *     AGA1789588231441  11252
+ *     EJD1789588321606
+ *     11255
+ *
+ * The last form is what a raw paste looks like: a code on one line and the
+ * order number on the next. Those are paired automatically.
  *
  * Dry run by default:
  *   npx tsx scripts/repair-nearya-tracking.ts codes.csv
@@ -40,7 +46,22 @@ async function main() {
 
   console.log(apply ? '⚠️  APPLY mode' : '🔍 DRY RUN — nothing will be written');
 
-  const lines = fs.readFileSync(file, 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
+  const rawLines = fs.readFileSync(file, 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
+
+  // A raw paste puts the code and the order number on separate lines. Join a
+  // code-only line with the next number-only line so copy-paste just works.
+  const lines: string[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const hasCode = PARCEL_CODE.test(line);
+    const hasNumber = /\b\d{3,12}\b/.test(line.replace(line.match(PARCEL_CODE)?.[1] ?? '', ''));
+    if (hasCode && !hasNumber && i + 1 < rawLines.length && /^\d{3,12}$/.test(rawLines[i + 1])) {
+      lines.push(`${line} ${rawLines[i + 1]}`);
+      i++;
+    } else {
+      lines.push(line);
+    }
+  }
   let repaired = 0, alreadyOk = 0, notFound = 0, unparsed = 0;
 
   for (const line of lines) {
