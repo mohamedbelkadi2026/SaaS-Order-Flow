@@ -2429,6 +2429,23 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
+  // Pull parcel statuses on demand. The 20-minute poller does the same work;
+  // this is for when the merchant doesn't want to wait for it.
+  const syncNearyaStatusMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/shipping/nearya/sync", {})).json(),
+    onSuccess: (r: any) => {
+      const parts = [`${r.updated ?? 0} commande(s) mise(s) à jour sur ${r.checked ?? 0} colis`];
+      if (r.remaining) parts.push(`${r.remaining} restant(s) — traités automatiquement sous peu`);
+      // Surface statuses we don't recognise rather than silently ignoring them:
+      // that's the one case where an order stays stale without explanation.
+      if (r.unmapped?.length) parts.push(`Statuts non reconnus : ${r.unmapped.join(", ")}`);
+      toast({ title: "Synchronisation Nearya terminée", description: parts.join(" · ") });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+    },
+    onError: (e: any) => toast({ title: "Synchronisation échouée", description: e?.message, variant: "destructive" }),
+  });
+
   const syncCitiesMutation = useMutation({
     mutationFn: (id: number) => apiRequest("POST", `/api/carrier-accounts/${id}/sync-cities`, {}),
     onSuccess: (data: any) => {
@@ -2827,6 +2844,21 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
                       Synchroniser les villes
                     </Button>
+                    {acct.carrierName === "nearya" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={() => syncNearyaStatusMutation.mutate()}
+                        disabled={syncNearyaStatusMutation.isPending}
+                        data-testid={`button-sync-nearya-status-${acct.id}`}
+                      >
+                        {syncNearyaStatusMutation.isPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser les statuts
+                      </Button>
+                    )}
                     {isSeedCarrier && (
                       <Button
                         size="sm"

@@ -21,7 +21,7 @@ import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 import { testMetaConnection, fetchMetaDailySpend, normalizeAdAccountId } from "./services/meta-ads";
-import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapNearyaStatus, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
+import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapNearyaStatus, trackNearyaParcel, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -14246,6 +14246,87 @@ function ensureHeaders(sheet) {
   });
 
   /** POST /api/shipping/waselex/sync — sync manuelle des statuts Waselex (batch) */
+  /**
+   * Pull Nearya parcel statuses on demand.
+   *
+   * The same work the 20-minute poller does, triggered by the merchant. Their
+   * API has no bulk endpoint, so parcels are polled one at a time and spaced
+   * out; a store with many open parcels takes a while rather than hammering
+   * Nearya and getting throttled.
+   */
+  app.post("/api/shipping/nearya/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "nearya");
+      const account: any = accounts.find((a: any) => a.isActive === 1) || accounts[0];
+      if (!account) return res.status(400).json({ message: "Aucun compte Nearya configuré." });
+      if (!account.apiKey || !account.apiSecret) {
+        return res.status(400).json({ message: "Clé API et Compte ID Nearya requis." });
+      }
+
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const pending = allOrders.filter((o: any) =>
+        o.trackNumber &&
+        (o.shippingProvider || "").toLowerCase().trim() === "nearya" &&
+        !["delivered", "refused", "Retour Recu"].includes(o.status || "")
+      );
+
+      if (!pending.length) {
+        return res.json({ checked: 0, updated: 0, unmapped: [], message: "Aucun colis Nearya en cours." });
+      }
+
+      // Bounded so the request can't hang: anything beyond this is picked up by
+      // the automatic sync a few minutes later.
+      const batch = pending.slice(0, 120);
+      let updated = 0;
+      const unmapped: string[] = [];
+      let authFailed = false;
+
+      for (const order of batch) {
+        const r = await trackNearyaParcel((order as any).trackNumber, {
+          apiKey: account.apiKey, apiSecret: account.apiSecret,
+        });
+        if (r.error === 'NEARYA_401') { authFailed = true; break; }
+
+        if (r.label && r.label !== (order as any).commentStatus) {
+          await storage.updateOrder(order.id, { commentStatus: r.label } as any);
+        }
+        // A status we don't recognise leaves the order alone and is reported
+        // back, rather than guessed at — a wrong guess would mark an
+        // undelivered parcel as delivered and distort the profit report.
+        if (!r.status && r.label) {
+          if (!unmapped.includes(r.label)) unmapped.push(r.label);
+        } else if (r.status && r.status !== order.status) {
+          await storage.updateOrderStatus(order.id, r.status);
+          await storage.createOrderFollowUpLog({
+            orderId: order.id, agentId: null, agentName: 'Nearya Sync',
+            note: `📦 Statut mis à jour: ${r.label} → ${r.status}`,
+          } as any);
+          updated++;
+          try {
+            const { broadcastToStore } = await import('./sse');
+            broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: r.status, commentStatus: r.label });
+          } catch {}
+        }
+        await new Promise(res2 => setTimeout(res2, 200));
+      }
+
+      if (authFailed) {
+        return res.status(401).json({ message: "Identifiants Nearya invalides ou expirés. Reconnectez le compte." });
+      }
+
+      res.json({
+        checked: batch.length,
+        updated,
+        remaining: Math.max(0, pending.length - batch.length),
+        unmapped,
+      });
+    } catch (err: any) {
+      console.error("[NEARYA-SYNC]", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.post("/api/shipping/waselex/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
     try {
       const storeId = req.user!.storeId!;
