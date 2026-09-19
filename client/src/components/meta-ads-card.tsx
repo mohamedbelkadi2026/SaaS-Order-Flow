@@ -24,7 +24,7 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
   const { data: status, isLoading } = useQuery<any>({ queryKey: ["/api/meta-ads/status"] });
 
   const connectMut = useMutation({
-    mutationFn: async () => apiRequest("POST", "/api/meta-ads/connect", { adAccountId, accessToken }),
+    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/connect", { adAccountId, accessToken })).json(),
     onSuccess: async (r: any) => {
       toast({ title: "Meta Ads connecté", description: r?.accountName ? `Compte : ${r.accountName}` : undefined });
       setOpen(false); setAccessToken("");
@@ -34,9 +34,15 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
   });
 
   const syncMut = useMutation({
-    mutationFn: async () => apiRequest("POST", "/api/meta-ads/sync", { days: 7 }),
+    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/sync", { days: 30 })).json(),
     onSuccess: (r: any) => {
-      toast({ title: "Import terminé", description: `${r?.synced ?? 0} ligne(s) importée(s) du ${r?.since} au ${r?.until}.` });
+      const n = r?.synced ?? 0;
+      toast({
+        title: n > 0 ? "Import terminé" : "Aucune dépense trouvée",
+        description: n > 0
+          ? `${n} ligne(s) importée(s) du ${r?.since} au ${r?.until}.`
+          : `Meta n'a renvoyé aucune dépense entre le ${r?.since} et le ${r?.until}. Vérifiez qu'une campagne a bien tourné sur cette période.`,
+      });
       qc.invalidateQueries({ queryKey: ["/api/meta-ads/status"] });
       qc.invalidateQueries({ queryKey: ["/api/meta-ads/spend"] });
     },
@@ -44,7 +50,7 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
   });
 
   const disconnectMut = useMutation({
-    mutationFn: async () => apiRequest("POST", "/api/meta-ads/disconnect", {}),
+    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/disconnect", {})).json(),
     onSuccess: () => {
       toast({ title: "Meta Ads déconnecté" });
       qc.invalidateQueries({ queryKey: ["/api/meta-ads/status"] });

@@ -101,6 +101,9 @@ export async function fetchMetaDailySpend(
     fields: 'campaign_id,campaign_name,spend,impressions,clicks,account_currency',
     time_increment: 1,
     time_range: JSON.stringify({ since, until }),
+    // Meta defaults to active campaigns only: a campaign paused since yesterday
+    // would report nothing for the days it actually ran.
+    filtering: JSON.stringify([]),
     limit: 200,
     access_token: accessToken,
   };
@@ -115,6 +118,11 @@ export async function fetchMetaDailySpend(
       }
 
       const data = Array.isArray(res.data?.data) ? res.data.data : [];
+      if (page === 0 && !data.length) {
+        // An empty result and a broken query look identical from the outside,
+        // so log what Meta actually returned rather than reporting "0 rows".
+        console.warn(`[META] insights returned 0 rows for ${act} ${since}→${until}. Body: ${JSON.stringify(res.data).slice(0, 500)}`);
+      }
       for (const r of data) {
         const spend = parseFloat(r?.spend ?? '0');
         if (!r?.date_start || Number.isNaN(spend)) continue;
