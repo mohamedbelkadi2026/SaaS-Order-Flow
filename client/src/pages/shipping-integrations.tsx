@@ -227,6 +227,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   );
   // Same SIMPLE/STOCK split as Ameex, but Nearya uses two endpoints and keys
   // its stock lines on SKU.
+  // Shown once by Nearya when the webhook is created; used to verify the
+  // X-Nearya-Signature header on every delivery.
+  const [nearyaWebhookSecret, setNearyaWebhookSecret] = useState<string>("");
   const [nearyaMode, setNearyaMode] = useState<string>(
     (existingAccount?.settings as any)?.nearyaFulfillmentMode === "store" ? "store" : "simple"
   );
@@ -484,6 +487,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             ...((existingAccount?.settings as object) || {}),
             nearyaBusinessId: nearyaBusinessId.trim(),
             nearyaFulfillmentMode: nearyaMode === "store" ? "store" : "simple",
+            ...(nearyaWebhookSecret.trim() ? { nearyaWebhookSecret: nearyaWebhookSecret.trim() } : {}),
           };
         } else if (isAmeex) {
           if (apiKey.trim())        body.apiKey          = apiKey;
@@ -539,6 +543,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           payload.settings         = {
             nearyaBusinessId: nearyaBusinessId.trim(),
             nearyaFulfillmentMode: nearyaMode === "store" ? "store" : "simple",
+            ...(nearyaWebhookSecret.trim() ? { nearyaWebhookSecret: nearyaWebhookSecret.trim() } : {}),
           };
         } else if (isAmeex) {
           payload.apiSecret       = ameexApiId.trim() || undefined;
@@ -902,6 +907,22 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   />
                   <p className="text-[10px] text-muted-foreground">
                     Dans votre compte Nearya, section « Business IDs ». Envoyé comme « company » à chaque requête.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Webhook Secret <span className="text-muted-foreground font-normal">(optionnel)</span>
+                  </Label>
+                  <Input
+                    type="password"
+                    value={nearyaWebhookSecret}
+                    onChange={e => setNearyaWebhookSecret(e.target.value)}
+                    placeholder="Affiché une seule fois par Nearya"
+                    data-testid="input-nearya-webhook-secret"
+                    className="h-10 text-xs font-mono"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Nearya → Paramètres → Webhooks. Collez-le ici pour que chaque notification soit vérifiée.
                   </p>
                 </div>
                 <div className="space-y-2 mt-3">
@@ -1727,6 +1748,22 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   />
                   <p className="text-[10px] text-muted-foreground">
                     Dans votre compte Nearya, section « Business IDs ». Envoyé comme « company » à chaque requête.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Webhook Secret <span className="text-muted-foreground font-normal">(optionnel)</span>
+                  </Label>
+                  <Input
+                    type="password"
+                    value={nearyaWebhookSecret}
+                    onChange={e => setNearyaWebhookSecret(e.target.value)}
+                    placeholder="Affiché une seule fois par Nearya"
+                    data-testid="input-nearya-webhook-secret"
+                    className="h-10 text-xs font-mono"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Nearya → Paramètres → Webhooks. Collez-le ici pour que chaque notification soit vérifiée.
                   </p>
                 </div>
                 <div className="space-y-2 mt-3">

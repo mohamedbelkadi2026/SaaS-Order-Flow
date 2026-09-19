@@ -6696,6 +6696,27 @@ export async function registerRoutes(
       if (carrierName === "nearya") {
         console.log(`[NEARYA-WEBHOOK-RAW] ${JSON.stringify(body)}`);
 
+        // Nearya signs each delivery with X-Nearya-Signature, using a secret
+        // shown once when the webhook is created. Verified only when the
+        // merchant has saved it — an unverified delivery is still processed,
+        // since refusing them would silently freeze every status update, but a
+        // MISMATCH is refused: that means someone else is posting.
+        const nSig = String(req.headers['x-nearya-signature'] || '');
+        const nSecret = (account as any)?.settings?.nearyaWebhookSecret;
+        if (nSecret && nSig) {
+          try {
+            const crypto = await import('crypto');
+            const expected = crypto.createHmac('sha256', String(nSecret))
+              .update(JSON.stringify(body)).digest('hex');
+            if (expected !== nSig.replace(/^sha256=/, '')) {
+              console.warn(`[NEARYA-WEBHOOK] signature mismatch — refusing. got=${nSig.slice(0, 16)}…`);
+              return res.status(401).json({ received: false, reason: 'bad signature' });
+            }
+          } catch (e: any) {
+            console.warn(`[NEARYA-WEBHOOK] could not verify signature: ${e?.message}`);
+          }
+        }
+
         const pick = (re: RegExp): string => {
           const walk = (node: any, depth = 0): string | null => {
             if (!node || depth > 5) return null;
@@ -6722,13 +6743,24 @@ export async function registerRoutes(
           return walk(body) || '';
         };
 
-        const tracking = pick(/^(parcel|parcelCode|code|tracking|trackingCode|code_suivi|codeSuivi)$/i);
-        const rawSt    = pick(/^(status|state|statut|etat|situation)$/i);
+        // Field names come from Nearya's own webhook documentation:
+        //   event  — e.g. PARCEL_STATUS_UPDATED
+        //   cab    — "identifiant unique du colis", their word for the code
+        //   status — an OBJECT carrying { id, label, date }, not a string
+        const tracking = pick(/^(cab|parcel|parcelCode|code|tracking|trackingCode|code_suivi|codeSuivi)$/i);
+
+        // `status` being an object is why a plain key search found nothing:
+        // read its label, falling back to its id.
+        const statusObj: any = (body as any)?.status;
+        const rawSt = (statusObj && typeof statusObj === 'object')
+          ? String(statusObj.label ?? statusObj.libelle ?? statusObj.name ?? statusObj.id ?? '').trim()
+          : pick(/^(status|state|statut|etat|situation)$/i);
         // We send our own order number as `orderId` when creating the parcel,
         // so Nearya echoes it back. That is a second way in — and the only one
         // for parcels stored with Nearya's internal id instead of the code.
         const ourRef   = pick(/^(orderId|order_num|orderNumber|reference)$/i);
-        console.log(`[NEARYA-WEBHOOK] store=${storeId} parcel="${tracking}" ref="${ourRef}" status="${rawSt}"`);
+        const evt = String((body as any)?.event ?? '');
+        console.log(`[NEARYA-WEBHOOK] store=${storeId} event="${evt}" cab="${tracking}" ref="${ourRef}" status="${rawSt}"`);
 
         if (!tracking && !ourRef) {
           await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
