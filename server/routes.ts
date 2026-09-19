@@ -21,7 +21,7 @@ import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 import { testMetaConnection, fetchMetaDailySpend, normalizeAdAccountId } from "./services/meta-ads";
-import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
+import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapNearyaStatus, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -6656,7 +6656,10 @@ export async function registerRoutes(
       // carrier_account row instead of silently falling through to the
       // default account.
       const normalizedCarrierName = CARRIER_NAME_ALIASES[carrierName] || carrierName;
-      const account = rows.find(r => r.carrierName.toLowerCase() === normalizedCarrierName)
+      // `let`, not `const`: the Ameex payload detection below reassigns this.
+      // As a const it threw "Assignment to constant variable" at runtime and the
+      // whole webhook came back as a 500.
+      let account = rows.find(r => r.carrierName.toLowerCase() === normalizedCarrierName)
         || rows.find(r => r.isDefault === 1)
         || rows[0];
 
@@ -6686,6 +6689,85 @@ export async function registerRoutes(
       }
 
       // ── Ozon Express: fields differ from all other carriers ─────────────────
+      // ── Nearya Express ──────────────────────────────────────────────────────
+      // Their webhook payload is undocumented, so the parcel code and status
+      // are searched for by key rather than assumed — the same approach that
+      // /region and the create-parcel response both needed.
+      if (carrierName === "nearya") {
+        console.log(`[NEARYA-WEBHOOK-RAW] ${JSON.stringify(body)}`);
+
+        const pick = (re: RegExp): string => {
+          const walk = (node: any, depth = 0): string | null => {
+            if (!node || depth > 5) return null;
+            if (Array.isArray(node)) {
+              for (let i = node.length - 1; i >= 0; i--) {
+                const hit = walk(node[i], depth + 1);
+                if (hit) return hit;
+              }
+              return null;
+            }
+            if (typeof node === 'object') {
+              for (const [k, v] of Object.entries(node)) {
+                if (re.test(k) && (typeof v === 'string' || typeof v === 'number') && String(v).trim()) {
+                  return String(v).trim();
+                }
+              }
+              for (const v of Object.values(node)) {
+                const hit = walk(v, depth + 1);
+                if (hit) return hit;
+              }
+            }
+            return null;
+          };
+          return walk(body) || '';
+        };
+
+        const tracking = pick(/^(parcel|parcelCode|code|tracking|trackingCode|code_suivi|codeSuivi)$/i);
+        const rawSt    = pick(/^(status|state|statut|etat|situation)$/i);
+        console.log(`[NEARYA-WEBHOOK] store=${storeId} parcel="${tracking}" status="${rawSt}"`);
+
+        if (!tracking) {
+          await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
+            action: 'webhook_no_match', status: 'ok',
+            message: `⚠️ Nearya: aucun code de colis reconnu dans le payload`,
+            payload: JSON.stringify(body).slice(0, 1000) });
+          return res.json({ received: true, matched: false });
+        }
+
+        const nOrder = await storage.getOrderByTrackingNumber(storeId, tracking);
+        if (!nOrder) {
+          await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
+            action: 'webhook_no_match', status: 'ok',
+            message: `⚠️ Nearya: aucune commande pour le colis ${tracking} — statut: "${rawSt}"` });
+          return res.json({ received: true, matched: false });
+        }
+
+        const mapped = mapNearyaStatus(rawSt);
+        if (mapped.label && mapped.label !== (nOrder as any).commentStatus) {
+          await storage.updateOrder(nOrder.id, { commentStatus: mapped.label } as any);
+        }
+        // An unrecognised status leaves the order alone: guessing would mark an
+        // undelivered parcel as delivered and feed a false profit figure.
+        if (mapped.status && mapped.status !== nOrder.status) {
+          await storage.updateOrderStatus(nOrder.id, mapped.status);
+          await storage.createOrderFollowUpLog({
+            orderId: nOrder.id, agentId: null, agentName: 'Nearya Webhook',
+            note: `📦 Statut mis à jour via webhook: ${mapped.label} → ${mapped.status}`,
+          } as any);
+          try {
+            const { broadcastToStore } = await import('./sse');
+            broadcastToStore(storeId, 'order_updated', { orderId: nOrder.id, status: mapped.status, commentStatus: mapped.label });
+          } catch {}
+        }
+
+        await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
+          action: 'webhook_received', status: 'success',
+          message: `✅ Commande #${nOrder.id} — colis ${tracking} — "${rawSt}" → ${mapped.status || 'commentaire uniquement'}`,
+          payload: JSON.stringify(body).slice(0, 1000) });
+
+        return res.json({ received: true, matched: true, status: mapped.status });
+      }
+
       if (carrierName === "ozonexpress") {
         // Full raw payload — used to locate driver/livreur field name in Ozon's schema
         console.log(`[OZON-WEBHOOK-RAW] ${JSON.stringify(req.body)}`);
@@ -6776,7 +6858,10 @@ export async function registerRoutes(
           message: `❌ Erreur traitement webhook — ${procErr?.message || procErr}`,
           payload: JSON.stringify(body).slice(0, 1000),
         });
-        return res.status(500).json({ message: "Erreur traitement webhook", error: procErr?.message });
+        // 200, not 500. Carriers retry on 5xx and disable endpoints that keep
+        // failing — Nearya warned they would cut ours off. The delivery was
+        // received; that we could not process it is our problem, logged above.
+        return res.status(200).json({ received: true, processed: false, error: procErr?.message });
       }
 
       await storage.createIntegrationLog({
@@ -6791,7 +6876,9 @@ export async function registerRoutes(
       res.json({ received: true, tracked: result.tracked });
     } catch (err: any) {
       console.error("[Webhook:carrier:permanent]", err);
-      res.status(500).json({ message: "Erreur webhook" });
+      // Acknowledge regardless: a 5xx makes the carrier retry and eventually
+      // disable the webhook, which costs far more than one missed status.
+      res.status(200).json({ received: true, processed: false });
     }
   });
 
@@ -6840,7 +6927,10 @@ export async function registerRoutes(
           message: `❌ Erreur traitement webhook — ${procErr?.message || procErr}`,
           payload: JSON.stringify(body).slice(0, 1000),
         });
-        return res.status(500).json({ message: "Erreur traitement webhook", error: procErr?.message });
+        // 200, not 500. Carriers retry on 5xx and disable endpoints that keep
+        // failing — Nearya warned they would cut ours off. The delivery was
+        // received; that we could not process it is our problem, logged above.
+        return res.status(200).json({ received: true, processed: false, error: procErr?.message });
       }
 
       await storage.createIntegrationLog({
@@ -6855,7 +6945,9 @@ export async function registerRoutes(
       res.json({ received: true, tracked: result.tracked });
     } catch (err: any) {
       console.error("[Webhook:carrier]", err);
-      res.status(500).json({ message: "Erreur webhook" });
+      // Acknowledge regardless: a 5xx makes the carrier retry and eventually
+      // disable the webhook, which costs far more than one missed status.
+      res.status(200).json({ received: true, processed: false });
     }
   });
 
