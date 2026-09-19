@@ -14309,6 +14309,7 @@ function ensureHeaders(sheet) {
       for (const order of batch) {
         const r = await trackNearyaParcel((order as any).trackNumber, {
           apiKey: account.apiKey, apiSecret: account.apiSecret,
+          businessId: (account.settings as any)?.nearyaBusinessId || account.carrierStoreName || undefined,
         });
         if (r.error === 'NEARYA_401') { authFailed = true; break; }
         if (r.error) {

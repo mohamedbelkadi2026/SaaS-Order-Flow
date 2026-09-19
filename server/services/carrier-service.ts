@@ -4449,11 +4449,21 @@ export function mapNearyaStatus(raw: string | null | undefined): { status: strin
  */
 export async function trackNearyaParcel(
   parcelCode: string,
-  creds: { apiKey: string; apiSecret: string },
+  creds: { apiKey: string; apiSecret: string; businessId?: string },
 ): Promise<{ status: string | null; label: string; error?: string }> {
   try {
+    // Their other endpoints all take the Business ID as `company`; the status
+    // one isn't documented as needing it, but sending it costs nothing and
+    // real parcel codes straight from their own Colis screen still come back
+    // "Colis itrouvable!" without it.
+    const params: Record<string, string> = { parcel: parcelCode };
+    if (creds.businessId) params.company = creds.businessId;
+
+    const url = `${NEARYA_API.status}?${new URLSearchParams(params)}`;
+    console.log(`[NEARYA-TRACK] GET ${url}`);
+
     const res = await axios.get(NEARYA_API.status, {
-      params:  { parcel: parcelCode },
+      params,
       headers: { 'x-api-id': creds.apiSecret, 'x-api-key': creds.apiKey, 'Accept': 'application/json' },
       timeout: 20000,
       validateStatus: () => true,

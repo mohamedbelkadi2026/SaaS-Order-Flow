@@ -976,7 +976,13 @@ app.use((req, res, next) => {
         console.log(`[NEARYA-AUTO-SYNC][${label}] store=${storeId}: polling ${toSync.length} parcel(s)`);
         for (const order of toSync) {
           try {
-            const r = await trackNearyaParcel((order as any).trackNumber!, { apiKey, apiSecret });
+            const r = await trackNearyaParcel((order as any).trackNumber!, {
+              apiKey, apiSecret,
+              businessId: (() => {
+                try { return (account as any).settings?.nearyaBusinessId || (account as any).carrierStoreName || undefined; }
+                catch { return undefined; }
+              })(),
+            });
             if (r.error === 'NEARYA_401') {
               console.error(`[NEARYA-AUTO-SYNC][${label}] store=${storeId}: identifiants invalides — reconnectez Nearya.`);
               break;
