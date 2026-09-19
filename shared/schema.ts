@@ -7,6 +7,9 @@ export const stores = pgTable("stores", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   ownerId: integer("owner_id"),
+  // USD→MAD rate x100 (1000 = 10.00). Merchants settle their ad spend at a rate
+  // they negotiate, so it is theirs to set rather than fetched from a feed.
+  usdToMadRate: integer("usd_to_mad_rate").notNull().default(1000),
   // 'standard' (SaaS classique) | 'tajerdrop_seller' (dropshipper TajerDrop)
   storeType: text("store_type").default("standard"),
   // TajerDrop seller validation flow — null for standard stores
@@ -1188,6 +1191,10 @@ export const adCampaignProductMap = pgTable("ad_campaign_product_map", {
   id:           serial("id").primaryKey(),
   storeId:      integer("store_id").notNull().references(() => stores.id, { onDelete: "cascade" }),
   campaignName: text("campaign_name").notNull(),
+  // Keyed on the campaign id, not the name: merchants rename campaigns and the
+  // id never changes, so the link survives a rename.
+  campaignId:   text("campaign_id"),
+  source:       text("source").notNull().default("meta"),
   productId:    integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
   createdAt:    timestamp("created_at").defaultNow().notNull(),
 });

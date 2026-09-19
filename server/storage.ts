@@ -3363,6 +3363,85 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(metaAdSpend).where(and(...conds)).orderBy(desc(metaAdSpend.date));
   }
 
+  /**
+   * Every campaign that has spend, with its mapped product when there is one.
+   *
+   * Drives the mapping screen: a campaign that appears here without a product
+   * is spend that isn't attributed to anything, so new campaigns surface on
+   * their own instead of being silently dropped.
+   */
+  async getMetaCampaignsWithMapping(storeId: number, since?: string, until?: string): Promise<Array<{
+    campaignId: string; campaignName: string; totalAmount: number; currency: string;
+    days: number; productId: number | null; productName: string | null;
+  }>> {
+    const conds = [eq(metaAdSpend.storeId, storeId)];
+    if (since) conds.push(gte(metaAdSpend.date, since));
+    if (until) conds.push(lte(metaAdSpend.date, until));
+
+    const spend = await db.select().from(metaAdSpend).where(and(...conds));
+    const maps  = await db.select().from(adCampaignProductMap)
+      .where(and(eq(adCampaignProductMap.storeId, storeId), eq(adCampaignProductMap.source, 'meta')));
+    const prods = await db.select({ id: products.id, name: products.name })
+      .from(products).where(eq(products.storeId, storeId));
+
+    const byCampaign = new Map<string, { campaignId: string; campaignName: string; totalAmount: number; currency: string; days: number }>();
+    for (const r of spend) {
+      const cur = byCampaign.get(r.campaignId);
+      if (cur) {
+        cur.totalAmount += r.amount;
+        cur.days += 1;
+        if (r.campaignName) cur.campaignName = r.campaignName;
+      } else {
+        byCampaign.set(r.campaignId, {
+          campaignId: r.campaignId, campaignName: r.campaignName || r.campaignId,
+          totalAmount: r.amount, currency: r.currency, days: 1,
+        });
+      }
+    }
+
+    const mapById = new Map(maps.filter(m => m.campaignId).map(m => [m.campaignId as string, m]));
+    // Fall back to the name for rows saved before campaign_id existed.
+    const mapByName = new Map(maps.map(m => [m.campaignName, m]));
+    const prodName = new Map(prods.map(p => [p.id, p.name]));
+
+    return Array.from(byCampaign.values())
+      .map(c => {
+        const m = mapById.get(c.campaignId) || mapByName.get(c.campaignName);
+        return {
+          ...c,
+          productId: m?.productId ?? null,
+          productName: m ? (prodName.get(m.productId) ?? null) : null,
+        };
+      })
+      .sort((a, b) => b.totalAmount - a.totalAmount);
+  }
+
+  /** Link a campaign to a product, or clear the link when productId is null. */
+  async setCampaignProductMapping(storeId: number, campaignId: string, campaignName: string, productId: number | null): Promise<void> {
+    const existing = await db.select().from(adCampaignProductMap).where(and(
+      eq(adCampaignProductMap.storeId, storeId),
+      eq(adCampaignProductMap.source, 'meta'),
+      eq(adCampaignProductMap.campaignId, campaignId),
+    ));
+
+    if (productId == null) {
+      if (existing.length) {
+        await db.delete(adCampaignProductMap).where(eq(adCampaignProductMap.id, existing[0].id));
+      }
+      return;
+    }
+
+    if (existing.length) {
+      await db.update(adCampaignProductMap)
+        .set({ productId, campaignName })
+        .where(eq(adCampaignProductMap.id, existing[0].id));
+    } else {
+      await db.insert(adCampaignProductMap).values({
+        storeId, source: 'meta', campaignId, campaignName, productId,
+      } as any);
+    }
+  }
+
   async deleteUser(id: number): Promise<void> {
     // Twelve tables reference users.id. Only orders.assigned_to_id used to be
     // cleared here, so deleting anyone who had touched an order, logged a

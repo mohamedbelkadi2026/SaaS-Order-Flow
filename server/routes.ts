@@ -4431,6 +4431,76 @@ export async function registerRoutes(
     }
   });
 
+  /**
+   * Campaigns that have spend, with their mapped product.
+   *
+   * Amounts are converted to MAD here using the rate the merchant set, so the
+   * whole app shows one currency. The raw figure stays untouched in the
+   * database: converting on import would bake one day's rate into history.
+   */
+  app.get("/api/meta-ads/campaigns", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { since, until } = req.query as Record<string, string>;
+      const rows = await storage.getMetaCampaignsWithMapping(storeId, since, until);
+
+      const store: any = await storage.getStore(storeId);
+      const rate = (store?.usdToMadRate ?? 1000) / 100;
+
+      res.json({
+        rate,
+        campaigns: rows.map(c => ({
+          ...c,
+          // amountMad is centimes of MAD, like every other money field here.
+          amountMad: c.currency === 'MAD' ? c.totalAmount : Math.round(c.totalAmount * rate),
+        })),
+        unmappedCount: rows.filter(c => !c.productId).length,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/meta-ads/campaigns/map", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { campaignId, campaignName, productId } = req.body || {};
+      if (!campaignId) return res.status(400).json({ message: "campaignId requis." });
+
+      if (productId != null) {
+        // Guard the store boundary: a product id from another store would
+        // silently attribute this store's spend to someone else's catalogue.
+        const p: any = await storage.getProduct(Number(productId));
+        if (!p || p.storeId !== storeId) {
+          return res.status(400).json({ message: "Produit introuvable dans votre boutique." });
+        }
+      }
+
+      await storage.setCampaignProductMapping(
+        storeId, String(campaignId), String(campaignName || campaignId),
+        productId == null ? null : Number(productId),
+      );
+      res.json({ mapped: productId != null });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // The merchant settles USD spend at a rate they negotiate, so they set it.
+  app.post("/api/meta-ads/rate", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const rate = Number(req.body?.rate);
+      if (!Number.isFinite(rate) || rate <= 0 || rate > 100) {
+        return res.status(400).json({ message: "Taux invalide." });
+      }
+      await storage.updateStore(storeId, { usdToMadRate: Math.round(rate * 100) } as any);
+      res.json({ rate });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // Spend rows for the Publicités page.
   app.get("/api/meta-ads/spend", requireAuth, async (req, res) => {
     try {

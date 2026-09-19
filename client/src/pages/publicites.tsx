@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import MetaAdsCard from "@/components/meta-ads-card";
+import MetaCampaignMapping from "@/components/meta-campaign-mapping";
 import { useProducts, useAgents, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -325,6 +326,7 @@ export default function Publicites() {
 
       {/* Automatic Meta spend import, next to the manual entry it replaces. */}
       <MetaAdsCard isAdmin={isAdmin} />
+      <MetaCampaignMapping isAdmin={isAdmin} />
       </div>
 
       {/* Media Buyer privacy notice */}
