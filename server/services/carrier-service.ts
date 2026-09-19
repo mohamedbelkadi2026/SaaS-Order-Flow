@@ -4259,12 +4259,21 @@ export async function createNearyaParcel(
       return null;
     };
 
+    // Nearya's real parcel codes look like EJD1789722545603 — three letters
+    // then digits. Their internal ObjectId is 24 lowercase hex characters and
+    // is NOT accepted by docParcelStatus: storing one gives "Colis itrouvable!"
+    // on every status lookup, forever, with no way back.
+    const isObjectId = (v: string) => /^[0-9a-f]{24}$/i.test(v);
+
     const realCode = findBy(TRACK_KEY)(res.data);
-    const fallbackId = realCode ? null : findBy(FALLBACK_KEY)(res.data);
-    if (!realCode && fallbackId) {
-      console.warn(`${tag} ⚠️ no tracking code in the response — falling back to the internal id "${fallbackId}". Status lookups will fail for this parcel.`);
-    }
-    const trackingNumber = realCode || extractTracking(res.data) || fallbackId;
+    const candidate = realCode || extractTracking(res.data);
+    const trackingNumber = candidate && !isObjectId(candidate)
+      ? candidate
+      : (() => {
+          const fb = findBy(FALLBACK_KEY)(res.data);
+          console.warn(`${tag} ⚠️ no usable parcel code in the response (candidate="${candidate || 'none'}"). Full body: ${JSON.stringify(res.data).slice(0, 600)}`);
+          return fb && !isObjectId(fb) ? fb : null;
+        })();
     if (!trackingNumber) {
       // Put the shape in the error itself: hunting for this in the Railway logs
       // costs a round trip, and the same problem on /region was solved the
