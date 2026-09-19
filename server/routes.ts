@@ -4412,12 +4412,32 @@ export async function registerRoutes(
       const creds = await getMetaCreds(storeId);
       if (!creds) return res.status(400).json({ message: "Meta Ads n'est pas connecté." });
 
-      const days = Math.min(90, Math.max(1, Number(req.body?.days) || 7));
-      const until = new Date();
-      const since = new Date(until.getTime() - (days - 1) * 86400000);
-      const fmt = (d: Date) => d.toISOString().slice(0, 10);
+      // An explicit range wins over `days`, so the page can import exactly the
+      // period the merchant is looking at rather than a rolling window.
+      const isDate = (v: any) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+      let sinceStr: string, untilStr: string;
 
-      const { rows, error } = await fetchMetaDailySpend(creds.adAccountId, creds.accessToken, fmt(since), fmt(until));
+      if (isDate(req.body?.since) && isDate(req.body?.until)) {
+        sinceStr = req.body.since;
+        untilStr = req.body.until;
+        if (sinceStr > untilStr) [sinceStr, untilStr] = [untilStr, sinceStr];
+        // Meta refuses very long ranges and they are slow to page through.
+        const spanDays = (Date.parse(untilStr) - Date.parse(sinceStr)) / 86400000;
+        if (spanDays > 400) {
+          return res.status(400).json({ message: "Période trop longue (400 jours maximum)." });
+        }
+      } else {
+        const days = Math.min(400, Math.max(1, Number(req.body?.days) || 7));
+        const untilD = new Date();
+        const sinceD = new Date(untilD.getTime() - (days - 1) * 86400000);
+        const fmt = (d: Date) => d.toISOString().slice(0, 10);
+        sinceStr = fmt(sinceD);
+        untilStr = fmt(untilD);
+      }
+
+      const fmt = (d: Date) => d.toISOString().slice(0, 10);
+      const since = new Date(sinceStr), until = new Date(untilStr);
+      const { rows, error } = await fetchMetaDailySpend(creds.adAccountId, creds.accessToken, sinceStr, untilStr);
       if (error && !rows.length) {
         await recordMetaSyncResult(storeId, 0, error);
         return res.status(502).json({ message: error });

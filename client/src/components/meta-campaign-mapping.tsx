@@ -19,7 +19,52 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient();
   const [rateInput, setRateInput] = useState<string>("");
 
-  const { data, isLoading } = useQuery<any>({ queryKey: ["/api/meta-ads/campaigns"] });
+  // Period selection. Defaults to the current calendar month — the same frame
+  // merchants use to reconcile what they actually paid Meta.
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const monthRange = (offset: number) => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + offset + 1, 0);
+    // Never ask for future days: Meta returns nothing and it looks like a bug.
+    return { since: iso(start), until: iso(end > now ? now : end) };
+  };
+
+  const [preset, setPreset] = useState<"this_month" | "last_month" | "custom">("this_month");
+  const [customSince, setCustomSince] = useState(monthRange(0).since);
+  const [customUntil, setCustomUntil] = useState(monthRange(0).until);
+
+  const range = preset === "custom"
+    ? { since: customSince, until: customUntil }
+    : monthRange(preset === "this_month" ? 0 : -1);
+
+  const { data, isLoading } = useQuery<any>({
+    queryKey: ["/api/meta-ads/campaigns", range.since, range.until],
+    queryFn: async () => {
+      const qs = new URLSearchParams({ since: range.since, until: range.until });
+      const res = await fetch(`/api/meta-ads/campaigns?${qs}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Chargement des campagnes impossible");
+      return res.json();
+    },
+  });
+
+  // Import the period being viewed, rather than a rolling window: picking a
+  // past month and finding it empty should be one click away from fixing.
+  const importMut = useMutation({
+    mutationFn: async () =>
+      (await apiRequest("POST", "/api/meta-ads/sync", { since: range.since, until: range.until })).json(),
+    onSuccess: (r: any) => {
+      const n = r?.synced ?? 0;
+      toast({
+        title: n > 0 ? "Import terminé" : "Aucune dépense sur cette période",
+        description: `${n} ligne(s) du ${r?.since} au ${r?.until}.`,
+      });
+      qc.invalidateQueries({ queryKey: ["/api/meta-ads/campaigns"] });
+      qc.invalidateQueries({ queryKey: ["/api/meta-ads/status"] });
+    },
+    onError: (e: any) => toast({ title: "Import échoué", description: e?.message, variant: "destructive" }),
+  });
   const { data: products = [] } = useQuery<any[]>({ queryKey: ["/api/products"] });
 
   const mapMut = useMutation({
@@ -41,7 +86,6 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
   if (!isAdmin || isLoading) return null;
 
   const campaigns: any[] = data?.campaigns || [];
-  if (!campaigns.length) return null;
 
   const rate = data?.rate ?? 10;
   const unmapped = data?.unmappedCount ?? 0;
@@ -55,6 +99,34 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
           <p className="text-xs text-muted-foreground mt-0.5">
             Liez chaque campagne à un produit. La dépense sera ensuite imputée automatiquement, chaque jour.
           </p>
+
+          <div className="flex flex-wrap items-center gap-2 mt-3">
+            <select
+              value={preset}
+              onChange={e => setPreset(e.target.value as any)}
+              data-testid="select-meta-period"
+              className="h-9 rounded-md border border-border bg-white px-2 text-xs"
+            >
+              <option value="this_month">Ce mois</option>
+              <option value="last_month">Mois dernier</option>
+              <option value="custom">Personnalisé</option>
+            </select>
+
+            {preset === "custom" && (
+              <>
+                <Input type="date" value={customSince} onChange={e => setCustomSince(e.target.value)}
+                  className="h-9 w-[150px] text-xs" data-testid="input-meta-since" />
+                <span className="text-xs text-muted-foreground">au</span>
+                <Input type="date" value={customUntil} onChange={e => setCustomUntil(e.target.value)}
+                  className="h-9 w-[150px] text-xs" data-testid="input-meta-until" />
+              </>
+            )}
+
+            <Button size="sm" variant="outline" disabled={importMut.isPending}
+              onClick={() => importMut.mutate()} data-testid="btn-import-period">
+              {importMut.isPending ? "Import…" : "Importer cette période"}
+            </Button>
+          </div>
         </div>
 
         {/* The rate is the merchant's own settlement rate, not a market feed. */}
@@ -81,6 +153,12 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
         </div>
       )}
 
+      {!campaigns.length ? (
+        <p className="text-xs text-muted-foreground py-6 text-center">
+          Aucune dépense enregistrée du {range.since} au {range.until}.
+          Cliquez « Importer cette période » pour la récupérer depuis Meta.
+        </p>
+      ) : (
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
@@ -132,6 +210,7 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
           </tbody>
         </table>
       </div>
+      )}
 
       <p className="text-[10px] text-muted-foreground flex items-start gap-1.5">
         <Link2 className="w-3 h-3 shrink-0 mt-0.5" />
