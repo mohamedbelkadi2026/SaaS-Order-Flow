@@ -6724,9 +6724,13 @@ export async function registerRoutes(
 
         const tracking = pick(/^(parcel|parcelCode|code|tracking|trackingCode|code_suivi|codeSuivi)$/i);
         const rawSt    = pick(/^(status|state|statut|etat|situation)$/i);
-        console.log(`[NEARYA-WEBHOOK] store=${storeId} parcel="${tracking}" status="${rawSt}"`);
+        // We send our own order number as `orderId` when creating the parcel,
+        // so Nearya echoes it back. That is a second way in — and the only one
+        // for parcels stored with Nearya's internal id instead of the code.
+        const ourRef   = pick(/^(orderId|order_num|orderNumber|reference)$/i);
+        console.log(`[NEARYA-WEBHOOK] store=${storeId} parcel="${tracking}" ref="${ourRef}" status="${rawSt}"`);
 
-        if (!tracking) {
+        if (!tracking && !ourRef) {
           await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
             action: 'webhook_no_match', status: 'ok',
             message: `⚠️ Nearya: aucun code de colis reconnu dans le payload`,
@@ -6734,7 +6738,23 @@ export async function registerRoutes(
           return res.json({ received: true, matched: false });
         }
 
-        const nOrder = await storage.getOrderByTrackingNumber(storeId, tracking);
+        let nOrder = tracking ? await storage.getOrderByTrackingNumber(storeId, tracking) : null;
+
+        // Fall back to our own reference, then repair the stored code. Early
+        // parcels were saved with Nearya's internal ObjectId because the
+        // response parser preferred `_id`, and every status lookup for them
+        // returns "Colis itrouvable!" until the real code replaces it.
+        if (!nOrder && ourRef) {
+          const byRef = await storage.getOrderByNumber(storeId, String(ourRef));
+          if (byRef) {
+            nOrder = byRef;
+            if (tracking && (byRef as any).trackNumber !== tracking) {
+              await storage.updateOrder(byRef.id, { trackNumber: tracking } as any);
+              console.log(`[NEARYA-WEBHOOK] repaired tracking for order ${ourRef}: "${(byRef as any).trackNumber}" → "${tracking}"`);
+            }
+          }
+        }
+
         if (!nOrder) {
           await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
             action: 'webhook_no_match', status: 'ok',

@@ -4229,12 +4229,17 @@ export async function createNearyaParcel(
     // /region turned out to nest its payload two levels under { status,
     // results, data }, so don't assume the tracking code sits at the top
     // level either — walk the response for a tracking-shaped field.
-    const TRACK_KEY = /^(code|parcel|parcelCode|tracking|trackingCode|trackingNumber|codeSuivi|code_suivi|barcode|reference|ref|_id|id)$/i;
-    const findTracking = (node: any, depth = 0): string | null => {
+    // Two tiers on purpose. Lumping _id in with the tracking keys made the
+    // extractor grab Nearya's internal ObjectId — a 24-char hex string — and
+    // every later status lookup came back "Colis itrouvable!". A real tracking
+    // key always wins; the internal id is only a last resort.
+    const TRACK_KEY    = /^(code|parcel|parcelCode|tracking|trackingCode|trackingNumber|codeSuivi|code_suivi|barcode|reference)$/i;
+    const FALLBACK_KEY = /^(_id|id|ref)$/i;
+    const findBy = (re: RegExp) => (node: any, depth = 0): string | null => {
       if (!node || depth > 6) return null;
       if (Array.isArray(node)) {
         for (const item of node) {
-          const hit = findTracking(item, depth + 1);
+          const hit = findBy(re)(item, depth + 1);
           if (hit) return hit;
         }
         return null;
@@ -4243,18 +4248,23 @@ export async function createNearyaParcel(
         // Prefer the explicitly tracking-named keys at this level before
         // descending, so a nested id doesn't win over the real code.
         for (const [k, v] of Object.entries(node)) {
-          if (TRACK_KEY.test(k) && typeof v === 'string' && v.trim().length >= 4) return v.trim();
-          if (TRACK_KEY.test(k) && typeof v === 'number') return String(v);
+          if (re.test(k) && typeof v === 'string' && v.trim().length >= 4) return v.trim();
+          if (re.test(k) && typeof v === 'number') return String(v);
         }
         for (const v of Object.values(node)) {
-          const hit = findTracking(v, depth + 1);
+          const hit = findBy(re)(v, depth + 1);
           if (hit) return hit;
         }
       }
       return null;
     };
 
-    const trackingNumber = extractTracking(res.data) || findTracking(res.data);
+    const realCode = findBy(TRACK_KEY)(res.data);
+    const fallbackId = realCode ? null : findBy(FALLBACK_KEY)(res.data);
+    if (!realCode && fallbackId) {
+      console.warn(`${tag} ⚠️ no tracking code in the response — falling back to the internal id "${fallbackId}". Status lookups will fail for this parcel.`);
+    }
+    const trackingNumber = realCode || extractTracking(res.data) || fallbackId;
     if (!trackingNumber) {
       // Put the shape in the error itself: hunting for this in the Railway logs
       // costs a round trip, and the same problem on /region was solved the
