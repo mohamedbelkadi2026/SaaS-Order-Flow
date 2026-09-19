@@ -14280,6 +14280,10 @@ function ensureHeaders(sheet) {
       const batch = pending.slice(0, 120);
       let updated = 0;
       const unmapped: string[] = [];
+      // Failures were previously swallowed: a run that reached Nearya and got
+      // nothing back looked identical to a run where nothing had changed.
+      const problems: string[] = [];
+      let failed = 0;
       let authFailed = false;
 
       for (const order of batch) {
@@ -14287,6 +14291,11 @@ function ensureHeaders(sheet) {
           apiKey: account.apiKey, apiSecret: account.apiSecret,
         });
         if (r.error === 'NEARYA_401') { authFailed = true; break; }
+        if (r.error) {
+          failed++;
+          // One sample is enough to identify the shape; the rest repeat it.
+          if (problems.length < 2) problems.push(`${(order as any).trackNumber}: ${r.error}`);
+        }
 
         if (r.label && r.label !== (order as any).commentStatus) {
           await storage.updateOrder(order.id, { commentStatus: r.label } as any);
@@ -14320,6 +14329,8 @@ function ensureHeaders(sheet) {
         updated,
         remaining: Math.max(0, pending.length - batch.length),
         unmapped,
+        failed,
+        problems,
       });
     } catch (err: any) {
       console.error("[NEARYA-SYNC]", err);

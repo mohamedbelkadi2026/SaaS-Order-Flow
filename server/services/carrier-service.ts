@@ -4415,7 +4415,11 @@ export async function trackNearyaParcel(
       validateStatus: () => true,
     });
     if (res.status === 401 || res.status === 403) return { status: null, label: '', error: 'NEARYA_401' };
-    if (res.status < 200 || res.status >= 300)    return { status: null, label: '', error: `HTTP ${res.status}` };
+    if (res.status < 200 || res.status >= 300) {
+      const snippet = JSON.stringify(res.data ?? null).slice(0, 300);
+      console.warn(`[NEARYA-TRACK] ${parcelCode}: HTTP ${res.status} — ${snippet}`);
+      return { status: null, label: '', error: `HTTP ${res.status}: ${snippet}` };
+    }
 
     // Same envelope problem as /region: dig for the status string rather than
     // assuming a shape.
@@ -4444,8 +4448,13 @@ export async function trackNearyaParcel(
 
     const rawStatus = findStatus(res.data);
     if (!rawStatus) {
-      console.warn(`[NEARYA-TRACK] ${parcelCode}: no status found. Body: ${JSON.stringify(res.data).slice(0, 400)}`);
-      return { status: null, label: '' };
+      // Carry the body back, not just a log line: an empty response and an
+      // unrecognised shape are indistinguishable otherwise, and the same
+      // problem on /region and on the create-parcel response was only solved
+      // once the actual payload was visible.
+      const snippet = JSON.stringify(res.data ?? null).slice(0, 300);
+      console.warn(`[NEARYA-TRACK] ${parcelCode}: no status found. Body: ${snippet}`);
+      return { status: null, label: '', error: `NO_STATUS: ${snippet}` };
     }
     const mapped = mapNearyaStatus(rawStatus);
     return { status: mapped.status, label: mapped.label };

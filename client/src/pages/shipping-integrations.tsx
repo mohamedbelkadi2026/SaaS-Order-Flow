@@ -2439,6 +2439,9 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
       // Surface statuses we don't recognise rather than silently ignoring them:
       // that's the one case where an order stays stale without explanation.
       if (r.unmapped?.length) parts.push(`Statuts non reconnus : ${r.unmapped.join(", ")}`);
+      // Show what Nearya actually returned when nothing could be read from it.
+      if (r.failed) parts.push(`${r.failed} colis sans réponse exploitable`);
+      if (r.problems?.length) parts.push(r.problems.join(" | "));
       toast({ title: "Synchronisation Nearya terminée", description: parts.join(" · ") });
       qc.invalidateQueries({ queryKey: ["/api/orders"] });
       qc.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
