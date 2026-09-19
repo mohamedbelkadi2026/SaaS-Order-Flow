@@ -3442,6 +3442,50 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  /**
+   * Meta spend for the profit page, in MAD centimes, attributed to products.
+   *
+   * Two conversions happen here and nowhere else:
+   *   - the ad account's currency → MAD, at the rate the merchant set. Rows
+   *     stay in their original currency in the database so changing the rate
+   *     re-values the whole history.
+   *   - campaign → product, through the mapping. Spend on an unmapped campaign
+   *     is returned in `unattributed`: it is real money and belongs in the
+   *     store total, it just can't be charged to a product yet.
+   */
+  async getMetaSpendForProfit(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+    total: number;
+    byProduct: Record<number, number>;
+    unattributed: number;
+  }> {
+    const conds = [eq(metaAdSpend.storeId, storeId)];
+    if (dateFrom) conds.push(gte(metaAdSpend.date, dateFrom.substring(0, 10)));
+    if (dateTo)   conds.push(lte(metaAdSpend.date, dateTo.substring(0, 10)));
+
+    const rows = await db.select().from(metaAdSpend).where(and(...conds));
+    if (!rows.length) return { total: 0, byProduct: {}, unattributed: 0 };
+
+    const store: any = await this.getStore(storeId);
+    const rate = (store?.usdToMadRate ?? 1000) / 100;
+
+    const maps = await db.select().from(adCampaignProductMap)
+      .where(and(eq(adCampaignProductMap.storeId, storeId), eq(adCampaignProductMap.source, 'meta')));
+    const byId   = new Map(maps.filter(m => m.campaignId).map(m => [m.campaignId as string, m.productId]));
+    const byName = new Map(maps.map(m => [m.campaignName, m.productId]));
+
+    let total = 0, unattributed = 0;
+    const byProduct: Record<number, number> = {};
+
+    for (const r of rows) {
+      const mad = r.currency === 'MAD' ? r.amount : Math.round(r.amount * rate);
+      total += mad;
+      const pid = byId.get(r.campaignId) ?? byName.get(r.campaignName);
+      if (pid) byProduct[pid] = (byProduct[pid] || 0) + mad;
+      else unattributed += mad;
+    }
+    return { total, byProduct, unattributed };
+  }
+
   async deleteUser(id: number): Promise<void> {
     // Twelve tables reference users.id. Only orders.assigned_to_id used to be
     // cleared here, so deleting anyone who had touched an order, logged a

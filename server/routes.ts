@@ -1160,6 +1160,7 @@ export async function registerRoutes(
     }
 
     let adSpendTotal = 0;
+    let byPlatformMetaSeed: { spend: number; delivered: number; revenue: number } | null = null;
     const productAdCostMap: Record<number, number> = {};
     const activeProductId = (productId && productId !== 'all') ? Number(productId) : null;
     // Legacy adSpendTracking — amounts stored in DH → multiply by 100 to convert to centimes
@@ -1193,8 +1194,40 @@ export async function registerRoutes(
       if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + amountCents;
     });
 
+    // Meta Ads — imported automatically, converted to MAD and attributed to
+    // products through the campaign mapping. Skipped when the source filter
+    // excludes it, so the platform breakdown stays consistent.
+    let metaUnattributed = 0;
+    if (!adSourceFilter || adSourceFilter.toLowerCase() === 'meta' || adSourceFilter.toLowerCase() === 'facebook') {
+      const meta = await storage.getMetaSpendForProfit(storeId, dateFrom, dateTo);
+      metaUnattributed = meta.unattributed;
+
+      if (activeProductId !== null) {
+        // Viewing one product: charge it only what its own campaigns spent.
+        // Unmapped spend belongs to no product and must not be spread around.
+        const own = meta.byProduct[activeProductId] || 0;
+        adSpendTotal += own;
+        if (own) productAdCostMap[activeProductId] = (productAdCostMap[activeProductId] || 0) + own;
+      } else {
+        // Store-wide: every dirham counts, mapped or not — it was spent either
+        // way, and hiding it would overstate the profit.
+        adSpendTotal += meta.total;
+        for (const [pid, amount] of Object.entries(meta.byProduct)) {
+          productAdCostMap[Number(pid)] = (productAdCostMap[Number(pid)] || 0) + amount;
+        }
+      }
+
+      if (meta.total) {
+        if (!byPlatformMetaSeed) byPlatformMetaSeed = { spend: 0, delivered: 0, revenue: 0 };
+        byPlatformMetaSeed.spend += activeProductId !== null
+          ? (meta.byProduct[activeProductId] || 0)
+          : meta.total;
+      }
+    }
+
     // Build per-platform ad spend breakdown
     const byPlatform: Record<string, { spend: number; delivered: number; revenue: number }> = {};
+    if (byPlatformMetaSeed) byPlatform['Meta'] = byPlatformMetaSeed;
 
     adSpendEntries.forEach((e: any) => {
       if (activeProductId !== null && e.productId !== activeProductId) return;
@@ -1283,6 +1316,10 @@ export async function registerRoutes(
       roas: canRevenue ? roas : undefined,
       roi: canRevenue ? roi : undefined,
       adSpendTotal: canRevenue ? adSpendTotal : undefined,
+      // Spend on campaigns not yet linked to a product: counted in the store
+      // total but chargeable to nothing, so each product's profit reads higher
+      // than it really is until the campaign is mapped.
+      metaUnattributed: canRevenue ? metaUnattributed : undefined,
       profit: canProfit ? netProfit : undefined,
       totalProductCost: canProfit ? totalProductCost : undefined,
       totalShipping: canProfit ? totalShipping : undefined,
