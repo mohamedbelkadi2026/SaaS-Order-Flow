@@ -4263,17 +4263,42 @@ export async function createNearyaParcel(
     // then digits. Their internal ObjectId is 24 lowercase hex characters and
     // is NOT accepted by docParcelStatus: storing one gives "Colis itrouvable!"
     // on every status lookup, forever, with no way back.
-    const isObjectId = (v: string) => /^[0-9a-f]{24}$/i.test(v);
+    // Match on the SHAPE of a real code, not on field names. Two attempts at
+    // trusting key names both stored something unusable: first their internal
+    // ObjectId, then "ABKA" — a four-letter fragment. Their Colis screen shows
+    // codes like AGA1789588231441 and EJD1789722545603: 2-4 letters followed
+    // by 10-16 digits, and nothing else has that shape.
+    const PARCEL_SHAPE = /^[A-Z]{2,4}\d{10,16}$/i;
 
-    const realCode = findBy(TRACK_KEY)(res.data);
-    const candidate = realCode || extractTracking(res.data);
-    const trackingNumber = candidate && !isObjectId(candidate)
-      ? candidate
-      : (() => {
-          const fb = findBy(FALLBACK_KEY)(res.data);
-          console.warn(`${tag} ⚠️ no usable parcel code in the response (candidate="${candidate || 'none'}"). Full body: ${JSON.stringify(res.data).slice(0, 600)}`);
-          return fb && !isObjectId(fb) ? fb : null;
-        })();
+    // Walk the whole response and collect every value that looks like one.
+    const collectShaped = (node: any, out: string[] = [], depth = 0): string[] => {
+      if (!node || depth > 6) return out;
+      if (typeof node === 'string' || typeof node === 'number') {
+        const v = String(node).trim();
+        if (PARCEL_SHAPE.test(v)) out.push(v);
+        return out;
+      }
+      if (Array.isArray(node)) {
+        for (const item of node) collectShaped(item, out, depth + 1);
+        return out;
+      }
+      if (typeof node === 'object') {
+        for (const v of Object.values(node)) collectShaped(v, out, depth + 1);
+      }
+      return out;
+    };
+
+    const shaped = collectShaped(res.data);
+    // A value under a tracking-named key is preferred, but only if it also has
+    // the right shape — that is what "ABKA" failed.
+    const named = findBy(TRACK_KEY)(res.data);
+    const trackingNumber = (named && PARCEL_SHAPE.test(named))
+      ? named
+      : (shaped[0] ?? null);
+
+    if (!trackingNumber) {
+      console.warn(`${tag} ⚠️ no value matching the parcel-code shape in the response (named key gave "${named || 'none'}"). Full body: ${JSON.stringify(res.data)}`);
+    }
     if (!trackingNumber) {
       // Put the shape in the error itself: hunting for this in the Railway logs
       // costs a round trip, and the same problem on /region was solved the
