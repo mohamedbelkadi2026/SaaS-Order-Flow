@@ -24,7 +24,11 @@ import { orders } from '@shared/schema';
 import { and, eq } from 'drizzle-orm';
 
 const PARCEL_CODE = /\b([A-Z]{2,4}\d{10,16})\b/;
-const OBJECT_ID   = /^[0-9a-f]{24}$/i;
+// Anything that isn't shaped like a real code is replaceable: Nearya's
+// internal ObjectId, and the four-letter fragments ("ABKA") an earlier parser
+// picked up. Testing for "is a real code" rather than listing the bad shapes
+// covers whatever else may already be stored.
+const IS_REAL_CODE = (v: string) => /^[A-Z]{2,4}\d{10,16}$/i.test(v);
 
 async function main() {
   const file = process.argv[2];
@@ -62,10 +66,10 @@ async function main() {
     for (const o of rows) {
       const current = (o as any).trackNumber || '';
       if (current === parcelCode) { alreadyOk++; continue; }
-      // Only ever replace an ObjectId or an empty value: never overwrite a code
-      // that already looks real, in case the file is stale.
-      if (current && !OBJECT_ID.test(current)) {
-        console.log(`  !  order ${orderNumber}: keeping existing code "${current}" (not an ObjectId)`);
+      // Never overwrite a value that already looks like a real parcel code, in
+      // case the file is stale.
+      if (current && IS_REAL_CODE(current)) {
+        console.log(`  !  order ${orderNumber}: keeping existing code "${current}" (already valid)`);
         continue;
       }
       console.log(`  ✓  order ${orderNumber}: "${current || '(vide)'}" → ${parcelCode}`);
