@@ -3349,7 +3349,20 @@ export default function Orders() {
             );
           })()}
 
-          {shipProgress && !shipProgress.active && shipProgress.failed > 0 && (
+          {/* Only offer a retry for failures a retry can actually fix. A parcel
+              that already exists at the carrier, a blacklisted number or a bad
+              address fail identically every time — and re-shipping a duplicate
+              creates a second parcel the merchant pays for. */}
+          {(() => {
+            const retryable = (shipProgress?.results || []).filter(r =>
+              r.status === 'failed' &&
+              !/double|existe déjà|already exists/i.test(r.error || '') &&
+              !/blacklist|liste noire/i.test(r.error || '') &&
+              !/adresse|ville/i.test(r.error || '') &&
+              !/Données manquantes|Destinataire.*obligatoire/i.test(r.error || '')
+            );
+            if (!shipProgress || shipProgress.active || retryable.length === 0) return null;
+            return (
             <div className="px-6 pb-4">
               <Button
                 variant="default"
@@ -3357,9 +3370,7 @@ export default function Orders() {
                 className="w-full bg-amber-500 hover:bg-amber-600 text-white rounded-xl"
                 data-testid="button-retry-failed-ship"
                 onClick={() => {
-                  const failedIds = (shipProgress.results || [])
-                    .filter(r => r.status === 'failed')
-                    .map(r => r.orderId);
+                  const failedIds = retryable.map(r => r.orderId);
                   if (failedIds.length === 0) return;
                   const provider = shipProgress.provider;
                   setShipProgress({ active: true, done: 0, total: failedIds.length, shipped: 0, failed: 0, provider });
@@ -3373,10 +3384,11 @@ export default function Orders() {
                 }}
               >
                 <RotateCcw className="w-4 h-4 mr-2" />
-                Réessayer les {shipProgress.failed} échec{shipProgress.failed > 1 ? 's' : ''}
+                Réessayer les {retryable.length} échec{retryable.length > 1 ? 's' : ''}
               </Button>
             </div>
-          )}
+            );
+          })()}
 
           {!shipProgress?.active && (
             <div className="px-6 py-4 flex justify-end">
