@@ -523,8 +523,9 @@ export default function Publicites() {
                       <div className="leading-tight">
                         <div>{e.periodLabel || e.date}</div>
                         <div className="text-[10px]">
-                          {e.campaignCount} campagne{e.campaignCount > 1 ? 's' : ''}
-                          {e.dayCount ? ` · ${e.dayCount} jour${e.dayCount > 1 ? 's' : ''}` : ''}
+                          {e.entryCount > 1 ? `${e.entryCount} entrées` : null}
+                          {e.entryCount > 1 && e.campaignCount ? ' · ' : null}
+                          {e.campaignCount ? `${e.campaignCount} campagne${e.campaignCount > 1 ? 's' : ''}` : null}
                         </div>
                       </div>
                     ) : e.date}
@@ -542,7 +543,9 @@ export default function Publicites() {
                         editing or deleting one does nothing, since the next
                         import recreates it. Show where it came from instead. */}
                     {e.readOnly ? (
-                      <span className="text-[10px] text-muted-foreground">Import auto</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {e.entryCount > 1 ? 'Total' : e.hasImported ? 'Import auto' : 'Total'}
+                      </span>
                     ) : (isAdmin || e.userId === user?.id) && (
                       <div className="flex items-center justify-end gap-1">
                         <Button variant="ghost" size="icon"

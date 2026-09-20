@@ -3599,15 +3599,55 @@ export async function registerRoutes(
     // their own manual entries, not the store's whole ad account.
     const wantsMeta = !source || source === 'all'
       || /^(meta|facebook)/i.test(source);
-    if (isAdmin && wantsMeta) {
-      const metaEntries = await storage.getMetaSpendAsEntries(storeId, {
-        productId: opts.productId,
-        dateFrom, dateTo,
-      });
-      return res.json([...metaEntries, ...entries]);
+    const metaEntries = (isAdmin && wantsMeta)
+      ? await storage.getMetaSpendAsEntries(storeId, { productId: opts.productId, dateFrom, dateTo })
+      : [];
+
+    const all = [...metaEntries, ...entries];
+
+    // The Par Produit tab answers "what did this product cost over this
+    // period" — so it returns one row per product, manual and imported spend
+    // summed together. Listing every entry meant the same product appeared a
+    // dozen times and the figure had to be added up by hand.
+    // Par Source keeps the raw entries, which is where they stay editable.
+    if (tab === 'produit') {
+      const grouped = new Map<string, any>();
+      for (const e of all) {
+        const key = String(e.productId ?? 'none');
+        const cur = grouped.get(key);
+        if (cur) {
+          cur.amount += Number(e.amount ?? 0);
+          cur.entryCount += 1;
+          if (e.campaignCount) cur.campaignCount = (cur.campaignCount || 0) + e.campaignCount;
+          if (!e.readOnly) cur.hasManual = true;
+          if (e.readOnly)  cur.hasImported = true;
+          if (e.date && (!cur.firstDate || e.date < cur.firstDate)) cur.firstDate = e.date;
+          if (e.date && (!cur.date || e.date > cur.date)) cur.date = e.date;
+        } else {
+          grouped.set(key, {
+            ...e,
+            id: -(grouped.size + 1000),
+            entryCount: 1,
+            hasManual:   !e.readOnly,
+            hasImported: !!e.readOnly,
+            firstDate: e.firstDate || e.date,
+            // An aggregate is never editable: it isn't a stored row. The
+            // individual entries remain editable under Par Source.
+            readOnly: true,
+          });
+        }
+      }
+      const rows = Array.from(grouped.values())
+        .map(g => ({
+          ...g,
+          periodLabel: g.firstDate === g.date ? g.date : `${g.firstDate} → ${g.date}`,
+          source: g.hasManual && g.hasImported ? 'Mixte' : g.source,
+        }))
+        .sort((a, b) => b.amount - a.amount);
+      return res.json(rows);
     }
 
-    res.json(entries);
+    res.json(all);
   });
 
   app.post("/api/publicites", requireAuth, async (req, res) => {
