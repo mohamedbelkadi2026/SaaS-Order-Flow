@@ -3627,6 +3627,7 @@ export async function registerRoutes(
           grouped.set(key, {
             ...e,
             id: -(grouped.size + 1000),
+            magasinName: e.magasinName ?? null,
             entryCount: 1,
             hasManual:   !e.readOnly,
             hasImported: !!e.readOnly,

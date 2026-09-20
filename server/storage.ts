@@ -3512,10 +3512,17 @@ export class DatabaseStorage implements IStorage {
 
     // The magasin chosen on the Meta connection, inherited by every row.
     let metaMagasinId: number | null = null;
+    let metaMagasinName: string | null = null;
     try {
       const ads = await this.getIntegrationsByStore(storeId, 'ads');
       const meta: any = ads.find((i: any) => i.provider === 'meta');
       if (meta) metaMagasinId = JSON.parse(meta.credentials || '{}')?.magasinId ?? null;
+      // The table renders magasinName, not the id — sending only the id left
+      // the column showing an em dash even once a magasin had been chosen.
+      if (metaMagasinId) {
+        const m: any = await this.getStore(metaMagasinId);
+        metaMagasinName = m?.name ?? null;
+      }
     } catch {}
 
     const maps = await db.select().from(adCampaignProductMap)
@@ -3553,6 +3560,7 @@ export class DatabaseStorage implements IStorage {
           id: -(grouped.size + 1),
           storeId, amount: mad,
           magasinId: metaMagasinId,
+          magasinName: metaMagasinName,
           date: r.date, firstDate: r.date,
           // Match the label the Publicités page already offers ("Facebook Ads"),
           // so imported and manual entries land under the same source filter
