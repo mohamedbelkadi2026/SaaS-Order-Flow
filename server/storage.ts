@@ -5325,7 +5325,24 @@ export class DatabaseStorage implements IStorage {
       : newAdEntriesRaw;
     const newAdTotal = newAdEntries.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 
-    const totalAdSpend = legacyTotal + newAdTotal;
+    // Meta Ads — imported automatically into meta_ad_spend, which neither of
+    // the two tables above covers. Without this the Publicités page showed a
+    // real figure while Rentabilité insisted Pub was 0.00 DH and ROAS was
+    // infinite: two screens disagreeing about the same money.
+    let metaTotal = 0;
+    if (!source || /^(meta|facebook)/i.test(source)) {
+      try {
+        const meta = await this.getMetaSpendForProfit(storeId, dateFrom, dateTo);
+        // A product filter charges that product only its own campaigns;
+        // unattributed spend belongs to no product and must not be pinned to
+        // whichever one happens to be selected.
+        metaTotal = productId ? (meta.byProduct[productId] || 0) : meta.total;
+      } catch (e: any) {
+        console.warn(`[PROFIT] Meta spend unavailable: ${e?.message}`);
+      }
+    }
+
+    const totalAdSpend = legacyTotal + newAdTotal + metaTotal;
 
     // --- Final net profit (COD formula) ---
     const netProfit = revenue - productCost - shippingCost - packagingCostTotal - agentCommissions - totalAdSpend;
