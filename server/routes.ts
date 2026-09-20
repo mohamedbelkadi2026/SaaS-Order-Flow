@@ -4464,6 +4464,11 @@ export async function registerRoutes(
         accountName: test.accountName || null,
         currency:    test.currency || null,
         timezone:    test.timezone || null,
+        // Which magasin this ad account's spend belongs to. An ad account has
+        // no notion of magasin, so the merchant says once and every imported
+        // row inherits it — otherwise the Magasin column and filter are empty
+        // for half the spend.
+        magasinId:   req.body?.magasinId ? Number(req.body.magasinId) : null,
       });
 
       const existing = (await storage.getIntegrationsByStore(storeId, 'ads'))

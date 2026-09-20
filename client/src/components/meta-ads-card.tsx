@@ -20,11 +20,15 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
   const [open, setOpen] = useState(false);
   const [adAccountId, setAdAccountId] = useState("");
   const [accessToken, setAccessToken] = useState("");
+  // An ad account has no notion of magasin, so the merchant assigns one once
+  // and every imported row inherits it.
+  const [magasinId, setMagasinId] = useState<string>("");
+  const { data: magasins = [] } = useQuery<any[]>({ queryKey: ["/api/magasins"] });
 
   const { data: status, isLoading } = useQuery<any>({ queryKey: ["/api/meta-ads/status"] });
 
   const connectMut = useMutation({
-    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/connect", { adAccountId, accessToken })).json(),
+    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/connect", { adAccountId, accessToken, magasinId: magasinId || null })).json(),
     onSuccess: async (r: any) => {
       toast({ title: "Meta Ads connecté", description: r?.accountName ? `Compte : ${r.accountName}` : undefined });
       setOpen(false); setAccessToken("");
@@ -130,6 +134,24 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
             <Input id="meta_token" type="password" value={accessToken} onChange={e => setAccessToken(e.target.value)}
               placeholder="EAAB..." className="h-10 text-xs font-mono" data-testid="input-meta-token" />
             <p className="text-[10px] text-muted-foreground">Token d'utilisateur système avec l'autorisation ads_read</p>
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="meta_magasin" className="text-xs font-semibold">Magasin</Label>
+            <select
+              id="meta_magasin"
+              value={magasinId}
+              onChange={e => setMagasinId(e.target.value)}
+              data-testid="select-meta-magasin"
+              className="h-10 w-full rounded-md border border-border bg-white px-2 text-xs"
+            >
+              <option value="">— Aucun —</option>
+              {(magasins as any[]).map(m => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-muted-foreground">
+              Toutes les dépenses importées de ce compte seront rattachées à ce magasin.
+            </p>
           </div>
           <div className="sm:col-span-2 flex justify-end">
             <Button size="sm" disabled={connectMut.isPending || !adAccountId.trim() || !accessToken.trim()}

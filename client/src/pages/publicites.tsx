@@ -327,6 +327,21 @@ export default function Publicites() {
       {/* Automatic Meta spend import, next to the manual entry it replaces. */}
       <MetaAdsCard isAdmin={isAdmin} />
       <MetaCampaignMapping isAdmin={isAdmin} />
+
+      {/* "Mixte" means a product carries BOTH a manual entry and the automatic
+          Meta import for the same period. If the manual entries were the same
+          Facebook spend typed in by hand, it is now counted twice and every
+          profit figure below is wrong. Worth saying out loud rather than
+          leaving as a quiet label. */}
+      {isAdmin && (entries as any[]).some((e: any) => e.source === 'Mixte') && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+          <span className="font-semibold">Dépenses en double possible.</span>{" "}
+          Certains produits marqués « Mixte » ont à la fois des dépenses saisies à la main et
+          l'import automatique Meta sur la même période. Si vous saisissiez vos dépenses Facebook
+          manuellement avant de connecter Meta, elles sont comptées deux fois — supprimez les
+          anciennes saisies Facebook dans l'onglet « Par Source ».
+        </div>
+      )}
       </div>
 
       {/* Media Buyer privacy notice */}

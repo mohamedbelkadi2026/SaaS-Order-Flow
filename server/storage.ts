@@ -3510,6 +3510,14 @@ export class DatabaseStorage implements IStorage {
     const store: any = await this.getStore(storeId);
     const rate = (store?.usdToMadRate ?? 1000) / 100;
 
+    // The magasin chosen on the Meta connection, inherited by every row.
+    let metaMagasinId: number | null = null;
+    try {
+      const ads = await this.getIntegrationsByStore(storeId, 'ads');
+      const meta: any = ads.find((i: any) => i.provider === 'meta');
+      if (meta) metaMagasinId = JSON.parse(meta.credentials || '{}')?.magasinId ?? null;
+    } catch {}
+
     const maps = await db.select().from(adCampaignProductMap)
       .where(and(eq(adCampaignProductMap.storeId, storeId), eq(adCampaignProductMap.source, 'meta')));
     const byId   = new Map(maps.filter(m => m.campaignId).map(m => [m.campaignId as string, m.productId]));
@@ -3544,6 +3552,7 @@ export class DatabaseStorage implements IStorage {
           // Negative ids mark synthetic rows the UI must not offer to edit.
           id: -(grouped.size + 1),
           storeId, amount: mad,
+          magasinId: metaMagasinId,
           date: r.date, firstDate: r.date,
           // Match the label the Publicités page already offers ("Facebook Ads"),
           // so imported and manual entries land under the same source filter
