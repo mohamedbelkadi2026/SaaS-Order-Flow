@@ -4606,12 +4606,16 @@ export async function registerRoutes(
         const days = Math.min(400, Math.max(1, Number(req.body?.days) || 7));
         const untilD = new Date();
         const sinceD = new Date(untilD.getTime() - (days - 1) * 86400000);
-        const fmt = (d: Date) => d.toISOString().slice(0, 10);
+        // Local date: toISOString() rolls back an hour in Morocco, so a
+        // window meant to start today began yesterday.
+        const fmt = (d: Date) =>
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         sinceStr = fmt(sinceD);
         untilStr = fmt(untilD);
       }
 
-      const fmt = (d: Date) => d.toISOString().slice(0, 10);
+      const fmt = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       const since = new Date(sinceStr), until = new Date(untilStr);
       // Import every configured account, not just the first: missing one would
       // under-report the ad budget and overstate the profit.

@@ -910,7 +910,8 @@ app.use((req, res, next) => {
 
         const until = new Date();
         const since = new Date(until.getTime() - 3 * 86400000);
-        const fmt = (d: Date) => d.toISOString().slice(0, 10);
+        const fmt = (d: Date) =>
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
         // Every configured ad account, not just the first — a merchant can run
         // several under one Business Manager and missing one under-reports the

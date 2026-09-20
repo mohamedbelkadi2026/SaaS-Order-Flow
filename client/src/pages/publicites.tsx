@@ -155,7 +155,11 @@ export default function Publicites() {
 
   function applyPreset(p: string) {
     const d = new Date();
-    const iso = (dt: Date) => dt.toISOString().split("T")[0];
+    // Local date, not UTC. toISOString() shifts Morocco back an hour, so the
+    // 1st of the month at 00:00 became the 31st of the previous one — every
+    // preset silently reached a day too far back.
+    const iso = (dt: Date) =>
+      `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
     const today = iso(d);
     let from = "", to = "";
     if (p === "today") { from = today; to = today; }
