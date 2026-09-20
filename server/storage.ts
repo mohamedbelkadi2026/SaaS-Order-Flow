@@ -3519,6 +3519,10 @@ export class DatabaseStorage implements IStorage {
       .from(products).where(eq(products.storeId, storeId));
     const prodName = new Map(prods.map(p => [p.id, p.name]));
 
+    // One row per PRODUCT for the whole selected period, not one per day.
+    // A product advertised every day produced thirty near-identical lines and
+    // the figure a merchant actually wants — what this product cost this month,
+    // across all its campaigns — had to be added up by hand.
     const grouped = new Map<string, any>();
     for (const r of rows) {
       const pid = byId.get(r.campaignId) ?? byName.get(r.campaignName) ?? null;
@@ -3526,26 +3530,43 @@ export class DatabaseStorage implements IStorage {
       if (opts.productId !== undefined && opts.productId !== null && pid !== opts.productId) continue;
       if (opts.productId === null && pid !== null) continue;
 
-      const key = `${r.date}|${pid ?? 'none'}`;
+      const key = String(pid ?? 'none');
       const mad = r.currency === 'MAD' ? r.amount : Math.round(r.amount * rate);
       const cur = grouped.get(key);
       if (cur) {
         cur.amount += mad;
-        cur.campaignCount += 1;
+        cur.campaignIds.add(r.campaignId);
+        cur.days.add(r.date);
+        if (r.date < cur.firstDate) cur.firstDate = r.date;
+        if (r.date > cur.date)      cur.date = r.date;   // most recent day
       } else {
         grouped.set(key, {
           // Negative ids mark synthetic rows the UI must not offer to edit.
           id: -(grouped.size + 1),
-          storeId, date: r.date, amount: mad,
+          storeId, amount: mad,
+          date: r.date, firstDate: r.date,
           source: 'Meta', productId: pid,
           productName: pid ? (prodName.get(pid) ?? null) : null,
           addedByName: 'Import Meta Ads',
           readOnly: true,
-          campaignCount: 1,
+          campaignIds: new Set([r.campaignId]),
+          days: new Set([r.date]),
         });
       }
     }
-    return Array.from(grouped.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
+
+    return Array.from(grouped.values())
+      .map(g => ({
+        ...g,
+        campaignCount: g.campaignIds.size,
+        dayCount: g.days.size,
+        // The period this total covers, so a single date column isn't read as
+        // "spent on that day".
+        periodLabel: g.firstDate === g.date ? g.date : `${g.firstDate} → ${g.date}`,
+        campaignIds: undefined,
+        days: undefined,
+      }))
+      .sort((a, b) => b.amount - a.amount);
   }
 
   async deleteUser(id: number): Promise<void> {

@@ -515,7 +515,20 @@ export default function Publicites() {
                       {e.source}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{e.date}</TableCell>
+                  {/* An imported row is a total for the period, not one day's
+                      spend — show the range and how many campaigns it covers,
+                      so the date column isn't read as a single day. */}
+                  <TableCell className="text-sm text-muted-foreground">
+                    {e.readOnly ? (
+                      <div className="leading-tight">
+                        <div>{e.periodLabel || e.date}</div>
+                        <div className="text-[10px]">
+                          {e.campaignCount} campagne{e.campaignCount > 1 ? 's' : ''}
+                          {e.dayCount ? ` · ${e.dayCount} jour${e.dayCount > 1 ? 's' : ''}` : ''}
+                        </div>
+                      </div>
+                    ) : e.date}
+                  </TableCell>
                   {tab === "produit" && (
                     <TableCell className="text-sm text-right">
                       {e.productSellingPrice ? formatCurrency(e.productSellingPrice) : <span className="text-muted-foreground">—</span>}
@@ -588,7 +601,9 @@ export default function Publicites() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                     <Badge variant="outline" className={cn("text-xs font-medium border", SOURCE_STYLES[e.source] || "")}>{e.source}</Badge>
-                    <span className="text-xs text-muted-foreground">{e.date}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {e.readOnly ? (e.periodLabel || e.date) : e.date}
+                    </span>
                   </div>
                   {isAdmin && <p className="text-xs font-semibold text-foreground mb-0.5">{e.userName || "Inconnu"}</p>}
                   <p className="text-xs text-muted-foreground mb-0.5">
