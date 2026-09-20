@@ -1,3 +1,9 @@
+// Pin the process to UTC before anything reads a date. The timestamp columns
+// carry no timezone, so a process on local time would write local and read it
+// back as UTC — an hour out, and two hours out whenever Morocco drops to UTC+0
+// for Ramadan. Displays convert to the viewer's own zone in the browser.
+process.env.TZ = process.env.TZ || 'UTC';
+
 import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";

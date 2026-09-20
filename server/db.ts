@@ -47,6 +47,12 @@ const useSSL = isRemoteConnection(process.env.DATABASE_URL ?? "");
 
 export const pool = new Pool({
   connectionString,
+  // Every connection speaks UTC. The timestamp columns carry no timezone, so
+  // whatever now() resolves to is what gets stored verbatim — and a server
+  // sitting on Africa/Casablanca wrote local time that was then read back as
+  // UTC, showing an hour late. Morocco also drops to UTC+0 for Ramadan, so
+  // "local" isn't even a fixed offset.
+  options: '-c timezone=UTC',
   max: 5,
   idleTimeoutMillis: 60_000,
   connectionTimeoutMillis: 8_000,

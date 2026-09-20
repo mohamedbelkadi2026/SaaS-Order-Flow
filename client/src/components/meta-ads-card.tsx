@@ -69,7 +69,18 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
   });
 
   const syncMut = useMutation({
-    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/sync", { days: 30 })).json(),
+    mutationFn: async () => {
+      // The current calendar month, not a rolling 30 days: asking for 30 days
+      // on the 20th reached back into the previous month, so a campaign that
+      // ran twenty days this month reported forty and carried last month's
+      // spend with it.
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const since = iso(new Date(now.getFullYear(), now.getMonth(), 1));
+      const until = iso(now);
+      return (await apiRequest("POST", "/api/meta-ads/sync", { since, until })).json();
+    },
     onSuccess: (r: any) => {
       const n = r?.synced ?? 0;
       toast({
