@@ -15,7 +15,12 @@ import MetaCampaignMapping from "@/components/meta-campaign-mapping";
  * imported automatically from then on. The token is never sent back to the
  * browser — the status endpoint only reports whether one is stored.
  */
-export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
+export default function MetaAdsCard({ isAdmin, since, until }: {
+  isAdmin: boolean;
+  /** The period currently shown on the page, so the import matches it. */
+  since?: string;
+  until?: string;
+}) {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -70,16 +75,17 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
 
   const syncMut = useMutation({
     mutationFn: async () => {
-      // The current calendar month, not a rolling 30 days: asking for 30 days
-      // on the 20th reached back into the previous month, so a campaign that
-      // ran twenty days this month reported forty and carried last month's
-      // spend with it.
+      // Import exactly the period shown on the page. A rolling 30 days reached
+      // back into the previous month, so a campaign that ran twenty days this
+      // month reported forty and carried last month's spend with it — and
+      // importing a period other than the one being read is confusing on its
+      // own. Falls back to the current month when no filter is set.
       const now = new Date();
       const pad = (n: number) => String(n).padStart(2, "0");
       const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-      const since = iso(new Date(now.getFullYear(), now.getMonth(), 1));
-      const until = iso(now);
-      return (await apiRequest("POST", "/api/meta-ads/sync", { since, until })).json();
+      const from = since || iso(new Date(now.getFullYear(), now.getMonth(), 1));
+      const to   = until || iso(now);
+      return (await apiRequest("POST", "/api/meta-ads/sync", { since: from, until: to })).json();
     },
     onSuccess: (r: any) => {
       const n = r?.synced ?? 0;
@@ -142,7 +148,7 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
             <Button size="sm" variant="outline" className="gap-2" disabled={syncMut.isPending}
               onClick={() => syncMut.mutate()} data-testid="btn-meta-sync">
               <RefreshCw className={`w-3.5 h-3.5 ${syncMut.isPending ? "animate-spin" : ""}`} />
-              Importer maintenant
+              {since && until ? `Importer ${since} → ${until}` : "Importer maintenant"}
             </Button>
           )}
           <Button size="sm" variant={connected ? "outline" : "default"} className="gap-2"

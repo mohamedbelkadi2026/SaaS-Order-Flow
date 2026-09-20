@@ -321,7 +321,7 @@ export default function Publicites() {
       {/* Meta connection and its campaigns as one block: the campaign list is
           what the connection is for, and splitting them left two cards saying
           "Meta" side by side. */}
-      <MetaAdsCard isAdmin={isAdmin} />
+      <MetaAdsCard isAdmin={isAdmin} since={applied.dateFrom || undefined} until={applied.dateTo || undefined} />
 
       {/* "Mixte" means a product carries BOTH a manual entry and the automatic
           Meta import for the same period. If the manual entries were the same
