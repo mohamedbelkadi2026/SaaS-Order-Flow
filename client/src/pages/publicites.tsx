@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import MetaAdsCard from "@/components/meta-ads-card";
-import MetaCampaignMapping from "@/components/meta-campaign-mapping";
 import { useProducts, useAgents, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -313,20 +312,12 @@ export default function Publicites() {
             {isAdmin ? "Suivi global des dépenses publicitaires" : "Vos dépenses publicitaires personnelles"}
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button onClick={() => setImportOpen(true)} variant="outline" className="gap-2 rounded-lg font-semibold border-border/60" data-testid="btn-importer">
-            <Upload className="w-4 h-4" />
-            Importer
-          </Button>
-          <Button onClick={openModal} className="gap-2 rounded-lg font-semibold" style={{ background: GOLD, color: "#fff" }} data-testid="btn-nouvelle">
-            <Plus className="w-4 h-4" />
-            {isMediaBuyer ? "Ajouter ma dépense" : "Nouvelle dépense"}
-          </Button>
-        </div>
+      </div>
 
-      {/* Automatic Meta spend import, next to the manual entry it replaces. */}
+      {/* Meta connection and its campaigns as one block: the campaign list is
+          what the connection is for, and splitting them left two cards saying
+          "Meta" side by side. */}
       <MetaAdsCard isAdmin={isAdmin} />
-      <MetaCampaignMapping isAdmin={isAdmin} />
 
       {/* "Mixte" means a product carries BOTH a manual entry and the automatic
           Meta import for the same period. If the manual entries were the same
@@ -342,7 +333,6 @@ export default function Publicites() {
           anciennes saisies Facebook dans l'onglet « Par Source ».
         </div>
       )}
-      </div>
 
       {/* Media Buyer privacy notice */}
       {isMediaBuyer && (
@@ -374,16 +364,31 @@ export default function Publicites() {
         ))}
       </div>
 
-      {/* Tabs */}
-      <div className="border-b border-border/60 flex gap-0">
-        {(["source", "produit"] as Tab[]).map(t => (
-          <button key={t} onClick={() => resetAndSwitchTab(t)} data-testid={`tab-${t}`}
-            className={cn("px-5 py-2.5 text-sm font-semibold border-b-2 transition-all",
-              tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
-            )}>
-            {t === "source" ? "📢 Par Source" : "📦 Par Produit"}
-          </button>
-        ))}
+      {/* Tabs, with the actions on the same line: they act on what the tabs
+          show, and stacking them above left a band of empty space. */}
+      <div className="border-b border-border/60 flex items-end justify-between gap-3 flex-wrap">
+        <div className="flex gap-0">
+          {(["source", "produit"] as Tab[]).map(t => (
+            <button key={t} onClick={() => resetAndSwitchTab(t)} data-testid={`tab-${t}`}
+              className={cn("px-5 py-2.5 text-sm font-semibold border-b-2 transition-all",
+                tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
+              )}>
+              {t === "source" ? "📢 Par Source" : "📦 Par Produit"}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2 pb-1.5">
+          <Button onClick={() => setImportOpen(true)} variant="outline" size="sm"
+            className="gap-2 rounded-lg font-semibold border-border/60" data-testid="btn-importer">
+            <Upload className="w-4 h-4" />
+            Importer
+          </Button>
+          <Button onClick={openModal} size="sm" className="gap-2 rounded-lg font-semibold"
+            style={{ background: GOLD, color: "#fff" }} data-testid="btn-nouvelle">
+            <Plus className="w-4 h-4" />
+            {isMediaBuyer ? "Ajouter ma dépense" : "Nouvelle dépense"}
+          </Button>
+        </div>
       </div>
 
       {/* Filter bar */}

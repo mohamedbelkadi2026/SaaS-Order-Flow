@@ -211,7 +211,7 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
             {[...campaigns].sort((a, b) => (a.productId ? 1 : 0) - (b.productId ? 1 : 0)).map(c => (
               <tr key={c.campaignId} className="border-b border-border/40 last:border-0">
                 <td className="py-2 pr-3">
-                  <div className="font-medium truncate max-w-[260px]" title={c.campaignName}>{c.campaignName}</div>
+                  <div className="font-medium break-words" title={c.campaignName}>{c.campaignName}</div>
                   <div className="text-[10px] text-muted-foreground font-mono">{c.campaignId}</div>
                 </td>
                 <td className="py-2 px-3 text-right text-muted-foreground">{c.days}</td>
@@ -232,7 +232,8 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
                       productId: e.target.value ? Number(e.target.value) : null,
                     })}
                     data-testid={`select-campaign-product-${c.campaignId}`}
-                    className={`h-9 w-full max-w-[240px] rounded-md border px-2 text-xs ${
+                    title={c.productName || undefined}
+                    className={`h-9 w-full min-w-[260px] rounded-md border px-2 text-xs ${
                       c.productId ? "border-border bg-white" : "border-amber-400 bg-amber-50"
                     }`}
                   >
@@ -248,6 +249,12 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
         </table>
       </div>
       )}
+
+      <div className="flex justify-end">
+        <Button size="sm" variant="outline" onClick={() => setOpen(false)} data-testid="btn-done-mapping">
+          Terminé
+        </Button>
+      </div>
 
       <p className="text-[10px] text-muted-foreground flex items-start gap-1.5">
         <Link2 className="w-3 h-3 shrink-0 mt-0.5" />
