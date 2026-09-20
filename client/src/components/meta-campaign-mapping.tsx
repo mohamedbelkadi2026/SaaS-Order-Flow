@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { AlertTriangle, Link2 } from "lucide-react";
+import { AlertTriangle, Link2, ChevronDown, ChevronUp } from "lucide-react";
 
 /**
  * Campaign → product mapping.
@@ -17,6 +17,10 @@ import { AlertTriangle, Link2 } from "lucide-react";
 export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
   const { toast } = useToast();
   const qc = useQueryClient();
+  // Collapsed by default: the table can run to dozens of campaigns and pushed
+  // the actual spend list off the screen. It is a setup step, consulted when a
+  // new campaign needs linking, not something to read every visit.
+  const [open, setOpen] = useState(false);
   const [rateInput, setRateInput] = useState<string>("");
 
   // Period selection. Defaults to the current calendar month — the same frame
@@ -91,11 +95,44 @@ export default function MetaCampaignMapping({ isAdmin }: { isAdmin: boolean }) {
   const unmapped = data?.unmappedCount ?? 0;
   const dh = (centimes: number) => (centimes / 100).toLocaleString("fr-MA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        data-testid="btn-open-campaign-mapping"
+        className="w-full rounded-xl border border-border/60 bg-card px-4 py-3 text-left hover:bg-muted/40 transition-colors"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <span className="font-semibold text-sm">Campagnes Meta</span>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {campaigns.length} campagne{campaigns.length > 1 ? "s" : ""}
+              {unmapped > 0 && ` · ${unmapped} sans produit`}
+            </p>
+          </div>
+          <span className="flex items-center gap-2">
+            {/* Unlinked campaigns are spend charged to no product, so the count
+                stays visible even when the panel is closed. */}
+            {unmapped > 0 && (
+              <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                {unmapped} à lier
+              </span>
+            )}
+            <ChevronDown className="w-4 h-4 text-muted-foreground" />
+          </span>
+        </div>
+      </button>
+    );
+  }
+
   return (
     <div className="rounded-xl border border-border/60 bg-card p-4 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="font-semibold text-sm">Campagnes Meta</h3>
+          <button onClick={() => setOpen(false)} className="font-semibold text-sm flex items-center gap-1.5"
+            data-testid="btn-close-campaign-mapping">
+            Campagnes Meta <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+          </button>
           <p className="text-xs text-muted-foreground mt-0.5">
             Liez chaque campagne à un produit. La dépense sera ensuite imputée automatiquement, chaque jour.
           </p>

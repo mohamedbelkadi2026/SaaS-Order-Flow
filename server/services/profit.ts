@@ -170,9 +170,26 @@ export async function computeProfitability(
     allUsers: true,
   });
 
+  // Meta Ads — imported automatically into meta_ad_spend, which neither of the
+  // two sources above touches. Without it the PUB column read 0,00 DH on every
+  // product while Publicités showed the real figure, and the net profit was
+  // overstated by the entire ad budget.
+  let metaAdRows: Array<{ productId: number | null; amountDH: number }> = [];
+  try {
+    const meta = await storage.getMetaSpendForProfit(storeId, cutoffDateStr, endDateStr);
+    metaAdRows = Object.entries(meta.byProduct)
+      .map(([pid, cents]) => ({ productId: Number(pid), amountDH: Number(cents) / 100 }));
+    // Spend on campaigns not yet linked to a product is real money: it belongs
+    // in the global figure rather than being dropped or spread across products.
+    if (meta.unattributed) metaAdRows.push({ productId: null, amountDH: meta.unattributed / 100 });
+  } catch (e: any) {
+    console.warn(`[PROFIT] Meta spend unavailable: ${e?.message}`);
+  }
+
   const adSpendRows = [
     ...legacyAdRows.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) })),
     ...newAdEntries.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) / 100 })),
+    ...metaAdRows,
   ];
 
   const productAdSpendMap: Record<number, number> = {};
