@@ -3545,7 +3545,10 @@ export class DatabaseStorage implements IStorage {
           id: -(grouped.size + 1),
           storeId, amount: mad,
           date: r.date, firstDate: r.date,
-          source: 'Meta', productId: pid,
+          // Match the label the Publicités page already offers ("Facebook Ads"),
+          // so imported and manual entries land under the same source filter
+          // instead of splitting the same platform across two names.
+          source: 'Facebook Ads', productId: pid,
           productName: pid ? (prodName.get(pid) ?? null) : null,
           addedByName: 'Import Meta Ads',
           readOnly: true,

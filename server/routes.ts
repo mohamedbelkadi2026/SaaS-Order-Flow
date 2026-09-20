@@ -1198,7 +1198,7 @@ export async function registerRoutes(
     // products through the campaign mapping. Skipped when the source filter
     // excludes it, so the platform breakdown stays consistent.
     let metaUnattributed = 0;
-    if (!adSourceFilter || adSourceFilter.toLowerCase() === 'meta' || adSourceFilter.toLowerCase() === 'facebook') {
+    if (!adSourceFilter || /^(meta|facebook)/i.test(adSourceFilter)) {
       const meta = await storage.getMetaSpendForProfit(storeId, dateFrom, dateTo);
       metaUnattributed = meta.unattributed;
 
@@ -1227,7 +1227,7 @@ export async function registerRoutes(
 
     // Build per-platform ad spend breakdown
     const byPlatform: Record<string, { spend: number; delivered: number; revenue: number }> = {};
-    if (byPlatformMetaSeed) byPlatform['Meta'] = byPlatformMetaSeed;
+    if (byPlatformMetaSeed) byPlatform['Facebook Ads'] = byPlatformMetaSeed;
 
     adSpendEntries.forEach((e: any) => {
       if (activeProductId !== null && e.productId !== activeProductId) return;
@@ -3598,7 +3598,7 @@ export async function registerRoutes(
     // admins and only when the source filter allows it: a media buyer sees
     // their own manual entries, not the store's whole ad account.
     const wantsMeta = !source || source === 'all'
-      || source.toLowerCase() === 'meta' || source.toLowerCase() === 'facebook';
+      || /^(meta|facebook)/i.test(source);
     if (isAdmin && wantsMeta) {
       const metaEntries = await storage.getMetaSpendAsEntries(storeId, {
         productId: opts.productId,
