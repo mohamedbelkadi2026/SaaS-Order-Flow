@@ -20,6 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
+import { moroccoDayStart, moroccoDayEnd, moroccoOffsetString } from "@shared/morocco-time";
 import { testMetaConnection, fetchMetaDailySpend, normalizeAdAccountId, listMetaAdAccounts } from "./services/meta-ads";
 import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapNearyaStatus, trackNearyaParcel, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
@@ -3980,8 +3981,8 @@ export async function registerRoutes(
         timeZone: "Africa/Casablanca",
         year: "numeric", month: "2-digit", day: "2-digit",
       }).format(new Date());
-      const from = new Date(`${ymd}T00:00:00.000+01:00`);
-      const to = new Date(`${ymd}T23:59:59.999+01:00`);
+      const from = moroccoDayStart(ymd);
+      const to = moroccoDayEnd(ymd);
 
       const allStoreOrders = await storage.getOrdersByStore(thisStoreId);
       const todays = allStoreOrders.filter(o => {
@@ -4019,7 +4020,8 @@ export async function registerRoutes(
 
   // ── PART A diagnostic — exposes the truth behind CONFIRMÉES/LIVRÉES numbers ──
   // Read-only. Computes every candidate definition for the CURRENTLY SELECTED
-  // range (dateFrom/dateTo query params, Africa/Casablanca +01:00 boundary)
+  // range (dateFrom/dateTo query params, Africa/Casablanca day boundary —
+  // the offset is resolved per date, since Morocco drops to UTC+0 for Ramadan)
   // plus duplicate Shopify orders, so support/admins can see exactly why two
   // cards might disagree. Does not modify any data.
   app.get("/api/admin/diag/stats-truth", requireAuth, requireAdmin, async (req, res) => {
@@ -4029,14 +4031,14 @@ export async function registerRoutes(
 
       let allOrders = await storage.getOrdersByStore(storeId);
 
-      // Apply the SAME +01:00 Africa/Casablanca date-boundary semantics used
+      // Apply the SAME Africa/Casablanca date-boundary semantics used
       // by the rest of the diag/stats endpoints.
       if (dateFrom) {
-        const from = new Date(`${dateFrom.substring(0, 10)}T00:00:00.000+01:00`);
+        const from = moroccoDayStart(dateFrom.substring(0, 10));
         allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt as any) >= from);
       }
       if (dateTo) {
-        const to = new Date(`${dateTo.substring(0, 10)}T23:59:59.999+01:00`);
+        const to = moroccoDayEnd(dateTo.substring(0, 10));
         allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt as any) <= to);
       }
 
@@ -4082,7 +4084,7 @@ export async function registerRoutes(
       }
 
       res.json({
-        range: { dateFrom: dateFrom ?? null, dateTo: dateTo ?? null, timezone: "Africa/Casablanca (+01:00)" },
+        range: { dateFrom: dateFrom ?? null, dateTo: dateTo ?? null, timezone: `Africa/Casablanca (${moroccoOffsetString()})` },
         total,
         duplicates: { groups: duplicates, duplicateExtra },
         confirmedCount,
