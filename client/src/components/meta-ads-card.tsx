@@ -29,6 +29,9 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
   // ones to import.
   const [discovered, setDiscovered] = useState<Array<{ id: string; name: string; currency: string }>>([]);
   const [picked, setPicked] = useState<string[]>([]);
+  // Adding an account to a live connection, without re-pasting the token.
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [newAccountId, setNewAccountId] = useState("");
   const { data: magasins = [] } = useQuery<any[]>({ queryKey: ["/api/magasins"] });
 
   const { data: status, isLoading } = useQuery<any>({ queryKey: ["/api/meta-ads/status"] });
@@ -52,6 +55,17 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
       qc.invalidateQueries({ queryKey: ["/api/meta-ads/status"] });
     },
     onError: (e: any) => toast({ title: "Connexion impossible", description: e?.message, variant: "destructive" }),
+  });
+
+  const manageMut = useMutation({
+    mutationFn: async (v: { action: "add" | "remove"; adAccountId: string }) =>
+      (await apiRequest("POST", "/api/meta-ads/accounts/manage", v)).json(),
+    onSuccess: (_r, v) => {
+      toast({ title: v.action === "add" ? "Compte ajouté" : "Compte retiré" });
+      setNewAccountId(""); setAddingAccount(false);
+      qc.invalidateQueries({ queryKey: ["/api/meta-ads/status"] });
+    },
+    onError: (e: any) => toast({ title: "Action impossible", description: e?.message, variant: "destructive" }),
   });
 
   const syncMut = useMutation({
@@ -144,8 +158,61 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
         </div>
       )}
 
-      {/* The campaign list belongs to this connection — keeping it in the same
-          card avoids two cards both labelled Meta sitting side by side. */}
+      {/* Every account being imported. Listing them by name matters once there
+          is more than one: an act_ id alone says nothing about which business
+          it is, and spend from a forgotten account silently goes missing. */}
+      {connected && (
+        <div className="mt-4 border-t border-border/60 pt-4 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold">
+              Comptes publicitaires ({(status.adAccountIds || []).length})
+            </span>
+            <Button size="sm" variant="outline" onClick={() => setAddingAccount(v => !v)}
+              data-testid="btn-add-account">
+              + Ajouter un compte
+            </Button>
+          </div>
+
+          <div className="rounded-lg border border-border divide-y">
+            {(status.adAccountIds || []).map((id: string) => (
+              <div key={id} className="flex items-center gap-2 px-3 py-2 text-xs">
+                <span className="flex-1 font-medium">{status.accountNames?.[id] || "Compte sans nom"}</span>
+                <span className="text-muted-foreground font-mono">{id}</span>
+                {(status.adAccountIds || []).length > 1 && (
+                  <button
+                    onClick={() => manageMut.mutate({ action: "remove", adAccountId: id })}
+                    className="text-red-600 hover:underline"
+                    data-testid={`btn-remove-account-${id}`}
+                  >
+                    Retirer
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {addingAccount && (
+            <div className="flex flex-wrap items-end gap-2 pt-1">
+              <div className="space-y-1 flex-1 min-w-[220px]">
+                <Label htmlFor="new_act" className="text-[10px] font-semibold">Identifiant du compte</Label>
+                <Input id="new_act" value={newAccountId} onChange={e => setNewAccountId(e.target.value)}
+                  placeholder="act_1234567890" className="h-9 text-xs font-mono"
+                  data-testid="input-new-account" />
+              </div>
+              <Button size="sm" disabled={!newAccountId.trim() || manageMut.isPending}
+                onClick={() => manageMut.mutate({ action: "add", adAccountId: newAccountId.trim() })}
+                data-testid="btn-confirm-add-account">
+                {manageMut.isPending ? "Vérification…" : "Ajouter"}
+              </Button>
+              <p className="w-full text-[10px] text-muted-foreground">
+                Le compte doit être accessible par le même token — donnez à votre utilisateur système
+                l'accès à ce compte dans le Business Manager, puis ajoutez-le ici.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       {connected && (
         <div className="mt-4 border-t border-border/60 pt-4">
           <MetaCampaignMapping isAdmin={isAdmin} />

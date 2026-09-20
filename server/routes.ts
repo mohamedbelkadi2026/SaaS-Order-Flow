@@ -4453,6 +4453,10 @@ export async function registerRoutes(
       res.json({
         connected:    !!(c.adAccountId && c.accessToken),
         adAccountId:  c.adAccountId || '',
+        // Every account being imported, with the names cached at connect time
+        // so the card can list them without calling Meta on every page load.
+        adAccountIds: Array.isArray(c.adAccountIds) && c.adAccountIds.length ? c.adAccountIds : (c.adAccountId ? [c.adAccountId] : []),
+        accountNames: c.accountNames || {},
         accountName:  c.accountName || null,
         currency:     c.currency || null,
         timezone:     c.timezone || null,
@@ -4495,6 +4499,9 @@ export async function registerRoutes(
         adAccountIds: Array.isArray(req.body?.adAccountIds) && req.body.adAccountIds.length
           ? req.body.adAccountIds.map((v: any) => normalizeAdAccountId(String(v)))
           : [normalizeAdAccountId(String(adAccountId))],
+        accountNames: req.body?.accountNames && typeof req.body.accountNames === 'object'
+          ? req.body.accountNames
+          : { [normalizeAdAccountId(String(adAccountId))]: test.accountName || '' },
       });
 
       const existing = (await storage.getIntegrationsByStore(storeId, 'ads'))
@@ -4509,6 +4516,53 @@ export async function registerRoutes(
       }
 
       res.json({ connected: true, accountName: test.accountName, currency: test.currency, timezone: test.timezone });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /**
+   * Add or remove one ad account on an existing connection.
+   *
+   * Reconnecting to add a second account meant re-pasting the token and losing
+   * the magasin — and a mistyped token would have dropped a working connection.
+   */
+  app.post("/api/meta-ads/accounts/manage", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const action = String(req.body?.action || 'add');
+      const rawId = String(req.body?.adAccountId || '');
+      if (!rawId) return res.status(400).json({ message: "Identifiant de compte requis." });
+      const acct = normalizeAdAccountId(rawId);
+
+      const existing: any = (await storage.getIntegrationsByStore(storeId, 'ads'))
+        .find((i: any) => i.provider === 'meta');
+      if (!existing) return res.status(400).json({ message: "Meta Ads n'est pas connecté." });
+
+      const c = JSON.parse(existing.credentials || '{}');
+      const ids: string[] = Array.isArray(c.adAccountIds) && c.adAccountIds.length
+        ? c.adAccountIds : (c.adAccountId ? [c.adAccountId] : []);
+      c.accountNames = c.accountNames || {};
+
+      if (action === 'remove') {
+        if (ids.length <= 1) {
+          return res.status(400).json({ message: "Impossible de retirer le dernier compte — déconnectez Meta Ads à la place." });
+        }
+        c.adAccountIds = ids.filter(i => i !== acct);
+        delete c.accountNames[acct];
+        if (c.adAccountId === acct) c.adAccountId = c.adAccountIds[0];
+      } else {
+        if (ids.includes(acct)) return res.status(400).json({ message: "Ce compte est déjà ajouté." });
+        // Verify with the existing token before adding: an account the token
+        // can't read would import nothing and look like a silent failure.
+        const test = await testMetaConnection(acct, c.accessToken);
+        if (!test.ok) return res.status(400).json({ message: test.error });
+        c.adAccountIds = [...ids, acct];
+        c.accountNames[acct] = test.accountName || '';
+      }
+
+      await storage.updateIntegration(existing.id, { credentials: JSON.stringify(c) } as any);
+      res.json({ adAccountIds: c.adAccountIds, accountNames: c.accountNames });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
