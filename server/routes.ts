@@ -4570,6 +4570,39 @@ export async function registerRoutes(
     }
   });
 
+  /**
+   * Manual Facebook entries that overlap the Meta import.
+   *
+   * A merchant who typed their Facebook spend by hand before connecting Meta
+   * now has it twice over the overlapping days: once by hand, once imported.
+   * Both land in the profit calculation, so the ad budget is overstated and
+   * the net profit understated by the same amount.
+   *
+   * Read-only: this reports what overlaps so the merchant decides, rather than
+   * deleting figures they may have entered deliberately.
+   */
+  app.get("/api/meta-ads/duplicates", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const rows = await storage.getFacebookManualOverlappingMeta(storeId);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/meta-ads/duplicates/delete", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
+      if (!ids.length) return res.status(400).json({ message: "Aucune entrée sélectionnée." });
+      const deleted = await storage.deleteAdSpendEntries(storeId, ids);
+      res.json({ deleted });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.post("/api/meta-ads/disconnect", requireAuth, requireAdmin, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;

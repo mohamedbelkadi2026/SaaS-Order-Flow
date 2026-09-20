@@ -3594,6 +3594,65 @@ export class DatabaseStorage implements IStorage {
       .sort((a, b) => b.amount - a.amount);
   }
 
+  /**
+   * Manual Facebook entries falling on days the Meta import also covers.
+   *
+   * Only Facebook-ish sources, and only days Meta actually returned data for:
+   * a hand-entered figure for a day Meta has nothing on is not a duplicate,
+   * and neither is spend on another platform.
+   */
+  async getFacebookManualOverlappingMeta(storeId: number): Promise<Array<{
+    id: number; date: string; amount: number; source: string;
+    productId: number | null; productName: string | null;
+    metaAmountSameDay: number;
+  }>> {
+    const metaRows = await db.select().from(metaAdSpend).where(eq(metaAdSpend.storeId, storeId));
+    if (!metaRows.length) return [];
+
+    const store: any = await this.getStore(storeId);
+    const rate = (store?.usdToMadRate ?? 1000) / 100;
+
+    const metaByDay = new Map<string, number>();
+    for (const r of metaRows) {
+      const mad = r.currency === 'MAD' ? r.amount : Math.round(r.amount * rate);
+      metaByDay.set(r.date, (metaByDay.get(r.date) || 0) + mad);
+    }
+
+    const manual = await db.select().from(adSpend).where(eq(adSpend.storeId, storeId));
+    const prods = await db.select({ id: products.id, name: products.name })
+      .from(products).where(eq(products.storeId, storeId));
+    const prodName = new Map(prods.map(p => [p.id, p.name]));
+
+    return manual
+      .filter((e: any) => {
+        const src = String(e.source || '').toLowerCase();
+        // Only the platform Meta imports — other sources are never duplicates.
+        if (!/facebook|meta|fb/.test(src)) return false;
+        const day = String(e.date || '').substring(0, 10);
+        return metaByDay.has(day);
+      })
+      .map((e: any) => ({
+        id: e.id,
+        date: String(e.date).substring(0, 10),
+        amount: Number(e.amount || 0),
+        source: e.source || '',
+        productId: e.productId ?? null,
+        productName: e.productId ? (prodName.get(e.productId) ?? null) : null,
+        metaAmountSameDay: metaByDay.get(String(e.date).substring(0, 10)) || 0,
+      }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+  }
+
+  /** Delete manual ad-spend entries by id, scoped to the store. */
+  async deleteAdSpendEntries(storeId: number, ids: number[]): Promise<number> {
+    if (!ids.length) return 0;
+    // Scoped to the store so an id from elsewhere can't be removed.
+    const res = await db.delete(adSpend)
+      .where(and(eq(adSpend.storeId, storeId), inArray(adSpend.id, ids)))
+      .returning({ id: adSpend.id });
+    return res.length;
+  }
+
   async deleteUser(id: number): Promise<void> {
     // Twelve tables reference users.id. Only orders.assigned_to_id used to be
     // cleared here, so deleting anyone who had touched an order, logged a
