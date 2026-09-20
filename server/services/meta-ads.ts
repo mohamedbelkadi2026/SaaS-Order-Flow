@@ -79,6 +79,39 @@ function metaErrorMessage(err: any, httpStatus: number): string {
 }
 
 /**
+ * Every ad account the token can read, within the business it belongs to.
+ *
+ * A merchant running several accounts under one Business Manager needs them
+ * all: importing only the first would silently under-report the ad budget and
+ * overstate the profit.
+ */
+export async function listMetaAdAccounts(
+  accessToken: string,
+): Promise<{ accounts: Array<{ id: string; name: string; currency: string }>; error?: string }> {
+  try {
+    const res = await axios.get(`${META_GRAPH}/me/adaccounts`, {
+      params: { fields: 'account_id,name,currency,account_status', limit: 200, access_token: accessToken },
+      timeout: 25000,
+      validateStatus: () => true,
+    });
+    console.log(`[META] GET /me/adaccounts → HTTP ${res.status}`);
+    if (res.status < 200 || res.status >= 300) {
+      return { accounts: [], error: metaErrorMessage((res.data as any)?.error, res.status) };
+    }
+    const raw = Array.isArray(res.data?.data) ? res.data.data : [];
+    const accounts = raw.map((a: any) => ({
+      id: normalizeAdAccountId(String(a?.account_id ?? a?.id ?? '')),
+      name: String(a?.name ?? ''),
+      currency: String(a?.currency ?? ''),
+    })).filter((a: any) => a.id && a.id !== 'act_');
+    console.log(`[META] ${accounts.length} ad account(s) visible to this token`);
+    return { accounts };
+  } catch (err: any) {
+    return { accounts: [], error: err?.message || String(err) };
+  }
+}
+
+/**
  * Daily spend per campaign between two dates (inclusive), in the ad account's
  * own timezone — which is NOT necessarily the store's.
  *

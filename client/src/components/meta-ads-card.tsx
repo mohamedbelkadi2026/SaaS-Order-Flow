@@ -24,12 +24,28 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
   // An ad account has no notion of magasin, so the merchant assigns one once
   // and every imported row inherits it.
   const [magasinId, setMagasinId] = useState<string>("");
+  // A Business Manager can hold several ad accounts. Rather than making the
+  // merchant paste each id, the token is used to list them and they tick the
+  // ones to import.
+  const [discovered, setDiscovered] = useState<Array<{ id: string; name: string; currency: string }>>([]);
+  const [picked, setPicked] = useState<string[]>([]);
   const { data: magasins = [] } = useQuery<any[]>({ queryKey: ["/api/magasins"] });
 
   const { data: status, isLoading } = useQuery<any>({ queryKey: ["/api/meta-ads/status"] });
 
+  const discoverMut = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/accounts", { accessToken })).json(),
+    onSuccess: (r: any) => {
+      const list = r?.accounts || [];
+      setDiscovered(list);
+      setPicked(list.map((a: any) => a.id));
+      if (!list.length) toast({ title: "Aucun compte publicitaire visible avec ce token", variant: "destructive" });
+    },
+    onError: (e: any) => toast({ title: "Lecture impossible", description: e?.message, variant: "destructive" }),
+  });
+
   const connectMut = useMutation({
-    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/connect", { adAccountId, accessToken, magasinId: magasinId || null })).json(),
+    mutationFn: async () => (await apiRequest("POST", "/api/meta-ads/connect", { adAccountId: adAccountId || picked[0], accessToken, magasinId: magasinId || null, adAccountIds: picked.length ? picked : undefined })).json(),
     onSuccess: async (r: any) => {
       toast({ title: "Meta Ads connecté", description: r?.accountName ? `Compte : ${r.accountName}` : undefined });
       setOpen(false); setAccessToken("");
@@ -167,6 +183,37 @@ export default function MetaAdsCard({ isAdmin }: { isAdmin: boolean }) {
             <p className="text-[10px] text-muted-foreground">
               Toutes les dépenses importées de ce compte seront rattachées à ce magasin.
             </p>
+          </div>
+          <div className="sm:col-span-2 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-xs font-semibold">Comptes publicitaires à importer</Label>
+              <Button size="sm" variant="outline" disabled={!accessToken.trim() || discoverMut.isPending}
+                onClick={() => discoverMut.mutate()} data-testid="btn-discover-accounts">
+                {discoverMut.isPending ? "Lecture…" : "Lister mes comptes"}
+              </Button>
+            </div>
+            {discovered.length > 0 ? (
+              <div className="rounded-lg border border-border divide-y max-h-48 overflow-y-auto">
+                {discovered.map(a => (
+                  <label key={a.id} className="flex items-center gap-2 px-3 py-2 text-xs cursor-pointer hover:bg-muted/40">
+                    <input
+                      type="checkbox"
+                      checked={picked.includes(a.id)}
+                      onChange={e => setPicked(p => e.target.checked ? [...p, a.id] : p.filter(x => x !== a.id))}
+                      data-testid={`checkbox-account-${a.id}`}
+                    />
+                    <span className="flex-1">{a.name || a.id}</span>
+                    <span className="text-muted-foreground font-mono">{a.id}</span>
+                    {a.currency && <span className="text-muted-foreground">{a.currency}</span>}
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[10px] text-muted-foreground">
+                Plusieurs comptes sous le même Business Manager ? Collez le token puis cliquez
+                « Lister mes comptes » pour tous les importer.
+              </p>
+            )}
           </div>
           <div className="sm:col-span-2 flex justify-end">
             <Button size="sm" disabled={connectMut.isPending || !adAccountId.trim() || !accessToken.trim()}

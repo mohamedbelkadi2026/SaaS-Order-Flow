@@ -912,15 +912,29 @@ app.use((req, res, next) => {
         const since = new Date(until.getTime() - 3 * 86400000);
         const fmt = (d: Date) => d.toISOString().slice(0, 10);
 
-        const { rows: spend, error } = await fetchMetaDailySpend(
-          creds.adAccountId, creds.accessToken, fmt(since), fmt(until),
-        );
+        // Every configured ad account, not just the first — a merchant can run
+        // several under one Business Manager and missing one under-reports the
+        // ad budget.
+        const accountIds: string[] = Array.isArray(creds.adAccountIds) && creds.adAccountIds.length
+          ? creds.adAccountIds
+          : [creds.adAccountId];
 
-        if (error && !spend.length) {
+        let spendCount = 0, savedTotal = 0;
+        let error: string | null = null;
+
+        for (const acct of accountIds) {
+          const r = await fetchMetaDailySpend(acct, creds.accessToken, fmt(since), fmt(until));
+          if (r.error && !r.rows.length) { error = `${acct}: ${r.error}`; continue; }
+          spendCount += r.rows.length;
+          savedTotal += await st.upsertMetaAdSpend(row.storeId, r.rows, acct);
+          await new Promise(res => setTimeout(res, 800));
+        }
+
+        const spend = { length: spendCount } as { length: number };
+        if (error && !spendCount) {
           console.error(`[META-SYNC][${label}] store=${row.storeId}: ${error}`);
         } else {
-          const saved = await st.upsertMetaAdSpend(row.storeId, spend);
-          console.log(`[META-SYNC][${label}] store=${row.storeId}: ${saved} campaign-day row(s)`);
+          console.log(`[META-SYNC][${label}] store=${row.storeId}: ${savedTotal} row(s) from ${accountIds.length} account(s)`);
         }
 
         // Record the outcome so the Publicités page can show a revoked token

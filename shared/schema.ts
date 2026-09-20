@@ -345,6 +345,10 @@ export const adSpend = pgTable("ad_spend", {
 export const metaAdSpend = pgTable("meta_ad_spend", {
   id:           serial("id").primaryKey(),
   storeId:      integer("store_id").notNull(),
+  // Which ad account this row came from. A merchant can run several under one
+  // Business Manager, and two of them can spend on the same day — without this
+  // in the key they would overwrite each other.
+  adAccountId:  text("ad_account_id").notNull().default(""),
   date:         text("date").notNull(),          // YYYY-MM-DD, ad account timezone
   campaignId:   text("campaign_id").notNull(),
   campaignName: text("campaign_name").notNull().default(""),
@@ -354,7 +358,7 @@ export const metaAdSpend = pgTable("meta_ad_spend", {
   clicks:       integer("clicks").notNull().default(0),
   syncedAt:     timestamp("synced_at").defaultNow(),
 }, (t) => ({
-  uniq: unique("meta_ad_spend_unique").on(t.storeId, t.date, t.campaignId),
+  uniq: unique("meta_ad_spend_unique_v2").on(t.storeId, t.adAccountId, t.date, t.campaignId),
 }));
 export type MetaAdSpend = typeof metaAdSpend.$inferSelect;
 

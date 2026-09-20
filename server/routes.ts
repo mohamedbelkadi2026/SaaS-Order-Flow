@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { testMetaConnection, fetchMetaDailySpend, normalizeAdAccountId } from "./services/meta-ads";
+import { testMetaConnection, fetchMetaDailySpend, normalizeAdAccountId, listMetaAdAccounts } from "./services/meta-ads";
 import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapNearyaStatus, trackNearyaParcel, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
@@ -4387,16 +4387,36 @@ export async function registerRoutes(
   // ============================================================
 
   /** Read the saved Meta credentials for a store, if any. */
-  const getMetaCreds = async (storeId: number): Promise<{ adAccountId: string; accessToken: string } | null> => {
+  const getMetaCreds = async (storeId: number): Promise<{ adAccountId: string; accessToken: string; adAccountIds: string[] } | null> => {
     const rows = await storage.getIntegrationsByStore(storeId, 'ads');
     const meta = rows.find((i: any) => i.provider === 'meta' && i.isActive !== 0);
     if (!meta) return null;
     try {
       const c = JSON.parse((meta as any).credentials || '{}');
       if (!c.adAccountId || !c.accessToken) return null;
-      return { adAccountId: c.adAccountId, accessToken: c.accessToken };
+      // One Business Manager can hold several ad accounts. adAccountIds is the
+      // full list the merchant chose to import; adAccountId stays as the first
+      // one for anything still expecting a single value.
+      const ids: string[] = Array.isArray(c.adAccountIds) && c.adAccountIds.length
+        ? c.adAccountIds
+        : [c.adAccountId];
+      return { adAccountId: c.adAccountId, accessToken: c.accessToken, adAccountIds: ids };
     } catch { return null; }
   };
+
+  // Which ad accounts this token can see — used to offer the list at connect
+  // time instead of making the merchant paste each id by hand.
+  app.post("/api/meta-ads/accounts", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const token = String(req.body?.accessToken || '');
+      if (!token) return res.status(400).json({ message: "Token requis." });
+      const { accounts, error } = await listMetaAdAccounts(token);
+      if (error) return res.status(400).json({ message: error });
+      res.json({ accounts });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
 
   /**
    * Remember the outcome of the last import on the integration row.
@@ -4470,6 +4490,11 @@ export async function registerRoutes(
         // row inherits it — otherwise the Magasin column and filter are empty
         // for half the spend.
         magasinId:   req.body?.magasinId ? Number(req.body.magasinId) : null,
+        // Every account to import from. Defaults to the one entered, so a
+        // single-account merchant sees no change.
+        adAccountIds: Array.isArray(req.body?.adAccountIds) && req.body.adAccountIds.length
+          ? req.body.adAccountIds.map((v: any) => normalizeAdAccountId(String(v)))
+          : [normalizeAdAccountId(String(adAccountId))],
       });
 
       const existing = (await storage.getIntegrationsByStore(storeId, 'ads'))
@@ -4534,13 +4559,24 @@ export async function registerRoutes(
 
       const fmt = (d: Date) => d.toISOString().slice(0, 10);
       const since = new Date(sinceStr), until = new Date(untilStr);
-      const { rows, error } = await fetchMetaDailySpend(creds.adAccountId, creds.accessToken, sinceStr, untilStr);
-      if (error && !rows.length) {
-        await recordMetaSyncResult(storeId, 0, error);
-        return res.status(502).json({ message: error });
+      // Import every configured account, not just the first: missing one would
+      // under-report the ad budget and overstate the profit.
+      let saved = 0;
+      let lastError: string | null = null;
+      let anyRows = false;
+
+      for (const acct of creds.adAccountIds) {
+        const { rows, error } = await fetchMetaDailySpend(acct, creds.accessToken, sinceStr, untilStr);
+        if (error && !rows.length) { lastError = `${acct}: ${error}`; continue; }
+        if (rows.length) anyRows = true;
+        saved += await storage.upsertMetaAdSpend(storeId, rows, acct);
       }
 
-      const saved = await storage.upsertMetaAdSpend(storeId, rows);
+      if (!anyRows && lastError) {
+        await recordMetaSyncResult(storeId, 0, lastError);
+        return res.status(502).json({ message: lastError });
+      }
+      const error = lastError;
       await recordMetaSyncResult(storeId, saved, error || null);
       res.json({ synced: saved, since: fmt(since), until: fmt(until), warning: error || null });
     } catch (err: any) {

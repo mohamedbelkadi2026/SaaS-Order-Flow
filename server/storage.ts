@@ -3336,15 +3336,20 @@ export class DatabaseStorage implements IStorage {
   async upsertMetaAdSpend(storeId: number, rows: Array<{
     date: string; campaignId: string; campaignName: string;
     amount: number; currency: string; impressions: number; clicks: number;
-  }>): Promise<number> {
+    adAccountId?: string;
+  }>, adAccountId = ''): Promise<number> {
     let n = 0;
     for (const r of rows) {
       if (!r.date || !r.campaignId) continue;
+      const acct = r.adAccountId || adAccountId || '';
       await db.insert(metaAdSpend).values({
-        storeId, date: r.date, campaignId: r.campaignId, campaignName: r.campaignName,
+        storeId, adAccountId: acct,
+        date: r.date, campaignId: r.campaignId, campaignName: r.campaignName,
         amount: r.amount, currency: r.currency, impressions: r.impressions, clicks: r.clicks,
       }).onConflictDoUpdate({
-        target: [metaAdSpend.storeId, metaAdSpend.date, metaAdSpend.campaignId],
+        // Keyed on the account too: two accounts can spend on the same campaign
+        // id on the same day, and without this one would silently erase the other.
+        target: [metaAdSpend.storeId, metaAdSpend.adAccountId, metaAdSpend.date, metaAdSpend.campaignId],
         set: {
           campaignName: r.campaignName, amount: r.amount, currency: r.currency,
           impressions: r.impressions, clicks: r.clicks, syncedAt: new Date(),
