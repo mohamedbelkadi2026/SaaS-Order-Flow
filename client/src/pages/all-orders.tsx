@@ -98,7 +98,9 @@ const ALL_COLUMNS = [
   { key: 'actionBy', label: 'Action By', locked: false },
   { key: 'comment', label: 'Comment', locked: false },
   { key: 'livraison', label: 'Livraison', locked: false },
-  { key: 'derniereAction', label: 'Dernière action', locked: false },
+  // This column has always rendered createdAt — the label said otherwise.
+  { key: 'derniereAction', label: 'Date création', locked: false },
+  { key: 'lastAction', label: 'Dernière action', locked: false },
   { key: 'status', label: 'Status', locked: false },
   { key: 'prix', label: 'Prix', locked: false },
   { key: 'adresse', label: 'Adresse', locked: false },
@@ -837,7 +839,8 @@ export default function AllOrders() {
                 {isColVisible('actionBy') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Action By</div>{showInlineFilters && renderColFilter('actionBy', 'Filtr...')}</TableHead>}
                 {isColVisible('comment') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Comment</TableHead>}
                 {isColVisible('livraison') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Livraison</TableHead>}
-                {isColVisible('derniereAction') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Dernière action</TableHead>}
+                {isColVisible('derniereAction') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Date création</TableHead>}
+                {isColVisible('lastAction') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Dernière action</TableHead>}
                 {isColVisible('status') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Status</TableHead>}
                 {isColVisible('prix') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Prix</TableHead>}
                 {isColVisible('adresse') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Adresse</TableHead>}
@@ -1018,6 +1021,26 @@ export default function AllOrders() {
                       {isColVisible('derniereAction') && (
                         <TableCell className="whitespace-nowrap text-muted-foreground text-[11px]">
                           {order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
+                        </TableCell>
+                      )}
+                      {/* The real last action: who touched the order and when.
+                          An order that hasn't been worked yet shows a dash
+                          rather than falling back to its creation date, which
+                          would read as if someone had handled it. */}
+                      {isColVisible('lastAction') && (
+                        <TableCell className="whitespace-nowrap text-[11px]">
+                          {(order as any).lastActionAt ? (
+                            <div className="leading-tight">
+                              <div className="font-medium">
+                                {(order as any).lastActionByName
+                                  || (agents as any[])?.find((a: any) => a.id === (order as any).lastActionBy)?.username
+                                  || "—"}
+                              </div>
+                              <div className="text-muted-foreground">
+                                {new Date((order as any).lastActionAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            </div>
+                          ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
                       {isColVisible('status') && <TableCell><StatusBadge status={order.commentStatus || order.status} /></TableCell>}
