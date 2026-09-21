@@ -3389,17 +3389,26 @@ export class DatabaseStorage implements IStorage {
     const prods = await db.select({ id: products.id, name: products.name })
       .from(products).where(eq(products.storeId, storeId));
 
-    const byCampaign = new Map<string, { campaignId: string; campaignName: string; totalAmount: number; currency: string; days: number }>();
+    // Distinct days, not rows: two rows for the same day (from two accounts,
+    // or a leftover from before the account id was recorded) must not turn a
+    // 20-day campaign into a 40-day one.
+    const byCampaign = new Map<string, { campaignId: string; campaignName: string; totalAmount: number; currency: string; days: number; dates: Set<string>; seen: Set<string> }>();
     for (const r of spend) {
       const cur = byCampaign.get(r.campaignId);
+      // Skip an exact repeat of a (day, account) pair already counted.
+      const rowKey = `${r.date}|${(r as any).adAccountId || ''}`;
       if (cur) {
+        if (cur.seen.has(rowKey)) continue;
+        cur.seen.add(rowKey);
         cur.totalAmount += r.amount;
-        cur.days += 1;
+        cur.dates.add(r.date);
+        cur.days = cur.dates.size;
         if (r.campaignName) cur.campaignName = r.campaignName;
       } else {
         byCampaign.set(r.campaignId, {
           campaignId: r.campaignId, campaignName: r.campaignName || r.campaignId,
           totalAmount: r.amount, currency: r.currency, days: 1,
+          dates: new Set([r.date]), seen: new Set([rowKey]),
         });
       }
     }
