@@ -4475,24 +4475,47 @@ export async function trackNearyaParcel(
       return { status: null, label: '', error: `HTTP ${res.status}: ${snippet}` };
     }
 
-    // Same envelope problem as /region: dig for the status string rather than
-    // assuming a shape.
+    // Nearya responses can contain an envelope field such as status: "success".
+    // That describes the API request, NOT the parcel state. Prefer status-like
+    // fields inside the payload/history and explicitly ignore envelope values.
+    const ENVELOPE_VALUES = new Set(['success', 'ok', 'true', '200']);
+    const STATUS_KEY = /^(status|state|statut|etat|situation|parcelStatus|parcel_status|deliveryStatus|delivery_status)$/i;
+    const PAYLOAD_KEY = /^(data|result|results|parcel|shipment|tracking|history|histories|events|details)$/i;
+
     const findStatus = (node: any, depth = 0): string | null => {
-      if (!node || depth > 6) return null;
-      if (typeof node === 'string') return null;
+      if (!node || depth > 8) return null;
       if (Array.isArray(node)) {
-        // A history array: the last entry is the current state.
+        // Tracking histories are chronological in normal carrier APIs; inspect
+        // newest entries first, but still validate that the value is not merely
+        // an API envelope marker.
         for (let i = node.length - 1; i >= 0; i--) {
           const hit = findStatus(node[i], depth + 1);
           if (hit) return hit;
         }
         return null;
       }
-      if (typeof node === 'object') {
-        for (const [k, v] of Object.entries(node)) {
-          if (/^(status|state|statut|etat|situation)$/i.test(k) && typeof v === 'string' && v.trim()) return v;
+      if (typeof node !== 'object') return null;
+
+      // First search known payload containers. This prevents top-level
+      // { status: "success", data: { ...real parcel status... } } from winning.
+      for (const [k, v] of Object.entries(node)) {
+        if (PAYLOAD_KEY.test(k)) {
+          const hit = findStatus(v, depth + 1);
+          if (hit) return hit;
         }
-        for (const v of Object.values(node)) {
+      }
+
+      // Then accept a local status field only when it looks like a parcel state.
+      for (const [k, v] of Object.entries(node)) {
+        if (STATUS_KEY.test(k) && typeof v === 'string' && v.trim()) {
+          const value = v.trim();
+          if (!ENVELOPE_VALUES.has(value.toLowerCase())) return value;
+        }
+      }
+
+      // Finally inspect unknown nested objects for undocumented Nearya shapes.
+      for (const [k, v] of Object.entries(node)) {
+        if (!PAYLOAD_KEY.test(k) && v && typeof v === 'object') {
           const hit = findStatus(v, depth + 1);
           if (hit) return hit;
         }
