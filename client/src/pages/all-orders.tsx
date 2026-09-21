@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAllOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useFilterOptions, useMagasins } from "@/hooks/use-store-data";
 import { OrderDetailsModal } from "@/components/order-details-modal";
+import { OrderHistoryDialog } from "@/components/order-history-dialog";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -1496,42 +1497,11 @@ export default function AllOrders() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!historyOrder} onOpenChange={(open) => { if (!open) setHistoryOrder(null); }}>
-        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-hidden flex flex-col z-[100]">
-          <DialogHeader>
-            <DialogTitle>Historique de la commande {historyOrder?.orderNumber ? `#${historyOrder.orderNumber}` : ""}</DialogTitle>
-            <DialogDescription>
-              Parcours complet de la commande : création, confirmation, expédition, livraison et autres changements.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="overflow-y-auto pr-1 space-y-3">
-            {historyLoading ? (
-              <div className="flex items-center justify-center py-10 text-muted-foreground">
-                <Loader2 className="w-5 h-5 mr-2 animate-spin" /> Chargement de l'historique…
-              </div>
-            ) : historyError ? (
-              <div className="py-8 text-center text-sm text-destructive">Impossible de charger l'historique.</div>
-            ) : historyLogs.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">Aucun événement supplémentaire enregistré. La date de création reste disponible dans la commande.</div>
-            ) : (
-              historyLogs.map((log: any) => (
-                <div key={log.id} className="relative pl-6 pb-3 border-l ml-2 last:pb-0">
-                  <span className="absolute -left-[5px] top-1.5 h-2.5 w-2.5 rounded-full bg-primary ring-4 ring-background" />
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium break-words">{log.title || log.note}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{log.actor || log.agentName || "Système"}</p>
-                    </div>
-                    <time className="text-[11px] text-muted-foreground whitespace-nowrap">
-                      {log.createdAt ? new Date(log.createdAt).toLocaleString("fr-MA", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
-                    </time>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      <OrderHistoryDialog
+        order={historyOrder}
+        open={!!historyOrder}
+        onOpenChange={(open) => { if (!open) setHistoryOrder(null); }}
+      />
 
       <OrderDetailsModal
         order={selectedOrder}
