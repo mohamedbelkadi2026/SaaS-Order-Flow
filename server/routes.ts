@@ -9233,9 +9233,11 @@ function ensureHeaders(sheet) {
       connectionName: rows[0]?.connectionName ?? null,
       createdAt: rows[0]?.createdAt ?? null,
       // Multi-store list
-      stores: rows.map(r => ({
+      // Only return active connections to the UI. Once disconnected, a shop
+      // disappears completely and is shown again only after a fresh OAuth connect.
+      stores: rows.filter(r => !!r.oauthAccessToken && !!r.isActive).map(r => ({
         id: r.id,
-        connected: !!(r.oauthAccessToken) && !!r.isActive,
+        connected: true,
         connectionName: r.connectionName ?? null,
         ordersCount: r.ordersCount ?? 0,
         createdAt: r.createdAt,
