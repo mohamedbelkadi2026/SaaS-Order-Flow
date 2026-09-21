@@ -4,6 +4,7 @@ import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, use
 import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { CustomerHistoryModal } from "@/components/customer-history-modal";
+import { OrderHistoryDialog } from "@/components/order-history-dialog";
 import { formatCurrency, cn } from "@/lib/utils";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { SourceBadge } from '@/components/source-badge';
@@ -827,6 +828,7 @@ export default function Orders() {
   // "pages" instead of silently acting on only the visible page.
   const [selectAllPages, setSelectAllPages] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [historyOrder, setHistoryOrder] = useState<any | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
   const [customerHistoryPhone, setCustomerHistoryPhone] = useState<string | null>(null);
@@ -2451,7 +2453,7 @@ export default function Orders() {
                             <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Modifier" data-testid={`action-edit-${order.id}`}>
                               <Pencil className="w-3.5 h-3.5 text-amber-500" />
                             </button>
-                            <button className="p-1.5 rounded hover:bg-muted transition-colors" title="Historique" data-testid={`action-history-${order.id}`}>
+                            <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setHistoryOrder({ ...order }); }} className="p-1.5 rounded hover:bg-muted transition-colors cursor-pointer" title="Historique" data-testid={`action-history-${order.id}`}>
                               <Clock className="w-3.5 h-3.5 text-gray-400" />
                             </button>
                             {order.status === 'confirme' && (
@@ -2742,7 +2744,7 @@ export default function Orders() {
                   {/* ── BOTTOM ACTIONS ── */}
                   <div className="px-3 pb-3 flex items-center gap-2">
                     <button
-                      onClick={() => openOrder(order)}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setHistoryOrder({ ...order }); }}
                       className="w-8 h-8 rounded-lg border border-border/60 bg-muted/40 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors active:scale-95"
                       data-testid={`history-mobile-${order.id}`}
                       title="Historique"
@@ -3656,6 +3658,8 @@ export default function Orders() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <OrderHistoryDialog order={historyOrder} open={!!historyOrder} onOpenChange={(open) => { if (!open) setHistoryOrder(null); }} />
 
       <OrderDetailsModal
         order={selectedOrder}
