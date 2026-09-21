@@ -63,6 +63,16 @@ export const pool = new Pool({
   ...(useSSL && { ssl: { rejectUnauthorized: false } }),
 });
 
+// The startup option above is dropped by some connection proxies, and it was:
+// orders kept being stored an hour ahead. A statement issued on each new
+// connection can't be stripped the same way, so this is the one that actually
+// guarantees now() resolves to UTC.
+pool.on('connect', (client) => {
+  client.query("SET TIME ZONE 'UTC'").catch((err: any) =>
+    console.error(`[DB] could not set session time zone to UTC: ${err?.message}`)
+  );
+});
+
 // Surface DB connection errors as warnings — never crash the process.
 pool.on("error", (err) => {
   console.error("[DB] Pool error:", err.message);
@@ -95,6 +105,19 @@ export async function initializeDatabase(): Promise<void> {
     const connCheck = await client.query("SELECT current_database(), current_user, version()");
     const { current_database, current_user } = connCheck.rows[0];
     console.log(`[DB] Connected ✅ — database: "${current_database}", user: "${current_user}"`);
+
+    // Print what the database actually thinks the time is. If "stored" differs
+    // from "utc", timestamps are being written in local time and every order
+    // will display an hour off — this line settles it without guesswork.
+    try {
+      const tz = await pool.query(
+        "SELECT current_setting('TimeZone') AS tz, now()::timestamp AS stored, (now() AT TIME ZONE 'UTC') AS utc"
+      );
+      const r = tz.rows[0] || {};
+      console.log(`[DB] session TimeZone=${r.tz} | stored=${r.stored?.toISOString?.() ?? r.stored} | utc=${r.utc?.toISOString?.() ?? r.utc} | node TZ=${process.env.TZ}`);
+    } catch (e: any) {
+      console.warn(`[DB] time zone check failed: ${e?.message}`);
+    }
 
     // ── 1. Verify carrier_accounts is visible via to_regclass (schema check) ──
     const regCheck = await client.query(`SELECT to_regclass('public.carrier_accounts') AS tbl`);
