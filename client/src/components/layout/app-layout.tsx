@@ -171,9 +171,10 @@ const LANG_OPTIONS = [
 /* ─── Error Boundary ───────────────────────────────────────────── */
 class ContentErrorBoundary extends Component<
   { children: ReactNode },
-  { hasError: boolean }
+  { hasError: boolean; retryKey: number }
 > {
-  state = { hasError: false };
+  private autoRetryTimer?: ReturnType<typeof setTimeout>;
+  state = { hasError: false, retryKey: 0 };
 
   static getDerivedStateFromError() {
     return { hasError: true };
@@ -181,27 +182,53 @@ class ContentErrorBoundary extends Component<
 
   componentDidCatch(err: Error, info: React.ErrorInfo) {
     console.error("[ContentErrorBoundary]", err, info);
+    // Most production crashes here are transient (lazy chunk/network/data timing).
+    // Recover once automatically without forcing the user to reload the whole app.
+    if (this.state.retryKey === 0) {
+      this.autoRetryTimer = setTimeout(() => {
+        this.setState({ hasError: false, retryKey: 1 });
+      }, 700);
+    }
   }
+
+  componentWillUnmount() {
+    if (this.autoRetryTimer) clearTimeout(this.autoRetryTimer);
+  }
+
+  private retry = () => {
+    this.setState((s) => ({ hasError: false, retryKey: s.retryKey + 1 }));
+  };
 
   render() {
     if (this.state.hasError) {
+      // First failure is recovered automatically; keep the UI calm while retrying.
+      if (this.state.retryKey === 0) {
+        return (
+          <div className="flex items-center justify-center min-h-64">
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <Loader2 className="w-5 h-5 animate-spin text-primary" />
+              Chargement…
+            </div>
+          </div>
+        );
+      }
       return (
-        <div className="flex flex-col items-center justify-center min-h-64 gap-4 p-8 text-center">
-          <AlertTriangle className="w-12 h-12 text-destructive opacity-60" />
+        <div className="flex flex-col items-center justify-center min-h-64 gap-3 p-8 text-center">
+          <AlertTriangle className="w-9 h-9 text-amber-500 opacity-80" />
           <div>
-            <p className="font-semibold text-lg">Une erreur inattendue s'est produite</p>
-            <p className="text-muted-foreground text-sm mt-1">Actualisez la page pour continuer</p>
+            <p className="font-semibold">Cette section n'a pas pu se charger</p>
+            <p className="text-muted-foreground text-sm mt-1">Vos données sont conservées. Vous pouvez réessayer sans recharger toute la plateforme.</p>
           </div>
           <button
-            onClick={() => window.location.reload()}
+            onClick={this.retry}
             className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold"
           >
-            Actualiser la page
+            Réessayer
           </button>
         </div>
       );
     }
-    return this.props.children;
+    return <React.Fragment key={this.state.retryKey}>{this.props.children}</React.Fragment>;
   }
 }
 
