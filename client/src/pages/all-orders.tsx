@@ -260,6 +260,19 @@ export default function AllOrders() {
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [historyOrder, setHistoryOrder] = useState<any | null>(null);
+
+  const { data: historyLogs = [], isLoading: historyLoading, isError: historyError } = useQuery<any[]>({
+    queryKey: ["/api/orders", historyOrder?.id, "followup-logs"],
+    queryFn: async () => {
+      const response = await fetch(`/api/orders/${historyOrder.id}/followup-logs`, { credentials: "include" });
+      if (!response.ok) throw new Error("Historique indisponible");
+      const payload = await response.json();
+      return Array.isArray(payload) ? payload : [];
+    },
+    enabled: !!historyOrder?.id,
+    staleTime: 0,
+  });
   const [shippingProvider, setShippingProvider] = useState<string>("");
   const [editFields, setEditFields] = useState<Record<string, string>>({});
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -1073,7 +1086,7 @@ export default function AllOrders() {
                             <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Modifier" data-testid={`all-action-edit-${order.id}`}>
                               <Pencil className="w-3.5 h-3.5 text-amber-500" />
                             </button>
-                            <button className="p-1.5 rounded hover:bg-muted transition-colors" title="Historique" data-testid={`all-action-history-${order.id}`}>
+                            <button onClick={() => setHistoryOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Historique" data-testid={`all-action-history-${order.id}`}>
                               <Clock className="w-3.5 h-3.5 text-gray-400" />
                             </button>
                           </div>
@@ -1462,6 +1475,43 @@ export default function AllOrders() {
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Suppression...</>
                 : <><Trash2 className="w-4 h-4" /> Supprimer définitivement</>}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!historyOrder} onOpenChange={(open) => { if (!open) setHistoryOrder(null); }}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Historique de la commande {historyOrder?.orderNumber ? `#${historyOrder.orderNumber}` : ""}</DialogTitle>
+            <DialogDescription>
+              Toutes les actions enregistrées pour cette commande, de la plus récente à la plus ancienne.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="overflow-y-auto pr-1 space-y-3">
+            {historyLoading ? (
+              <div className="flex items-center justify-center py-10 text-muted-foreground">
+                <Loader2 className="w-5 h-5 mr-2 animate-spin" /> Chargement de l'historique…
+              </div>
+            ) : historyError ? (
+              <div className="py-8 text-center text-sm text-destructive">Impossible de charger l'historique.</div>
+            ) : historyLogs.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">Aucune action enregistrée pour cette commande.</div>
+            ) : (
+              historyLogs.map((log: any) => (
+                <div key={log.id} className="relative pl-6 pb-3 border-l ml-2 last:pb-0">
+                  <span className="absolute -left-[5px] top-1.5 h-2.5 w-2.5 rounded-full bg-primary ring-4 ring-background" />
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium break-words">{log.note}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{log.agentName || "Système"}</p>
+                    </div>
+                    <time className="text-[11px] text-muted-foreground whitespace-nowrap">
+                      {log.createdAt ? new Date(log.createdAt).toLocaleString("fr-MA", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
+                    </time>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </DialogContent>
       </Dialog>
