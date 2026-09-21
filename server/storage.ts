@@ -1658,6 +1658,23 @@ export class DatabaseStorage implements IStorage {
         .where(eq(orders.id, id))
         .returning();
 
+      // Central lifecycle audit: every status transition passes through this
+      // method (human actions, carrier webhooks and background sync jobs).
+      // Keeping it here makes the Historique complete going forward.
+      if (prevStatus !== status) {
+        let actorName: string | null = null;
+        if (actorId != null) {
+          const [actor] = await tx.select({ username: users.username }).from(users).where(eq(users.id, actorId));
+          actorName = actor?.username ?? null;
+        }
+        await tx.insert(orderFollowUpLogs).values({
+          orderId: id,
+          agentId: actorId ?? null,
+          agentName: actorName ?? (actorId != null ? "Utilisateur" : "Système / Transporteur"),
+          note: `Statut: "${prevStatus || "—"}" → "${status}"`,
+        });
+      }
+
       const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, id));
 
       // Store propriétaire de chaque produit — les mouvements de stock doivent
