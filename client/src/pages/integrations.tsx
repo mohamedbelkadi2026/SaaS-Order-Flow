@@ -925,17 +925,23 @@ function YouCanTab() {
   }, []);
 
   const handleDisconnect = async (integrationId?: number) => {
-    await fetch("/api/integrations/youcan/disconnect", {
+    const response = await fetch("/api/integrations/youcan/disconnect", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ integrationId }),
     });
-    refetch();
+    if (!response.ok) {
+      toast({ title: "Erreur", description: "Impossible de déconnecter cette boutique YouCan.", variant: "destructive" });
+      return;
+    }
+    await refetch();
     toast({ title: "Boutique YouCan déconnectée" });
   };
 
-  const stores: any[] = status?.stores || (status?.connected ? [{ id: null, connected: true, connectionName: status?.connectionName, ordersCount: status?.ordersCount }] : []);
+  // The API returns active connections only. Disconnected shops must disappear
+  // and remain hidden until the user explicitly connects them again via OAuth.
+  const stores: any[] = (status?.stores || []).filter((store: any) => store.connected);
 
   return (
     <div className="max-w-lg mx-auto space-y-4">
