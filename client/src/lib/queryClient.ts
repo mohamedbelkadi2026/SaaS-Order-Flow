@@ -67,7 +67,16 @@ export const queryClient = new QueryClient({
       refetchInterval: false,
       refetchOnWindowFocus: false,
       staleTime: 300000,
-      retry: false,
+      // Retry transient network/server failures so a brief Railway/proxy hiccup does not
+      // turn into a broken page. Do not retry auth/permission/client errors.
+      retry: (failureCount, error: any) => {
+        if (failureCount >= 2) return false;
+        const message = String(error?.message || "");
+        const status = Number(message.match(/^(\\d{3}):/)?.[1] || 0);
+        if (status >= 400 && status < 500) return false;
+        return true;
+      },
+      retryDelay: (attemptIndex) => Math.min(750 * 2 ** attemptIndex, 2500),
     },
     mutations: {
       retry: false,
