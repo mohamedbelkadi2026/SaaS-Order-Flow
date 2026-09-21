@@ -14063,6 +14063,73 @@ function ensureHeaders(sheet) {
   // ============================================================
   // ORDER FOLLOW-UP LOGS (Journal de Suivi)
   // ============================================================
+  app.get("/api/orders/:id/history", requireAuth, async (req, res) => {
+    try {
+      const orderId = Number(req.params.id);
+      if (!Number.isFinite(orderId)) return res.status(400).json({ message: "ID commande invalide" });
+
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "Commande non trouvée" });
+      if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+
+      const logs = await storage.getOrderFollowUpLogs(orderId);
+      const events: any[] = logs.map((log: any) => ({
+        id: `log-${log.id}`,
+        type: "activity",
+        title: log.note,
+        actor: log.agentName || "Système",
+        at: log.createdAt,
+      }));
+
+      // Historical orders created before lifecycle auditing still have these
+      // reliable timestamps on the order row. Add them without inventing dates.
+      if ((order as any).createdAt) {
+        events.push({
+          id: "created",
+          type: "created",
+          title: "Commande créée",
+          actor: (order as any).source ? `Source: ${(order as any).source}` : "Système",
+          at: (order as any).createdAt,
+        });
+      }
+      if ((order as any).pickupDate) {
+        events.push({
+          id: "shipped",
+          type: "shipping",
+          title: `Commande expédiée${(order as any).shippingProvider ? ` via ${(order as any).shippingProvider}` : ""}${(order as any).trackNumber ? ` — Tracking: ${(order as any).trackNumber}` : ""}`,
+          actor: "Expédition",
+          at: (order as any).pickupDate,
+        });
+      }
+      if ((order as any).returnConfirmedAt) {
+        events.push({
+          id: "return-confirmed",
+          type: "return",
+          title: "Retour reçu et confirmé",
+          actor: "Système",
+          at: (order as any).returnConfirmedAt,
+        });
+      }
+
+      events.sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime());
+
+      res.json({
+        order: {
+          id: order.id,
+          orderNumber: order.orderNumber,
+          currentStatus: order.status,
+          commentStatus: (order as any).commentStatus ?? null,
+          trackingNumber: (order as any).trackNumber ?? null,
+          shippingProvider: (order as any).shippingProvider ?? null,
+        },
+        events,
+      });
+    } catch (err: any) {
+      console.error("[ORDER-HISTORY]", err?.message || err);
+      res.status(500).json({ message: "Impossible de charger l'historique" });
+    }
+  });
+
   app.get("/api/orders/:id/followup-logs", requireAuth, async (req, res) => {
     const orderId = Number(req.params.id);
     const order = await storage.getOrder(orderId);
