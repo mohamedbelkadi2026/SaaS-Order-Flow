@@ -1079,16 +1079,32 @@ export default function AllOrders() {
                         </TableCell>
                       )}
                       {isColVisible('action') && (
-                        <TableCell>
-                          <div className="flex items-center gap-0.5">
+                        <TableCell className="relative z-10" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center gap-0.5 pointer-events-auto">
                             <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Voir" data-testid={`all-action-view-${order.id}`}>
                               <Eye className="w-3.5 h-3.5 text-blue-500" />
                             </button>
                             <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Modifier" data-testid={`all-action-edit-${order.id}`}>
                               <Pencil className="w-3.5 h-3.5 text-amber-500" />
                             </button>
-                            <button onClick={() => setHistoryOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Historique" data-testid={`all-action-history-${order.id}`}>
-                              <Clock className="w-3.5 h-3.5 text-gray-400" />
+                            <button
+                              type="button"
+                              onPointerDown={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                              }}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                console.log("[ORDER-HISTORY-CLICK]", order.id, order.orderNumber);
+                                setHistoryOrder({ ...order });
+                              }}
+                              className="relative z-10 p-1.5 rounded hover:bg-muted transition-colors cursor-pointer pointer-events-auto"
+                              title="Historique"
+                              aria-label={`Historique commande ${order.orderNumber || order.id}`}
+                              data-testid={`all-action-history-${order.id}`}
+                            >
+                              <Clock className="w-3.5 h-3.5 text-gray-400 pointer-events-none" />
                             </button>
                           </div>
                         </TableCell>
@@ -1481,7 +1497,7 @@ export default function AllOrders() {
       </Dialog>
 
       <Dialog open={!!historyOrder} onOpenChange={(open) => { if (!open) setHistoryOrder(null); }}>
-        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-hidden flex flex-col z-[100]">
           <DialogHeader>
             <DialogTitle>Historique de la commande {historyOrder?.orderNumber ? `#${historyOrder.orderNumber}` : ""}</DialogTitle>
             <DialogDescription>
