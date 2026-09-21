@@ -262,17 +262,18 @@ export default function AllOrders() {
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [historyOrder, setHistoryOrder] = useState<any | null>(null);
 
-  const { data: historyLogs = [], isLoading: historyLoading, isError: historyError } = useQuery<any[]>({
-    queryKey: ["/api/orders", historyOrder?.id, "followup-logs"],
+  const { data: historyData, isLoading: historyLoading, isError: historyError } = useQuery<any>({
+    queryKey: ["/api/orders", historyOrder?.id, "history"],
     queryFn: async () => {
-      const response = await fetch(`/api/orders/${historyOrder.id}/followup-logs`, { credentials: "include" });
+      const response = await fetch(`/api/orders/${historyOrder.id}/history`, { credentials: "include" });
       if (!response.ok) throw new Error("Historique indisponible");
-      const payload = await response.json();
-      return Array.isArray(payload) ? payload : [];
+      return response.json();
     },
     enabled: !!historyOrder?.id,
     staleTime: 0,
+    retry: 1,
   });
+  const historyLogs: any[] = historyData?.events || [];
   const [shippingProvider, setShippingProvider] = useState<string>("");
   const [editFields, setEditFields] = useState<Record<string, string>>({});
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -1484,7 +1485,7 @@ export default function AllOrders() {
           <DialogHeader>
             <DialogTitle>Historique de la commande {historyOrder?.orderNumber ? `#${historyOrder.orderNumber}` : ""}</DialogTitle>
             <DialogDescription>
-              Toutes les actions enregistrées pour cette commande, de la plus récente à la plus ancienne.
+              Parcours complet de la commande : création, confirmation, expédition, livraison et autres changements.
             </DialogDescription>
           </DialogHeader>
           <div className="overflow-y-auto pr-1 space-y-3">
@@ -1495,15 +1496,15 @@ export default function AllOrders() {
             ) : historyError ? (
               <div className="py-8 text-center text-sm text-destructive">Impossible de charger l'historique.</div>
             ) : historyLogs.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">Aucune action enregistrée pour cette commande.</div>
+              <div className="py-8 text-center text-sm text-muted-foreground">Aucun événement supplémentaire enregistré. La date de création reste disponible dans la commande.</div>
             ) : (
               historyLogs.map((log: any) => (
                 <div key={log.id} className="relative pl-6 pb-3 border-l ml-2 last:pb-0">
                   <span className="absolute -left-[5px] top-1.5 h-2.5 w-2.5 rounded-full bg-primary ring-4 ring-background" />
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="text-sm font-medium break-words">{log.note}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{log.agentName || "Système"}</p>
+                      <p className="text-sm font-medium break-words">{log.title || log.note}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{log.actor || log.agentName || "Système"}</p>
                     </div>
                     <time className="text-[11px] text-muted-foreground whitespace-nowrap">
                       {log.createdAt ? new Date(log.createdAt).toLocaleString("fr-MA", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}
