@@ -9021,10 +9021,30 @@ function ensureHeaders(sheet) {
   // ─────────────────────────────────────────────────────────────────────────────
 
   async function refreshYouCanToken(integration: any): Promise<string | null> {
-    const refreshToken = decrypt(integration.oauthRefreshToken || "");
-    if (!refreshToken) return decrypt(integration.oauthAccessToken || "");
+    // A webhook must never fail just because an old OAuth token was encrypted
+    // with a key that is no longer available. The signed webhook payload is
+    // sufficient to create the order; OAuth is only used to enrich it with
+    // full address/details from YouCan.
+    let accessToken: string | null = null;
+    let refreshToken: string | null = null;
+
+    try {
+      if (integration.oauthAccessToken) accessToken = decrypt(integration.oauthAccessToken);
+    } catch (err: any) {
+      console.warn(`[YOUCAN-OAUTH] Cannot decrypt access token for integration ${integration.id}; webhook will continue from payload only: ${err?.message || err}`);
+    }
+
+    try {
+      if (integration.oauthRefreshToken) refreshToken = decrypt(integration.oauthRefreshToken);
+    } catch (err: any) {
+      console.warn(`[YOUCAN-OAUTH] Cannot decrypt refresh token for integration ${integration.id}; webhook will continue from payload only: ${err?.message || err}`);
+    }
+
+    if (!refreshToken) return accessToken;
+
     const expiresAt = integration.oauthExpiresAt ? new Date(integration.oauthExpiresAt).getTime() : 0;
-    if (expiresAt - Date.now() > 24 * 60 * 60 * 1000) return decrypt(integration.oauthAccessToken || "");
+    if (accessToken && expiresAt - Date.now() > 24 * 60 * 60 * 1000) return accessToken;
+
     try {
       const resp = await fetch("https://api.youcan.shop/oauth/token", {
         method: "POST",
@@ -9037,15 +9057,16 @@ function ensureHeaders(sheet) {
         }),
       });
       const tokens = await resp.json() as any;
-      if (!tokens.access_token) return decrypt(integration.oauthAccessToken || "");
+      if (!tokens.access_token) return accessToken;
       await db.update(storeIntegrations).set({
         oauthAccessToken: encrypt(tokens.access_token),
         oauthRefreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : integration.oauthRefreshToken,
         oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
       }).where(eq(storeIntegrations.id, integration.id));
       return tokens.access_token;
-    } catch {
-      return decrypt(integration.oauthAccessToken || "");
+    } catch (err: any) {
+      console.warn(`[YOUCAN-OAUTH] Token refresh failed for integration ${integration.id}; using webhook payload/access token fallback: ${err?.message || err}`);
+      return accessToken;
     }
   }
 
