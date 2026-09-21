@@ -14073,13 +14073,35 @@ function ensureHeaders(sheet) {
       if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
 
       const logs = await storage.getOrderFollowUpLogs(orderId);
-      const events: any[] = logs.map((log: any) => ({
-        id: `log-${log.id}`,
-        type: "activity",
-        title: log.note,
-        actor: log.agentName || "Système",
-        at: log.createdAt,
-      }));
+      const events: any[] = logs.map((log: any) => {
+        const note = String(log.note || "");
+        const transition = note.match(/^Statut:\s*"([^"]*)"\s*→\s*"([^"]*)"/i);
+        const toStatus = transition?.[2] || "";
+        const normalized = toStatus.toLowerCase();
+        let type = "activity";
+        let title = note;
+        if (normalized === "confirme") {
+          type = "confirmed";
+          title = "Commande confirmée";
+        } else if (normalized === "delivered" || normalized.includes("livr")) {
+          type = "delivered";
+          title = "Commande livrée";
+        } else if (normalized.includes("expédi") || normalized.includes("ramass") || normalized.includes("transit") || normalized === "in_progress" || normalized === "attente de ramassage") {
+          type = "shipping";
+          title = normalized === "attente de ramassage" ? "En attente de ramassage" : `Suivi livraison : ${toStatus}`;
+        } else if (transition) {
+          type = "status";
+          title = `Statut : ${toStatus}`;
+        }
+        return {
+          id: `log-${log.id}`,
+          type,
+          title,
+          actor: log.agentName || "Système",
+          at: log.createdAt,
+          raw: note,
+        };
+      });
 
       // Historical orders created before lifecycle auditing still have these
       // reliable timestamps on the order row. Add them without inventing dates.
