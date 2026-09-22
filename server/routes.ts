@@ -22,7 +22,7 @@ import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 import { moroccoDayStart, moroccoDayEnd, moroccoOffsetString } from "@shared/morocco-time";
 import { testMetaConnection, fetchMetaDailySpend, normalizeAdAccountId, listMetaAdAccounts } from "./services/meta-ads";
-import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapNearyaStatus, trackNearyaParcel, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
+import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapNearyaStatus, trackNearyaParcel, getNearyaShippingCost, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -3044,8 +3044,15 @@ export async function registerRoutes(
                   .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
                 // Static delivery fee fallback (skipped for EC — per-city table takes priority)
                 const fee = (orderCreds as any).deliveryFee || 0;
-                if (fee > 0 && provider.toLowerCase() !== 'expresscoursier') {
+                if (fee > 0 && !['expresscoursier', 'nearya'].includes(provider.toLowerCase())) {
                   allDbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
+                }
+                // Nearya fixed tariff requested by the merchant:
+                // Casablanca = 20 DH, all other cities = 30 DH.
+                if (provider.toLowerCase() === 'nearya') {
+                  const nearyaFee = getNearyaShippingCost((order as any).customerCity || resolvedCity);
+                  console.log(`[NEARYA-COST] Order #${ref} city="${(order as any).customerCity || resolvedCity}" → shippingCost=${nearyaFee} centimes`);
+                  allDbUpdates.push(storage.updateOrder(order.id, { shippingCost: nearyaFee }));
                 }
                 // Try to get real per-city delivery cost from Digylog
                 if (provider === 'digylog') {
@@ -14655,6 +14662,19 @@ function ensureHeaders(sheet) {
       }
 
       const allOrders = await storage.getOrdersByStore(storeId);
+
+      // Nearya tariff: Casablanca 20 DH, every other city 30 DH.
+      // Do this before filtering terminal statuses so already-delivered historical
+      // orders with a missing fee are repaired by the same Sync button.
+      let feesUpdated = 0;
+      for (const o of allOrders) {
+        if ((o.shippingProvider || "").toLowerCase().trim() !== "nearya") continue;
+        if ((o.shippingCost || 0) > 0) continue;
+        const fee = getNearyaShippingCost(o.customerCity);
+        await storage.updateOrder(o.id, { shippingCost: fee } as any);
+        feesUpdated++;
+      }
+
       const pending = allOrders.filter((o: any) =>
         o.trackNumber &&
         (o.shippingProvider || "").toLowerCase().trim() === "nearya" &&
@@ -14735,6 +14755,7 @@ function ensureHeaders(sheet) {
         unmapped,
         failed,
         problems,
+        feesUpdated,
       });
     } catch (err: any) {
       console.error("[NEARYA-SYNC]", err);
