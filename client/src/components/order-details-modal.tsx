@@ -1126,7 +1126,11 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                 <Plus className="w-4 h-4" />
               </button>
             </div>
-            <div>
+            <div
+              className="overflow-y-auto overscroll-contain"
+              style={{ maxHeight: "300px" }}
+              data-testid="articles-scroll-area"
+            >
               {localItems.map(item => (
                 <ItemRow key={item.id} item={item} products={stockProducts} onChange={handleItemChange} onDelete={handleItemDelete} />
               ))}
