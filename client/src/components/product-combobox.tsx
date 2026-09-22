@@ -171,7 +171,7 @@ export function ProductCombobox({
                 <button
                   key={p.id}
                   type="button"
-                  onClick={() => variants.length > 0 ? setExpandedProductId(p.id) : handleSelect(p)}
+                  onClick={() => showVariants && variants.length > 0 ? setExpandedProductId(p.id) : handleSelect(p)}
                   className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-amber-50 border-b border-gray-100 last:border-0 transition-colors"
                 >
                   <Package className="w-4 h-4 shrink-0 text-gray-400" />
