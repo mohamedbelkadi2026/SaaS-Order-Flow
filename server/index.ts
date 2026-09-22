@@ -706,6 +706,17 @@ app.use((req, res, next) => {
         const storeId = (account as any).storeId;
         const apiKey  = (account as any).apiKey;
         const allOrders = await st.getOrdersByStore(storeId);
+
+        // Keep Nearya delivery fees complete even for terminal orders, which are
+        // intentionally excluded from status polling below.
+        for (const o of allOrders) {
+          if ((o.shippingProvider || '').toLowerCase().trim() !== 'nearya') continue;
+          if ((o.shippingCost || 0) > 0) continue;
+          const fee = getNearyaShippingCost(o.customerCity);
+          await st.updateOrder(o.id, { shippingCost: fee });
+          console.log(`[NEARYA-FEE] #${o.orderNumber} city="${o.customerCity || ''}" → ${fee / 100} DH`);
+        }
+
         const toSync = allOrders.filter((o: any) =>
           o.shippingProvider === 'digylog' &&
           o.trackNumber &&
@@ -974,7 +985,7 @@ app.use((req, res, next) => {
       const { db: dbInst } = await import('./db');
       const { carrierAccounts: caTable } = await import('@shared/schema');
       const { eq: eqFn } = await import('drizzle-orm');
-      const { trackNearyaParcel } = await import('./services/carrier-service');
+      const { trackNearyaParcel, getNearyaShippingCost } = await import('./services/carrier-service');
       const { storage: st } = await import("./storage");
 
       const accounts = await dbInst.select().from(caTable)
