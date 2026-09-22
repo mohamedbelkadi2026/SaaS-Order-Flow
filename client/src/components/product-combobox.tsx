@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
-import { Check, ChevronsUpDown, Package, PlusCircle } from "lucide-react";
+import { Check, ChevronsUpDown, Package, PlusCircle, ChevronRight, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAVY = "#1e1b4b";
@@ -36,6 +36,7 @@ export function ProductCombobox({
 }: ProductComboboxProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [expandedProductId, setExpandedProductId] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -96,6 +97,7 @@ export function ProductCombobox({
     onChange(product);
     setOpen(false);
     setSearch("");
+    setExpandedProductId(null);
   };
 
   const handleCreate = () => {
@@ -159,36 +161,54 @@ export function ProductCombobox({
         <div
           ref={dropdownRef}
           className="absolute z-[500] top-full mt-1 w-full rounded-md border border-border bg-white shadow-xl overflow-hidden"
-          style={{ maxHeight: 360 }}
+          style={{ maxHeight: 365 }}
         >
-          <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
-            {/* Stock results */}
-            {filtered.length > 0 && filtered.map(p => {
+          <div className="overflow-y-auto" style={{ maxHeight: 365 }}>
+            {/* Stock results — compact product list first; variants only after choosing a product */}
+            {expandedProductId === null && filtered.length > 0 && filtered.map(p => {
               const variants = p.variants || [];
-              const visibleVariants = search.trim()
-                ? variants.filter(v => {
-                    const q = search.toLowerCase();
-                    return p.name.toLowerCase().includes(q) || (v.name || "").toLowerCase().includes(q) || (v.sku || "").toLowerCase().includes(q);
-                  })
-                : variants;
               return (
-                <div key={p.id} className="border-b border-gray-100 last:border-0">
-                  <button type="button" onClick={() => handleSelect(p)}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-amber-50">
-                    <Package className="w-3.5 h-3.5 shrink-0 text-gray-400" />
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold truncate" style={{ color: NAVY }}>{p.name}</div>
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => variants.length > 0 ? setExpandedProductId(p.id) : handleSelect(p)}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-amber-50 border-b border-gray-100 last:border-0 transition-colors"
+                >
+                  <Package className="w-4 h-4 shrink-0 text-gray-400" />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-sm truncate" style={{ color: NAVY }}>{p.name}</div>
+                    <div className="flex items-center gap-2 mt-0.5">
                       {p.sku && <span className="text-[10px] font-mono text-gray-400">SKU: {p.sku}</span>}
+                      {variants.length > 0 && <span className="text-[10px] font-semibold" style={{ color: GOLD }}>{variants.length} variante{variants.length > 1 ? "s" : ""}</span>}
+                    </div>
+                  </div>
+                  {variants.length > 0 && <ChevronRight className="w-4 h-4 shrink-0 text-gray-400" />}
+                </button>
+              );
+            })}
+
+            {expandedProductId !== null && (() => {
+              const p = products.find(x => x.id === expandedProductId);
+              if (!p) return null;
+              const variants = p.variants || [];
+              return (
+                <div>
+                  <button type="button" onClick={() => setExpandedProductId(null)}
+                    className="sticky top-0 z-10 w-full flex items-center gap-2 px-4 py-2.5 text-left bg-white border-b border-gray-100 hover:bg-gray-50">
+                    <ArrowLeft className="w-4 h-4" style={{ color: NAVY }} />
+                    <div className="min-w-0">
+                      <div className="text-xs text-gray-400">Produits</div>
+                      <div className="font-bold text-sm truncate" style={{ color: NAVY }}>{p.name}</div>
                     </div>
                   </button>
-                  {visibleVariants.map((v, idx) => (
+                  {variants.map((v, idx) => (
                     <button key={v.id ?? `${p.id}-${idx}`} type="button" onClick={() => selectVariant(p, v)}
-                      className="w-full flex items-center gap-2 pl-9 pr-3 py-2 text-left hover:bg-amber-50 bg-gray-50/50">
-                      <Check className="w-3 h-3 shrink-0" style={{ opacity: value === `${p.name} — ${v.name}` ? 1 : 0, color: GOLD }} />
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-amber-50 border-b border-gray-50 last:border-0">
+                      <Check className="w-3.5 h-3.5 shrink-0" style={{ opacity: value === `${p.name} — ${v.name}` ? 1 : 0, color: GOLD }} />
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium truncate" style={{ color: NAVY }}>{v.name}</div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          {v.sku && <span className="text-[10px] font-mono text-gray-400 bg-white px-1.5 py-0.5 rounded">SKU: {v.sku}</span>}
+                        <div className="text-sm font-semibold truncate" style={{ color: NAVY }}>{v.name}</div>
+                        <div className="flex items-center gap-2 mt-1">
+                          {v.sku && <span className="text-[10px] font-mono text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">SKU: {v.sku}</span>}
                           {typeof v.stock === "number" && <span className="text-[10px] text-gray-400">Stock: {v.stock}</span>}
                         </div>
                       </div>
@@ -196,7 +216,7 @@ export function ProductCombobox({
                   ))}
                 </div>
               );
-            })}
+            })()}
 
             {/* No stock results at all */}
             {products.length === 0 && !showCreate && (
