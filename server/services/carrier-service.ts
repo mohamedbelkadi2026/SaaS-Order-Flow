@@ -4475,64 +4475,59 @@ export async function trackNearyaParcel(
       return { status: null, label: '', error: `HTTP ${res.status}: ${snippet}` };
     }
 
-    // Nearya responses can contain an envelope field such as status: "success".
-    // That describes the API request, NOT the parcel state. Prefer status-like
-    // fields inside the payload/history and explicitly ignore envelope values.
-    const ENVELOPE_VALUES = new Set(['success', 'ok', 'true', '200']);
-    const STATUS_KEY = /^(status|state|statut|etat|situation|parcelStatus|parcel_status|deliveryStatus|delivery_status)$/i;
-    const PAYLOAD_KEY = /^(data|result|results|parcel|shipment|tracking|history|histories|events|details)$/i;
+    // Nearya mixes delivery state with payment state (for example "non payé").
+    // Score candidates instead of taking the first field named "status".
+    const ENVELOPE_VALUES = new Set(['success','ok','true','200']);
+    const PAYMENT_VALUES = /^(non\s*pay[eé]|pay[eé]|unpaid|paid|impay[eé])$/i;
+    const DELIVERY_KEY = /(parcel.?status|delivery.?status|shipment.?status|tracking.?status|statut.?colis|etat.?colis|situation|status|statut|etat|state)/i;
+    const PAYMENT_KEY = /(payment|paiement|paid|pay[eé])/i;
+    const DATE_KEY = /(date|time|created|updated|scan)/i;
+    const candidates: { value:string; score:number; date:number }[] = [];
 
-    const findStatus = (node: any, depth = 0): string | null => {
-      if (!node || depth > 8) return null;
-      if (Array.isArray(node)) {
-        // Tracking histories are chronological in normal carrier APIs; inspect
-        // newest entries first, but still validate that the value is not merely
-        // an API envelope marker.
-        for (let i = node.length - 1; i >= 0; i--) {
-          const hit = findStatus(node[i], depth + 1);
-          if (hit) return hit;
-        }
-        return null;
-      }
-      if (typeof node !== 'object') return null;
-
-      // First search known payload containers. This prevents top-level
-      // { status: "success", data: { ...real parcel status... } } from winning.
-      for (const [k, v] of Object.entries(node)) {
-        if (PAYLOAD_KEY.test(k)) {
-          const hit = findStatus(v, depth + 1);
-          if (hit) return hit;
+    const pushCandidate = (key:string, value:any, depth:number, parent:any) => {
+      if (typeof value !== 'string' && typeof value !== 'number') return;
+      const v=String(value).trim(); if(!v || ENVELOPE_VALUES.has(v.toLowerCase())) return;
+      if(PAYMENT_KEY.test(key) || PAYMENT_VALUES.test(v)) return;
+      if(!DELIVERY_KEY.test(key)) return;
+      let score=10-depth;
+      if(/parcel|delivery|shipment|tracking|colis|situation/i.test(key)) score+=20;
+      // Known delivery vocabulary gets priority over generic metadata.
+      if(mapNearyaStatus(v).status) score+=50;
+      let date=0;
+      if(parent && typeof parent==='object'){
+        for(const [pk,pv] of Object.entries(parent)){
+          if(DATE_KEY.test(pk) && (typeof pv==='string'||typeof pv==='number')){
+            const t=new Date(pv as any).getTime(); if(Number.isFinite(t)) date=Math.max(date,t);
+          }
         }
       }
-
-      // Then accept a local status field only when it looks like a parcel state.
-      for (const [k, v] of Object.entries(node)) {
-        if (STATUS_KEY.test(k) && typeof v === 'string' && v.trim()) {
-          const value = v.trim();
-          if (!ENVELOPE_VALUES.has(value.toLowerCase())) return value;
-        }
-      }
-
-      // Finally inspect unknown nested objects for undocumented Nearya shapes.
-      for (const [k, v] of Object.entries(node)) {
-        if (!PAYLOAD_KEY.test(k) && v && typeof v === 'object') {
-          const hit = findStatus(v, depth + 1);
-          if (hit) return hit;
-        }
-      }
-      return null;
+      candidates.push({value:v,score,date});
     };
-
-    const rawStatus = findStatus(res.data);
+    const walk=(node:any,depth=0)=>{
+      if(!node||depth>9)return;
+      if(Array.isArray(node)){ for(const item of node) walk(item,depth+1); return; }
+      if(typeof node!=='object')return;
+      for(const [k,v] of Object.entries(node)){
+        if(v && typeof v==='object'){
+          // Nearya webhook docs use status objects such as {id,label,date}.
+          if(DELIVERY_KEY.test(k) && !PAYMENT_KEY.test(k)){
+            const o:any=v;
+            const label=o.label ?? o.libelle ?? o.name ?? o.title ?? o.status ?? o.statut ?? o.etat;
+            if(label!=null) pushCandidate(k,String(label),depth,o);
+          }
+          walk(v,depth+1);
+        } else pushCandidate(k,v,depth,node);
+      }
+    };
+    walk(res.data);
+    candidates.sort((a,b)=>(b.score-a.score)||(b.date-a.date));
+    const rawStatus=candidates[0]?.value || null;
     if (!rawStatus) {
-      // Carry the body back, not just a log line: an empty response and an
-      // unrecognised shape are indistinguishable otherwise, and the same
-      // problem on /region and on the create-parcel response was only solved
-      // once the actual payload was visible.
-      const snippet = JSON.stringify(res.data ?? null).slice(0, 300);
-      console.warn(`[NEARYA-TRACK] ${parcelCode}: no status found. Body: ${snippet}`);
-      return { status: null, label: '', error: `NO_STATUS: ${snippet}` };
+      const snippet = JSON.stringify(res.data ?? null).slice(0, 1000);
+      console.warn(`[NEARYA-TRACK] ${parcelCode}: no DELIVERY status found. Body: ${snippet}`);
+      return { status: null, label: '', error: `NO_DELIVERY_STATUS: ${snippet}` };
     }
+    console.log(`[NEARYA-TRACK] ${parcelCode}: delivery status="${rawStatus}" candidates=${candidates.slice(0,4).map(x=>x.value).join(' | ')}`);
     const mapped = mapNearyaStatus(rawStatus);
     return { status: mapped.status, label: mapped.label };
   } catch (err: any) {
