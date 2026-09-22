@@ -4454,6 +4454,12 @@ export function mapNearyaStatus(raw: string | null | undefined): { status: strin
   if (has('refus', 'refused', 'annul', 'cancel', 'مرفوض', 'ملغي'))      return { status: 'refused',      label };
   if (has('livre', 'delivered', 'delivre', 'مسلم', 'تم التسليم'))       return { status: 'delivered',    label };
 
+  // Nearya-specific operational states seen in production.
+  if (has('pas de reponse', 'injoignable', 'no answer', 'unreachable')) return { status: 'Injoignable', label };
+  if (has('reporte', 'postponed', 'report'))                            return { status: 'Reporté', label };
+  if (has('confirme', 'confirmed'))                                     return { status: 'Confirmé', label };
+  if (has('expedie', 'shipped', 'expedition'))                          return { status: 'En Transit', label };
+
   // In flight.
   if (has('distribution', 'out for delivery', 'sorti', 'en cours de livraison', 'خرج')) return { status: 'En cours de livraison', label };
   if (has('transit', 'hub', 'transfert', 'en route', 'في الطريق'))      return { status: 'En Transit',   label };
@@ -4462,8 +4468,10 @@ export function mapNearyaStatus(raw: string | null | undefined): { status: strin
   if (has('attente', 'pending', 'nouveau', 'cree', 'created', 'قيد'))   return { status: 'Attente De Ramassage', label };
   if (has('ramass', 'picked', 'collect', 'recupere', 'تم الاستلام'))    return { status: 'Ramassé',      label };
 
-  console.warn(`[NEARYA] unmapped status "${label}" — order left unchanged. Add it to mapNearyaStatus().`);
-  return { status: null, label };
+  // Unknown Nearya labels must still be visible in the platform instead of
+  // being silently discarded. Keep the carrier's own label as the order status.
+  console.warn(`[NEARYA] unknown status "${label}" — preserving raw Nearya label in platform`);
+  return { status: label, label };
 }
 
 /**
@@ -4546,7 +4554,7 @@ export async function trackNearyaParcel(
       }
     };
     walk(res.data);
-    candidates.sort((a,b)=>(b.score-a.score)||(b.date-a.date));
+    candidates.sort((a,b)=>{\n      // Prefer the newest dated status event first; when dates are absent/equal,\n      // fall back to semantic score. This prevents an old \"attente ramassage\"\n      // from beating a later \"expédié\" / \"reporté\" event.\n      if (a.date || b.date) {\n        const byDate = b.date - a.date;\n        if (byDate) return byDate;\n      }\n      return b.score - a.score;\n    });
     const rawStatus=candidates[0]?.value || null;
     if (!rawStatus) {
       const snippet = JSON.stringify(res.data ?? null).slice(0, 1000);
