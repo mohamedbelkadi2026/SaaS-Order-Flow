@@ -23,6 +23,7 @@ interface ProductComboboxProps {
   onChange: (product: ProductOption) => void;
   className?: string;
   placeholder?: string;
+  showVariants?: boolean;
   "data-testid"?: string;
 }
 
@@ -32,6 +33,7 @@ export function ProductCombobox({
   onChange,
   className,
   placeholder = "Rechercher un produit...",
+  showVariants = true,
   "data-testid": testId,
 }: ProductComboboxProps) {
   const [open, setOpen] = useState(false);
