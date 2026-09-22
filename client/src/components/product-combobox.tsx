@@ -149,7 +149,7 @@ export function ProductCombobox({
         >
           <div className="overflow-y-auto" style={{ maxHeight: 365 }}>
             {/* Stock results — compact product list first; variants only after choosing a product */}
-            {expandedProductId === null && filtered.length > 0 && filtered.map(p => {
+            {filtered.length > 0 && filtered.map(p => {
               const variants = p.variants || [];
               return (
                 <button
