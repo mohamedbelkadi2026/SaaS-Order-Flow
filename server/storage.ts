@@ -1584,7 +1584,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Return statuses that restore stock when transitioning FROM delivered
-  private readonly RETURN_STATUSES = new Set(['retourné', 'refused', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)', 'Annulé']);
+  private readonly RETURN_STATUSES = new Set(['retourné', 'refused', 'Annulé (fake)', 'Annulé par client', 'Annulé (faux numéro)', 'Annulé (double)', 'Annulé']);
 
   // ── Stock-commitment statuses ──
   // Confirme + Confirmé Reporté both reserve inventory: confirme_reporte
@@ -4233,7 +4233,7 @@ export class DatabaseStorage implements IStorage {
       total: count(),
       confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
-      cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
+      cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé par client', 'Annulé (faux numéro)', 'Annulé (double)'))`,
       avgResponseMinutes: sql<number>`ROUND(AVG(EXTRACT(EPOCH FROM (${orders.updatedAt} - ${orders.createdAt}))/60))::int`,
     }).from(orders)
       .where(and(...conditions))
@@ -4299,7 +4299,7 @@ export class DatabaseStorage implements IStorage {
       total:     count(),
       confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
-      cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)','Annulé (faux numéro)','Annulé (double)'))`,
+      cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)','Annulé par client','Annulé (faux numéro)','Annulé (double)'))`,
     })
       .from(orders)
       .where(and(...conditions))
