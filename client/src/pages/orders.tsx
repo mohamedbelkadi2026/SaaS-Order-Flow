@@ -133,6 +133,8 @@ const STATUS_DROPDOWN_OPTIONS: { value: string; label: string; disabled?: boolea
   { value: 'rappel',                        label: 'Rappel'                     },
   { value: 'Injoignable',                   label: 'Injoignable'                },
   { value: 'Annulé (fake)',                 label: 'Annulé (fake)'              },
+  { value: 'Annulé par client',            label: 'Annulé par client'           },
+  { value: 'Annulé par client',            label: 'Annulé par client'           },
   { value: 'Annulé (faux numéro)',          label: 'Annulé (faux numéro)'       },
   { value: 'Annulé (double)',               label: 'Annulé (double)'            },
   { value: 'boite vocale',                  label: 'Boite Vocale'               },
