@@ -4425,6 +4425,20 @@ export async function fetchNearyaRegions(
  * left alone — a wrong mapping would mark an undelivered parcel as delivered
  * and feed a false number straight into the profit report.
  */
+export function getNearyaShippingCost(city: string | null | undefined): number {
+  const normalized = String(city ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ');
+  const isCasablanca =
+    normalized.includes('casablanca') ||
+    normalized.includes('casa') ||
+    normalized.includes('الدار البيضاء') ||
+    normalized.includes('الدارالبيضاء');
+  return isCasablanca ? 2000 : 3000; // centimes: 20 DH / 30 DH
+}
+
 export function mapNearyaStatus(raw: string | null | undefined): { status: string | null; label: string } {
   const label = String(raw ?? '').trim();
   if (!label) return { status: null, label: '' };
@@ -4496,6 +4510,9 @@ export async function trackNearyaParcel(
     const pushCandidate = (key:string, value:any, depth:number, parent:any) => {
       if (typeof value !== 'string' && typeof value !== 'number') return;
       const v=String(value).trim(); if(!v || ENVELOPE_VALUES.has(v.toLowerCase())) return;
+      // Nearya status objects also contain Mongo/Object IDs. They are metadata,
+      // never a human delivery status (e.g. 62178f2c9a43d43fee4efe8a).
+      if (/^[a-f0-9]{24}$/i.test(v) || /^\d{10,}$/.test(v)) return;
       if(PAYMENT_KEY.test(key) || PAYMENT_VALUES.test(v)) return;
       if(!DELIVERY_KEY.test(key)) return;
       let score=10-depth;
