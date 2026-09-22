@@ -373,29 +373,9 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     : MOROCCAN_CITIES;
   const isCarrierSpecific = carrierData?.isCarrierSpecific ?? false;
 
-  const { data: stockCatalog = [] } = useQuery<any[]>({
+  const { data: stockProducts = [] } = useQuery<ProductOption[]>({
     queryKey: ["/api/products"],
     staleTime: 5 * 60 * 1000,
-  });
-
-  // The API returns parent products with nested variants. ProductCombobox expects
-  // a flat list, so expose every variant as its own selectable stock row.
-  // Parent products without variants remain selectable exactly as before.
-  const stockProducts: ProductOption[] = stockCatalog.flatMap((p: any) => {
-    const variants = Array.isArray(p.variants) ? p.variants : [];
-    if (variants.length === 0) return [p as ProductOption];
-    return variants.map((v: any) => ({
-      ...p,
-      id: v.id,
-      productId: p.id,
-      name: `${p.name} — ${v.name}`,
-      sku: v.sku || p.sku || null,
-      sellingPrice: v.sellingPrice ?? p.sellingPrice ?? null,
-      costPrice: v.costPrice ?? p.costPrice ?? null,
-      stock: v.stock,
-      variantId: v.id,
-      variantName: v.name,
-    })) as ProductOption[];
   });
 
   // Store settings — needed to check allowAttachTracking (skipped for superAdmin who always sees the box)
