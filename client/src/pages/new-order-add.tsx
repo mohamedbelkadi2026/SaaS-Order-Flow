@@ -451,6 +451,7 @@ export default function NewOrderAdd() {
                     value={item.rawProductName}
                     onChange={p => handleProductSelect(item.id, p)}
                     placeholder="Rechercher dans le stock..."
+                    showVariants={false}
                   />
                 </div>
                 <Input className="text-xs h-9" placeholder="Référence" value={item.sku} onChange={e => updateItem(item.id, "sku", e.target.value)} />
