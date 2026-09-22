@@ -4313,12 +4313,21 @@ export async function createNearyaParcel(
     }
     console.log(`${tag} tracking resolved from response: ${trackingNumber}`);
 
-    const feeRaw = (res.data as any)?.deliveryFee ?? (res.data as any)?.price ?? (res.data as any)?.fee;
-    const deliveryFee = feeRaw != null && !Number.isNaN(Number(feeRaw))
-      ? Math.round(Number(feeRaw) * 100)
-      : undefined;
+    // Nearya tariff requested for this integration:
+    // Casablanca = 20 DH, every other destination = 30 DH.
+    // Keep this independent from response.price: that field may be the COD
+    // amount rather than the carrier fee.
+    const cityNorm = String(input.city || '')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ')
+      .trim();
+    const isCasablanca =
+      /(^|\\s)(casablanca|casa)(\\s|$)/i.test(cityNorm) ||
+      cityNorm.includes('الدار البيضاء');
+    const deliveryFee = isCasablanca ? 2000 : 3000;
 
-    console.log(`${tag} ✅ tracking=${trackingNumber}${deliveryFee != null ? ` fee=${deliveryFee}c` : ''}`);
+    console.log(`${tag} ✅ tracking=${trackingNumber} fee=${deliveryFee}c (${isCasablanca ? 'Casablanca' : 'hors Casablanca'})`);
     return { trackingNumber, deliveryFee };
   } catch (err: any) {
     const msg = err?.response?.data?.message || err?.message || String(err);
