@@ -4525,8 +4525,9 @@ export async function trackNearyaParcel(
       if(!DELIVERY_KEY.test(key)) return;
       let score=10-depth;
       if(/parcel|delivery|shipment|tracking|colis|situation/i.test(key)) score+=20;
-      // Known delivery vocabulary gets priority over generic metadata.
-      if(mapNearyaStatus(v).status) score+=50;
+      // Prefer meaningful carrier delivery labels over generic envelope fields.
+      const nv = v.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (/(livr|retour|refus|annul|distribution|transit|hub|ramass|attente|expedi|reporte|reponse|confirm|delivered|returned|refused|shipped|picked|pending)/i.test(nv)) score+=50;
       let date=0;
       if(parent && typeof parent==='object'){
         for(const [pk,pv] of Object.entries(parent)){
@@ -4554,7 +4555,16 @@ export async function trackNearyaParcel(
       }
     };
     walk(res.data);
-    candidates.sort((a,b)=>{\n      // Prefer the newest dated status event first; when dates are absent/equal,\n      // fall back to semantic score. This prevents an old \"attente ramassage\"\n      // from beating a later \"expédié\" / \"reporté\" event.\n      if (a.date || b.date) {\n        const byDate = b.date - a.date;\n        if (byDate) return byDate;\n      }\n      return b.score - a.score;\n    });
+    candidates.sort((a,b)=>{
+      // Prefer the newest dated status event first; when dates are absent/equal,
+      // fall back to semantic score. This prevents an old "attente ramassage"
+      // from beating a later "expédié" / "reporté" event.
+      if (a.date || b.date) {
+        const byDate = b.date - a.date;
+        if (byDate) return byDate;
+      }
+      return b.score - a.score;
+    });
     const rawStatus=candidates[0]?.value || null;
     if (!rawStatus) {
       const snippet = JSON.stringify(res.data ?? null).slice(0, 1000);
