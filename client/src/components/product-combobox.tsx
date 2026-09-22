@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronsUpDown, Package, PlusCircle, ChevronRight, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -39,6 +40,32 @@ export function ProductCombobox({
   const [expandedProductId, setExpandedProductId] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [overlayRect, setOverlayRect] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
+
+  useEffect(() => {
+    if (!open || !inputRef.current) { setOverlayRect(null); return; }
+    const update = () => {
+      const r = inputRef.current!.getBoundingClientRect();
+      const margin = 16;
+      // Prefer a large panel above the field. This intentionally escapes the
+      // Articles scroll area and overlays the modal so all products are visible.
+      const availableAbove = Math.max(220, r.top - margin * 2);
+      const maxHeight = Math.min(520, availableAbove);
+      setOverlayRect({
+        left: r.left,
+        top: Math.max(margin, r.top - maxHeight - 8),
+        width: r.width,
+        maxHeight,
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return products;
@@ -157,13 +184,13 @@ export function ProductCombobox({
         </div>
       </div>
 
-      {open && (
+      {open && overlayRect && createPortal(
         <div
           ref={dropdownRef}
-          className="absolute z-[500] top-full mt-1 w-full rounded-md border border-border bg-white shadow-xl overflow-hidden"
-          style={{ maxHeight: 365 }}
+          className="fixed z-[9999] rounded-xl border border-border bg-white shadow-2xl overflow-hidden"
+          style={{ left: overlayRect.left, top: overlayRect.top, width: overlayRect.width, maxHeight: overlayRect.maxHeight }}
         >
-          <div className="overflow-y-auto" style={{ maxHeight: 365 }}>
+          <div className="overflow-y-auto overscroll-contain" style={{ maxHeight: overlayRect.maxHeight }}>
             {/* Stock results — compact product list first; variants only after choosing a product */}
             {expandedProductId === null && filtered.length > 0 && filtered.map(p => {
               const variants = p.variants || [];
@@ -259,7 +286,7 @@ export function ProductCombobox({
             )}
           </div>
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }
