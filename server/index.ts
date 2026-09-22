@@ -1008,11 +1008,26 @@ app.use((req, res, next) => {
               console.error(`[NEARYA-AUTO-SYNC][${label}] store=${storeId}: identifiants invalides — reconnectez Nearya.`);
               break;
             }
-            if (r.label && r.label !== (order as any).commentStatus) {
+            const carrierStatusChanged = !!r.label && r.label !== (order as any).commentStatus;
+            if (carrierStatusChanged) {
+              // Always preserve and expose Nearya's exact delivery label, even
+              // when it has no platform-level equivalent yet.
               await st.updateOrder(order.id, { commentStatus: r.label });
+              await st.createOrderFollowUpLog({
+                orderId: order.id,
+                agentId: null,
+                agentName: 'Nearya Auto-Sync',
+                note: `📦 Nearya: ${r.label}`,
+              });
+              try {
+                const { broadcastToStore } = await import('./sse');
+                broadcastToStore(storeId, 'order_updated', {
+                  orderId: order.id, status: r.status || order.status, commentStatus: r.label,
+                });
+              } catch {}
             }
-            // r.status is null for a status we don't recognise: leave the order
-            // alone rather than guess. mapNearyaStatus() logs the raw value.
+            // r.status is only the safe internal bucket. The raw carrier label
+            // above remains visible for every Nearya delivery status.
             if (r.status && r.status !== order.status) {
               await st.updateOrderStatus(order.id, r.status);
               await st.createOrderFollowUpLog({
