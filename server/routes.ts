@@ -14688,12 +14688,25 @@ function ensureHeaders(sheet) {
           if (problems.length < 2) problems.push(`${(order as any).trackNumber}: ${r.error}`);
         }
 
-        if (r.label && r.label !== (order as any).commentStatus) {
+        const carrierStatusChanged = !!r.label && r.label !== (order as any).commentStatus;
+        if (carrierStatusChanged) {
+          // Keep the exact Nearya delivery status visible even when there is no
+          // safe internal status mapping for it.
           await storage.updateOrder(order.id, { commentStatus: r.label } as any);
+          await storage.createOrderFollowUpLog({
+            orderId: order.id, agentId: null, agentName: 'Nearya Sync',
+            note: `📦 Nearya: ${r.label}`,
+          } as any);
+          try {
+            const { broadcastToStore } = await import('./sse');
+            broadcastToStore(storeId, 'order_updated', {
+              orderId: order.id, status: r.status || order.status, commentStatus: r.label,
+            });
+          } catch {}
+          updated++;
         }
-        // A status we don't recognise leaves the order alone and is reported
-        // back, rather than guessed at — a wrong guess would mark an
-        // undelivered parcel as delivered and distort the profit report.
+        // Unknown raw labels are still shown in commentStatus/history; only the
+        // platform bucket is left unchanged until it can be mapped safely.
         if (!r.status && r.label) {
           if (!unmapped.includes(r.label)) unmapped.push(r.label);
         } else if (r.status && r.status !== order.status) {
