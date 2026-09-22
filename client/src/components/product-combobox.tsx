@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
-import { Check, ChevronsUpDown, Package, PlusCircle, ChevronRight, ArrowLeft } from "lucide-react";
+import { Check, ChevronsUpDown, Package, PlusCircle, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAVY = "#1e1b4b";
@@ -179,10 +179,8 @@ export function ProductCombobox({
                     <div className="font-bold text-sm truncate" style={{ color: NAVY }}>{p.name}</div>
                     <div className="flex items-center gap-2 mt-0.5">
                       {p.sku && <span className="text-[10px] font-mono text-gray-400">SKU: {p.sku}</span>}
-                      {variants.length > 0 && <span className="text-[10px] font-semibold" style={{ color: GOLD }}>{variants.length} variante{variants.length > 1 ? "s" : ""}</span>}
                     </div>
                   </div>
-                  {variants.length > 0 && <ChevronRight className="w-4 h-4 shrink-0 text-gray-400" />}
                 </button>
               );
             })}
