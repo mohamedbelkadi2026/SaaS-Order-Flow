@@ -1699,68 +1699,77 @@ export class DatabaseStorage implements IStorage {
         ))
         .limit(1))[0]);
 
+      // Resolve the exact inventory target for an order item.
+      // SKU is authoritative when supplied by Shopify / YouCan / WooCommerce:
+      // variant SKU -> that variant only; parent SKU -> parent only.
+      // If an imported SKU is present but unknown, fail safe and do NOT touch
+      // another product/variant's stock.
+      const applyOutbound = async (item: any, movementType: 'shipped' | 'delivered', reason: string) => {
+        if (!item.productId) return;
+        const qty = Math.max(1, Number(item.quantity) || 1);
+        const sku = String(item.sku || '').trim();
+        const variants = await tx.select().from(productVariants).where(eq(productVariants.productId, item.productId));
+        const variantBySku = sku ? variants.find(v => String(v.sku || '').trim() === sku) : undefined;
+        const [parent] = await tx.select().from(products).where(eq(products.id, item.productId));
+        if (!parent) return;
+
+        if (variantBySku) {
+          await tx.update(productVariants)
+            .set({ stock: sql`GREATEST(0, ${productVariants.stock} - ${qty})` })
+            .where(eq(productVariants.id, variantBySku.id));
+          await tx.insert(stockLogs).values({
+            storeId: stockStoreFor(item.productId), productId: item.productId, orderId: id,
+            changeAmount: -qty, reason: `${reason} — variant ${variantBySku.name} [SKU: ${sku}]`,
+          });
+          await tx.insert(stockMovements).values({
+            storeId: stockStoreFor(item.productId), productId: item.productId, variantId: variantBySku.id,
+            type: movementType, quantity: -qty, orderId: id, userId: actorId ?? null,
+            reason: `${reason} — variant ${variantBySku.name} [SKU: ${sku}]`,
+          });
+          return;
+        }
+
+        const parentSku = String(parent.sku || '').trim();
+        if (sku && parentSku !== sku) {
+          console.warn(`[STOCK-SKU-SAFE] Order #${id}: SKU "${sku}" not found for product #${item.productId}; stock unchanged`);
+          return;
+        }
+
+        // No SKU means legacy/manual imports keep their existing parent-product
+        // behaviour. A matching parent SKU is also safe to deduct here.
+        await tx.update(products)
+          .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
+          .where(eq(products.id, item.productId));
+        await tx.insert(stockLogs).values({
+          storeId: stockStoreFor(item.productId), productId: item.productId, orderId: id,
+          changeAmount: -qty, reason: sku ? `${reason} [SKU: ${sku}]` : reason,
+        });
+        await tx.insert(stockMovements).values({
+          storeId: stockStoreFor(item.productId), productId: item.productId,
+          type: movementType, quantity: -qty, orderId: id, userId: actorId ?? null,
+          reason: sku ? `${reason} [SKU: ${sku}]` : reason,
+        });
+      };
+
       // ── RULE 0.5: First-time shipped transition → one physical departure ──
-      // Confirmation reserves no physical stock. The first carrier/shipping
-      // transition subtracts it and writes the single negative ledger row.
       const isFirstShippedTransition = SHIPPED_STATUS_SET.has(status) &&
         status !== 'delivered' &&
         !SHIPPED_STATUS_SET.has(prevStatus ?? '');
       if (isFirstShippedTransition && !hasOutboundMovement) {
-        for (const item of items) {
-          if (!item.productId) continue;
-          const qty = Number(item.quantity);
-          await tx.update(products)
-            .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
-            .where(eq(products.id, item.productId));
-          await tx.insert(stockLogs).values({
-            storeId: stockStoreFor(item.productId),
-            productId: item.productId,
-            orderId: id,
-            changeAmount: -qty,
-            reason: `Commande #${id} expédiée`,
-          });
-          await tx.insert(stockMovements).values({
-            storeId: stockStoreFor(item.productId),
-            productId: item.productId,
-            type: 'shipped',
-            quantity: -qty,
-            orderId: id,
-            userId: actorId ?? null,
-            reason: `Commande #${id} expédiée`,
-          });
-        }
-        hasOutboundMovement = true;
+        for (const item of items) await applyOutbound(item, 'shipped', `Commande #${id} expédiée`);
+        hasOutboundMovement = Boolean((await tx.select({ id: stockMovements.id })
+          .from(stockMovements)
+          .where(and(eq(stockMovements.orderId, id), inArray(stockMovements.type, ['shipped', 'delivered'])))
+          .limit(1))[0]);
       }
 
       // ── RULE 1: First-time delivery ────────────────────────────────────
-      // A direct transition to delivered (without a recorded shipment) creates
-      // the one physical movement. After shipping, delivered creates no second
-      // negative row.
       if (status === 'delivered' && prevStatus !== 'delivered' && !hasOutboundMovement) {
-        for (const item of items) {
-          if (!item.productId) continue;
-          const qty = Number(item.quantity);
-          await tx.update(products)
-            .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
-            .where(eq(products.id, item.productId));
-          await tx.insert(stockLogs).values({
-            storeId: stockStoreFor(item.productId),
-            productId: item.productId,
-            orderId: id,
-            changeAmount: -qty,
-            reason: `Commande #${id} livrée`,
-          });
-          await tx.insert(stockMovements).values({
-            storeId: stockStoreFor(item.productId),
-            productId: item.productId,
-            type: 'delivered',
-            quantity: -qty,
-            orderId: id,
-            userId: actorId ?? null,
-            reason: `Commande #${id} livrée`,
-          });
-        }
-        hasOutboundMovement = true;
+        for (const item of items) await applyOutbound(item, 'delivered', `Commande #${id} livrée`);
+        hasOutboundMovement = Boolean((await tx.select({ id: stockMovements.id })
+          .from(stockMovements)
+          .where(and(eq(stockMovements.orderId, id), inArray(stockMovements.type, ['shipped', 'delivered'])))
+          .limit(1))[0]);
       }
 
       // ── RULE 2a: Retour → restauration AUTOMATIQUE (par défaut) ──────────
