@@ -14667,7 +14667,7 @@ function ensureHeaders(sheet) {
 
       // Bounded so the request can't hang: anything beyond this is picked up by
       // the automatic sync a few minutes later.
-      const batch = pending.slice(0, 120);
+      const batch = pending.slice(0, 12);
       let updated = 0;
       const unmapped: string[] = [];
       // Failures were previously swallowed: a run that reached Nearya and got
@@ -14708,14 +14708,14 @@ function ensureHeaders(sheet) {
             broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: r.status, commentStatus: r.label });
           } catch {}
         }
-        await new Promise(res2 => setTimeout(res2, 200));
+        await new Promise(res2 => setTimeout(res2, 75));
       }
 
       if (authFailed) {
         return res.status(401).json({ message: "Identifiants Nearya invalides ou expirés. Reconnectez le compte." });
       }
 
-      res.json({
+      return res.json({
         checked: batch.length,
         updated,
         remaining: Math.max(0, pending.length - batch.length),
@@ -14725,7 +14725,8 @@ function ensureHeaders(sheet) {
       });
     } catch (err: any) {
       console.error("[NEARYA-SYNC]", err);
-      res.status(500).json({ message: err.message });
+      if (!res.headersSent) return res.status(500).json({ message: err.message });
+      console.error("[NEARYA-SYNC] response already sent; skipping second response");
     }
   });
 
