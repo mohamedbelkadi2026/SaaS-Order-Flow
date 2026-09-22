@@ -4443,34 +4443,9 @@ export function mapNearyaStatus(raw: string | null | undefined): { status: strin
   const label = String(raw ?? '').trim();
   if (!label) return { status: null, label: '' };
 
-  const n = label.toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[_-]+/g, ' ').trim();
-
-  const has = (...needles: string[]) => needles.some(x => n.includes(x));
-
-  // Terminal states first: "retour livre" must not be read as delivered.
-  if (has('retour', 'returned', 'rejete', 'مرتجع', 'راجع'))            return { status: 'Retour Recu', label };
-  if (has('refus', 'refused', 'annul', 'cancel', 'مرفوض', 'ملغي'))      return { status: 'refused',      label };
-  if (has('livre', 'delivered', 'delivre', 'مسلم', 'تم التسليم'))       return { status: 'delivered',    label };
-
-  // Nearya-specific operational states seen in production.
-  if (has('pas de reponse', 'injoignable', 'no answer', 'unreachable')) return { status: 'Injoignable', label };
-  if (has('reporte', 'postponed', 'report'))                            return { status: 'Reporté', label };
-  if (has('confirme', 'confirmed'))                                     return { status: 'Confirmé', label };
-  if (has('expedie', 'shipped', 'expedition'))                          return { status: 'En Transit', label };
-
-  // In flight.
-  if (has('distribution', 'out for delivery', 'sorti', 'en cours de livraison', 'خرج')) return { status: 'En cours de livraison', label };
-  if (has('transit', 'hub', 'transfert', 'en route', 'في الطريق'))      return { status: 'En Transit',   label };
-  // 'attente' is tested first: "En attente de ramassage" contains "ramass"
-  // and would otherwise be read as already picked up — the opposite state.
-  if (has('attente', 'pending', 'nouveau', 'cree', 'created', 'قيد'))   return { status: 'Attente De Ramassage', label };
-  if (has('ramass', 'picked', 'collect', 'recupere', 'تم الاستلام'))    return { status: 'Ramassé',      label };
-
-  // Unknown Nearya labels must still be visible in the platform instead of
-  // being silently discarded. Keep the carrier's own label as the order status.
-  console.warn(`[NEARYA] unknown status "${label}" — preserving raw Nearya label in platform`);
+  // Nearya is the source of truth for the delivery label shown in Orders.
+  // Keep exactly the human-readable carrier status (ramassé, reporté,
+  // pas de réponse, livré, etc.) instead of translating it to a platform label.
   return { status: label, label };
 }
 
