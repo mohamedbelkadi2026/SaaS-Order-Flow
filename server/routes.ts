@@ -628,7 +628,7 @@ export async function registerRoutes(
     ordersList.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
       else if (o.status === 'Injoignable') injoignable++;
-      else if (o.status === 'Annulé (fake)') annuleFake++;
+      else if (o.status === 'Annulé (fake)' || o.status === 'Annulé par client') annuleFake++;
       else if (o.status === 'Annulé (faux numéro)') annuleFauxNumero++;
       else if (o.status === 'Annulé (double)') annuleDouble++;
       else if (o.status === 'boite vocale') boiteVocale++;
@@ -13191,7 +13191,7 @@ function ensureHeaders(sheet) {
     // refusal reason (status itself is the fallback bucket).
     const REFUSED_STATUSES = new Set([
       'refused', 'retourné',
-      'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)',
+      'Annulé', 'Annulé (fake)', 'Annulé par client', 'Annulé (faux numéro)', 'Annulé (double)',
       'Injoignable', 'boite vocale',
     ]);
 
