@@ -11,7 +11,10 @@ export interface ProductOption {
   sku?: string | null;
   sellingPrice?: number | null;
   costPrice?: number | null;
-  variants?: Array<{ name: string; sku: string; sellingPrice?: number; costPrice?: number }>;
+  variants?: Array<{ id?: number; name: string; sku: string; sellingPrice?: number; costPrice?: number; stock?: number }>;
+  productId?: number;
+  variantId?: number;
+  variantName?: string;
 }
 
 interface ProductComboboxProps {
@@ -39,12 +42,29 @@ export function ProductCombobox({
   const filtered = useMemo(() => {
     if (!search.trim()) return products;
     const q = search.toLowerCase();
-    return products.filter(
-      p =>
-        p.name.toLowerCase().includes(q) ||
-        (p.sku || "").toLowerCase().includes(q)
+    return products.filter(p =>
+      p.name.toLowerCase().includes(q) ||
+      (p.sku || "").toLowerCase().includes(q) ||
+      (p.variants || []).some(v =>
+        (v.name || "").toLowerCase().includes(q) ||
+        (v.sku || "").toLowerCase().includes(q)
+      )
     );
   }, [products, search]);
+
+  const selectVariant = (parent: ProductOption, variant: NonNullable<ProductOption["variants"]>[number]) => {
+    handleSelect({
+      ...parent,
+      id: parent.id,
+      productId: parent.id,
+      variantId: variant.id,
+      variantName: variant.name,
+      name: `${parent.name} — ${variant.name}`,
+      sku: variant.sku || parent.sku || null,
+      sellingPrice: variant.sellingPrice ?? parent.sellingPrice ?? null,
+      costPrice: variant.costPrice ?? parent.costPrice ?? null,
+    });
+  };
 
   // Whether the typed text is exactly a stock product name (exact match)
   const isExactMatch = useMemo(
@@ -138,44 +158,43 @@ export function ProductCombobox({
       {open && (
         <div
           ref={dropdownRef}
-          className="absolute z-[200] mt-1 w-full rounded-md border border-border bg-white shadow-lg overflow-hidden"
-          style={{ maxHeight: 280 }}
+          className="absolute z-[500] bottom-full mb-1 w-full rounded-md border border-border bg-white shadow-xl overflow-hidden"
+          style={{ maxHeight: 360 }}
         >
-          <div className="overflow-y-auto" style={{ maxHeight: 280 }}>
+          <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
             {/* Stock results */}
             {filtered.length > 0 && filtered.map(p => {
-              const isSelected = value === p.name;
+              const variants = p.variants || [];
+              const visibleVariants = search.trim()
+                ? variants.filter(v => {
+                    const q = search.toLowerCase();
+                    return p.name.toLowerCase().includes(q) || (v.name || "").toLowerCase().includes(q) || (v.sku || "").toLowerCase().includes(q);
+                  })
+                : variants;
               return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => handleSelect(p)}
-                  className={cn(
-                    "w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-left transition-colors",
-                    "hover:bg-amber-50 border-b border-gray-50 last:border-0",
-                    isSelected ? "bg-amber-50" : ""
-                  )}
-                >
-                  <Check
-                    className="w-3.5 h-3.5 shrink-0"
-                    style={{ opacity: isSelected ? 1 : 0, color: GOLD }}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate" style={{ color: NAVY }}>{p.name}</div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      {p.sku && (
-                        <span className="text-[10px] font-mono text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
-                          {p.sku}
-                        </span>
-                      )}
-                      {(p.sellingPrice || p.costPrice) ? (
-                        <span className="text-[11px] font-semibold" style={{ color: GOLD }}>
-                          {sellingDH(p)} DH
-                        </span>
-                      ) : null}
+                <div key={p.id} className="border-b border-gray-100 last:border-0">
+                  <button type="button" onClick={() => handleSelect(p)}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-amber-50">
+                    <Package className="w-3.5 h-3.5 shrink-0 text-gray-400" />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold truncate" style={{ color: NAVY }}>{p.name}</div>
+                      {p.sku && <span className="text-[10px] font-mono text-gray-400">SKU: {p.sku}</span>}
                     </div>
-                  </div>
-                </button>
+                  </button>
+                  {visibleVariants.map((v, idx) => (
+                    <button key={v.id ?? `${p.id}-${idx}`} type="button" onClick={() => selectVariant(p, v)}
+                      className="w-full flex items-center gap-2 pl-9 pr-3 py-2 text-left hover:bg-amber-50 bg-gray-50/50">
+                      <Check className="w-3 h-3 shrink-0" style={{ opacity: value === `${p.name} — ${v.name}` ? 1 : 0, color: GOLD }} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium truncate" style={{ color: NAVY }}>{v.name}</div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {v.sku && <span className="text-[10px] font-mono text-gray-400 bg-white px-1.5 py-0.5 rounded">SKU: {v.sku}</span>}
+                          {typeof v.stock === "number" && <span className="text-[10px] text-gray-400">Stock: {v.stock}</span>}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
               );
             })}
 
