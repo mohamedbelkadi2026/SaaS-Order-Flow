@@ -968,16 +968,7 @@ export default function AllOrders() {
                       {isColVisible('ville') && <TableCell className="whitespace-nowrap">{order.customerCity || "-"}</TableCell>}
                       {isColVisible('produit') && (
                         <TableCell className="text-[11px] align-top" title={productName} data-testid={`all-text-product-${order.id}`}>
-                          <div className="max-w-[200px] line-clamp-2 break-words">{productName}</div>
-                          {items.some((it: any) => String(it.sku || '').trim()) && (
-                            <div className="mt-1 flex flex-wrap gap-1" data-testid={`order-skus-${order.id}`}>
-                              {items.filter((it: any) => String(it.sku || '').trim()).map((it: any, idx: number) => (
-                                <span key={idx} className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 font-mono text-[9px] font-semibold text-muted-foreground" title="SKU reçu de la boutique">
-                                  SKU: {String(it.sku).trim()}
-                                </span>
-                              ))}
-                            </div>
-                          )}
+                          <div className="min-w-[180px] max-w-[280px] whitespace-normal break-words leading-5 font-medium">{productName}</div>
                           {/* Badge "Produit non reconnu" : visible quand aucun item n'a de productId résolu */}
                           {items.length > 0 && items.every((it: any) => !it.productId) && (
                             <Badge
