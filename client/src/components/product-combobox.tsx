@@ -158,7 +158,7 @@ export function ProductCombobox({
       {open && (
         <div
           ref={dropdownRef}
-          className="absolute z-[500] bottom-full mb-1 w-full rounded-md border border-border bg-white shadow-xl overflow-hidden"
+          className="absolute z-[500] top-full mt-1 w-full rounded-md border border-border bg-white shadow-xl overflow-hidden"
           style={{ maxHeight: 360 }}
         >
           <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
