@@ -4556,9 +4556,8 @@ export async function trackNearyaParcel(
     };
     walk(res.data);
     candidates.sort((a,b)=>{
-      // Prefer the newest dated status event first; when dates are absent/equal,
-      // fall back to semantic score. This prevents an old "attente ramassage"
-      // from beating a later "expédié" / "reporté" event.
+      // Nearya returns a status history. Always prefer the newest dated event;
+      // only use semantic score when the API gives no usable event date.
       if (a.date || b.date) {
         const byDate = b.date - a.date;
         if (byDate) return byDate;
