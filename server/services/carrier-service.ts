@@ -4555,13 +4555,31 @@ export async function trackNearyaParcel(
       }
     };
     walk(res.data);
+    // Nearya often returns the full parcel history without a date attached to
+    // every status item. In that case the generic score ties all known labels
+    // and "attente ramassage" (the first history item) incorrectly wins.
+    // Rank delivery progress explicitly so sync selects the most advanced
+    // carrier state seen in the response.
+    const progressRank = (value: string): number => {
+      const n = value.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+      if (/(livre|delivered|retour|returned|refus|refused|annul|cancel)/i.test(n)) return 100;
+      if (/(pas de reponse|injoignable|no answer|unreachable|reporte|postponed)/i.test(n)) return 90;
+      if (/(distribution|out for delivery|sorti|en cours de livraison)/i.test(n)) return 80;
+      if (/(expedie|shipped|transit|hub|transfert|en route)/i.test(n)) return 70;
+      if (/(ramass|picked|collect|recupere)/i.test(n)) return 60;
+      if (/(confirme|confirmed)/i.test(n)) return 50;
+      if (/(attente|pending|nouveau|cree|created)/i.test(n)) return 10;
+      return 0;
+    };
     candidates.sort((a,b)=>{
-      // Nearya returns a status history. Always prefer the newest dated event;
-      // only use semantic score when the API gives no usable event date.
+      // A real event timestamp is strongest. If dates are missing/equal, use
+      // delivery progression before the generic field score.
       if (a.date || b.date) {
         const byDate = b.date - a.date;
         if (byDate) return byDate;
       }
+      const byProgress = progressRank(b.value) - progressRank(a.value);
+      if (byProgress) return byProgress;
       return b.score - a.score;
     });
     const rawStatus=candidates[0]?.value || null;
