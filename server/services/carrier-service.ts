@@ -4536,14 +4536,17 @@ export async function trackNearyaParcel(
     // Rank delivery progress explicitly so sync selects the most advanced
     // carrier state seen in the response.
     const progressRank = (value: string): number => {
-      const n = value.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
-      if (/(livre|delivered|retour|returned|refus|refused|annul|cancel)/i.test(n)) return 100;
-      if (/(pas de reponse|injoignable|no answer|unreachable|reporte|postponed)/i.test(n)) return 90;
-      if (/(distribution|out for delivery|sorti|en cours de livraison)/i.test(n)) return 80;
+      // Strip French accents correctly: ramassé -> ramasse, expédié -> expedie,
+      // livré -> livre, reporté -> reporte, etc.
+      const n = value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      // Terminal / exception statuses from the Nearya UI.
+      if (/(livre|delivered|retourne|returned|retour|refuse|refused|annule|cancel|supprime|rembourse|remplace)/i.test(n)) return 100;
+      if (/(preparation de retour|pas de reponse|injoignable|no answer|unreachable|reporte|postponed|hors zone)/i.test(n)) return 90;
+      if (/(mis en distribution|distribution|out for delivery|sorti|en cours de livraison)/i.test(n)) return 80;
       if (/(expedie|shipped|transit|hub|transfert|en route)/i.test(n)) return 70;
-      if (/(ramass|picked|collect|recupere)/i.test(n)) return 60;
-      if (/(confirme|confirmed)/i.test(n)) return 50;
-      if (/(attente|pending|nouveau|cree|created)/i.test(n)) return 10;
+      if (/(ramasse|picked|collect|recupere)/i.test(n)) return 60;
+      if (/(programme|confirme|confirmed)/i.test(n)) return 50;
+      if (/(attente ramassage|attente|pending|nouveau|cree|created)/i.test(n)) return 10;
       return 0;
     };
     candidates.sort((a,b)=>{
