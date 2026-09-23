@@ -180,6 +180,26 @@ export const ORDER_STATUSES = [
   // ── Vitipsexpress raw statuses (fallback) ────────────────────────────────
   { value: 'Reçu par livreur',                  label: 'Reçu par livreur',              color: C.transit      },
   { value: 'Recu par livreur',                  label: 'Reçu par livreur',              color: C.transit      },
+
+  // ── Nearya raw statuses ──────────────────────────────────────────────────
+  { value: 'attente ramassage',                  label: 'Attente ramassage',             color: C.waiting      },
+  { value: 'ramassé',                            label: 'Ramassé',                       color: C.cyan         },
+  { value: 'mis en distribution',                label: 'Mis en distribution',           color: C.sky          },
+  { value: 'supprimé',                           label: 'Supprimé',                      color: C.rose         },
+  { value: 'annulé',                             label: 'Annulé',                        color: C.rose         },
+  { value: 'annulé par client',                  label: 'Annulé par client',             color: C.rose         },
+  { value: 'expédié',                            label: 'Expédié',                       color: C.blue         },
+  { value: 'livré',                              label: 'Livré',                         color: C.delivered    },
+  { value: 'retour',                             label: 'Retour',                        color: C.orange       },
+  { value: 'refusé',                             label: 'Refusé',                        color: C.refused      },
+  { value: 'hors zone',                          label: 'Hors zone',                     color: C.amber        },
+  { value: 'pas de réponse',                     label: 'Pas de réponse',                color: C.amber        },
+  { value: 'reporté',                            label: 'Reporté',                       color: C.violet       },
+  { value: 'préparation de retour',              label: 'Préparation de retour',         color: C.orange       },
+  { value: 'retourné',                           label: 'Retourné',                      color: C.roseDeep     },
+  { value: 'remplacé',                           label: 'Remplacé',                      color: C.teal         },
+  { value: 'remboursé',                          label: 'Remboursé',                     color: C.rose         },
+  { value: 'programmé',                          label: 'Programmé',                     color: C.sky          },
 ] as const;
 
 export const SUIVI_STATUSES = [
@@ -295,7 +315,8 @@ export function StatusBadge({ status, displayText, className }: { status: string
 }
 
 export function isAnnuleStatus(status: string) {
-  return status.startsWith('Annulé');
+  const n = normalizeForAmeex(status || '');
+  return n === 'annule' || n === 'annule par client' || n.startsWith('annule (') || n === 'supprime';
 }
 
 export function isCancelledGroup(status: string) {
