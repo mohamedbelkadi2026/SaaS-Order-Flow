@@ -943,7 +943,7 @@ export class DatabaseStorage implements IStorage {
 
     if (filters.status) {
       if (filters.status === 'annule_group') {
-        conditions.push(sql`(${orders.status} LIKE 'Annulé%' OR ${orders.commentStatus} ILIKE '%supprim%')`);
+        conditions.push(sql`(LOWER(${orders.status}) LIKE 'annul%' OR LOWER(${orders.status}) = 'supprimé' OR ${orders.commentStatus} ILIKE '%supprim%')`);
       } else if (filters.status === 'pas_reponse_group') {
         // Matches "Pas de réponse 1" through "Pas de réponse 4"
         // and any future numbered variants without code changes.
@@ -958,8 +958,8 @@ export class DatabaseStorage implements IStorage {
             and(
               sql`${orders.trackNumber} IS NOT NULL`,
               sql`${orders.trackNumber} != ''`,
-              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'refused', 'Supprimée', 'retourné', 'Retour Recu', 'En Cours De Retour')`,
-              sql`${orders.status} NOT LIKE 'Annulé%'`,
+              sql`LOWER(${orders.status}) NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'livré', 'livrée', 'refused', 'refusé', 'supprimé', 'supprimée', 'retourné', 'retournée', 'retour recu', 'en cours de retour')`,
+              sql`LOWER(${orders.status}) NOT LIKE 'annul%'`,
               sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`
             ),
             inArray(orders.status, [
@@ -997,6 +997,10 @@ export class DatabaseStorage implements IStorage {
       } else if (filters.status === 'retour_confirme') {
         conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
+      } else if (filters.status === 'delivered') {
+        // Carrier raw delivered labels (including Nearya) belong in Livrées,
+        // even though we preserve the exact carrier status text on the order.
+        conditions.push(sql`LOWER(${orders.status}) IN ('delivered', 'livré', 'livrée', 'livré *', 'livrée *', 'livraison effectuée', 'remis au client', 'livré au client')`);
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
         conditions.push(inArray(orders.status, [
