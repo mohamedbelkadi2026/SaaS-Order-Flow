@@ -271,35 +271,33 @@ export default function NewOrderAdd() {
             </Button>
           </div>
 
-          {/* Boutique + magasin + toggles */}
+          {/* Boutique + toggles */}
           <div className="flex flex-wrap items-end gap-8 mb-6">
-            <div className="flex-1 min-w-[180px]">
+            <div className="flex-1 min-w-[220px]">
               <Label className="text-xs mb-1.5 block">Boutique *</Label>
-              <Input value={storeData?.name || ""} readOnly className="bg-gray-50 text-sm" />
-            </div>
-            {(magasins as any[]).length > 1 && (
-              <div className="flex-1 min-w-[180px]">
-                <Label className="text-xs mb-1.5 block">Magasin</Label>
+              {(magasins as any[]).length > 0 ? (
                 <Select
-                  value={selectedMagasinId}
+                  value={selectedMagasinId || String(storeData?.id ?? "")}
                   onValueChange={v => {
-                    setSelectedMagasinId(v === "__all__" ? "" : v);
+                    setSelectedMagasinId(v);
                     setSelectedCarrierProvider("");
                     setCustomerCity("");
+                    setItems([newItem()]);
                   }}
                 >
-                  <SelectTrigger className="text-sm" data-testid="select-magasin-order">
-                    <SelectValue placeholder="Tous les magasins" />
+                  <SelectTrigger className="text-sm" data-testid="select-boutique-order">
+                    <SelectValue placeholder="Sélectionner une boutique" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__all__">Tous les magasins</SelectItem>
                     {(magasins as any[]).map((m: any) => (
                       <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-            )}
+              ) : (
+                <Input value={storeData?.name || ""} readOnly className="bg-gray-50 text-sm" />
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <Label className="text-sm font-medium">Ouvrable:</Label>
               <Switch checked={canOpen} onCheckedChange={setCanOpen} />
