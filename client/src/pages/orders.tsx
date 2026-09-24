@@ -1258,6 +1258,19 @@ export default function Orders() {
     setShipValidation({ valid, invalid, suggestOnly });
   }, [bulkShipProvider, bulkCarrierData, selectedIds, filteredOrders, showBulkShipModal]);
 
+  const recordPhoneCall = (order: any) => {
+    // Fire-and-forget: clicking the existing blue phone icon is itself the call attempt.
+    // Do not block the native tel: action if logging fails.
+    fetch(`/api/orders/${order.id}/calls`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ outcome: "tentative" }),
+    }).then(() => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", order.id, "calls"] });
+    }).catch(() => {});
+  };
+
   const openOrder = (order: any) => {
     setSelectedOrder(order);
     setEditFields({
@@ -2161,7 +2174,7 @@ export default function Orders() {
                             <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-green-500 hover:text-green-700" data-testid={`whatsapp-${order.id}`}>
                               <SiWhatsapp className="w-3.5 h-3.5" />
                             </a>
-                            <a href={telLink(order.customerPhone)} onClick={e => e.stopPropagation()} className="text-blue-500 hover:text-blue-700" data-testid={`phone-${order.id}`}>
+                            <a href={telLink(order.customerPhone)} onClick={e => { e.stopPropagation(); recordPhoneCall(order); }} className="text-blue-500 hover:text-blue-700" data-testid={`phone-${order.id}`}>
                               <Phone className="w-3.5 h-3.5" />
                             </a>
                           </div>
@@ -2625,7 +2638,7 @@ export default function Orders() {
                       <>
                         <a
                           href={telLink(order.customerPhone)}
-                          onClick={e => e.stopPropagation()}
+                          onClick={e => { e.stopPropagation(); recordPhoneCall(order); }}
                           className="shrink-0 w-8 h-8 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 active:scale-95"
                           data-testid={`phone-mobile-${order.id}`}
                         >
