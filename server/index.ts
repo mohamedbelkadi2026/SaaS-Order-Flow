@@ -10,6 +10,7 @@ import rateLimit from "express-rate-limit";
 import cors from "cors";
 import compression from "compression";
 import { registerRoutes } from "./routes";
+import { registerCallLogRoutes } from "./call-log-routes";
 import { setupAuth, ensureSessionTable } from "./auth";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -602,7 +603,10 @@ app.use((req, res, next) => {
   setupAuth(app);
   console.log("[Startup] Auth routes registered (/api/auth/login, /api/auth/signup, ...)");
 
-  // 1b. Initialize Socket.io (must be before routes so emit helpers are ready)
+  // 1b. Manual call-history routes (authenticated via the session above)
+  registerCallLogRoutes(app);
+
+  // 1c. Initialize Socket.io (must be before routes so emit helpers are ready)
   initSocket(httpServer);
 
   // 2. All other API routes
