@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { CustomerHistoryModal } from "@/components/customer-history-modal";
 import { OrderHistoryDialog } from "@/components/order-history-dialog";
+import { OrderCallHistoryDialog } from "@/components/order-call-history-dialog";
 import { formatCurrency, cn } from "@/lib/utils";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { SourceBadge } from '@/components/source-badge';
@@ -831,6 +832,7 @@ export default function Orders() {
   const [selectAllPages, setSelectAllPages] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [historyOrder, setHistoryOrder] = useState<any | null>(null);
+  const [callHistoryOrder, setCallHistoryOrder] = useState<any | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
   const [customerHistoryPhone, setCustomerHistoryPhone] = useState<string | null>(null);
@@ -2458,6 +2460,9 @@ export default function Orders() {
                             <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setHistoryOrder({ ...order }); }} className="p-1.5 rounded hover:bg-muted transition-colors cursor-pointer" title="Historique" data-testid={`action-history-${order.id}`}>
                               <Clock className="w-3.5 h-3.5 text-gray-400" />
                             </button>
+                            <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCallHistoryOrder({ ...order }); }} className="p-1.5 rounded hover:bg-emerald-50 transition-colors cursor-pointer" title="Historique des appels" data-testid={`action-calls-${order.id}`}>
+                              <Phone className="w-3.5 h-3.5 text-emerald-600" />
+                            </button>
                             {order.status === 'confirme' && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); setAmeexShipOrderId(order.id); }}
@@ -2752,6 +2757,14 @@ export default function Orders() {
                       title="Historique"
                     >
                       <Clock className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCallHistoryOrder({ ...order }); }}
+                      className="w-8 h-8 rounded-lg border border-emerald-100 bg-emerald-50 flex items-center justify-center text-emerald-600 hover:text-emerald-700 transition-colors active:scale-95"
+                      data-testid={`calls-mobile-${order.id}`}
+                      title="Historique des appels"
+                    >
+                      <Phone className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => openOrder(order)}
@@ -3662,6 +3675,7 @@ export default function Orders() {
       </Dialog>
 
       <OrderHistoryDialog order={historyOrder} open={!!historyOrder} onOpenChange={(open) => { if (!open) setHistoryOrder(null); }} />
+      <OrderCallHistoryDialog order={callHistoryOrder} open={!!callHistoryOrder} onOpenChange={(open) => { if (!open) setCallHistoryOrder(null); }} />
 
       <OrderDetailsModal
         order={selectedOrder}
