@@ -4080,8 +4080,14 @@ export class DatabaseStorage implements IStorage {
 
   async migrateCustomersFromDeliveredOrders(storeId: number): Promise<number> {
     await db.delete(customers).where(eq(customers.storeId, storeId));
-    const deliveredOrders = await db.select().from(orders)
-      .where(and(eq(orders.storeId, storeId), eq(orders.status, 'delivered')));
+
+    // Keep the Customers table in sync with the exact same delivered-status
+    // vocabulary used by Dashboard and /api/clients/loyal. Carrier integrations
+    // may store "Livré", "Livrée", "livre", etc. instead of only "delivered".
+    const storeOrders = await db.select().from(orders)
+      .where(eq(orders.storeId, storeId));
+    const deliveredOrders = storeOrders.filter(order => isDeliveredStatus(order.status));
+
     for (const order of deliveredOrders) {
       if (!order.customerPhone) continue;
       const customer = await this.getOrCreateCustomer(
