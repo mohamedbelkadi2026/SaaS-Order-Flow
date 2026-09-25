@@ -78,6 +78,7 @@ const TajerDropInvoices = lazy(() => import("@/pages/tajerdrop/invoices"));
 const TajerDropIntegrations = lazy(() => import("@/pages/tajerdrop/integrations"));
 const AdminTajerDropProducts = lazy(() => import("@/pages/admin-tajerdrop-products"));
 const AdminTajerDropOperations = lazy(() => import("@/pages/admin-tajerdrop-operations"));
+const AdminAiLandingPages = lazy(() => import("@/pages/admin-ai-landing-pages"));
 
 // ── TajerDrop Seller App — completely separate from the SaaS experience ───────
 function TajerDropApp() {
@@ -373,6 +374,14 @@ function AppRouter() {
         <AdminTajerDropOperations />
       </Suspense>
     );
+  }
+
+  // ── Super-admin AI Landing Page Studio ─────────────────────────────────────
+  if (location === "/super-admin/ai-landing-pages") {
+    if (isLoading) return <FullPageSpinner />;
+    if (!user) return <AuthPage />;
+    if (!(user as any).isSuperAdmin) return <NotFound />;
+    return <Suspense fallback={<FullPageSpinner />}><AdminAiLandingPages /></Suspense>;
   }
 
   // ── 2. Super-admin panel ───────────────────────────────────────────────────
