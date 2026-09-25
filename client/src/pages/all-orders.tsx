@@ -956,6 +956,16 @@ export default function AllOrders() {
                         <TableCell className="whitespace-nowrap">
                           <div className="flex items-center gap-1">
                             <span className="text-[11px]">{order.customerPhone}</span>
+                            {(order.duplicateCount ?? 1) > 1 && (
+                              <Badge
+                                variant="destructive"
+                                className="h-5 px-1.5 text-[10px] font-bold shrink-0"
+                                title={`${order.duplicateCount} commandes avec ce numéro`}
+                                data-testid={`all-badge-duplicate-${order.id}`}
+                              >
+                                ⚠️ x{order.duplicateCount}
+                              </Badge>
+                            )}
                             <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-green-500 hover:text-green-700" data-testid={`all-whatsapp-${order.id}`}>
                               <SiWhatsapp className="w-3.5 h-3.5" />
                             </a>
@@ -1163,6 +1173,16 @@ export default function AllOrders() {
                   </div>
                   <div className="flex items-center gap-1.5 mb-1.5">
                     <span className="font-mono text-xs text-muted-foreground">{order.customerPhone}</span>
+                    {(order.duplicateCount ?? 1) > 1 && (
+                      <Badge
+                        variant="destructive"
+                        className="h-5 px-1.5 text-[10px] font-bold shrink-0"
+                        title={`${order.duplicateCount} commandes avec ce numéro`}
+                        data-testid={`all-badge-duplicate-mobile-${order.id}`}
+                      >
+                        ⚠️ {order.duplicateCount} Cmds
+                      </Badge>
+                    )}
                     <a href={telLink(order.customerPhone)} className="p-1 rounded-full bg-blue-100 text-blue-600" data-testid={`all-phone-mobile-${order.id}`}>
                       <Phone className="w-3 h-3" />
                     </a>
