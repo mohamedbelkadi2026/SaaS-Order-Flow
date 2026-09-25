@@ -11,6 +11,7 @@ import cors from "cors";
 import compression from "compression";
 import { registerRoutes } from "./routes";
 import { registerCallLogRoutes } from "./call-log-routes";
+import { registerAiLandingPageRoutes } from "./ai-landing-page-routes";
 import { setupAuth, ensureSessionTable } from "./auth";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -605,6 +606,7 @@ app.use((req, res, next) => {
 
   // 1b. Manual call-history routes (authenticated via the session above)
   registerCallLogRoutes(app);
+  registerAiLandingPageRoutes(app);
 
   // 1c. Initialize Socket.io (must be before routes so emit helpers are ready)
   initSocket(httpServer);
