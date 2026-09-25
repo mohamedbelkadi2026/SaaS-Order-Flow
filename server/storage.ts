@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { 
+import { isDeliveredStatus } from "@shared/order-status-sets";
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, orderDeletionBatches, stockLogs, stockMovements, payments, emailVerificationCodes,
   carrierAccounts, carrierCities, metaAdSpend, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, waselexCities, nearyaRegions, carrierCityPricing,
@@ -3822,14 +3823,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getLoyalClientsWithDeliveries(storeId: number, options?: { magasinId?: number | null }): Promise<any[]> {
-    const DELIVERED_STATUS = 'delivered';
-
-    const conditions: any[] = [eq(orders.storeId, storeId), eq(orders.status, DELIVERED_STATUS)];
+    const conditions: any[] = [eq(orders.storeId, storeId)];
     if (options?.magasinId != null) {
       conditions.push(eq(orders.magasinId, options.magasinId));
     }
 
-    const deliveredOrders = await db
+    const candidateOrders = await db
       .select({
         orderId: orders.id,
         orderNumber: orders.orderNumber,
@@ -3845,6 +3844,10 @@ export class DatabaseStorage implements IStorage {
       .where(and(...conditions))
       .orderBy(desc(orders.updatedAt));
 
+    // Keep client counts aligned with Dashboard/shared status logic.
+    // Carrier/import sources may store "Livré", "Livrée", "livre", etc.,
+    // not only the canonical "delivered" token.
+    const deliveredOrders = candidateOrders.filter(o => isDeliveredStatus(o.status));
     if (deliveredOrders.length === 0) return [];
 
     const orderIds = deliveredOrders.map(o => o.orderId);
@@ -3931,8 +3934,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getLoyalClients(storeId: number, options?: { magasinId?: number | null }): Promise<any[]> {
-    const DELIVERED_STATUSES = ['delivered'];
-
     const conditions: any[] = [eq(orders.storeId, storeId)];
     if (options?.magasinId != null) {
       conditions.push(eq(orders.magasinId, options.magasinId));
@@ -3981,8 +3982,7 @@ export class DatabaseStorage implements IStorage {
       });
     }
 
-    const isDelivered = (status: string) =>
-      DELIVERED_STATUSES.some(s => (status || "").toLowerCase().trim() === s.toLowerCase().trim());
+    const isDelivered = (status: string) => isDeliveredStatus(status);
 
     const clientMap: Record<string, any> = {};
 
