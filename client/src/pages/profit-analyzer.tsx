@@ -301,6 +301,7 @@ export default function ProfitAnalyzer() {
   const [liveDateTo,     setLiveDateTo]     = useState('');
   const [liveShowCustom, setLiveShowCustom] = useState(false);
   const [platformView,   setPlatformView]   = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<"all" | "facebook" | "google" | "tiktok" | "organic" | "other">("all");
 
   const buildLiveParams = () => {
     const p = new URLSearchParams();
@@ -364,6 +365,17 @@ export default function ProfitAnalyzer() {
 
   const liveProducts  = liveData?.products  ?? [];
   const livePlatforms = liveData?.platforms ?? [];
+  const sourceKey = (label: string) => {
+    const n = String(label || "").toLowerCase();
+    if (n.includes("facebook") || n.includes("meta") || n === "fb") return "facebook";
+    if (n.includes("google")) return "google";
+    if (n.includes("tiktok") || n.includes("tik")) return "tiktok";
+    if (n.includes("organic") || n.includes("organique")) return "organic";
+    return "other";
+  };
+  const filteredPlatforms = sourceFilter === "all"
+    ? livePlatforms
+    : livePlatforms.filter((p: any) => sourceKey(p.platform) === sourceFilter);
   const liveTotalOrders    = (liveData as any)?.totals?.totalOrders     ?? liveProducts.reduce((s: number, p: any) => s + p.totalOrders, 0);
   const liveTotalDelivered = (liveData as any)?.totals?.deliveredOrders ?? liveProducts.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
   const liveTotalRevenue   = liveProducts.reduce((s: number, p: any) => s + p.revenue, 0);
@@ -1091,7 +1103,7 @@ export default function ProfitAnalyzer() {
 
       {/* Header */}
       <div className="border-b border-white/10 px-6 py-4 sticky top-0 z-10 backdrop-blur-md bg-black/20">
-        <div className="max-w-6xl mx-auto flex items-center justify-between gap-4 flex-wrap">
+        <div className="w-full flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: `${GOLD}20`, border: `1px solid ${GOLD}40` }}>
               <BarChart3 className="w-4.5 h-4.5" style={{ color: GOLD }} />
@@ -1127,7 +1139,7 @@ export default function ProfitAnalyzer() {
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-6 py-6 space-y-5">
+      <div className="w-full px-4 md:px-6 py-6 space-y-5">
 
         {/* ═══════════════ LIVE TAB ═══════════════ */}
         {activeTab === 'live' && (
@@ -1157,6 +1169,18 @@ export default function ProfitAnalyzer() {
             <div className="flex items-center gap-2">
               <button onClick={() => setPlatformView(false)} data-testid="btn-view-product" className={`text-xs px-3 py-1.5 rounded-lg font-semibold border transition-all ${!platformView ? 'bg-white/10 text-white border-white/20' : 'text-slate-400 border-white/10 hover:text-white'}`}>📦 Par Produit</button>
               <button onClick={() => setPlatformView(true)} data-testid="btn-view-platform" className={`text-xs px-3 py-1.5 rounded-lg font-semibold border transition-all ${platformView ? 'bg-white/10 text-white border-white/20' : 'text-slate-400 border-white/10 hover:text-white'}`}>🌐 Par Plateforme</button>
+              <div className="ml-auto flex items-center gap-1.5 flex-wrap" data-testid="source-filter">
+                {[
+                  ["all","🌐 Tous"],["facebook","📘 Facebook"],["google","🔍 Google"],
+                  ["tiktok","🎵 TikTok"],["organic","🌱 Organique"],["other","📊 Autres"]
+                ].map(([key,label]) => (
+                  <button key={key} onClick={() => { setSourceFilter(key as any); setPlatformView(true); }}
+                    className={`text-[10px] px-2.5 py-1.5 rounded-lg border font-bold transition-all ${sourceFilter === key && platformView ? "border-amber-500/60 bg-amber-500/10 text-amber-300" : "border-white/10 text-slate-400 hover:text-white"}`}
+                    data-testid={`source-${key}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
             {!liveLoading && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1234,14 +1258,14 @@ export default function ProfitAnalyzer() {
                 </div>
               </div>
             )}
-            {!liveLoading && platformView && livePlatforms.length === 0 && <div className="text-center py-16 text-slate-500"><Globe className="w-10 h-10 mx-auto mb-3 opacity-40" /><p className="text-sm">Aucune donnée de plateforme</p></div>}
-            {!liveLoading && platformView && livePlatforms.length > 0 && (
+            {!liveLoading && platformView && filteredPlatforms.length === 0 && <div className="text-center py-16 text-slate-500"><Globe className="w-10 h-10 mx-auto mb-3 opacity-40" /><p className="text-sm">Aucune donnée de plateforme</p></div>}
+            {!liveLoading && platformView && filteredPlatforms.length > 0 && (
               <div className="rounded-xl border border-white/10 overflow-hidden">
                 <div className="px-4 py-3 border-b border-white/10 bg-white/5 flex items-center gap-2"><Globe className="w-4 h-4" style={{ color: '#3b82f6' }} /><span className="text-xs font-bold text-white uppercase tracking-widest">Profit par Plateforme</span></div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead><tr className="border-b border-white/5 text-slate-400 text-[10px] uppercase tracking-wider"><th className="text-left px-4 py-2.5">Plateforme</th><th className="text-center px-3 py-2.5">Commandes</th><th className="text-center px-3 py-2.5">Livrées</th><th className="text-right px-3 py-2.5">CA (DH)</th><th className="text-right px-3 py-2.5">Pub (DH)</th><th className="text-right px-3 py-2.5">Profit Net</th><th className="text-center px-3 py-2.5">ROAS</th><th className="text-center px-3 py-2.5">CPO</th></tr></thead>
-                    <tbody>{livePlatforms.map((p: any, i: number) => {
+                    <tbody>{filteredPlatforms.map((p: any, i: number) => {
                       const fmt = (n: number) => n.toLocaleString('fr-MA', { minimumFractionDigits: 2 });
                       const icon = p.platform.toLowerCase().includes('facebook') ? '📘' : p.platform.toLowerCase().includes('tiktok') ? '🎵' : p.platform.toLowerCase().includes('google') ? '🔍' : p.platform.toLowerCase().includes('organique') ? '🌱' : '📊';
                       return <tr key={i} className="border-b border-white/5 hover:bg-white/5" data-testid={`row-platform-${i}`}><td className="px-4 py-3 font-bold text-white"><span className="mr-2">{icon}</span>{p.platform}</td><td className="px-3 py-3 text-center text-slate-300 font-bold">{p.orders}</td><td className="px-3 py-3 text-center font-bold" style={{ color: '#10b981' }}>{p.delivered}</td><td className="px-3 py-3 text-right font-bold text-white">{fmt(p.revenue)}</td><td className="px-3 py-3 text-right" style={{ color: '#8b5cf6' }}>{fmt(p.adSpend)}</td><td className="px-3 py-3 text-right font-extrabold" style={{ color: p.netProfit >= 0 ? '#10b981' : '#f43f5e' }}>{fmt(p.netProfit)}</td><td className="px-3 py-3 text-center font-bold" style={{ color: p.roas >= 3 ? '#10b981' : p.roas >= 1.5 ? '#f59e0b' : '#f43f5e' }}>{p.roas.toFixed(2)}x</td><td className="px-3 py-3 text-center text-slate-300">{fmt(p.cpo)} DH</td></tr>;
