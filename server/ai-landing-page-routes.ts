@@ -34,18 +34,32 @@ Use the supplied product reference photos faithfully: preserve product shape, co
 Dense edge-to-edge professional layout, no empty sections. Follow this 3-part storytelling structure inside the long composition: PART 1 hero + detailed benefit subtitle + problem agitation with 3 muted problem scenes + reassurance lifestyle solution; PART 2 target audience/ease-of-use + macro functional close-up + truthful comparison against conventional methods without fabricated numbers; PART 3 verified specs/details only + 3 mini-features + massive COD trust/CTA footer. If a template section is not relevant to the detected product, adapt it truthfully instead of inventing a feature. Show price only when the user supplied one. Keep visible text short, legible and correctly spelled. Mobile-first long infographic suitable for WooCommerce/Shopify/YouCan product page. No website browser chrome, no mock webpage frame.`;
 
     try{
-      const model=process.env.OPENROUTER_IMAGE_MODEL||"google/gemini-3.1-flash-image";
-      const content:any[]=[{type:"text",text:prompt},...images.map((url:string)=>({type:"image_url",image_url:{url}}))];
-      const upstream=await fetch("https://openrouter.ai/api/v1/chat/completions",{
-        method:"POST",
-        headers:{"Authorization":`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":process.env.APP_PUBLIC_URL||"https://tajergrow.com","X-Title":"TajerGrow AI Landing Page"},
-        body:JSON.stringify({model,messages:[{role:"user",content}],modalities:["image","text"],image_config:{aspect_ratio:"9:16"}})
-      });
-      const data:any=await upstream.json().catch(()=>({}));
-      if(!upstream.ok) return res.status(upstream.status).json({message:data?.error?.message||data?.message||"Erreur OpenRouter"});
-      const image=getImageFromResponse(data);
-      if(!image) { console.error("[AI-LP] No image in OpenRouter response",JSON.stringify(data).slice(0,1500)); return res.status(502).json({message:"Le modèle n'a retourné aucune image. Configurez OPENROUTER_IMAGE_MODEL avec un modèle image compatible."}); }
-      res.json({image,model});
+      const model=process.env.OPENROUTER_IMAGE_MODEL?.trim() || undefined; // empty = OpenRouter account Default Model
+      const sections=[
+        "PART 1 ONLY. Hero + product headline/subtitle + problem agitation with 3 muted problem scenes + reassurance lifestyle solution. Do not include Part 2 or Part 3.",
+        "PART 2 ONLY. Continue the exact same product identity, palette and visual system. Target audience/ease-of-use + macro functional close-up + truthful comparison against conventional methods. Do not include Part 1 or Part 3.",
+        "PART 3 ONLY. Continue the exact same product identity, palette and visual system. Verified specs/details only + 3 mini-features + massive Moroccan COD trust/CTA footer. Show price only if supplied. Do not include Part 1 or Part 2."
+      ];
+      const generated:string[]=[];
+      let usedModel:string|undefined=model;
+      for(const section of sections){
+        const sectionPrompt=prompt+"\n\nIMPORTANT OUTPUT INSTRUCTION: "+section+" Generate ONE 9:16 vertical infographic image for this section.";
+        const content:any[]=[{type:"text",text:sectionPrompt},...images.map((url:string)=>({type:"image_url",image_url:{url}}))];
+        const payload:any={messages:[{role:"user",content}],modalities:["image","text"],image_config:{aspect_ratio:"9:16"}};
+        if(model) payload.model=model;
+        const upstream=await fetch("https://openrouter.ai/api/v1/chat/completions",{
+          method:"POST",
+          headers:{"Authorization":`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":process.env.APP_PUBLIC_URL||"https://tajergrow.com","X-Title":"TajerGrow AI Landing Page"},
+          body:JSON.stringify(payload)
+        });
+        const data:any=await upstream.json().catch(()=>({}));
+        if(!upstream.ok) return res.status(upstream.status).json({message:data?.error?.message||data?.message||"Erreur OpenRouter"});
+        const image=getImageFromResponse(data);
+        if(!image) { console.error("[AI-LP] No image in OpenRouter response",JSON.stringify(data).slice(0,1500)); return res.status(502).json({message:"Le modèle OpenRouter par défaut n'a retourné aucune image. Choisissez un modèle image compatible."}); }
+        generated.push(image);
+        usedModel=data?.model||usedModel;
+      }
+      res.json({images:generated,image:generated[0],model:usedModel||"OpenRouter Default Model"});
     }catch(err:any){
       console.error("[AI-LP]",err);
       res.status(500).json({message:err?.message||"Erreur de génération"});
