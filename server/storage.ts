@@ -1,6 +1,5 @@
 import { db } from "./db";
 import { 
-import { isDeliveredStatus } from "@shared/order-status-sets";
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, orderDeletionBatches, stockLogs, stockMovements, payments, emailVerificationCodes,
   carrierAccounts, carrierCities, metaAdSpend, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, waselexCities, nearyaRegions, carrierCityPricing,
