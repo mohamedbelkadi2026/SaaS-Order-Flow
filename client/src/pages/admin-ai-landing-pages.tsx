@@ -16,10 +16,24 @@ export default function AdminAiLandingPages() {
 
   const generate=useMutation({
     mutationFn: async()=> {
-      const r=await apiRequest("POST","/api/admin/ai-landing-pages/generate",{name,price,description,language,style,images});
-      return r.json();
+      setResults([]);
+      const calls=[1,2,3].map(async(part)=>{
+        try{
+          const r=await apiRequest("POST","/api/admin/ai-landing-pages/generate-part",{name,price,description,language,style,images,part});
+          const d=await r.json();
+          if(d?.image) setResults(prev=>{const next=[...prev]; next[part-1]=d.image; return next;});
+          return {part,ok:true,image:d?.image};
+        }catch(error:any){
+          return {part,ok:false,error:error?.message||"Erreur inconnue"};
+        }
+      });
+      return Promise.all(calls);
     },
-    onSuccess:(d:any)=>setResults(Array.isArray(d.images)?d.images:(d.image?[d.image]:[])),
+    onSuccess:(parts:any[])=>{
+      const failed=parts.filter(p=>!p.ok);
+      if(failed.length) toast({title:`${3-failed.length}/3 sections générées`,description:failed.map(p=>`Part ${p.part}: ${p.error}`).join(" · "),variant:"destructive"});
+      else toast({title:"Landing page prête",description:"Les 3 sections ont été générées."});
+    },
     onError:(e:any)=>toast({title:"Génération impossible",description:e?.message||"Vérifiez OPENROUTER_API_KEY et les crédits.",variant:"destructive"})
   });
 
@@ -44,8 +58,8 @@ export default function AdminAiLandingPages() {
           <button disabled={generate.isPending||images.length===0} onClick={()=>generate.mutate()} className="w-full rounded-xl py-3 font-bold bg-gradient-to-r from-[#C5A059] to-[#a07840] disabled:opacity-40 flex justify-center items-center gap-2">{generate.isPending?<Loader2 className="animate-spin w-4 h-4"/>:<Sparkles className="w-4 h-4"/>}{generate.isPending?"Génération en cours…":"Générer avec AI"}</button>
         </div>
         <div className="rounded-2xl border border-white/10 bg-[#162847] p-5 min-h-[560px]">
-          <div className="flex items-center justify-between mb-4"><h2 className="font-semibold flex items-center gap-2"><ImagePlus className="w-4 h-4 text-[#C5A059]"/>Preview</h2>{results.length>0&&<a href={results[0]} download="landing-page-part-1.png" className="text-xs px-3 py-2 rounded-lg bg-[#C5A059] text-[#0f1e38] font-bold flex gap-1 items-center"><Download className="w-3.5 h-3.5"/>Télécharger</a>}</div>
-          {results.length>0?<div className="space-y-4">{results.map((src,i)=><div key={i} className="space-y-2"><div className="flex items-center justify-between"><span className="text-xs font-semibold text-white/60">Part {i+1} / 3</span><a href={src} download={`landing-page-part-${i+1}.png`} className="text-xs text-[#C5A059] flex items-center gap-1"><Download className="w-3 h-3"/>Télécharger</a></div><img src={src} className="w-full rounded-xl"/></div>)}</div>:<div className="h-[480px] rounded-xl border border-dashed border-white/10 flex flex-col items-center justify-center text-white/25"><ImagePlus className="w-12 h-12 mb-3"/><p>Les 3 sections générées apparaîtront ici</p></div>}
+          <div className="flex items-center justify-between mb-4"><h2 className="font-semibold flex items-center gap-2"><ImagePlus className="w-4 h-4 text-[#C5A059]"/>Preview</h2>{results[0]&&<a href={results[0]} download="landing-page-part-1.png" className="text-xs px-3 py-2 rounded-lg bg-[#C5A059] text-[#0f1e38] font-bold flex gap-1 items-center"><Download className="w-3.5 h-3.5"/>Télécharger</a>}</div>
+          {results.some(Boolean)?<div className="space-y-4">{[0,1,2].map(i=>results[i]?<div key={i} className="space-y-2"><div className="flex items-center justify-between"><span className="text-xs font-semibold text-white/60">Part {i+1} / 3</span><a href={src} download={`landing-page-part-${i+1}.png`} className="text-xs text-[#C5A059] flex items-center gap-1"><Download className="w-3 h-3"/>Télécharger</a></div><img src={src} className="w-full rounded-xl"/></div>:<div key={i} className="h-28 rounded-xl border border-dashed border-white/10 flex items-center justify-center text-white/30 text-sm">Part {i+1} en cours…</div>)}</div>:<div className="h-[480px] rounded-xl border border-dashed border-white/10 flex flex-col items-center justify-center text-white/25"><ImagePlus className="w-12 h-12 mb-3"/><p>Les 3 sections générées apparaîtront ici</p></div>}
         </div>
       </div>
     </div>
