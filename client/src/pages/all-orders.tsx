@@ -4,6 +4,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAllOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useFilterOptions, useMagasins } from "@/hooks/use-store-data";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { OrderHistoryDialog } from "@/components/order-history-dialog";
+import { CustomerHistoryModal } from "@/components/customer-history-modal";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -262,6 +263,7 @@ export default function AllOrders() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [historyOrder, setHistoryOrder] = useState<any | null>(null);
+  const [customerHistoryPhone, setCustomerHistoryPhone] = useState<string | null>(null);
 
   const { data: historyData, isLoading: historyLoading, isError: historyError } = useQuery<any>({
     queryKey: ["/api/orders", historyOrder?.id, "history"],
@@ -959,8 +961,9 @@ export default function AllOrders() {
                             {(order.duplicateCount ?? 1) > 1 && (
                               <Badge
                                 variant="destructive"
-                                className="h-5 px-1.5 text-[10px] font-bold shrink-0"
-                                title={`${order.duplicateCount} commandes avec ce numéro`}
+                                className="h-5 px-1.5 text-[10px] font-bold shrink-0 cursor-pointer hover:opacity-85"
+                                onClick={e => { e.stopPropagation(); setCustomerHistoryPhone(order.customerPhone); }}
+                                title={`${order.duplicateCount} commandes — cliquez pour voir l'historique`}
                                 data-testid={`all-badge-duplicate-${order.id}`}
                               >
                                 ⚠️ x{order.duplicateCount}
@@ -1176,8 +1179,9 @@ export default function AllOrders() {
                     {(order.duplicateCount ?? 1) > 1 && (
                       <Badge
                         variant="destructive"
-                        className="h-5 px-1.5 text-[10px] font-bold shrink-0"
-                        title={`${order.duplicateCount} commandes avec ce numéro`}
+                        className="h-5 px-1.5 text-[10px] font-bold shrink-0 cursor-pointer hover:opacity-85"
+                        onClick={e => { e.stopPropagation(); setCustomerHistoryPhone(order.customerPhone); }}
+                        title={`${order.duplicateCount} commandes — cliquez pour voir l'historique`}
                         data-testid={`all-badge-duplicate-mobile-${order.id}`}
                       >
                         ⚠️ {order.duplicateCount} Cmds
@@ -1529,6 +1533,12 @@ export default function AllOrders() {
         onClose={() => setSelectedOrder(null)}
         onUpdated={(updated) => setSelectedOrder((prev: any) => prev ? { ...prev, ...updated } : prev)}
       />
+      {customerHistoryPhone && (
+        <CustomerHistoryModal
+          phone={customerHistoryPhone}
+          onClose={() => setCustomerHistoryPhone(null)}
+        />
+      )}
     </div>
   );
 }
