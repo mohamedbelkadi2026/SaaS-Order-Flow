@@ -4502,7 +4502,7 @@ export async function trackNearyaParcel(
       if(/parcel|delivery|shipment|tracking|colis|situation/i.test(key)) score+=20;
       // Prefer meaningful carrier delivery labels over generic envelope fields.
       const nv = v.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      if (/(livr|retour|refus|annul|distribution|transit|hub|ramass|attente|expedi|reporte|reponse|confirm|delivered|returned|refused|shipped|picked|pending)/i.test(nv)) score+=50;
+      if (/(livr|retour|refus|annul|distribution|transit|hub|ramass|attente|expedi|reporte|reponse|confirm|delivered|returned|refused|shipped|picked|pending|ready)/i.test(nv)) score+=50;
       let date=0;
       if(parent && typeof parent==='object'){
         for(const [pk,pv] of Object.entries(parent)){
@@ -4545,6 +4545,7 @@ export async function trackNearyaParcel(
       if (/(mis en distribution|distribution|out for delivery|sorti|en cours de livraison)/i.test(n)) return 80;
       if (/(expedie|shipped|transit|hub|transfert|en route)/i.test(n)) return 70;
       if (/(ramasse|picked|collect|recupere)/i.test(n)) return 60;
+      if (/(ready)/i.test(n)) return 55;
       if (/(programme|confirme|confirmed)/i.test(n)) return 50;
       if (/(attente ramassage|attente|pending|nouveau|cree|created)/i.test(n)) return 10;
       return 0;
@@ -4560,7 +4561,20 @@ export async function trackNearyaParcel(
       if (byProgress) return byProgress;
       return b.score - a.score;
     });
-    const rawStatus=candidates[0]?.value || null;
+    let rawStatus=candidates[0]?.value || null;
+
+    // Nearya's return screen can expose the return phase separately from the
+    // generic parcel state: the UI shows "RETOUR" + "READY" while the status
+    // candidate alone is just "READY". Preserve the carrier-visible combined
+    // label so Orders shows "RETOUR READY" and the parcel is no longer mistaken
+    // for a normal READY shipment.
+    if (rawStatus && /^ready$/i.test(rawStatus.trim())) {
+      const bodyText = JSON.stringify(res.data ?? null)
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (/retour|return/.test(bodyText)) rawStatus = 'RETOUR READY';
+    }
+
     if (!rawStatus) {
       const snippet = JSON.stringify(res.data ?? null).slice(0, 1000);
       console.warn(`[NEARYA-TRACK] ${parcelCode}: no DELIVERY status found. Body: ${snippet}`);
