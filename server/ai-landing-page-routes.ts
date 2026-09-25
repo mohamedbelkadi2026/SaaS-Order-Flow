@@ -21,20 +21,20 @@ export function registerAiLandingPageRoutes(app: Express) {
     const key=process.env.OPENROUTER_API_KEY;
     if(!key) return res.status(503).json({message:"OPENROUTER_API_KEY n'est pas configurée sur le serveur."});
     const {name,price,description,language="darija",style="ecommerce",images=[]}=req.body||{};
-    if(!name||!Array.isArray(images)||images.length===0) return res.status(400).json({message:"Nom du produit et au moins une photo requis."});
+    if(!Array.isArray(images)||images.length===0) return res.status(400).json({message:"Ajoutez au moins une photo du produit."});
     if(images.length>5) return res.status(400).json({message:"5 images maximum."});
     if(images.some((x:any)=>typeof x!=="string"||x.length>7_000_000)) return res.status(413).json({message:"Image invalide ou trop volumineuse."});
 
-    const prompt=`Create a premium, conversion-focused LONG VERTICAL E-COMMERCE LANDING PAGE INFOGRAPHIC as ONE image for Moroccan COD sales.
+    const prompt=`FIRST analyze the supplied product reference photos visually. If Product name or Product information below is empty, infer the likely product identity, use, visible features, target customer and customer problem from the images. Never invent exact specifications, certifications, safety claims, materials, accessories or performance numbers that are not visible/readable in the reference or explicitly supplied. Then create a premium, conversion-focused LONG VERTICAL E-COMMERCE LANDING PAGE INFOGRAPHIC for Moroccan COD sales.
 Product: ${String(name).slice(0,150)}
 Price: ${String(price||"").slice(0,50)}
 Product information: ${String(description||"").slice(0,2500)}
-Language for visible text: ${language}. Visual style: ${style}.
+Language for visible text: ${language}. If language is darija, write natural Moroccan Darija in Arabic script, with short readable sales copy. Visual style: ${style}. Derive the background, accent colors and visual identity from the dominant colors of the supplied product itself.
 Use the supplied product reference photos faithfully: preserve product shape, color, proportions and identity. Do not invent a different product.
-Dense edge-to-edge professional layout, no empty sections. Structure from top to bottom: strong hero/product headline and price; customer problem; product as solution; key benefits; 3-5 feature callouts; realistic Moroccan lifestyle/use scene when appropriate; trust/COD delivery section; final high-contrast CTA. Keep visible text short, legible and correctly spelled. Mobile-first long infographic suitable for WooCommerce/Shopify/YouCan product page. No website browser chrome, no mock webpage frame.`;
+Dense edge-to-edge professional layout, no empty sections. Follow this 3-part storytelling structure inside the long composition: PART 1 hero + detailed benefit subtitle + problem agitation with 3 muted problem scenes + reassurance lifestyle solution; PART 2 target audience/ease-of-use + macro functional close-up + truthful comparison against conventional methods without fabricated numbers; PART 3 verified specs/details only + 3 mini-features + massive COD trust/CTA footer. If a template section is not relevant to the detected product, adapt it truthfully instead of inventing a feature. Show price only when the user supplied one. Keep visible text short, legible and correctly spelled. Mobile-first long infographic suitable for WooCommerce/Shopify/YouCan product page. No website browser chrome, no mock webpage frame.`;
 
     try{
-      const model=process.env.OPENROUTER_IMAGE_MODEL||"google/gemini-2.5-flash-image";
+      const model=process.env.OPENROUTER_IMAGE_MODEL||"google/gemini-3.1-flash-image";
       const content:any[]=[{type:"text",text:prompt},...images.map((url:string)=>({type:"image_url",image_url:{url}}))];
       const upstream=await fetch("https://openrouter.ai/api/v1/chat/completions",{
         method:"POST",
