@@ -11,7 +11,7 @@ import {
   BarChart3, DollarSign, Activity, Eye, Package, Calendar,
   AlertCircle, Bell, MessageCircle, Phone, ChevronDown, ChevronUp,
   CreditCard, FileText, ExternalLink, Clock, Ban, MailCheck, MailWarning,
-  MapPin, Briefcase,
+  MapPin, Briefcase, Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -610,6 +610,15 @@ export default function SuperAdminPage() {
             <Crown className="w-3.5 h-3.5" style={{ color: GOLD }} />
             <span className="text-xs font-semibold text-white">{user.username}</span>
           </div>
+          <button
+            onClick={() => navigate("/super-admin/ai-landing-pages")}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all"
+            style={{ background: "rgba(197,160,89,0.12)", borderColor: "rgba(197,160,89,0.3)", color: GOLD }}
+            data-testid="button-ai-landing-studio"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">AI Landing Pages</span>
+          </button>
           <button
             onClick={() => logout().then(() => navigate("/"))}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-white/60 hover:text-white text-xs font-medium border border-white/10 hover:border-white/20 transition-all"
