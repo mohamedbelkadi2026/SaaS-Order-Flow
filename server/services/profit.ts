@@ -131,7 +131,7 @@ const norm = (s: string) =>
 
 export async function computeProfitability(
   storeId: number,
-  opts: { dateFrom?: string; dateTo?: string; dateRange?: string },
+  opts: { dateFrom?: string; dateTo?: string; dateRange?: string; source?: string },
 ): Promise<ProfitabilityResult> {
 
   const { cutoff, endDate } = resolveDateRange(opts);
@@ -151,6 +151,22 @@ export async function computeProfitability(
   storeOrders = storeOrders.filter(
     (o: any) => o.createdAt && new Date(o.createdAt) <= endDate
   );
+
+  // Optional traffic-source filter. This is applied BEFORE every product/cost
+  // calculation so "Par Produit + Facebook/Google/TikTok" is a real slice of
+  // those orders, not a frontend estimate.
+  const normalizeSource = (o: any): string => {
+    const raw = String(o?.trafficPlatform || o?.utmSource || "").toLowerCase().trim();
+    if (raw.includes("facebook") || raw.includes("meta") || raw === "fb") return "facebook";
+    if (raw.includes("google")) return "google";
+    if (raw.includes("tiktok") || raw.includes("tik")) return "tiktok";
+    if (raw.includes("organic") || raw.includes("organique")) return "organic";
+    return "other";
+  };
+  const requestedSource = String(opts.source || "all").toLowerCase().trim();
+  if (requestedSource && requestedSource !== "all") {
+    storeOrders = storeOrders.filter((o: any) => normalizeSource(o) === requestedSource);
+  }
 
   const orderIds = storeOrders.map(o => o.id);
 
@@ -186,11 +202,19 @@ export async function computeProfitability(
     console.warn(`[PROFIT] Meta spend unavailable: ${e?.message}`);
   }
 
-  const adSpendRows = [
+  const allAdSpendRows = [
     ...legacyAdRows.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) })),
     ...newAdEntries.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) / 100 })),
     ...metaAdRows,
   ];
+  // Meta spend has an explicit source. Legacy/manual spend currently has no
+  // trustworthy platform field in this computation, so never mislabel it as
+  // Google/TikTok. "all" keeps the existing totals unchanged.
+  const adSpendRows = requestedSource === "facebook"
+    ? metaAdRows
+    : requestedSource === "all"
+      ? allAdSpendRows
+      : [];
 
   const productAdSpendMap: Record<number, number> = {};
   let globalAdSpend = 0;
