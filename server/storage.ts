@@ -363,7 +363,9 @@ const REGION_CITY_MAP: Record<string, string[]> = {
 /** True for any status that represents a physical parcel coming back
  *  (contains the word "retour", case-insensitive). Excludes refused/Annulé. */
 export function isReturnStatus(status: string | null | undefined): boolean {
-  return !!status && status.toLowerCase().includes('retour');
+  if (!status) return false;
+  const normalized = status.toLowerCase().trim();
+  return normalized.includes('retour') || normalized === 'returned';
 }
 
 export class DatabaseStorage implements IStorage {
