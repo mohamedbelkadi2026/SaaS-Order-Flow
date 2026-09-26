@@ -2977,6 +2977,7 @@ export class DatabaseStorage implements IStorage {
         sellingPrice: p.sellingPrice,
         description: p.description,
         reference: p.reference,
+        ameexProductId: p.ameexProductId,
         hasVariants: p.hasVariants,
         baseStock: p.stock,
         settings: p.settings,
