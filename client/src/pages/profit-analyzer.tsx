@@ -302,6 +302,7 @@ export default function ProfitAnalyzer() {
   const [liveShowCustom, setLiveShowCustom] = useState(false);
   const [platformView,   setPlatformView]   = useState(false);
   const [sourceFilter, setSourceFilter] = useState<"all" | "facebook" | "google" | "tiktok" | "organic" | "other">("all");
+  const [hideProductNames, setHideProductNames] = useState(false);
 
   const buildLiveParams = () => {
     const p = new URLSearchParams();
@@ -365,6 +366,15 @@ export default function ProfitAnalyzer() {
   });
 
   const liveProducts  = liveData?.products  ?? [];
+  // Product view is always ranked by delivered orders, highest first.
+  // Keep products with no deliveries at the bottom; profit is only a tie-breaker.
+  const rankedLiveProducts = useMemo(
+    () => [...liveProducts].sort((a: any, b: any) =>
+      (Number(b.deliveredOrders || 0) - Number(a.deliveredOrders || 0)) ||
+      (Number(b.netProfit || 0) - Number(a.netProfit || 0))
+    ),
+    [liveProducts]
+  );
   const livePlatforms = liveData?.platforms ?? [];
   const sourceKey = (label: string) => {
     const n = String(label || "").toLowerCase();
@@ -1206,6 +1216,14 @@ export default function ProfitAnalyzer() {
                 <div className="px-4 py-3 border-b border-white/10 bg-white/5 flex items-center gap-2">
                   <Package className="w-4 h-4" style={{ color: '#f59e0b' }} />
                   <span className="text-xs font-bold text-white uppercase tracking-widest">Rentabilité par Produit — {liveProducts.length} Produit(s)</span>
+                  <button
+                    type="button"
+                    onClick={() => setHideProductNames(v => !v)}
+                    className="ml-auto text-[10px] px-2.5 py-1.5 rounded-lg border border-white/10 text-slate-300 hover:text-white hover:bg-white/5 transition-all font-semibold"
+                    title={hideProductNames ? "Afficher les noms des produits" : "Masquer les noms des produits"}
+                  >
+                    {hideProductNames ? "👁 Afficher noms" : "🙈 Masquer noms"}
+                  </button>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="text-xs" style={{ minWidth: '1200px', width: '100%' }}>
@@ -1227,7 +1245,7 @@ export default function ProfitAnalyzer() {
                       </tr>
                     </thead>
                     <tbody>
-                      {liveProducts.map((p: any, i: number) => {
+                      {rankedLiveProducts.map((p: any, i: number) => {
                         const fmt = (n: number) => n.toLocaleString('fr-MA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                         const caNet = (p.revenue ?? 0) - (p.shippingCost ?? 0);
                         const profitColor = p.netProfit > 0 ? '#10b981' : p.netProfit < 0 ? '#f43f5e' : '#94a3b8';
@@ -1235,7 +1253,7 @@ export default function ProfitAnalyzer() {
                         return (
                           <tr key={i} className={`border-b border-white/5 hover:bg-white/5 transition-colors ${p.noData ? "opacity-50" : ""}`} data-testid={`row-live-product-${i}`}>
                             <td className="px-4 py-3 text-white font-semibold w-1/3" title={p.name} style={{ wordBreak: 'break-word', whiteSpace: 'normal', lineHeight: '1.3' }}>
-                              {p.name}{p.noData && <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 border border-slate-600 font-normal">Nouveau</span>}
+                              {hideProductNames ? "••••••••" : p.name}{p.noData && <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 border border-slate-600 font-normal">Nouveau</span>}
                             </td>
                             {p.noData ? <td colSpan={12} className="px-3 py-3 text-center text-slate-500 text-[11px] italic">Aucune commande sur cette période</td> : (<>
                               <td className="px-3 py-3 text-center"><div className="font-bold" style={{ color: '#f59e0b' }}>{p.deliveredOrders} cmd</div>{p.deliveredUnits != null && p.deliveredUnits !== p.deliveredOrders && <div className="text-[11px] text-slate-400">{p.deliveredUnits} u</div>}</td>
