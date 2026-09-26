@@ -340,6 +340,7 @@ export default function ProfitAnalyzer() {
         p.set('dateRange', 'all');
       }
     }
+    if (sourceFilter !== "all") p.set("source", sourceFilter);
     return p.toString();
   };
 
@@ -355,7 +356,7 @@ export default function ProfitAnalyzer() {
   }, [liveDateRange, liveDateFrom, liveDateTo, liveShowCustom]);
 
   const { data: liveData, isLoading: liveLoading, refetch: liveRefetch } = useQuery<{ products: any[]; platforms: any[]; globalAdSpend?: number }>({
-    queryKey: ['/api/products/profitability', liveDateRange, liveDateFrom, liveDateTo, liveShowCustom],
+    queryKey: ['/api/products/profitability', liveDateRange, liveDateFrom, liveDateTo, liveShowCustom, sourceFilter],
     queryFn: async () => {
       const r = await fetch(`/api/products/profitability?${buildLiveParams()}`, { credentials: 'include' });
       return r.json();
@@ -1174,8 +1175,8 @@ export default function ProfitAnalyzer() {
                   ["all","🌐 Tous"],["facebook","📘 Facebook"],["google","🔍 Google"],
                   ["tiktok","🎵 TikTok"],["organic","🌱 Organique"],["other","📊 Autres"]
                 ].map(([key,label]) => (
-                  <button key={key} onClick={() => { setSourceFilter(key as any); setPlatformView(true); }}
-                    className={`text-[10px] px-2.5 py-1.5 rounded-lg border font-bold transition-all ${sourceFilter === key && platformView ? "border-amber-500/60 bg-amber-500/10 text-amber-300" : "border-white/10 text-slate-400 hover:text-white"}`}
+                  <button key={key} onClick={() => setSourceFilter(key as any)}
+                    className={`text-[10px] px-2.5 py-1.5 rounded-lg border font-bold transition-all ${sourceFilter === key ? "border-amber-500/60 bg-amber-500/10 text-amber-300" : "border-white/10 text-slate-400 hover:text-white"}`}
                     data-testid={`source-${key}`}>
                     {label}
                   </button>
