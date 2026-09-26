@@ -958,7 +958,8 @@ export class DatabaseStorage implements IStorage {
             and(
               sql`${orders.trackNumber} IS NOT NULL`,
               sql`${orders.trackNumber} != ''`,
-              sql`LOWER(${orders.status}) NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'livré', 'livrée', 'refused', 'refusé', 'supprimé', 'supprimée', 'retourné', 'retournée', 'retour recu', 'en cours de retour')`,
+              sql`LOWER(${orders.status}) NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'livré', 'livrée', 'refused', 'refusé', 'supprimé', 'supprimée', 'retourné', 'retournée', 'returned', 'retour recu', 'en cours de retour')`,
+              sql`LOWER(${orders.status}) NOT LIKE '%retour%'`,
               sql`LOWER(${orders.status}) NOT LIKE 'annul%'`,
               sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`
             ),
@@ -978,12 +979,12 @@ export class DatabaseStorage implements IStorage {
         // Catch both: (a) orders whose internal status contains "retour" (correct mapping),
         // and (b) legacy orders stored as "refused" whose commentStatus contains "retour"
         // (old webhook mapping bug where "retour" raw text → "refused" internal status).
-        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
+        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR LOWER(${orders.status}) = 'returned' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
       } else if (filters.status === 'retour_en_route') {
         // In-transit returns only: status contains "retour" but is NOT a terminal arrival
         // ("retourné", "retournée", "retour recu") AND not yet physically confirmed by user.
         conditions.push(sql`(
-          (LOWER(${orders.status}) LIKE '%retour%' AND LOWER(${orders.status}) NOT IN ('retourné', 'retournée', 'retour recu'))
+          ((LOWER(${orders.status}) LIKE '%retour%' OR LOWER(${orders.status}) = 'returned') AND LOWER(${orders.status}) NOT IN ('retourné', 'retournée', 'returned', 'retour recu'))
           OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'
               AND LOWER(COALESCE(${orders.commentStatus}, '')) NOT IN ('retourné', 'retournée', 'retour recu'))
         )`);
