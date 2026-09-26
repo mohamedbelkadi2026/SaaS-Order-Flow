@@ -11357,8 +11357,8 @@ function ensureHeaders(sheet) {
   app.get("/api/products/profitability", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
-      const result = await computeProfitability(storeId, { dateFrom, dateTo, dateRange });
+      const { dateFrom, dateTo, dateRange, source } = req.query as Record<string, string>;
+      const result = await computeProfitability(storeId, { dateFrom, dateTo, dateRange, source });
       res.json({ products: result.products, platforms: result.platforms, totals: result.totals, globalAdSpend: result.globalAdSpend });
     } catch (err) {
       throw err;
