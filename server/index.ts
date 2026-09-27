@@ -1004,10 +1004,41 @@ app.use((req, res, next) => {
         if (!apiKey || !apiSecret) continue;
 
         const allOrders = await st.getOrdersByStore(storeId);
+
+        // Nearya safety rule:
+        // "préfacture" is a carrier billing state, not a delivery regression.
+        // Historical Nearya orders that were incorrectly moved from delivered
+        // to préfacture are restored to delivered. From now on a delivered
+        // order is terminal for Nearya polling and can never regress to it.
+        const nearyaPrefacture = allOrders.filter((o: any) => {
+          if (o.shippingProvider !== 'nearya') return false;
+          const s = String(o.status || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          return s === 'prefacture';
+        });
+        for (const order of nearyaPrefacture) {
+          await st.updateOrderStatus(order.id, 'delivered');
+          await st.createOrderFollowUpLog({
+            orderId: order.id,
+            agentId: null,
+            agentName: 'Nearya Auto-Sync',
+            note: '📦 Correction Nearya: préfacture → delivered (préfacture = état de facturation, ne doit pas annuler une livraison)',
+          });
+          try {
+            const { broadcastToStore } = await import('./sse');
+            broadcastToStore(storeId, 'order_updated', {
+              orderId: order.id, status: 'delivered', commentStatus: (order as any).commentStatus,
+            });
+          } catch {}
+        }
+        if (nearyaPrefacture.length) {
+          console.log(`[NEARYA-AUTO-SYNC][${label}] store=${storeId}: restored ${nearyaPrefacture.length} préfacture order(s) to delivered`);
+        }
+
         const toSync = allOrders.filter((o: any) =>
           o.shippingProvider === 'nearya' &&
           o.trackNumber &&
-          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
+          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '') &&
+          !String(o.status || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes('prefacture')
         );
         if (!toSync.length) continue;
 
