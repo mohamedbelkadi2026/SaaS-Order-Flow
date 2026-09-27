@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp, RotateCcw, AlertTriangle, Trophy, Timer } from "lucide-react";
+import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp, RotateCcw, AlertTriangle, Trophy, Timer, Sparkles, BellRing, PhoneOff, Voicemail, MessageCircleOff, Ban } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/utils";
@@ -1431,19 +1431,30 @@ export default function Team() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-5 pb-5">
-                    <div className="rounded-xl bg-slate-50 dark:bg-slate-900/40 p-3">
-                      <p className="text-xl font-bold">{stats.total || 0}</p><p className="text-[10px] text-muted-foreground">Assignées</p>
-                    </div>
-                    <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/20 p-3">
-                      <p className="text-xl font-bold text-emerald-700">{stats.confirmed || 0}</p><p className="text-[10px] text-muted-foreground">Confirmées</p>
-                    </div>
-                    <div className="rounded-xl bg-blue-50 dark:bg-blue-950/20 p-3">
-                      <p className="text-xl font-bold text-blue-700">{stats.delivered || 0}</p><p className="text-[10px] text-muted-foreground">Livrées</p>
-                    </div>
-                    <div className="rounded-xl bg-red-50 dark:bg-red-950/20 p-3">
-                      <p className="text-xl font-bold text-red-600">{stats.cancelled || 0}</p><p className="text-[10px] text-muted-foreground">Annulées</p>
-                    </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 px-5 pb-5">
+                    {[
+                      { label: "Assignées", value: stats.total, icon: Package, cls: "bg-slate-50 text-slate-700 dark:bg-slate-900/40" },
+                      { label: "Nouveaux", value: stats.nouveaux, icon: Sparkles, cls: "bg-blue-50 text-blue-700 dark:bg-blue-950/20" },
+                      { label: "Confirmées", value: stats.confirmed, icon: CheckCircle, cls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20" },
+                      { label: "Livrées", value: stats.delivered, icon: Truck, cls: "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/20" },
+                      { label: "Rappels", value: stats.rappels, icon: BellRing, cls: "bg-violet-50 text-violet-700 dark:bg-violet-950/20" },
+                      { label: "Injoignables", value: stats.injoignables, icon: PhoneOff, cls: "bg-orange-50 text-orange-700 dark:bg-orange-950/20" },
+                      { label: "Boîte vocale", value: stats.boiteVocale, icon: Voicemail, cls: "bg-purple-50 text-purple-700 dark:bg-purple-950/20" },
+                      { label: "Pas de réponse", value: stats.pasDeReponse, icon: MessageCircleOff, cls: "bg-pink-50 text-pink-700 dark:bg-pink-950/20" },
+                      { label: "Annulées", value: stats.cancelled, icon: Ban, cls: "bg-red-50 text-red-700 dark:bg-red-950/20" },
+                    ].map(({ label, value, icon: Icon, cls }) => (
+                      <div key={label} className={cn("rounded-xl p-3 border border-black/5 dark:border-white/5", cls)}>
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-xl font-bold leading-none">{value || 0}</p>
+                            <p className="text-[10px] mt-1.5 font-medium opacity-80">{label}</p>
+                          </div>
+                          <div className="w-9 h-9 rounded-lg bg-white/70 dark:bg-white/10 flex items-center justify-center shrink-0">
+                            <Icon className="w-4 h-4" />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   <div className="px-5 py-3 border-t bg-muted/5 flex items-center justify-between text-xs">
