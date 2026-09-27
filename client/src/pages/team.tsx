@@ -1380,6 +1380,83 @@ export default function Team() {
         </Table>
       )}
 
+      {/* ── Agent performance cards ── */}
+      {!isLoading && visibleAgents.some((a: any) => a.role === 'agent') && (
+        <div className="space-y-4">
+          <div>
+            <h2 className="text-base font-bold uppercase tracking-wide">Performance des Agents</h2>
+            <p className="text-xs text-muted-foreground mt-1">Vue complète des agents Confirmation et Suivi</p>
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-5">
+            {visibleAgents.filter((a: any) => a.role === 'agent').map((agent: any) => {
+              const stats = getAgentStats(agent.id);
+              const roleInStore = getAgentRole(agent.id);
+              const confirmRate = stats.total > 0 ? Math.round((stats.confirmed / stats.total) * 100) : 0;
+              const deliveryRate = stats.confirmed > 0 ? Math.round((stats.delivered / stats.confirmed) * 100) : 0;
+              const status = getOnlineStatus(agent.lastSeenAt);
+              return (
+                <Card key={`perf-card-${agent.id}`} className="overflow-hidden border-border/60 shadow-sm">
+                  <div className="p-5 border-b bg-muted/5 flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="relative shrink-0">
+                        <Avatar className="w-12 h-12">
+                          <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${agent.username}`} />
+                          <AvatarFallback>{agent.username?.[0]}</AvatarFallback>
+                        </Avatar>
+                        <span className={cn("absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-background", status.color)} title={status.label} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-bold truncate">{agent.username}</p>
+                          <Badge variant="outline" className={cn("text-[10px]", roleInStore === "suivi" ? "bg-sky-50 text-sky-700 border-sky-200" : roleInStore === "both" ? "bg-purple-50 text-purple-700 border-purple-200" : "bg-green-50 text-green-700 border-green-200")}>
+                            {ROLE_LABELS[roleInStore] || roleInStore}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground truncate">{agent.email}</p>
+                      </div>
+                    </div>
+                    <Badge variant="outline" className={agent.isActive ? "bg-emerald-50 text-emerald-700 border-emerald-200" : ""}>{agent.isActive ? "Actif" : "Inactif"}</Badge>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 p-5">
+                    <div className="rounded-xl border p-3">
+                      <p className="text-[10px] font-bold uppercase text-muted-foreground">Taux conv.</p>
+                      <p className="text-2xl font-bold mt-1">{confirmRate}%</p>
+                      <p className="text-xs text-muted-foreground">{stats.confirmed || 0} / {stats.total || 0} confirmées</p>
+                    </div>
+                    <div className="rounded-xl border p-3">
+                      <p className="text-[10px] font-bold uppercase text-muted-foreground">Taux livraison</p>
+                      <p className="text-2xl font-bold mt-1 text-emerald-600">{deliveryRate}%</p>
+                      <p className="text-xs text-muted-foreground">{stats.delivered || 0} / {stats.confirmed || 0} livrées</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-5 pb-5">
+                    <div className="rounded-xl bg-slate-50 dark:bg-slate-900/40 p-3">
+                      <p className="text-xl font-bold">{stats.total || 0}</p><p className="text-[10px] text-muted-foreground">Assignées</p>
+                    </div>
+                    <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/20 p-3">
+                      <p className="text-xl font-bold text-emerald-700">{stats.confirmed || 0}</p><p className="text-[10px] text-muted-foreground">Confirmées</p>
+                    </div>
+                    <div className="rounded-xl bg-blue-50 dark:bg-blue-950/20 p-3">
+                      <p className="text-xl font-bold text-blue-700">{stats.delivered || 0}</p><p className="text-[10px] text-muted-foreground">Livrées</p>
+                    </div>
+                    <div className="rounded-xl bg-red-50 dark:bg-red-950/20 p-3">
+                      <p className="text-xl font-bold text-red-600">{stats.cancelled || 0}</p><p className="text-[10px] text-muted-foreground">Annulées</p>
+                    </div>
+                  </div>
+
+                  <div className="px-5 py-3 border-t bg-muted/5 flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Temps moyen</span>
+                    <span className="font-semibold">{fmtMinutes(stats.avgResponseMinutes)}</span>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* ── Media Buyers Summary Table ── */}
       <MediaBuyersSummaryTable />
 
