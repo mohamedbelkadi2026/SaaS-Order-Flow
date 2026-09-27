@@ -4246,6 +4246,11 @@ export class DatabaseStorage implements IStorage {
       confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé par client', 'Annulé (faux numéro)', 'Annulé (double)'))`,
+      nouveaux: sql<number>`count(*) filter (where lower(${orders.status}) = 'nouveau')`,
+      rappels: sql<number>`count(*) filter (where lower(${orders.status}) like 'rappel%')`,
+      injoignables: sql<number>`count(*) filter (where lower(${orders.status}) like 'injoignable%')`,
+      boiteVocale: sql<number>`count(*) filter (where lower(${orders.status}) like 'boite vocale%')`,
+      pasDeReponse: sql<number>`count(*) filter (where lower(${orders.status}) like 'pas de réponse%' or lower(${orders.status}) like 'pas de reponse%')`,
       avgResponseMinutes: sql<number>`ROUND(AVG(EXTRACT(EPOCH FROM (${orders.updatedAt} - ${orders.createdAt}))/60))::int`,
     }).from(orders)
       .where(and(...conditions))
@@ -4257,6 +4262,11 @@ export class DatabaseStorage implements IStorage {
       confirmed: Number(r.confirmed),
       delivered: Number(r.delivered),
       cancelled: Number(r.cancelled),
+      nouveaux: Number(r.nouveaux),
+      rappels: Number(r.rappels),
+      injoignables: Number(r.injoignables),
+      boiteVocale: Number(r.boiteVocale),
+      pasDeReponse: Number(r.pasDeReponse),
       avgResponseMinutes: r.avgResponseMinutes != null ? Number(r.avgResponseMinutes) : null,
     }));
   }
