@@ -729,6 +729,7 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
   const { toast } = useToast();
   const [todayCount, setTodayCount] = useState(0);
   const [showCamera, setShowCamera] = useState(false);
+  const [cameraNotice, setCameraNotice] = useState<{ kind: "success" | "duplicate" | "error"; text: string } | null>(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -739,18 +740,34 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
       const data = await res.json();
       if (data.success) {
         playSuccessBeep();
+        setCameraNotice({ kind: "success", text: `تم تسجيل المرتجع بنجاح — ${data.orderNumber}` });
         toast({ title: "✅ Retour confirmé", description: `${data.orderNumber} — ${data.customerName}` });
         setTodayCount((c) => c + 1);
         onConfirmed();
       } else {
+        const duplicate = /déjà confirmé|deja confirme|already/i.test(String(data.message || ""));
         playErrorBeep();
         vibrateScan([120, 80, 120]);
-        toast({ title: "Non confirmé", description: data.message, variant: "destructive" });
+        setCameraNotice({
+          kind: duplicate ? "duplicate" : "error",
+          text: duplicate
+            ? `⚠️ هذه الطلبية تم مسحها من قبل — ${data.orderNumber || raw.trim()}`
+            : `❌ لم يتم تسجيل الطلبية — ${data.message || "الرمز غير صالح"}`,
+        });
+        toast({ title: duplicate ? "Déjà scannée" : "Non confirmé", description: data.message, variant: "destructive" });
       }
-    } catch {
+    } catch (err: any) {
+      const msg = String(err?.message || "");
+      const duplicate = /déjà confirmé|deja confirme|already/i.test(msg);
       playErrorBeep();
       vibrateScan([120, 80, 120]);
-      toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
+      setCameraNotice({
+        kind: duplicate ? "duplicate" : "error",
+        text: duplicate
+          ? `⚠️ هذه الطلبية تم مسحها من قبل — ${raw.trim()}`
+          : "❌ وقع خطأ أثناء تسجيل الطلبية",
+      });
+      toast({ title: duplicate ? "Déjà scannée" : "Erreur", description: msg || "Échec de la confirmation", variant: "destructive" });
     } finally {
       setCode("");
       inputRef.current?.focus();
@@ -765,10 +782,23 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
   return (
     <>
       {showCamera && (
-        <CameraScanner
-          onScan={(decoded) => { submitCode(decoded); }}
-          onClose={() => setShowCamera(false)}
-        />
+        <>
+          <CameraScanner
+            onScan={(decoded) => { submitCode(decoded); }}
+            onClose={() => { setShowCamera(false); setCameraNotice(null); }}
+          />
+          {cameraNotice && (
+            <div className={`fixed z-[60] left-4 right-4 top-[max(70px,env(safe-area-inset-top))] mx-auto max-w-lg rounded-2xl px-4 py-4 text-center text-base font-bold shadow-2xl border-2 ${
+              cameraNotice.kind === "success"
+                ? "bg-emerald-600 text-white border-emerald-300"
+                : cameraNotice.kind === "duplicate"
+                ? "bg-amber-400 text-black border-amber-100"
+                : "bg-red-600 text-white border-red-300"
+            }`} dir="rtl">
+              {cameraNotice.text}
+            </div>
+          )}
+        </>
       )}
       <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3">
         <span className="text-sm font-medium shrink-0 hidden sm:block">Scanner un retour :</span>
@@ -784,7 +814,7 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => { unlockAudio(); setShowCamera(true); }}
+            onClick={() => { unlockAudio(); setCameraNotice(null); setShowCamera(true); }}
             className="flex-1 sm:flex-none rounded bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-3 py-2 text-sm text-white whitespace-nowrap font-medium"
           >
             📷 Scanner caméra
