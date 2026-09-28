@@ -424,6 +424,24 @@ function unlockAudio() {
   } catch { /* audio not available — no-op */ }
 }
 
+function playErrorBeep() {
+  try {
+    if (!sharedAudioContext || sharedAudioContext.state === "suspended") unlockAudio();
+    const ctx = sharedAudioContext!;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.type = "square";
+    oscillator.frequency.setValueAtTime(220, ctx.currentTime);
+    oscillator.frequency.setValueAtTime(165, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.22, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.28);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.28);
+  } catch { /* audio not available — no-op */ }
+}
+
 function playSuccessBeep() {
   try {
     if (!sharedAudioContext || sharedAudioContext.state === "suspended") unlockAudio();
@@ -448,6 +466,7 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
   const [capturing, setCapturing] = useState(false);
+  const scanLockRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -484,11 +503,10 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
             disableFlip: false,
           },
           (decodedText: string) => {
-            if (nativeStopped || cancelled) return;
-            nativeStopped = true;
-            playSuccessBeep();
+            if (cancelled || scanLockRef.current) return;
+            scanLockRef.current = true;
             onScan(decodedText);
-            if (startedRef.current) { scanner.stop().catch(() => {}); startedRef.current = false; }
+            window.setTimeout(() => { scanLockRef.current = false; }, 1400);
           },
           () => { /* per-frame decode errors ignored — normal in continuous scan */ }
         );
@@ -531,10 +549,9 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
             try {
               const codes: any[] = await detector.detect(videoEl);
               if (codes.length > 0 && !nativeStopped && !cancelled) {
-                nativeStopped = true;
-                playSuccessBeep();
+                scanLockRef.current = true;
                 onScan(codes[0].rawValue);
-                if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
+                window.setTimeout(() => { scanLockRef.current = false; }, 1400);
                 return;
               }
             } catch { /* invalid frame — continue */ }
@@ -595,9 +612,10 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
       ctx.drawImage(videoEl, 0, 0);
 
       const doScan = (value: string) => {
-        playSuccessBeep();
+        if (scanLockRef.current) return;
+        scanLockRef.current = true;
         onScan(value);
-        if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
+        window.setTimeout(() => { scanLockRef.current = false; }, 1400);
         setCapturing(false);
       };
 
@@ -628,8 +646,8 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4">
-      <div className="flex flex-col items-center gap-3 w-full max-w-[360px]">
+    <div className="fixed inset-0 z-50 flex flex-col bg-black">
+      <div className="relative flex flex-1 min-h-0 flex-col items-center justify-center w-full">
         <p className="text-white text-sm font-medium text-center leading-snug">
           {starting && !error
             ? "Ouverture de la caméra…"
@@ -640,19 +658,19 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
         {error && (
           <p className="text-red-400 text-sm text-center max-w-xs bg-black/40 rounded-lg px-3 py-2">{error}</p>
         )}
-        <div id={elementId} className="w-full max-w-[320px] aspect-square bg-white rounded-xl overflow-hidden" />
+        <div id={elementId} className="w-full h-[68vh] sm:h-[72vh] bg-black overflow-hidden [&_video]:!w-full [&_video]:!h-full [&_video]:!object-cover" />
         {!starting && !error && (
           <button
             onClick={capturePhoto}
             disabled={capturing}
-            className="w-full max-w-[320px] rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-60 px-4 py-3 text-sm font-semibold text-white"
+            className="w-[calc(100%-32px)] max-w-[520px] rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-60 px-4 py-3 text-sm font-semibold text-white"
           >
             {capturing ? "Analyse en cours…" : "📸 Prendre une photo"}
           </button>
         )}
         <button
           onClick={onClose}
-          className="w-full max-w-[320px] rounded-lg bg-white px-4 py-3 text-sm font-semibold hover:bg-gray-100 active:scale-95"
+          className="w-[calc(100%-32px)] max-w-[520px] rounded-lg bg-white px-4 py-3 text-sm font-semibold hover:bg-gray-100 active:scale-95"
         >
           Fermer
         </button>
@@ -681,9 +699,11 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
         setTodayCount((c) => c + 1);
         onConfirmed();
       } else {
+        playErrorBeep();
         toast({ title: "Non confirmé", description: data.message, variant: "destructive" });
       }
     } catch {
+      playErrorBeep();
       toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
     } finally {
       setCode("");
@@ -700,7 +720,7 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
     <>
       {showCamera && (
         <CameraScanner
-          onScan={(decoded) => { setShowCamera(false); submitCode(decoded); }}
+          onScan={(decoded) => { submitCode(decoded); }}
           onClose={() => setShowCamera(false)}
         />
       )}
