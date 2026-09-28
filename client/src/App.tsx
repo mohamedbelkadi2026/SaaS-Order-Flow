@@ -47,6 +47,7 @@ const Integrations = lazy(() => import("@/pages/integrations"));
 const SheetsIntegration = lazy(() => import("@/pages/sheets-integration"));
 const ShippingIntegrations = lazy(() => import("@/pages/shipping-integrations"));
 const IntegrationLogs = lazy(() => import("@/pages/integration-logs"));
+const DeletedOrders = lazy(() => import("@/pages/deleted-orders"));
 const Invoices = lazy(() => import("@/pages/invoices"));
 const Magasins = lazy(() => import("@/pages/magasins"));
 const AllOrders = lazy(() => import("@/pages/all-orders"));
@@ -145,7 +146,7 @@ function isPrivatePath(path: string) {
 const AGENT_BLOCKED_PATHS = [
   "/inventory", "/magasins", "/team", "/clients",
   "/invoices", "/billing", "/profitability",
-  "/integrations", "/integrations/shipping", "/integrations/logs",
+  "/integrations", "/integrations/shipping", "/integrations/logs", "/integrations/deleted-orders", "/integrations/deleted-orders",
   "/admin", "/calculator", "/automation",
 ];
 
@@ -324,6 +325,7 @@ function ProtectedRoutes() {
               <Route path="/integrations/sheets-script" component={SheetsIntegration} />
               <Route path="/integrations/shipping" component={ShippingIntegrations} />
               <Route path="/integrations/logs" component={IntegrationLogs} />
+              <Route path="/integrations/deleted-orders" component={DeletedOrders} />
               <Route path="/admin" component={Admin} />
               <Route path="/media-buyers" component={MediaBuyersPage} />
               <Route path="/mes-depenses" component={MesDepenses} />
