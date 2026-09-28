@@ -4497,6 +4497,10 @@ export async function trackNearyaParcel(
       // never a human delivery status (e.g. 62178f2c9a43d43fee4efe8a).
       if (/^[a-f0-9]{24}$/i.test(v) || /^\d{10,}$/.test(v)) return;
       if(PAYMENT_KEY.test(key) || PAYMENT_VALUES.test(v)) return;
+      const normalizedValue = v.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      // Nearya can expose invoice state ("facturé") in a generic status field.
+      // It is accounting metadata, never the parcel's delivery state.
+      if (/^(pre\s*)?facture(e)?$|^invoice(d)?$|^billing$/i.test(normalizedValue)) return;
       if(!DELIVERY_KEY.test(key)) return;
       let score=10-depth;
       if(/parcel|delivery|shipment|tracking|colis|situation/i.test(key)) score+=20;
@@ -4562,6 +4566,19 @@ export async function trackNearyaParcel(
       return b.score - a.score;
     });
     let rawStatus=candidates[0]?.value || null;
+
+    // Safety net: never persist Nearya billing labels as delivery statuses.
+    // If the best candidate is billing-only, select the best real parcel state.
+    if (rawStatus) {
+      const normalizedRaw = rawStatus.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (/^(pre\s*)?facture(e)?$|^invoice(d)?$|^billing$/i.test(normalizedRaw)) {
+        const real = candidates.find((candidate) => {
+          const n = candidate.value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          return !(/^(pre\s*)?facture(e)?$|^invoice(d)?$|^billing$/i.test(n));
+        });
+        rawStatus = real?.value || null;
+      }
+    }
 
     // Nearya's return screen can expose the return phase separately from the
     // generic parcel state: the UI shows "RETOUR" + "READY" while the status
