@@ -466,259 +466,108 @@ function playSuccessBeep() {
 }
 
 function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
-  const scannerRef = useRef<any>(null);
-  const startedRef = useRef(false); // tracks whether start() fully succeeded — gates safe .stop()
-  const elementId = "qr-reader-region";
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const readerRef = useRef<BrowserMultiFormatReader | null>(null);
+  const scanLockRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
-  const [capturing, setCapturing] = useState(false);
-  const scanLockRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    let nativeStopped = false;
+    unlockAudio();
 
     (async () => {
       try {
-        const { Html5Qrcode } = await import("html5-qrcode");
-        if (cancelled) return;
-
-        // getCameras() can fail on iOS before permission is granted — don't block on empty list,
-        // let start() request permission itself.
-        let cameras: any[] = [];
-        try { cameras = await Html5Qrcode.getCameras(); } catch (camErr: any) {
-          console.warn("[CameraScanner] getCameras failed, will try start() anyway:", camErr?.message);
-        }
-        if (cancelled) return;
-        // If cameras.length === 0 we still try start() — iOS fills the list only after first grant.
-
-        const scanner = new Html5Qrcode(elementId);
-        scannerRef.current = scanner;
-
-        // BUG 1 FIX — pass EXACTLY ONE key to cameraIdOrConfig; html5-qrcode validates strictly.
-        // "advanced" must NOT be in this object — apply focus separately via MediaStreamTrack below.
-        await scanner.start(
-          { facingMode: "environment" },
-          {
-            fps: 24,
-            qrbox: (w: number, h: number) => ({
-              width: Math.floor(w * 0.9),
-              height: Math.floor(h * 0.5),
-            }),
-            aspectRatio: 0.65,
-            disableFlip: false,
+        const constraints: MediaStreamConstraints = {
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
           },
-          (decodedText: string) => {
-            if (cancelled || scanLockRef.current) return;
-            scanLockRef.current = true;
-            onScan(decodedText);
-            window.setTimeout(() => { scanLockRef.current = false; }, 1400);
-          },
-          () => { /* per-frame decode errors ignored — normal in continuous scan */ }
-        );
-
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         if (cancelled) {
-          // Unmounted while starting — stop cleanly without letting error propagate.
-          scanner.stop().catch(() => {});
+          stream.getTracks().forEach(t => t.stop());
           return;
         }
+        streamRef.current = stream;
+        const video = videoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        video.setAttribute("playsinline", "true");
+        video.muted = true;
+        await video.play();
 
-        startedRef.current = true;
+        // Best-effort autofocus/zoom for courier labels; unsupported constraints are ignored.
+        try {
+          const track = stream.getVideoTracks()[0];
+          const caps: any = track?.getCapabilities?.() || {};
+          const advanced: any[] = [];
+          if (caps.focusMode?.includes?.("continuous")) advanced.push({ focusMode: "continuous" });
+          if (caps.zoom && typeof caps.zoom.min === "number") {
+            const targetZoom = Math.min(caps.zoom.max || 1, Math.max(caps.zoom.min || 1, 1.25));
+            advanced.push({ zoom: targetZoom });
+          }
+          if (advanced.length) await track.applyConstraints({ advanced } as any);
+        } catch {}
+
+        const hints = new Map();
+        hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+          BarcodeFormat.CODE_128, BarcodeFormat.CODE_39, BarcodeFormat.EAN_13,
+          BarcodeFormat.EAN_8, BarcodeFormat.QR_CODE,
+        ]);
+        hints.set(DecodeHintType.TRY_HARDER, true);
+        const reader = new BrowserMultiFormatReader(hints, 120);
+        readerRef.current = reader;
         setStarting(false);
 
-        // Apply continuous autofocus as a BONUS via MediaStreamTrack — never fatal if unsupported.
-        try {
-          const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
-          const track = (videoEl?.srcObject as MediaStream | null)?.getVideoTracks?.()?.[0];
-          if (track && typeof track.getCapabilities === "function") {
-            const caps: any = track.getCapabilities();
-            if (caps.focusMode?.includes?.("continuous")) {
-              await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as any] });
-            }
-          }
-        } catch { /* focus not supported — no-op */ }
-
-        // iPhone/Safari fallback: ZXing continuously decodes the LIVE video.
-        // html5-qrcode on iOS can render the camera correctly yet fail to decode
-        // some courier Code128 labels. ZXing is much more reliable for those.
-        try {
-          const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
-          if (videoEl) {
-            const hints = new Map();
-            hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-              BarcodeFormat.CODE_128, BarcodeFormat.CODE_39, BarcodeFormat.EAN_13,
-              BarcodeFormat.EAN_8, BarcodeFormat.QR_CODE,
-            ]);
-            hints.set(DecodeHintType.TRY_HARDER, true);
-            const zxingReader = new BrowserMultiFormatReader(hints, 350);
-            const zxingTick = async () => {
-              if (cancelled) return;
-              if (!scanLockRef.current && videoEl.readyState >= 2) {
-                try {
-                  const canvas = document.createElement("canvas");
-                  const scale = Math.min(1, 1280 / Math.max(1, videoEl.videoWidth));
-                  canvas.width = Math.max(1, Math.floor(videoEl.videoWidth * scale));
-                  canvas.height = Math.max(1, Math.floor(videoEl.videoHeight * scale));
-                  const cx = canvas.getContext("2d", { willReadFrequently: true });
-                  cx?.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-                  const result = await zxingReader.decodeFromCanvas(canvas as any);
-                  const value = result?.getText?.();
-                  if (value && !scanLockRef.current) {
-                    scanLockRef.current = true;
-                    onScan(value);
-                    window.setTimeout(() => { scanLockRef.current = false; }, 1400);
-                  }
-                } catch { /* no barcode in this frame */ }
-              }
-              if (!cancelled) window.setTimeout(zxingTick, 280);
-            };
-            window.setTimeout(zxingTick, 300);
-          }
-        } catch { /* ZXing live fallback unavailable — html5-qrcode remains active */ }
-
-        // BarcodeDetector native API in parallel (Chrome Android — hardware-accelerated, blur-tolerant).
-        // The guard is inside useEffect (not a conditional hook call) — safe for React's rules.
-        // On Safari/iOS where BarcodeDetector is absent this block is a complete no-op.
-        if (!cancelled && typeof window !== "undefined" && "BarcodeDetector" in window) {
-          const detector = new (window as any).BarcodeDetector({
-            formats: ["qr_code", "code_128", "code_39", "ean_13"],
-          });
-          const tick = async () => {
-            if (nativeStopped || cancelled) return;
-            const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
-            if (!videoEl || videoEl.readyState < 2) {
-              if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
-              return;
-            }
-            try {
-              const codes: any[] = await detector.detect(videoEl);
-              if (codes.length > 0 && !nativeStopped && !cancelled) {
-                scanLockRef.current = true;
-                onScan(codes[0].rawValue);
-                window.setTimeout(() => { scanLockRef.current = false; }, 1400);
-                return;
-              }
-            } catch { /* invalid frame — continue */ }
-            if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
-          };
-          requestAnimationFrame(tick);
-        }
+        // decodeFromVideoElementContinuously uses the live stream directly:
+        // no per-frame canvas allocation, much lighter and faster on iPhone/Android.
+        reader.decodeFromVideoElementContinuously(video, (result) => {
+          const value = result?.getText?.();
+          if (!value || cancelled || scanLockRef.current) return;
+          scanLockRef.current = true;
+          onScan(value);
+          window.setTimeout(() => { scanLockRef.current = false; }, 900);
+        });
       } catch (err: any) {
-        // BUG 2 FIX — ALL errors are caught here and shown inside the modal.
-        // Nothing escapes to the global Error Boundary.
         if (cancelled) return;
-        console.error("[CameraScanner] fatal start error (contained, app not affected):", err);
+        setStarting(false);
         setError(
           err?.name === "NotAllowedError"
-            ? "Permission caméra refusée. Autorise l'accès à la caméra dans les réglages du navigateur."
-            : err?.name === "NotFoundError"
-            ? "Aucune caméra trouvée."
-            : `Erreur caméra : ${err?.message || String(err)}`
+            ? "Autorisez la caméra pour scanner les colis."
+            : "Impossible d'ouvrir la caméra. Réessayez."
         );
-        setStarting(false);
-        startedRef.current = false;
       }
     })();
 
     return () => {
       cancelled = true;
-      nativeStopped = true;
-      // BUG 2 FIX — only call .stop() if start() fully succeeded; otherwise just clear.
-      if (startedRef.current && scannerRef.current) {
-        scannerRef.current.stop().catch(() => {}).finally(() => {
-          try { scannerRef.current?.clear(); } catch { /* ignore */ }
-        });
-      } else {
-        try { scannerRef.current?.clear(); } catch { /* ignore */ }
-      }
-      startedRef.current = false;
+      try { readerRef.current?.reset(); } catch {}
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
     };
   }, []);
 
-  // Manual photo capture — freezes one frame and decodes it.
-  // Uses jsQR (pure JS, works on ALL browsers incl. Safari/iOS) with BarcodeDetector
-  // as a first-pass bonus when available (also handles 1D barcodes on Android/Chrome).
-  const capturePhoto = async () => {
-    unlockAudio(); // MUST be first — before any await — to stay within the sync user gesture
-    setCapturing(true);
-    setError(null);
-    try {
-      const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
-      if (!videoEl || videoEl.readyState < 2) {
-        setError("Caméra pas encore prête, réessaie dans une seconde.");
-        setCapturing(false);
-        return;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = videoEl.videoWidth;
-      canvas.height = videoEl.videoHeight;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(videoEl, 0, 0);
-
-      const doScan = (value: string) => {
-        if (scanLockRef.current) return;
-        scanLockRef.current = true;
-        onScan(value);
-        window.setTimeout(() => { scanLockRef.current = false; }, 1400);
-        setCapturing(false);
-      };
-
-      // 1) BarcodeDetector native (Chrome/Android) — handles QR + 1D barcodes (Code128, EAN…)
-      if (typeof window !== "undefined" && "BarcodeDetector" in window) {
-        try {
-          const detector = new (window as any).BarcodeDetector({
-            formats: ["qr_code", "code_128", "code_39", "ean_13"],
-          });
-          const codes: any[] = await detector.detect(canvas);
-          if (codes.length > 0) { doScan(codes[0].rawValue); return; }
-        } catch { /* fall through to ZXing */ }
-      }
-
-      // 2) ZXing — pure JS, QR + 1D barcodes (Code128, Code39, EAN…), all browsers incl. Safari/iOS
-      try {
-        const reader = new BrowserMultiFormatReader();
-        const result = await reader.decodeFromCanvas(canvas as any);
-        if (result?.getText()) { doScan(result.getText()); return; }
-      } catch { /* NotFoundException is normal when no code found — not a fatal error */ }
-
-      setError("Aucun code détecté sur la photo — recadre le code bien au centre, à environ 15 cm, et réessaie.");
-    } catch (e: any) {
-      console.error("[CameraScanner] capturePhoto failed:", e);
-      setError(`Erreur capture : ${e?.message || String(e)}`);
-    }
-    setCapturing(false);
-  };
-
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black">
-      <div className="relative flex flex-1 min-h-0 flex-col items-center justify-center w-full">
-        <p className="text-white text-sm font-medium text-center leading-snug">
-          {starting && !error
-            ? "Ouverture de la caméra…"
-            : !error
-            ? "Pointez la caméra vers le code-barres ou QR code, à environ 15 cm de distance"
-            : ""}
-        </p>
-        {error && (
-          <p className="text-red-400 text-sm text-center max-w-xs bg-black/40 rounded-lg px-3 py-2">{error}</p>
-        )}
-        <div id={elementId} className="w-full h-[68vh] sm:h-[72vh] bg-black overflow-hidden [&_video]:!w-full [&_video]:!h-full [&_video]:!object-cover" />
-        {!starting && !error && (
-          <button
-            onClick={capturePhoto}
-            disabled={capturing}
-            className="w-[calc(100%-32px)] max-w-[520px] rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-60 px-4 py-3 text-sm font-semibold text-white"
-          >
-            {capturing ? "Analyse en cours…" : "📸 Prendre une photo"}
-          </button>
-        )}
-        <button
-          onClick={onClose}
-          className="w-[calc(100%-32px)] max-w-[520px] rounded-lg bg-white px-4 py-3 text-sm font-semibold hover:bg-gray-100 active:scale-95"
-        >
-          Fermer
-        </button>
+    <div className="fixed inset-0 z-50 bg-black">
+      <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted />
+      <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+        <div className="w-[92vw] max-w-[720px] h-[34vh] max-h-[320px] rounded-3xl border-[3px] border-white/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.22)]" />
       </div>
+      <div className="absolute top-[max(22px,env(safe-area-inset-top))] left-4 right-4 text-center text-white drop-shadow-lg">
+        <p className="text-lg font-bold">{starting ? "Ouverture caméra…" : "وجّه الكاميرا نحو الباركود"}</p>
+        {!starting && !error && <p className="mt-1 text-sm text-white/85">المسح يتم تلقائياً — لا حاجة للضغط</p>}
+        {error && <p className="mt-2 rounded-xl bg-red-600 px-4 py-3 font-semibold">{error}</p>}
+      </div>
+      <button
+        onClick={onClose}
+        className="absolute bottom-[max(24px,env(safe-area-inset-bottom))] left-5 right-5 mx-auto max-w-lg rounded-2xl bg-white py-4 text-base font-bold text-black shadow-xl"
+      >
+        Fermer
+      </button>
     </div>
   );
 }
