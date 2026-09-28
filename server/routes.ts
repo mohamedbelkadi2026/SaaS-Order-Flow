@@ -3235,6 +3235,18 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/orders/deletion-history", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (!['owner', 'admin', 'super_admin'].includes(user.role)) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      res.json(await storage.getOrderDeletionHistory(user.storeId!));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Corbeille indisponible" });
+    }
+  });
+
   app.get("/api/orders/deletion-undo", requireAuth, async (req, res) => {
     try {
       const user = req.user!;
