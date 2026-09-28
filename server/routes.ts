@@ -14701,9 +14701,12 @@ function ensureHeaders(sheet) {
         return res.json({ checked: 0, updated: 0, unmapped: [], message: "Aucun colis Nearya en cours." });
       }
 
-      // Bounded so the request can't hang: anything beyond this is picked up by
-      // the automatic sync a few minutes later.
-      const batch = pending.slice(0, 12);
+      // One manual Sync must cover every Nearya parcel belonging to the
+      // authenticated user's store. Process sequentially below (with the
+      // existing short delay) instead of silently stopping after 12 orders.
+      // Store scoping is preserved by getOrdersByStore(storeId), so each user
+      // syncs all of their own store's Nearya orders, never another store's.
+      const batch = pending;
       let updated = 0;
       const unmapped: string[] = [];
       // Failures were previously swallowed: a run that reached Nearya and got
