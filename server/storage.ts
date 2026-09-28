@@ -92,6 +92,7 @@ export interface IStorage {
   deleteOrder(id: number, storeId: number, deletedBy: number): Promise<void>;
   bulkDeleteOrders(ids: number[], storeId: number, deletedBy: number): Promise<number>;
   getLatestOrderDeletion(storeId: number): Promise<OrderDeletionUndoState>;
+  getOrderDeletionHistory(storeId: number): Promise<any[]>;
   restoreLatestOrderDeletion(storeId: number, restoredBy: number, expectedBatchId: number): Promise<{ restored: number; orderIds: number[] }>;
   createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order>;
   updateOrderStatus(id: number, status: string, actorId?: number | null): Promise<Order | undefined>;
@@ -1355,6 +1356,49 @@ export class DatabaseStorage implements IStorage {
         throw new Error("La suppression n'a pas pu être archivée complètement");
       }
       return deleted.length;
+    });
+  }
+
+  async getOrderDeletionHistory(storeId: number): Promise<any[]> {
+    const batches = await db.select({
+      id: orderDeletionBatches.id,
+      deletedBy: orderDeletionBatches.deletedBy,
+      deletedAt: orderDeletionBatches.deletedAt,
+      orderCount: orderDeletionBatches.orderCount,
+      snapshot: orderDeletionBatches.snapshot,
+      restoredBy: orderDeletionBatches.restoredBy,
+      restoredAt: orderDeletionBatches.restoredAt,
+      deletedByName: users.username,
+    })
+      .from(orderDeletionBatches)
+      .leftJoin(users, eq(orderDeletionBatches.deletedBy, users.id))
+      .where(eq(orderDeletionBatches.storeId, storeId))
+      .orderBy(desc(orderDeletionBatches.id))
+      .limit(100);
+
+    return batches.map((batch: any) => {
+      const snapshot = batch.snapshot as OrderDeletionSnapshot;
+      const archivedOrders = snapshot?.version === 2 && Array.isArray(snapshot.orders) ? snapshot.orders : [];
+      return {
+        id: batch.id,
+        deletedBy: batch.deletedBy,
+        deletedByName: batch.deletedByName || "Utilisateur supprimé",
+        deletedAt: batch.deletedAt,
+        orderCount: batch.orderCount,
+        restoredBy: batch.restoredBy,
+        restoredAt: batch.restoredAt,
+        canRestore: !batch.restoredAt,
+        orders: archivedOrders.map((order: any) => ({
+          id: order.id,
+          orderNumber: order.orderNumber,
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          city: order.city,
+          status: order.status,
+          totalPrice: order.totalPrice,
+          createdAt: order.createdAt,
+        })),
+      };
     });
   }
 
