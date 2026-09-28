@@ -27,7 +27,7 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { apiRequest } from "@/lib/queryClient";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
-import { BrowserMultiFormatReader } from "@zxing/library";
+import { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } from "@zxing/library";
 
 function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
@@ -442,6 +442,10 @@ function playErrorBeep() {
   } catch { /* audio not available — no-op */ }
 }
 
+function vibrateScan(pattern: number | number[] = 80) {
+  try { navigator.vibrate?.(pattern); } catch {}
+}
+
 function playSuccessBeep() {
   try {
     if (!sharedAudioContext || sharedAudioContext.state === "suspended") unlockAudio();
@@ -450,12 +454,14 @@ function playSuccessBeep() {
     const gain = ctx.createGain();
     oscillator.connect(gain);
     gain.connect(ctx.destination);
-    oscillator.type = "sine";
-    oscillator.frequency.value = 880;
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    oscillator.type = "square";
+    oscillator.frequency.setValueAtTime(1046, ctx.currentTime);
+    oscillator.frequency.setValueAtTime(1318, ctx.currentTime + 0.09);
+    gain.gain.setValueAtTime(0.55, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
     oscillator.start();
-    oscillator.stop(ctx.currentTime + 0.15);
+    oscillator.stop(ctx.currentTime + 0.22);
+    vibrateScan(80);
   } catch { /* audio not available — no-op */ }
 }
 
@@ -494,12 +500,12 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
         await scanner.start(
           { facingMode: "environment" },
           {
-            fps: 15,
-            qrbox: (w: number, h: number) => {
-              const s = Math.floor(Math.min(w, h) * 0.7);
-              return { width: s, height: s };
-            },
-            aspectRatio: 1.0,
+            fps: 24,
+            qrbox: (w: number, h: number) => ({
+              width: Math.floor(w * 0.9),
+              height: Math.floor(h * 0.5),
+            }),
+            aspectRatio: 0.65,
             disableFlip: false,
           },
           (decodedText: string) => {
@@ -531,6 +537,44 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
             }
           }
         } catch { /* focus not supported — no-op */ }
+
+        // iPhone/Safari fallback: ZXing continuously decodes the LIVE video.
+        // html5-qrcode on iOS can render the camera correctly yet fail to decode
+        // some courier Code128 labels. ZXing is much more reliable for those.
+        try {
+          const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+          if (videoEl) {
+            const hints = new Map();
+            hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+              BarcodeFormat.CODE_128, BarcodeFormat.CODE_39, BarcodeFormat.EAN_13,
+              BarcodeFormat.EAN_8, BarcodeFormat.QR_CODE,
+            ]);
+            hints.set(DecodeHintType.TRY_HARDER, true);
+            const zxingReader = new BrowserMultiFormatReader(hints, 350);
+            const zxingTick = async () => {
+              if (cancelled) return;
+              if (!scanLockRef.current && videoEl.readyState >= 2) {
+                try {
+                  const canvas = document.createElement("canvas");
+                  const scale = Math.min(1, 1280 / Math.max(1, videoEl.videoWidth));
+                  canvas.width = Math.max(1, Math.floor(videoEl.videoWidth * scale));
+                  canvas.height = Math.max(1, Math.floor(videoEl.videoHeight * scale));
+                  const cx = canvas.getContext("2d", { willReadFrequently: true });
+                  cx?.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+                  const result = await zxingReader.decodeFromCanvas(canvas as any);
+                  const value = result?.getText?.();
+                  if (value && !scanLockRef.current) {
+                    scanLockRef.current = true;
+                    onScan(value);
+                    window.setTimeout(() => { scanLockRef.current = false; }, 1400);
+                  }
+                } catch { /* no barcode in this frame */ }
+              }
+              if (!cancelled) window.setTimeout(zxingTick, 280);
+            };
+            window.setTimeout(zxingTick, 300);
+          }
+        } catch { /* ZXing live fallback unavailable — html5-qrcode remains active */ }
 
         // BarcodeDetector native API in parallel (Chrome Android — hardware-accelerated, blur-tolerant).
         // The guard is inside useEffect (not a conditional hook call) — safe for React's rules.
@@ -700,10 +744,12 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
         onConfirmed();
       } else {
         playErrorBeep();
+        vibrateScan([120, 80, 120]);
         toast({ title: "Non confirmé", description: data.message, variant: "destructive" });
       }
     } catch {
       playErrorBeep();
+      vibrateScan([120, 80, 120]);
       toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
     } finally {
       setCode("");
