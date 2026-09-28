@@ -108,6 +108,7 @@ const INTEGRATION_SUB_ITEMS = [
   { name: "Boutiques",              href: "/integrations" },
   { name: "Sociétés de Livraison",  href: "/integrations/shipping" },
   { name: "Journal",                href: "/integrations/logs" },
+  { name: "Commandes supprimées",   href: "/integrations/deleted-orders" },
 ];
 
 const NOUVELLE_SUB_ITEMS = [
@@ -155,6 +156,7 @@ const INTEGRATION_SUB_KEYS: Record<string, string> = {
   "Boutiques":             "integrationSub.stores",
   "Sociétés de Livraison": "integrationSub.shipping",
   "Journal":               "integrationSub.logs",
+  "Commandes supprimées":  "Commandes supprimées",
 };
 const NOUVELLE_SUB_KEYS: Record<string, string> = {
   "Ajouter":             "newOrderSub.add",
