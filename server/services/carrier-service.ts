@@ -4485,6 +4485,11 @@ export async function trackNearyaParcel(
     // Score candidates instead of taking the first field named "status".
     const ENVELOPE_VALUES = new Set(['success','ok','true','200']);
     const PAYMENT_VALUES = /^(non\s*pay[eé]|pay[eé]|unpaid|paid|impay[eé])$/i;
+    // "Facturé / préfacturé" is an accounting state in Nearya, not a parcel
+    // delivery state. A parcel can already be LIVRÉ or RETOURNÉ while Nearya
+    // also exposes FACTURÉ, so never let that billing label overwrite Orders.
+    const BILLING_VALUES = /^(pr[eé][ -]?factur[eé]e?|factur[eé]e?|invoice(?:d)?|billing)$/i;
+    const DELIVERY_VALUE = /(livr[eé]e?|delivered|retourn[eé]e?|returned|retour|refus[eé]?|refused|annul[eé]?|cancel|distribution|transit|hub|ramass[eé]?|attente|exp[eé]di[eé]?|report[eé]?|pas de r[eé]ponse|injoignable|ready)/i;
     const DELIVERY_KEY = /(parcel.?status|delivery.?status|shipment.?status|tracking.?status|statut.?colis|etat.?colis|situation|status|statut|etat|state)/i;
     const PAYMENT_KEY = /(payment|paiement|paid|pay[eé])/i;
     const DATE_KEY = /(date|time|created|updated|scan)/i;
@@ -4496,13 +4501,19 @@ export async function trackNearyaParcel(
       // Nearya status objects also contain Mongo/Object IDs. They are metadata,
       // never a human delivery status (e.g. 62178f2c9a43d43fee4efe8a).
       if (/^[a-f0-9]{24}$/i.test(v) || /^\d{10,}$/.test(v)) return;
-      if(PAYMENT_KEY.test(key) || PAYMENT_VALUES.test(v)) return;
-      if(!DELIVERY_KEY.test(key)) return;
+      if(PAYMENT_KEY.test(key) || PAYMENT_VALUES.test(v) || BILLING_VALUES.test(v)) return;
+      // Some Nearya responses put the real terminal label (LIVRÉ / RETOURNÉ)
+      // under a generic key while "FACTURÉ" sits in the normal status field.
+      // Accept a scalar from any key only when its VALUE is unmistakably a
+      // delivery label; this recovers the real parcel state without treating
+      // arbitrary metadata as a status.
+      if(!DELIVERY_KEY.test(key) && !DELIVERY_VALUE.test(v)) return;
       let score=10-depth;
       if(/parcel|delivery|shipment|tracking|colis|situation/i.test(key)) score+=20;
       // Prefer meaningful carrier delivery labels over generic envelope fields.
       const nv = v.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       if (/(livr|retour|refus|annul|distribution|transit|hub|ramass|attente|expedi|reporte|reponse|confirm|delivered|returned|refused|shipped|picked|pending|ready)/i.test(nv)) score+=50;
+      if (/(livre|delivered|retourne|returned|retour|refuse|refused|annule|cancel)/i.test(nv)) score+=100;
       let date=0;
       if(parent && typeof parent==='object'){
         for(const [pk,pv] of Object.entries(parent)){
