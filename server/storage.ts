@@ -982,7 +982,17 @@ export class DatabaseStorage implements IStorage {
         // Catch both: (a) orders whose internal status contains "retour" (correct mapping),
         // and (b) legacy orders stored as "refused" whose commentStatus contains "retour"
         // (old webhook mapping bug where "retour" raw text → "refused" internal status).
-        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR LOWER(${orders.status}) = 'returned' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
+        conditions.push(sql`(
+          LOWER(${orders.status}) LIKE '%retour%'
+          OR LOWER(${orders.status}) = 'returned'
+          OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%')
+          OR EXISTS (
+            SELECT 1 FROM stock_movements sm
+            WHERE sm.order_id = ${orders.id}
+              AND sm.store_id = ${storeId}
+              AND sm.type = 'returned'
+          )
+        )`);
       } else if (filters.status === 'retour_en_route') {
         // In-transit returns only: status contains "retour" but is NOT a terminal arrival
         // ("retourné", "retournée", "retour recu") AND not yet physically confirmed by user.
@@ -996,10 +1006,30 @@ export class DatabaseStorage implements IStorage {
         // "Reçus" = physically confirmed by the user (scan/button), regardless of carrier status.
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
       } else if (filters.status === 'retour_non_confirme') {
-        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
+        conditions.push(sql`(
+          LOWER(${orders.status}) LIKE '%retour%'
+          OR LOWER(${orders.status}) = 'returned'
+          OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%')
+          OR EXISTS (
+            SELECT 1 FROM stock_movements sm
+            WHERE sm.order_id = ${orders.id}
+              AND sm.store_id = ${storeId}
+              AND sm.type = 'returned'
+          )
+        )`);
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NULL`);
       } else if (filters.status === 'retour_confirme') {
-        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
+        conditions.push(sql`(
+          LOWER(${orders.status}) LIKE '%retour%'
+          OR LOWER(${orders.status}) = 'returned'
+          OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%')
+          OR EXISTS (
+            SELECT 1 FROM stock_movements sm
+            WHERE sm.order_id = ${orders.id}
+              AND sm.store_id = ${storeId}
+              AND sm.type = 'returned'
+          )
+        )`);
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
       } else if (filters.status === 'delivered') {
         // Carrier raw delivered labels (including Nearya) belong in Livrées,
