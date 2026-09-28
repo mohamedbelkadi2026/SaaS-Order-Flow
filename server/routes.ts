@@ -14687,11 +14687,15 @@ function ensureHeaders(sheet) {
         feesUpdated++;
       }
 
-      const pending = allOrders.filter((o: any) =>
-        o.trackNumber &&
-        (o.shippingProvider || "").toLowerCase().trim() === "nearya" &&
-        !["delivered", "refused", "Retour Recu"].includes(o.status || "")
-      );
+      const pending = allOrders.filter((o: any) => {
+        if (!o.trackNumber || (o.shippingProvider || "").toLowerCase().trim() !== "nearya") return false;
+        const current = String(o.status || "").trim();
+        // "facturé / préfacturé" is only Nearya billing state. Always re-check
+        // those rows so a later LIVRÉ / RETOURNÉ carrier state can replace it.
+        const normalized = current.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        if (/^(pre\s*)?facture(e)?$/.test(normalized)) return true;
+        return !["delivered", "refused", "Retour Recu"].includes(current);
+      });
 
       if (!pending.length) {
         return res.json({ checked: 0, updated: 0, unmapped: [], message: "Aucun colis Nearya en cours." });
