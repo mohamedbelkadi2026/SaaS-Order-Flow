@@ -4488,7 +4488,7 @@ export async function trackNearyaParcel(
     // "Facturé / préfacturé" is an accounting state in Nearya, not a parcel
     // delivery state. A parcel can already be LIVRÉ or RETOURNÉ while Nearya
     // also exposes FACTURÉ, so never let that billing label overwrite Orders.
-    const BILLING_VALUES = /^(pr[eé][ -]?factur[eé]e?|factur[eé]e?|invoice(?:d)?|billing)$/i;
+    const BILLING_VALUES = /^(?:pr[eé][ -]?factur[eé]e?|factur[eé]e?|invoice(?:d)?|billing)$/i;
     const DELIVERY_VALUE = /(livr[eé]e?|delivered|retourn[eé]e?|returned|retour|refus[eé]?|refused|annul[eé]?|cancel|distribution|transit|hub|ramass[eé]?|attente|exp[eé]di[eé]?|report[eé]?|pas de r[eé]ponse|injoignable|ready)/i;
     const DELIVERY_KEY = /(parcel.?status|delivery.?status|shipment.?status|tracking.?status|statut.?colis|etat.?colis|situation|status|statut|etat|state)/i;
     const PAYMENT_KEY = /(payment|paiement|paid|pay[eé])/i;
