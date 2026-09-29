@@ -983,9 +983,13 @@ export class DatabaseStorage implements IStorage {
         // and (b) legacy orders stored as "refused" whose commentStatus contains "retour"
         // (old webhook mapping bug where "retour" raw text → "refused" internal status).
         conditions.push(sql`(
-          LOWER(${orders.status}) LIKE '%retour%'
-          OR LOWER(${orders.status}) = 'returned'
-          OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%')
+          -- Same return truth used by Dashboard: a return-looking carrier/order
+          -- status OR a returned stock-ledger movement. comment_status matters
+          -- because some carriers (notably Nearya legacy rows) preserve the raw
+          -- carrier return label there while status can still be "refused".
+          LOWER(COALESCE(${orders.status}, '')) LIKE '%retour%'
+          OR LOWER(COALESCE(${orders.status}, '')) = 'returned'
+          OR LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'
           OR EXISTS (
             SELECT 1 FROM stock_movements sm
             WHERE sm.order_id = ${orders.id}
