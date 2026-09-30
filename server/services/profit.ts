@@ -7,7 +7,7 @@
 import { db } from "../db";
 import { storage } from "../storage";
 import {
-  orderItems, products, productVariants, adSpendTracking,
+  orderItems, products, productVariants, adSpendTracking, generalCharges,
 } from "@shared/schema";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { splitVariant } from "./variants";
@@ -61,6 +61,7 @@ export type ProfitTotals = {
   confirmationCost: number;
   adSpend: number;
   globalAdSpend: number;
+  fixedCharges: number;
   netProfit: number;
 };
 
@@ -650,7 +651,7 @@ export async function computeProfitability(
       globalAdSpend:     acc.globalAdSpend,
       netProfit:         acc.netProfit         + row.netProfit,
     }),
-    { totalOrders: 0, deliveredOrders: 0, revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0, adSpend: 0, globalAdSpend, netProfit: 0 }
+    { totalOrders: 0, deliveredOrders: 0, revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0, adSpend: 0, globalAdSpend, fixedCharges: 0, netProfit: 0 }
   );
   // Override order counts from storeOrders directly so totals match the
   // dashboard (per-product rows only count orders that have orderItems rows).
@@ -667,6 +668,19 @@ export async function computeProfitability(
   const agentCostAdjustmentDH = exactAgentCostDH - allocatedVariableAgentCostDH;
   totals.confirmationCost += agentCostAdjustmentDH;
   totals.netProfit -= agentCostAdjustmentDH;
+
+  // Operating charges are attributed by their own expense date. This makes a
+  // September charge reduce September profit only, regardless of when it was
+  // entered in the app.
+  const [chargeRow] = await db.select({
+    total: sql<number>`COALESCE(SUM(${generalCharges.amount}), 0)`,
+  }).from(generalCharges).where(and(
+    eq(generalCharges.storeId, storeId),
+    sql`${generalCharges.expenseDate} >= ${cutoffDateStr}`,
+    sql`${generalCharges.expenseDate} <= ${endDateStr}`,
+  ));
+  totals.fixedCharges = Number(chargeRow?.total || 0) / 100;
+  totals.netProfit -= totals.fixedCharges;
 
   return { products: dedupedProducts, platforms, totals, globalAdSpend };
 }
