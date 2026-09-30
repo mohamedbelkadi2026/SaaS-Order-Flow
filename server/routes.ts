@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, SHIPPED_STATUS_SET, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, aiSettings, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, aiSettings, stores, storeAgentSettings, carrierAccounts, adSpendTracking, generalCharges, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -3589,6 +3589,44 @@ export async function registerRoutes(
       byProduct[key].entries++;
     }
     res.json({ entries, byProduct: Object.values(byProduct) });
+  });
+
+  // ============================================================
+  // GENERAL CHARGES — fixed/operating expenses, scoped per store
+  // ============================================================
+  app.get("/api/charges", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { dateFrom, dateTo, month } = req.query as Record<string, string>;
+    const conditions: any[] = [eq(generalCharges.storeId, storeId)];
+    if (month && /^\\d{4}-\\d{2}$/.test(month)) {
+      conditions.push(gte(generalCharges.expenseDate, month + "-01"));
+      conditions.push(lte(generalCharges.expenseDate, month + "-31"));
+    } else {
+      if (dateFrom) conditions.push(gte(generalCharges.expenseDate, dateFrom));
+      if (dateTo) conditions.push(lte(generalCharges.expenseDate, dateTo));
+    }
+    const rows = await db.select().from(generalCharges).where(and(...conditions))
+      .orderBy(desc(generalCharges.expenseDate), desc(generalCharges.id));
+    res.json(rows);
+  });
+
+  app.post("/api/charges", requireAuth, requireAdmin, async (req, res) => {
+    const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
+    const [row] = await db.insert(generalCharges).values({ storeId: req.user!.storeId!, createdBy: req.user!.id, name: parsed.name, amount: Math.round(parsed.amount * 100), expenseDate: parsed.expenseDate, note: parsed.note || null }).returning();
+    res.json(row);
+  });
+
+  app.patch("/api/charges/:id", requireAuth, requireAdmin, async (req, res) => {
+    const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
+    const [row] = await db.update(generalCharges).set({ name: parsed.name, amount: Math.round(parsed.amount * 100), expenseDate: parsed.expenseDate, note: parsed.note || null }).where(and(eq(generalCharges.id, Number(req.params.id)), eq(generalCharges.storeId, req.user!.storeId!))).returning();
+    if (!row) return res.status(404).json({ message: "Charge introuvable" });
+    res.json(row);
+  });
+
+  app.delete("/api/charges/:id", requireAuth, requireAdmin, async (req, res) => {
+    const [row] = await db.delete(generalCharges).where(and(eq(generalCharges.id, Number(req.params.id)), eq(generalCharges.storeId, req.user!.storeId!))).returning({ id: generalCharges.id });
+    if (!row) return res.status(404).json({ message: "Charge introuvable" });
+    res.json({ ok: true });
   });
 
   // ============================================================
