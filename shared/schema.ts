@@ -322,6 +322,20 @@ export const adSpendTracking = pgTable("ad_spend_tracking", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ─── General operating charges ───────────────────────────────────────────────
+// Fixed/operating expenses entered by the merchant. Amounts are centimes and
+// expenseDate decides which month's profit is reduced.
+export const generalCharges = pgTable("general_charges", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id, { onDelete: "cascade" }).notNull(),
+  createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+  name: text("name").notNull(),
+  amount: integer("amount").notNull().default(0),
+  expenseDate: text("expense_date").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const adSpend = pgTable("ad_spend", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
