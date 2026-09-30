@@ -519,19 +519,41 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
           BarcodeFormat.EAN_8, BarcodeFormat.QR_CODE,
         ]);
         hints.set(DecodeHintType.TRY_HARDER, true);
-        const reader = new BrowserMultiFormatReader(hints, 120);
+        const reader = new BrowserMultiFormatReader(hints, 80);
         readerRef.current = reader;
         setStarting(false);
 
-        // decodeFromVideoElementContinuously uses the live stream directly:
-        // no per-frame canvas allocation, much lighter and faster on iPhone/Android.
-        reader.decodeFromVideoElementContinuously(video, (result) => {
-          const value = result?.getText?.();
-          if (!value || cancelled || scanLockRef.current) return;
-          scanLockRef.current = true;
-          onScan(value);
-          window.setTimeout(() => { scanLockRef.current = false; }, 900);
-        });
+        // Mobile Safari/Chrome can keep the camera preview alive while ZXing's
+        // video-element loop silently stops decoding. A frame-driven loop is
+        // more reliable for courier CODE_128/CODE_39 labels and keeps the
+        // camera open after every scan.
+        let scanning = false;
+        let lastValue = "";
+        let lastScannedAt = 0;
+        const scanFrame = async () => {
+          if (cancelled) return;
+          if (!scanning && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            scanning = true;
+            try {
+              const result = await reader.decodeOnceFromVideoElement(video);
+              const value = result?.getText?.()?.trim();
+              const now = Date.now();
+              if (value && !scanLockRef.current && (value !== lastValue || now - lastScannedAt > 2500)) {
+                lastValue = value;
+                lastScannedAt = now;
+                scanLockRef.current = true;
+                onScan(value);
+                window.setTimeout(() => { scanLockRef.current = false; }, 650);
+              }
+            } catch {
+              // No barcode in this frame is normal; keep scanning.
+            } finally {
+              scanning = false;
+            }
+          }
+          if (!cancelled) window.setTimeout(scanFrame, 70);
+        };
+        scanFrame();
       } catch (err: any) {
         if (cancelled) return;
         setStarting(false);
