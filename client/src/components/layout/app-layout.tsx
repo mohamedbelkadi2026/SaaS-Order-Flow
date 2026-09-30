@@ -46,6 +46,7 @@ import {
   Bot,
   BarChart3,
   Crown,
+  Landmark,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { setLanguage } from "@/i18n";
@@ -74,6 +75,7 @@ const ADMIN_NAV = [
   { name: "Facturation",            href: "/billing",       icon: CreditCard      },
   { name: "Advanced Profitability", href: "/profitability", icon: Calculator      },
   { name: "Publicités",             href: "/publicites",    icon: Receipt         },
+  { name: "Les Charges",            href: "/charges",       icon: Landmark        },
   { name: "Calculateur de Marge",   href: "/calculator",    icon: PieChart        },
   { name: "Profit Analyzer Pro",    href: "/profit-analyzer", icon: BarChart3     },
   { name: "Statistiques Livraison", href: "/delivery-stats",  icon: Truck         },
@@ -132,6 +134,7 @@ const NAV_KEYS: Record<string, string> = {
   "Facturation":            "nav.billing",
   "Advanced Profitability": "nav.profitability",
   "Publicités":             "nav.ads",
+  "Les Charges":            "Les Charges",
   "Calculateur de Marge":   "nav.calculator",
   "Profit Analyzer Pro":    "nav.profitAnalyzer",
   "Integration":            "nav.integrations",
