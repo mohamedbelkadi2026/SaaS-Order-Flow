@@ -54,6 +54,7 @@ const AllOrders = lazy(() => import("@/pages/all-orders"));
 const MediaBuyersPage = lazy(() => import("@/pages/media-buyers"));
 const MesDepenses = lazy(() => import("@/pages/mes-depenses"));
 const Publicites = lazy(() => import("@/pages/publicites"));
+const Charges = lazy(() => import("@/pages/charges"));
 const Profile = lazy(() => import("@/pages/profile"));
 const Calculator = lazy(() => import("@/pages/calculator"));
 const ProfitAnalyzer = lazy(() => import("@/pages/profit-analyzer"));
@@ -330,6 +331,7 @@ function ProtectedRoutes() {
               <Route path="/media-buyers" component={MediaBuyersPage} />
               <Route path="/mes-depenses" component={MesDepenses} />
               <Route path="/publicites" component={Publicites} />
+              <Route path="/charges" component={Charges} />
               <Route path="/profile" component={Profile} />
               <Route path="/calculator" component={Calculator} />
               <Route path="/profit-analyzer" component={ProfitAnalyzer} />
