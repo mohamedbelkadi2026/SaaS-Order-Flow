@@ -390,7 +390,9 @@ export default function ProfitAnalyzer() {
   const liveTotalOrders    = (liveData as any)?.totals?.totalOrders     ?? liveProducts.reduce((s: number, p: any) => s + p.totalOrders, 0);
   const liveTotalDelivered = (liveData as any)?.totals?.deliveredOrders ?? liveProducts.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
   const liveTotalRevenue   = liveProducts.reduce((s: number, p: any) => s + p.revenue, 0);
-  const liveTotalProfit    = liveProducts.reduce((s: number, p: any) => s + p.netProfit, 0) - (liveData?.globalAdSpend ?? 0);
+  const liveTotalProfit    = (liveData as any)?.totals?.netProfit != null
+    ? Number((liveData as any).totals.netProfit) - (liveData?.globalAdSpend ?? 0)
+    : liveProducts.reduce((s: number, p: any) => s + p.netProfit, 0) - (liveData?.globalAdSpend ?? 0);
   const liveDeliveryRate   = liveTotalOrders > 0 ? ((liveTotalDelivered / liveTotalOrders) * 100).toFixed(1) : "0";
 
   /* ── CSV Step state ── */
