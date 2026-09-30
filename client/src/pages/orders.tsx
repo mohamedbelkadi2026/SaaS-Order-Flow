@@ -468,6 +468,8 @@ function playSuccessBeep() {
 function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
   const scannerRef = useRef<any>(null);
   const startedRef = useRef(false); // tracks whether start() fully succeeded — gates safe .stop()
+  const scanLockRef = useRef(false);
+  const lastScanRef = useRef<{ value: string; at: number }>({ value: "", at: 0 });
   const elementId = "qr-reader-region";
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
@@ -475,7 +477,6 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
 
   useEffect(() => {
     let cancelled = false;
-    let nativeStopped = false;
 
     (async () => {
       try {
@@ -508,11 +509,16 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
             disableFlip: false,
           },
           (decodedText: string) => {
-            if (nativeStopped || cancelled) return;
-            nativeStopped = true;
+            if (cancelled || scanLockRef.current) return;
+            const value = decodedText.trim();
+            const now = Date.now();
+            if (!value || (lastScanRef.current.value === value && now - lastScanRef.current.at < 2500)) return;
+            lastScanRef.current = { value, at: now };
+            scanLockRef.current = true;
             playSuccessBeep();
-            onScan(decodedText);
-            if (startedRef.current) { scanner.stop().catch(() => {}); startedRef.current = false; }
+            onScan(value);
+            // Keep the live camera running so the next parcel can be scanned immediately.
+            window.setTimeout(() => { scanLockRef.current = false; }, 900);
           },
           () => { /* per-frame decode errors ignored — normal in continuous scan */ }
         );
@@ -546,23 +552,29 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
             formats: ["qr_code", "code_128", "code_39", "ean_13"],
           });
           const tick = async () => {
-            if (nativeStopped || cancelled) return;
+            if (cancelled) return;
             const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
             if (!videoEl || videoEl.readyState < 2) {
-              if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
+              if (!cancelled) requestAnimationFrame(tick);
               return;
             }
             try {
               const codes: any[] = await detector.detect(videoEl);
-              if (codes.length > 0 && !nativeStopped && !cancelled) {
-                nativeStopped = true;
+              const value = codes[0]?.rawValue?.trim?.();
+              const now = Date.now();
+              if (
+                value &&
+                !scanLockRef.current &&
+                !(lastScanRef.current.value === value && now - lastScanRef.current.at < 2500)
+              ) {
+                lastScanRef.current = { value, at: now };
+                scanLockRef.current = true;
                 playSuccessBeep();
-                onScan(codes[0].rawValue);
-                if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
-                return;
+                onScan(value);
+                window.setTimeout(() => { scanLockRef.current = false; }, 900);
               }
             } catch { /* invalid frame — continue */ }
-            if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
+            if (!cancelled) requestAnimationFrame(tick);
           };
           requestAnimationFrame(tick);
         }
@@ -585,7 +597,6 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
 
     return () => {
       cancelled = true;
-      nativeStopped = true;
       // BUG 2 FIX — only call .stop() if start() fully succeeded; otherwise just clear.
       if (startedRef.current && scannerRef.current) {
         scannerRef.current.stop().catch(() => {}).finally(() => {
@@ -619,9 +630,18 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
       ctx.drawImage(videoEl, 0, 0);
 
       const doScan = (value: string) => {
+        const cleanValue = value.trim();
+        const now = Date.now();
+        if (!cleanValue || scanLockRef.current || (lastScanRef.current.value === cleanValue && now - lastScanRef.current.at < 2500)) {
+          setCapturing(false);
+          return;
+        }
+        lastScanRef.current = { value: cleanValue, at: now };
+        scanLockRef.current = true;
         playSuccessBeep();
-        onScan(value);
-        if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
+        onScan(cleanValue);
+        // Photo fallback also leaves the camera alive for the next parcel.
+        window.setTimeout(() => { scanLockRef.current = false; }, 900);
         setCapturing(false);
       };
 
