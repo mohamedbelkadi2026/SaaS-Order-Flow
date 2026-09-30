@@ -208,6 +208,27 @@ export async function initializeDatabase(): Promise<void> {
     const finalIdType = finalColCheck.rows.find((c: any) => c.column_name === 'id')?.data_type;
     console.log(`[DB] carrier_accounts READY ✅ — id type: ${finalIdType ?? 'unknown'} (expected: integer)`);
 
+    // ── General charges — operating expenses used by monthly profit ──────────
+    // Kept here as a startup safety net in addition to the versioned migration:
+    // production must never expose /api/charges before this table exists.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.general_charges (
+        id           SERIAL PRIMARY KEY,
+        store_id     INTEGER NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+        created_by   INTEGER REFERENCES public.users(id) ON DELETE SET NULL,
+        name         TEXT NOT NULL,
+        amount       INTEGER NOT NULL DEFAULT 0,
+        expense_date TEXT NOT NULL,
+        note         TEXT,
+        created_at   TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_general_charges_store_date
+        ON public.general_charges (store_id, expense_date);
+    `);
+    console.log("[DATABASE]: general_charges table verified/created.");
+
     // ── 5. carrier_cities — live city cache synced from carrier API ───────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.carrier_cities (
