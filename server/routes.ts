@@ -3612,7 +3612,7 @@ export async function registerRoutes(
 
   app.post("/api/charges", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
+      const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
       const storeId = req.user!.storeId;
       if (!storeId) return res.status(400).json({ message: "Aucune boutique active." });
 
@@ -3636,7 +3636,7 @@ export async function registerRoutes(
   });
 
   app.patch("/api/charges/:id", requireAuth, requireAdmin, async (req, res) => {
-    const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
+    const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
     const [row] = await db.update(generalCharges).set({ name: parsed.name, amount: Math.round(parsed.amount * 100), expenseDate: parsed.expenseDate, note: parsed.note || null }).where(and(eq(generalCharges.id, Number(req.params.id)), eq(generalCharges.storeId, req.user!.storeId!))).returning();
     if (!row) return res.status(404).json({ message: "Charge introuvable" });
     res.json(row);
