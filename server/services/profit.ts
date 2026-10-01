@@ -439,21 +439,25 @@ export async function computeProfitability(
           (sum: number, x: any) => sum + (Number(x.price || 0) * Number(x.quantity || 1)), 0
         );
         const orderRevenueCents = Number((order as any).totalPrice || 0);
-        const revenueShareCents = explicitItemRevenueCents > 0
-          ? explicitItemRevenueCents
-          : (explicitOrderItemsCents > 0
-              ? 0
-              : orderRevenueCents / Math.max(1, siblings.length));
+
+        // totalPrice is the amount actually invoiced/collected from the client.
+        // Item prices are only weights (catalogue/subtotal before offer). This
+        // is essential for bundles and quantity discounts: e.g. 199 × 10 may
+        // show a 1,990 DH catalogue subtotal while the client actually pays
+        // only 849 DH. Across all product rows, allocated revenue must add up
+        // to exactly order.totalPrice — never the pre-discount subtotal.
+        const weight = explicitOrderItemsCents > 0
+          ? explicitItemRevenueCents / explicitOrderItemsCents
+          : 1 / Math.max(1, siblings.length);
+        const revenueShareCents = orderRevenueCents * weight;
 
         s.revenue += revenueShareCents / 100;
 
         // Shipping/packaging/agent confirmation are ORDER-level costs. Allocate
-        // them once across products using the same revenue weight (or equal
-        // shares when item prices are absent), instead of charging each product
-        // the full delivery fee.
-        const weight = explicitOrderItemsCents > 0
-          ? explicitItemRevenueCents / explicitOrderItemsCents
-          : 1 / Math.max(1, siblings.length);
+        // them once across products using the same weight, instead of charging
+        // each product the full order-level cost. Product purchase cost remains
+        // unit cost × full quantity (calculated above), even after a discount.
+
         s.shippingCost += (Number((order as any).shippingCost || 0) / 100) * weight;
 
         const prodSettings = (resolvedPid > 0 ? settingsById.get(resolvedPid) : undefined)
