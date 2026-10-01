@@ -426,19 +426,48 @@ export async function computeProfitability(
       const guardKey = `${key}_${item.orderId}`;
       if (!countedOrderForProduct.has(guardKey)) {
         countedOrderForProduct.add(guardKey);
-        s.revenue      += Number((order as any).totalPrice   || 0) / 100;
-        s.shippingCost += Number((order as any).shippingCost || 0) / 100;
+
+        // A single delivered order can contain several DIFFERENT products.
+        // Never credit the full order total + full delivery fee to every row.
+        // Revenue belongs to the item itself (order_items.price × qty). When an
+        // item has no usable price, split the order total proportionally across
+        // its item rows so the sum across products can never exceed the order.
+        const siblings = itemRows.filter((x: any) => x.orderId === item.orderId);
+        const itemQty = Number(item.quantity || 1);
+        const explicitItemRevenueCents = Number(item.price || 0) * itemQty;
+        const explicitOrderItemsCents = siblings.reduce(
+          (sum: number, x: any) => sum + (Number(x.price || 0) * Number(x.quantity || 1)), 0
+        );
+        const orderRevenueCents = Number((order as any).totalPrice || 0);
+        const revenueShareCents = explicitItemRevenueCents > 0
+          ? explicitItemRevenueCents
+          : (explicitOrderItemsCents > 0
+              ? 0
+              : orderRevenueCents / Math.max(1, siblings.length));
+
+        s.revenue += revenueShareCents / 100;
+
+        // Shipping/packaging/agent confirmation are ORDER-level costs. Allocate
+        // them once across products using the same revenue weight (or equal
+        // shares when item prices are absent), instead of charging each product
+        // the full delivery fee.
+        const weight = explicitOrderItemsCents > 0
+          ? explicitItemRevenueCents / explicitOrderItemsCents
+          : 1 / Math.max(1, siblings.length);
+        s.shippingCost += (Number((order as any).shippingCost || 0) / 100) * weight;
+
         const prodSettings = (resolvedPid > 0 ? settingsById.get(resolvedPid) : undefined)
           || (pid > 0 ? settingsById.get(pid) : undefined)
           || (item.productSettings as any);
         const emballageDH = Number(prodSettings?.profitDefaults?.coutEmballage || 0);
-        s.packagingCost   += emballageDH;
-        const confDH  = Number(prodSettings?.profitDefaults?.coutConfirmation || 0);
+        s.packagingCost += emballageDH * weight;
+        const confDH = Number(prodSettings?.profitDefaults?.coutConfirmation || 0) * weight;
         const assignedAgentId = Number((order as any).assignedToId);
-        const agentDH = variableCommissionCostCents(
+        const fullAgentDH = variableCommissionCostCents(
           agentById.get(assignedAgentId),
           agentRateMap.get(assignedAgentId) ?? 0,
         ) / 100;
+        const agentDH = fullAgentDH * weight;
         s.confirmationCost += confDH + agentDH;
         allocatedVariableAgentCostDH += agentDH;
       }
