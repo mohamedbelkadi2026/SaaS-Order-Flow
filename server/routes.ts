@@ -3611,9 +3611,28 @@ export async function registerRoutes(
   });
 
   app.post("/api/charges", requireAuth, requireAdmin, async (req, res) => {
-    const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
-    const [row] = await db.insert(generalCharges).values({ storeId: req.user!.storeId!, createdBy: req.user!.id, name: parsed.name, amount: Math.round(parsed.amount * 100), expenseDate: parsed.expenseDate, note: parsed.note || null }).returning();
-    res.json(row);
+    try {
+      const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
+      const storeId = req.user!.storeId;
+      if (!storeId) return res.status(400).json({ message: "Aucune boutique active." });
+
+      // Do not write created_by here: older production user IDs / restored DBs
+      // can violate that optional FK even though the charge itself is valid.
+      const [row] = await db.insert(generalCharges).values({
+        storeId,
+        name: parsed.name,
+        amount: Math.round(parsed.amount * 100),
+        expenseDate: parsed.expenseDate,
+        note: parsed.note || null,
+      }).returning();
+      res.json(row);
+    } catch (err: any) {
+      console.error("[CHARGES] create failed:", err?.message, err?.code, err?.detail);
+      const msg = err instanceof z.ZodError
+        ? err.issues.map((x: any) => x.message).join(", ")
+        : (err?.code === "42P01" ? "Table des charges absente. Redéployez la dernière version." : "Impossible d'enregistrer la charge.");
+      res.status(err instanceof z.ZodError ? 400 : 500).json({ message: msg });
+    }
   });
 
   app.patch("/api/charges/:id", requireAuth, requireAdmin, async (req, res) => {
