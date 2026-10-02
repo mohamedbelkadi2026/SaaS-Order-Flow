@@ -49,7 +49,7 @@ type StoreRow = {
   canOpen: number;
   createdAt: string | null;
   subscription: SubscriptionInfo | null;
-  settings?: { allowAttachTracking?: boolean } | null;
+  settings?: { allowAttachTracking?: boolean; chargesEnabled?: boolean } | null;
 };
 
 type GlobalStats = {
@@ -451,6 +451,19 @@ export default function SuperAdminPage() {
       toast({ title: "✓ Fonctionnalité mise à jour" });
     },
     onError: () => toast({ title: "Erreur", variant: "destructive" }),
+  });
+
+  const chargesAccessMutation = useMutation({
+    mutationFn: ({ storeId, chargesEnabled }: { storeId: number; chargesEnabled: boolean }) =>
+      apiRequest("PATCH", `/api/admin/stores/${storeId}/settings`, { chargesEnabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/stores"] });
+      toast({ title: "✓ Accès Les Charges mis à jour" });
+    },
+    onError: (err: any) => {
+      const msg = err?.message?.replace(/^\d+:\s*/, "") || "Erreur inconnue";
+      toast({ title: "Erreur", description: msg, variant: "destructive" });
+    },
   });
 
   const attachTrackingMutation = useMutation({
@@ -948,6 +961,35 @@ export default function SuperAdminPage() {
                                 </div>
                               );
                             })}
+                          </div>
+
+                          {/* Les Charges — explicit per-store access controlled by Super Admin */}
+                          <div className="mt-3 pt-3 border-t border-white/5 flex flex-wrap gap-6">
+                            <div>
+                              <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1.5">Les Charges</p>
+                              <div className="flex gap-1">
+                                {([true, false] as const).map(val => {
+                                  const isOn = (store as any).settings?.chargesEnabled !== false;
+                                  const isSelected = isOn === val;
+                                  return (
+                                    <button
+                                      key={String(val)}
+                                      disabled={chargesAccessMutation.isPending}
+                                      onClick={() => chargesAccessMutation.mutate({ storeId: store.id, chargesEnabled: val })}
+                                      className={cn("px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition-all disabled:opacity-50",
+                                        isSelected
+                                          ? val
+                                            ? "bg-green-900/30 border-green-600/50 text-green-400"
+                                            : "bg-red-900/30 border-red-600/50 text-red-400"
+                                          : "border-white/10 text-white/30 hover:text-white/60 hover:border-white/25"
+                                      )}
+                                    >
+                                      {val ? "Activé" : "Désactivé"}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
                           </div>
 
                           {/* ── Attach Tracking toggle (dépannage) ─── */}
