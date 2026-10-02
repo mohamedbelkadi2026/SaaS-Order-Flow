@@ -3594,7 +3594,17 @@ export async function registerRoutes(
   // ============================================================
   // GENERAL CHARGES — fixed/operating expenses, scoped per store
   // ============================================================
-  app.get("/api/charges", requireAuth, async (req, res) => {
+  const requireChargesAccess = async (req: any, res: any, next: any) => {
+    const storeId = req.user?.storeId;
+    if (!storeId) return res.status(401).json({ message: "Non authentifié" });
+    if (req.user?.isSuperAdmin) return next();
+    const store = await storage.getStore(storeId);
+    const enabled = (store?.settings as any)?.chargesEnabled !== false;
+    if (!enabled) return res.status(403).json({ message: "Les Charges sont désactivées pour cette boutique." });
+    next();
+  };
+
+  app.get("/api/charges", requireAuth, requireChargesAccess, async (req, res) => {
     const storeId = req.user!.storeId!;
     const { dateFrom, dateTo, month } = req.query as Record<string, string>;
     const conditions: any[] = [eq(generalCharges.storeId, storeId)];
@@ -3610,7 +3620,7 @@ export async function registerRoutes(
     res.json(rows);
   });
 
-  app.post("/api/charges", requireAuth, requireAdmin, async (req, res) => {
+  app.post("/api/charges", requireAuth, requireAdmin, requireChargesAccess, async (req, res) => {
     try {
       const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
       const storeId = req.user!.storeId;
@@ -3635,14 +3645,14 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/charges/:id", requireAuth, requireAdmin, async (req, res) => {
+  app.patch("/api/charges/:id", requireAuth, requireAdmin, requireChargesAccess, async (req, res) => {
     const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
     const [row] = await db.update(generalCharges).set({ name: parsed.name, amount: Math.round(parsed.amount * 100), expenseDate: parsed.expenseDate, note: parsed.note || null }).where(and(eq(generalCharges.id, Number(req.params.id)), eq(generalCharges.storeId, req.user!.storeId!))).returning();
     if (!row) return res.status(404).json({ message: "Charge introuvable" });
     res.json(row);
   });
 
-  app.delete("/api/charges/:id", requireAuth, requireAdmin, async (req, res) => {
+  app.delete("/api/charges/:id", requireAuth, requireAdmin, requireChargesAccess, async (req, res) => {
     const [row] = await db.delete(generalCharges).where(and(eq(generalCharges.id, Number(req.params.id)), eq(generalCharges.storeId, req.user!.storeId!))).returning({ id: generalCharges.id });
     if (!row) return res.status(404).json({ message: "Charge introuvable" });
     res.json({ ok: true });
@@ -17857,16 +17867,24 @@ function ensureHeaders(sheet) {
   app.patch("/api/admin/stores/:id/settings", requireSuperAdmin, async (req, res) => {
     try {
       const storeId = Number(req.params.id);
-      const body = z.object({ allowAttachTracking: z.boolean() }).parse(req.body);
+      const body = z.object({
+        allowAttachTracking: z.boolean().optional(),
+        chargesEnabled: z.boolean().optional(),
+      }).refine(v => v.allowAttachTracking !== undefined || v.chargesEnabled !== undefined, {
+        message: "Aucun réglage fourni",
+      }).parse(req.body);
       const store = await storage.getStore(storeId);
       if (!store) return res.status(404).json({ message: "Boutique introuvable" });
       const existing = (store.settings as Record<string, any>) || {};
       const updated = await storage.updateStore(storeId, {
-        settings: { ...existing, allowAttachTracking: body.allowAttachTracking },
+        settings: { ...existing, ...body },
       });
-      const saved = (updated?.settings as any)?.allowAttachTracking ?? false;
-      console.log(`[ADMIN-SETTINGS] Store ${storeId} allowAttachTracking → ${saved}`);
-      res.json({ allowAttachTracking: saved });
+      const savedSettings = (updated?.settings as any) || {};
+      console.log(`[ADMIN-SETTINGS] Store ${storeId} settings updated`, body);
+      res.json({
+        allowAttachTracking: savedSettings.allowAttachTracking ?? false,
+        chargesEnabled: savedSettings.chargesEnabled !== false,
+      });
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: "Données invalides" });
       res.status(500).json({ message: err.message || "Erreur serveur" });
