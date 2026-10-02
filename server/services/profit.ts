@@ -245,6 +245,17 @@ export async function computeProfitability(
 
   const orderMap = new Map(storeOrders.map(o => [o.id, o]));
 
+  // Hot path: profit rows below need sibling items for every item. Building an
+  // index once avoids repeatedly scanning the entire itemRows array (O(n²)),
+  // which became noticeable on stores with many delivered orders.
+  const itemsByOrderId = new Map<number, typeof itemRows>();
+  for (const row of itemRows) {
+    const orderId = Number(row.orderId);
+    const bucket = itemsByOrderId.get(orderId);
+    if (bucket) bucket.push(row);
+    else itemsByOrderId.set(orderId, [row]);
+  }
+
   // ── Agent commission rates ────────────────────────────────────────────────────
   const agentSettings = await storage.getStoreAgentSettings(storeId);
   const agentRateMap = new Map<number, number>(
@@ -432,7 +443,7 @@ export async function computeProfitability(
         // Revenue belongs to the item itself (order_items.price × qty). When an
         // item has no usable price, split the order total proportionally across
         // its item rows so the sum across products can never exceed the order.
-        const siblings = itemRows.filter((x: any) => x.orderId === item.orderId);
+        const siblings = itemsByOrderId.get(Number(item.orderId)) || [item];
         const itemQty = Number(item.quantity || 1);
         const explicitItemRevenueCents = Number(item.price || 0) * itemQty;
         const explicitOrderItemsCents = siblings.reduce(
