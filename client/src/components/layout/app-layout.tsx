@@ -601,13 +601,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   const navItems = useMemo(() => {
     if (isMediaBuyer) return [...MEDIA_BUYER_NAV];
-    if (!isAgent) return baseNav;
+    if (!isAgent) return baseNav.filter((item) => item.name !== "Les Charges" || (currentStore as any)?.settings?.chargesEnabled !== false);
     return baseNav.filter((item) => {
       if (!AGENT_ALLOWED_HREFS.includes(item.href)) return false;
       if (agentSpecialty === 'suivi' && item.name === 'Nouvelle commande') return false;
       return true;
     });
-  }, [isMediaBuyer, isAgent, baseNav, agentSpecialty, hasInventoryPermission]);
+  }, [isMediaBuyer, isAgent, baseNav, agentSpecialty, hasInventoryPermission, currentStore]);
 
   const visibleOrderSubItems = useMemo(() => {
     if (isMediaBuyer) return ORDER_SUB_ITEMS.filter(s => s.name !== 'Suivi des Colis');
