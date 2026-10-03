@@ -518,11 +518,32 @@ export default function ProfitAnalyzer() {
 
   function buildProductsFromRows(rows: NormalizedRow[]): ProductSummary[] {
     const groupMap: Record<string, { qty: number; rev: number; ship: number; count: number; displayName: string }> = {};
+
     for (const r of rows) {
-      const key = norm(r.designation);
-      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: r.designation };
-      groupMap[key].qty += r.qty; groupMap[key].rev += r.cod; groupMap[key].ship += r.shipping; groupMap[key].count++;
+      // A carrier export can encode a bundle as "Product A + Product B".
+      // Treat those as real component products instead of inventing a third
+      // "bundle product". COD/shipping remain order-level amounts and are
+      // allocated once across the components. Until stock prices are loaded,
+      // use an equal share; cost calculation later still resolves every
+      // component against Stock independently.
+      const parts = r.designation.split(/\s+\+\s+/).map(x => x.trim()).filter(Boolean);
+      const components = parts.length > 1 ? parts : [r.designation];
+      const share = 1 / components.length;
+
+      for (const component of components) {
+        const key = norm(component);
+        if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: component };
+        // CSV quantity describes parcel/item quantity. Each component in a
+        // bundle is present that many times.
+        groupMap[key].qty += r.qty;
+        groupMap[key].rev += r.cod * share;
+        groupMap[key].ship += r.shipping * share;
+        // Shared packaging/confirmation are also allocated via rowCount so
+        // their sum across bundle components equals one order, not two.
+        groupMap[key].count += share;
+      }
     }
+
     return Object.entries(groupMap).map(([, d]) => ({
       name: d.displayName, totalQty: d.qty, totalRevenue: d.rev, totalShipping: d.ship,
       rowCount: d.count, buyingCost: "", packagingCost: "", confirmationFee: "", adSpend: "0",
