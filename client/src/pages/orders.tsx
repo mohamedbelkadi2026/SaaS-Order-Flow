@@ -2972,15 +2972,17 @@ export default function Orders() {
                     : <RotateCcw className="w-4 h-4" />}
                 </button>
               )}
-              <button
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-white active:scale-95"
-                style={{ background: '#16a34a' }}
-                title="Expédier"
-                data-testid="button-mobile-ship"
-                onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }}
-              >
-                <Truck className="w-4 h-4" />
-              </button>
+              {canShipOrders && (
+                <button
+                  className="w-9 h-9 rounded-xl flex items-center justify-center text-white active:scale-95"
+                  style={{ background: '#16a34a' }}
+                  title="Expédier"
+                  data-testid="button-mobile-ship"
+                  onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }}
+                >
+                  <Truck className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>
