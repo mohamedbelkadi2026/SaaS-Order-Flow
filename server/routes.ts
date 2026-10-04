@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection } from "./services/carrier-service";
+import { shipOrderToCarrier, resolveAmeexStockLines, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -2689,6 +2689,13 @@ export async function registerRoutes(
                   }
                 }
 
+                // Ameex STOCK must be resolved from the selected carrier account,
+                // regardless of whether the caller is admin or an agent with can_ship_orders.
+                // This guarantees the exact same STOCK payload and warehouse decrement.
+                const ameexStock = provider.toLowerCase() === 'ameex'
+                  ? resolveAmeexStockLines(order, orderCreds)
+                  : null;
+
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -2710,6 +2717,12 @@ export async function registerRoutes(
                   apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
                   apiSecret:        (orderCreds as any).apiSecret || '',
                   previousAttemptHadPlaceholder: isAmeexRetry,
+                  ...(ameexStock ? {
+                    ameexFulfillmentMode: ameexStock.ameexFulfillmentMode,
+                    ameexItems:           ameexStock.ameexItems,
+                    ameexMissingRefs:     ameexStock.ameexMissingRefs,
+                    ameexProductKey:      (orderCreds as any).settings?.ameexProductKey || (orderCreds as any).ameexProductKey || 'id',
+                  } : {}),
                   cityId:           ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr ?? waselexCityId,
                   ecSettings,
                   ozonSettings,
@@ -17691,6 +17704,12 @@ function ensureHeaders(sheet) {
         console.log(`[WSLX-CITY] order=${orderId} city="${matchedCity}" → city_id=${singleWaselexCityId} ("${resolved.name}")`);
       }
 
+      // Resolve Ameex STOCK from this carrier account for every authorized user.
+      // Permissions only decide WHO may dispatch; they must never change HOW Ameex is called.
+      const singleAmeexStock = provider.toLowerCase() === 'ameex'
+        ? resolveAmeexStockLines(order, creds)
+        : null;
+
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -17711,6 +17730,12 @@ function ensureHeaders(sheet) {
         digylogNetworkId: (creds as any).digylogNetworkId || 1,
         apiId:            (creds as any).apiSecret || (creds as any).settings?.apiId || '',
         apiSecret:        (creds as any).apiSecret || '',
+        ...(singleAmeexStock ? {
+          ameexFulfillmentMode: singleAmeexStock.ameexFulfillmentMode,
+          ameexItems:           singleAmeexStock.ameexItems,
+          ameexMissingRefs:     singleAmeexStock.ameexMissingRefs,
+          ameexProductKey:      (creds as any).settings?.ameexProductKey || (creds as any).ameexProductKey || 'id',
+        } : {}),
         cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr ?? singleWaselexCityId,
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
