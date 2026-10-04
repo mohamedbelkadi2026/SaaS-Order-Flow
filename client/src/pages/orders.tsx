@@ -830,6 +830,7 @@ export default function Orders() {
   const { user } = useAuth();
   const isMediaBuyer = user?.role === 'media_buyer';
   const canUndoOrderDeletion = ['owner', 'admin', 'super_admin'].includes(user?.role ?? '');
+  const canShipOrders = user?.role !== 'agent' || user?.dashboardPermissions?.can_ship_orders === true;
 
   const [filters, setFilters] = useState({
     status: urlStatus,
@@ -1729,9 +1730,11 @@ export default function Orders() {
                     : <RotateCcw className="w-4 h-4" />}
                 </Button>
               )}
-              <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
-                <Truck className="w-4 h-4" />
-              </Button>
+              {canShipOrders && (
+                <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
+                  <Truck className="w-4 h-4" />
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="icon"
