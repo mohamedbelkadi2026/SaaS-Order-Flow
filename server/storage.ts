@@ -4987,6 +4987,8 @@ export class DatabaseStorage implements IStorage {
       show_top_products: false,
       show_inventory: false,
       show_all_orders: false,
+      can_edit_shipping_fee: false,
+      can_ship_orders: false,
     };
     if (!user) return defaults;
     const stored = user.dashboardPermissions as Record<string, boolean> | null;
