@@ -319,6 +319,9 @@ export interface CarrierShipInput {
   productName: string;
   canOpen: boolean;
   isStock?: boolean;     // "Produit en stock" — wired to orders.isStock
+  // Full order lines are required by stock-managed carriers (e.g. Nearya STORE)
+  // so agent dispatch uses the exact same warehouse-stock payload as admin dispatch.
+  items?: any[];
   orderNumber: string;
   orderId: number;
   storeId: number;
