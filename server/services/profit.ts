@@ -457,9 +457,18 @@ export async function computeProfitability(
         // show a 1,990 DH catalogue subtotal while the client actually pays
         // only 849 DH. Across all product rows, allocated revenue must add up
         // to exactly order.totalPrice — never the pre-discount subtotal.
-        const weight = explicitOrderItemsCents > 0
-          ? explicitItemRevenueCents / explicitOrderItemsCents
+        const totalSiblingQty = siblings.reduce(
+          (sum: number, x: any) => sum + Math.max(0, Number(x.quantity || 1)), 0
+        );
+        const quantityWeight = totalSiblingQty > 0
+          ? Math.max(0, itemQty) / totalSiblingQty
           : 1 / Math.max(1, siblings.length);
+        const rawWeight = explicitOrderItemsCents > 0
+          ? explicitItemRevenueCents / explicitOrderItemsCents
+          : quantityWeight;
+        const weight = Number.isFinite(rawWeight)
+          ? Math.max(0, Math.min(1, rawWeight))
+          : quantityWeight;
         const revenueShareCents = orderRevenueCents * weight;
 
         s.revenue += revenueShareCents / 100;
