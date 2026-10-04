@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, SHIPPED_STATUS_SET, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, aiSettings, stores, storeAgentSettings, carrierAccounts, adSpendTracking, generalCharges, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -20,9 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { moroccoDayStart, moroccoDayEnd, moroccoOffsetString } from "@shared/morocco-time";
-import { testMetaConnection, fetchMetaDailySpend, normalizeAdAccountId, listMetaAdAccounts } from "./services/meta-ads";
-import { shipOrderToCarrier, resolveAmeexStockLines, fetchNearyaRegions, mapNearyaStatus, trackNearyaParcel, getNearyaShippingCost, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection, loginOlivraison } from "./services/carrier-service";
+import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -142,60 +140,6 @@ const productImageUpload = multer({
     const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
     if (allowed.includes(file.mimetype)) cb(null, true);
     else cb(new Error("Seuls les fichiers image (JPG, PNG, WEBP) sont acceptés."));
-  },
-});
-
-// WhatsApp AI content uploads (image/audio/video) — separate directory from
-// the general product image upload above, since these are dedicated assets
-// sent by the AI confirmation agent, not the product page's own imageUrl.
-const WA_CONTENT_DIR = path.join(UPLOADS_BASE, "whatsapp-content");
-if (!fs.existsSync(WA_CONTENT_DIR)) fs.mkdirSync(WA_CONTENT_DIR, { recursive: true });
-
-const waImageUpload = multer({
-  storage: multer.diskStorage({
-    destination: WA_CONTENT_DIR,
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
-      cb(null, `wa_img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-    },
-  }),
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error("Seuls les fichiers image (JPG, PNG, WEBP) sont acceptés."));
-  },
-});
-
-const waAudioUpload = multer({
-  storage: multer.diskStorage({
-    destination: WA_CONTENT_DIR,
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase() || ".mp3";
-      cb(null, `wa_audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-    },
-  }),
-  limits: { fileSize: 20 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const allowed = ["audio/mpeg", "audio/mp3", "audio/ogg", "audio/wav", "audio/webm", "audio/aac", "audio/m4a", "audio/x-m4a", "audio/mp4"];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error("Seuls les fichiers audio (MP3, OGG, WAV, M4A) sont acceptés."));
-  },
-});
-
-const waVideoUpload = multer({
-  storage: multer.diskStorage({
-    destination: WA_CONTENT_DIR,
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase() || ".mp4";
-      cb(null, `wa_video_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-    },
-  }),
-  limits: { fileSize: 80 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const allowed = ["video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/3gpp"];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error("Seuls les fichiers vidéo (MP4, WEBM, MOV) sont acceptés."));
   },
 });
 
@@ -488,16 +432,7 @@ function parseWebhookOrder(provider: string, payload: any) {
     const customerAddress = payload.shipping_address
       ? `${payload.shipping_address.address1 || ''} ${payload.shipping_address.address2 || ''}`.trim()
       : '';
-    // Some checkouts never populate a city field — the whole destination
-    // arrives inside address1. Fall back through every place Shopify may put
-    // it before giving up; the free-text recovery happens later, once the
-    // store's carrier city list is available.
-    const customerCity = payload.shipping_address?.city
-      || payload.billing_address?.city
-      || payload.customer?.default_address?.city
-      || payload.shipping_address?.province
-      || payload.billing_address?.province
-      || '';
+    const customerCity = payload.shipping_address?.city || '';
     const totalPrice = Math.round(parseFloat(payload.total_price || '0') * 100);
     const orderNumber = String(payload.order_number || payload.id);
     const lineItems = (payload.line_items || []).map((item: any) => ({
@@ -514,16 +449,7 @@ function parseWebhookOrder(provider: string, payload: any) {
     const customerName = payload.customer?.full_name || payload.customer?.first_name || 'Client YouCan';
     const customerPhone = payload.customer?.phone || payload.shipping_address?.phone || '';
     const customerAddress = payload.shipping_address?.address || '';
-    // Some checkouts never populate a city field — the whole destination
-    // arrives inside address1. Fall back through every place Shopify may put
-    // it before giving up; the free-text recovery happens later, once the
-    // store's carrier city list is available.
-    const customerCity = payload.shipping_address?.city
-      || payload.billing_address?.city
-      || payload.customer?.default_address?.city
-      || payload.shipping_address?.province
-      || payload.billing_address?.province
-      || '';
+    const customerCity = payload.shipping_address?.city || '';
     const totalPrice = Math.round(parseFloat(payload.total_price || payload.total || '0') * 100);
     const orderNumber = String(payload.ref || payload.id || Date.now());
     const lineItems = (payload.items || payload.line_items || []).map((item: any) => ({
@@ -628,7 +554,7 @@ export async function registerRoutes(
     ordersList.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
       else if (o.status === 'Injoignable') injoignable++;
-      else if (o.status === 'Annulé (fake)' || o.status === 'Annulé par client') annuleFake++;
+      else if (o.status === 'Annulé (fake)') annuleFake++;
       else if (o.status === 'Annulé (faux numéro)') annuleFauxNumero++;
       else if (o.status === 'Annulé (double)') annuleDouble++;
       else if (o.status === 'boite vocale') boiteVocale++;
@@ -725,16 +651,7 @@ export async function registerRoutes(
     // like matching an incoming order to a catalog product, may still need
     // archived rows).
     const storeProducts = (await storage.getProductsByStore(storeId)).filter((p: any) => !p.archivedAt);
-    // The agent dropdown is scoped like the orders themselves: a team lead gets
-    // their whole team so they can compare members, a plain agent only
-    // themselves, an owner/admin everyone. Returning every agent here would let
-    // a lead pick someone outside their team and read their numbers.
-    const agentScope = await storage.getVisibleAgentIds(req.user! as any);
-    let storeAgents = (await storage.getUsersByStore(storeId)).filter(u => u.role === 'agent');
-    if (agentScope !== undefined) {
-      const allowedIds = new Set(Array.isArray(agentScope) ? agentScope : [agentScope]);
-      storeAgents = storeAgents.filter(u => allowedIds.has(u.id));
-    }
+    const storeAgents = (await storage.getUsersByStore(storeId)).filter(u => u.role === 'agent');
 
     const cities = [...new Set(allOrders.map(o => o.customerCity).filter(Boolean))].sort();
     const sources = [...new Set(allOrders.map(o => o.source).filter(Boolean))].sort();
@@ -772,29 +689,12 @@ export async function registerRoutes(
     let agentPermissions: Record<string, boolean> = {};
     if (isAgent) {
       agentPermissions = await storage.getAgentPermissions(currentUser.id);
-    }
-
-    // A team lead is scoped to their team rather than to themselves, and may
-    // narrow to any single member of it — that's the point of the role. The
-    // scope is re-applied to the order set below even when an agentId is
-    // passed, so a crafted request can't reach an agent outside the team.
-    const statsScope = await storage.getVisibleAgentIds(currentUser as any);
-    const teamIds = Array.isArray(statsScope) ? statsScope : null;
-
-    if (teamIds) {
-      // Pinning to self must NOT apply here: the lead's whole purpose is the
-      // team view. Anything outside the team falls back to the full team.
-      agentId = agentId && agentId !== 'all' && teamIds.includes(Number(agentId))
-        ? String(agentId)
-        : 'all';
-    } else if (isAgent && !agentPermissions.show_store_orders) {
-      agentId = String(currentUser.id);
+      if (!agentPermissions.show_store_orders) {
+        agentId = String(currentUser.id);
+      }
     }
 
     let allOrders = await storage.getOrdersByStore(storeId);
-    if (teamIds) {
-      allOrders = allOrders.filter(o => o.assignedToId != null && teamIds.includes(o.assignedToId));
-    }
 
     if (city && city !== 'all') {
       allOrders = allOrders.filter(o => o.customerCity === city);
@@ -947,26 +847,6 @@ export async function registerRoutes(
     let totalShipped = 0, deliveredShipped = 0, refusedShipped = 0, pendingShipped = 0;
     const byCarrier: Record<string, { total: number; delivered: number; pending: number; refused: number }> = {};
 
-    // ── Ledger truth for "shipped"/"returned" — supplements SHIPPED_STATUSES_SET
-    // and trackNumber below (see the 'EN COURS single source of truth' comment):
-    // a carrier can't report 'customer unreachable' without a package that
-    // already left the warehouse, regardless of which raw status string a
-    // given carrier/import used — so a stockMovements ledger row is proof
-    // even when status/trackNumber alone wouldn't catch it (5899bf5).
-    const statsOrderIds = allOrders.map((o: any) => o.id);
-    const statsShippedOrderIds = new Set<number>();
-    const statsReturnedOrderIds = new Set<number>();
-    if (statsOrderIds.length > 0) {
-      const statsMovements = await db.select({ orderId: stockMovements.orderId, type: stockMovements.type })
-        .from(stockMovements)
-        .where(and(eq(stockMovements.storeId, storeId), inArray(stockMovements.orderId, statsOrderIds)));
-      for (const m of statsMovements) {
-        if (m.orderId == null) continue;
-        if (m.type === 'shipped' || m.type === 'delivered') statsShippedOrderIds.add(m.orderId);
-        else if (m.type === 'returned') statsReturnedOrderIds.add(m.orderId);
-      }
-    }
-
     allOrders.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
       else if (o.status === 'rappel') rappel++;
@@ -1016,23 +896,12 @@ export async function registerRoutes(
     // filtered) when dateType==='creation', or the pickupDate-filtered set
     // when dateType==='shipping'. This is what lets EXPÉDIÉS reconcile with
     // a carrier's own ship-date-based count.
-    // Returned statuses — aligned with isReturnStatus() (server/storage.ts):
-    // any status containing "retour" (case-insensitive), same as the
-    // Historique drawer's definition. The old hardcoded 3-value set
-    // ['refused', 'retourné', 'Retour Recu'] missed statuses like
-    // 'En Cours De Retour', causing them to be counted as 'En cours'
-    // in Dashboard while Historique correctly filed them as returned.
-    const isRetourStatus = (s: string) => s.toLowerCase().includes('retour');
-    const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu', 'En Cours De Retour', 'retourné', 'En cours de réception']);
-    const shippedOrders = shippedCohortOrders.filter(o =>
-      statsShippedOrderIds.has(o.id) || SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber
-    );
+    const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
+    const shippedOrders = shippedCohortOrders.filter(o => SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
     totalShipped = shippedOrders.length;
     deliveredShipped = shippedOrders.filter(o => isDeliveredStatus(o.status)).length;
-    refusedShipped = shippedOrders.filter(o => statsReturnedOrderIds.has(o.id) || isRetourStatus(o.status) || RETURNED_STATUSES.has(o.status)).length;
-    pendingShipped = shippedOrders.filter(o =>
-      !isDeliveredStatus(o.status) && !statsReturnedOrderIds.has(o.id) && !isRetourStatus(o.status) && !RETURNED_STATUSES.has(o.status)
-    ).length;
+    refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
+    pendingShipped = shippedOrders.filter(o => !isDeliveredStatus(o.status) && !RETURNED_STATUSES.has(o.status)).length;
 
     // Per-carrier breakdown — recomputed from the same shipping/delivery
     // cohort (a carrier shipment always has a tracking number).
@@ -1135,14 +1004,8 @@ export async function registerRoutes(
       rawProductMap[key].total++;
       // confirme column = ALL confirmed: 'confirme' + 'expédié' + 'delivered'
       if (isConfirmedCumulative(o.status)) rawProductMap[key].confirme++;
-      // inProgress = all orders currently with the carrier — same robust
-      // definition as the main EN COURS card above (ledger OR status OR
-      // trackNumber), not the old hardcoded 6-status list which missed
-      // 'Injoignable' and several valid SHIPPED_STATUS_SET strings entirely.
-      if (!isDeliveredStatus(o.status) && !statsReturnedOrderIds.has(o.id) && !isRetourStatus(o.status) && !RETURNED_STATUSES.has(o.status) &&
-          (statsShippedOrderIds.has(o.id) || SHIPPED_STATUSES_SET.has(o.status) || !!(o as any).trackNumber)) {
-        rawProductMap[key].inProgress++;
-      }
+      // inProgress = all orders currently with the carrier
+      if (['in_progress', 'expédié', 'Attente De Ramassage', 'transit', 'unreachable', 'En Cours De Retour'].includes(o.status)) rawProductMap[key].inProgress++;
       if (isDeliveredStatus(o.status)) rawProductMap[key].delivered++;
     });
     const productPerformance = Object.values(rawProductMap).sort((a, b) => b.total - a.total);
@@ -1161,7 +1024,6 @@ export async function registerRoutes(
     }
 
     let adSpendTotal = 0;
-    let byPlatformMetaSeed: { spend: number; delivered: number; revenue: number } | null = null;
     const productAdCostMap: Record<number, number> = {};
     const activeProductId = (productId && productId !== 'all') ? Number(productId) : null;
     // Legacy adSpendTracking — amounts stored in DH → multiply by 100 to convert to centimes
@@ -1195,40 +1057,8 @@ export async function registerRoutes(
       if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + amountCents;
     });
 
-    // Meta Ads — imported automatically, converted to MAD and attributed to
-    // products through the campaign mapping. Skipped when the source filter
-    // excludes it, so the platform breakdown stays consistent.
-    let metaUnattributed = 0;
-    if (!adSourceFilter || /^(meta|facebook)/i.test(adSourceFilter)) {
-      const meta = await storage.getMetaSpendForProfit(storeId, dateFrom, dateTo);
-      metaUnattributed = meta.unattributed;
-
-      if (activeProductId !== null) {
-        // Viewing one product: charge it only what its own campaigns spent.
-        // Unmapped spend belongs to no product and must not be spread around.
-        const own = meta.byProduct[activeProductId] || 0;
-        adSpendTotal += own;
-        if (own) productAdCostMap[activeProductId] = (productAdCostMap[activeProductId] || 0) + own;
-      } else {
-        // Store-wide: every dirham counts, mapped or not — it was spent either
-        // way, and hiding it would overstate the profit.
-        adSpendTotal += meta.total;
-        for (const [pid, amount] of Object.entries(meta.byProduct)) {
-          productAdCostMap[Number(pid)] = (productAdCostMap[Number(pid)] || 0) + amount;
-        }
-      }
-
-      if (meta.total) {
-        if (!byPlatformMetaSeed) byPlatformMetaSeed = { spend: 0, delivered: 0, revenue: 0 };
-        byPlatformMetaSeed.spend += activeProductId !== null
-          ? (meta.byProduct[activeProductId] || 0)
-          : meta.total;
-      }
-    }
-
     // Build per-platform ad spend breakdown
     const byPlatform: Record<string, { spend: number; delivered: number; revenue: number }> = {};
-    if (byPlatformMetaSeed) byPlatform['Facebook Ads'] = byPlatformMetaSeed;
 
     adSpendEntries.forEach((e: any) => {
       if (activeProductId !== null && e.productId !== activeProductId) return;
@@ -1275,15 +1105,15 @@ export async function registerRoutes(
       dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
     });
     // computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
-    // profResult.totals.netProfit is the per-product sum — each row already subtracts its own
-    // adSpend share (see profit.ts), BUT ad spend entries with no productId (a general expense
-    // like "Facebook Ads" not tied to any specific product) go into profResult.globalAdSpend
-    // instead, and totals.netProfit never subtracts that. Confirmed live: Dashboard showed
-    // +12995.00 DH while Rentabilité Avancée (getAdminProfitSummary, which correctly sums ALL ad
-    // spend regardless of product link) showed the correct -10415.00 DH for the same period — a
-    // 23410.00 DH gap matching an unlinked "Facebook Ads" entry exactly. Must subtract
-    // globalAdSpend here too, on top of totals.netProfit, to match every other profit view.
-    const netProfit = Math.round((profResult.totals.netProfit - profResult.globalAdSpend) * 100);
+    // profResult.totals.netProfit is ALREADY the fully-final profit — each per-product row is
+    // revenue − productCost − shippingCost − packagingCost − confirmationCost − adSpend (see
+    // profit.ts), summed into totals. Do NOT subtract adSpendTotal again here — that used to
+    // double-count ad spend, making PROFIT NET on this dashboard disagree with the identical
+    // formula on Rentabilité Avancée for the exact same period (by exactly the ad-spend amount,
+    // e.g. -11457.96 DH here vs the correct +11308.52 DH there — a 22766.48 DH gap, matching
+    // Dépenses publicitaires exactly). adSpendTotal is still used below for ROAS/ROI, which
+    // legitimately need it as a standalone figure.
+    const netProfit = Math.round(profResult.totals.netProfit * 100);
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
@@ -1317,10 +1147,6 @@ export async function registerRoutes(
       roas: canRevenue ? roas : undefined,
       roi: canRevenue ? roi : undefined,
       adSpendTotal: canRevenue ? adSpendTotal : undefined,
-      // Spend on campaigns not yet linked to a product: counted in the store
-      // total but chargeable to nothing, so each product's profit reads higher
-      // than it really is until the campaign is mapped.
-      metaUnattributed: canRevenue ? metaUnattributed : undefined,
       profit: canProfit ? netProfit : undefined,
       totalProductCost: canProfit ? totalProductCost : undefined,
       totalShipping: canProfit ? totalShipping : undefined,
@@ -2221,25 +2047,17 @@ export async function registerRoutes(
       const storeId = req.user!.storeId!;
       const sub = await storage.getSubscription(storeId);
       const now = new Date();
-      // The subscription is counted over the merchant's OWN period (their
-      // anniversary day), not the calendar month. Dashboard filters are
-      // unrelated and stay on calendar months — see shared/billing.ts.
-      const usage = await storage.getBillingUsage(storeId);
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const [monthlyCount] = await db.select({ count: count() }).from(orders)
+        .where(and(eq(orders.storeId, storeId), gte(orders.createdAt, monthStart), lt(orders.createdAt, monthEnd)));
       const teamMembers = await db.select().from(users).where(eq(users.storeId, storeId));
       res.json({
         plan: sub?.plan ?? 'starter',
-        monthlyLimit: usage.limit,
+        monthlyLimit: sub?.monthlyLimit ?? 1500,
         billingCycleStart: sub?.billingCycleStart,
         isActive: sub?.isActive ?? 1,
-        // Orders inside the current billing period.
-        currentMonthOrders: usage.used,
-        periodStart:  usage.period.start.toISOString(),
-        periodEnd:    usage.period.end.toISOString(),
-        daysLeft:     usage.period.daysLeft,
-        anchorDay:    usage.period.anchorDay,
-        remaining:    usage.remaining,
-        isOverLimit:  usage.isOverLimit,
-        isExpired:    usage.isExpired,
+        currentMonthOrders: Number(monthlyCount?.count ?? 0),
         teamCount: teamMembers.length,
         storeCount: 1,
         month: `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`,
@@ -2373,8 +2191,7 @@ export async function registerRoutes(
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 25,
     };
-    // A team lead sees their whole team; a plain agent only themselves.
-    const agentOnly = await storage.getVisibleAgentIds(user as any);
+    const agentOnly = user.role === 'agent' ? user.id : undefined;
     // Media buyers only see their own attributed orders (by ID or UTM pattern CODE*%)
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
@@ -2408,7 +2225,7 @@ export async function registerRoutes(
       page:  1,
       limit: 100_000, // no pagination for export — return everything matching the filters
     };
-    const agentOnly      = await storage.getVisibleAgentIds(user as any);
+    const agentOnly      = user.role === 'agent'       ? user.id : undefined;
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
       const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
@@ -2466,7 +2283,7 @@ export async function registerRoutes(
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 25,
     };
-    const agentOnly = await storage.getVisibleAgentIds(user as any);
+    const agentOnly = user.role === 'agent' ? user.id : undefined;
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
       const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
@@ -2510,10 +2327,7 @@ export async function registerRoutes(
   app.post("/api/orders/bulk-assign", requireAuth, async (req, res) => {
     try {
       const user = req.user!;
-      // A team lead may reassign, but only orders already belonging to their
-      // team — an agent could otherwise pass any id in the request body.
-      const leadAssign = await storage.isTeamLead(user as any);
-      if (user.role === 'agent' && !leadAssign) {
+      if (user.role === 'agent') {
         return res.status(403).json({ message: "Agents cannot bulk assign orders" });
       }
       const { orderIds, agentId } = req.body;
@@ -2523,17 +2337,6 @@ export async function registerRoutes(
       const targetAgent = await storage.getUserById(Number(agentId));
       if (!targetAgent || targetAgent.storeId !== user.storeId) {
         return res.status(400).json({ message: "Agent not found in your store" });
-      }
-      if (leadAssign) {
-        const scope = await storage.getVisibleAgentIds(user as any);
-        const team = Array.isArray(scope) ? scope : [user.id];
-        const check = await storage.assertOrdersInAgentScope(orderIds.map(Number), user.storeId!, team);
-        if (!check.ok) {
-          return res.status(403).json({ message: `Certaines commandes ne font pas partie de votre équipe (${check.offending.slice(0, 5).join(', ')}).` });
-        }
-        if (!team.includes(Number(agentId))) {
-          return res.status(403).json({ message: "Vous ne pouvez affecter qu'à un agent de votre équipe." });
-        }
       }
       const updated = await storage.bulkAssignOrders(orderIds, Number(agentId), user.storeId!);
       res.json({ updated });
@@ -2547,8 +2350,7 @@ export async function registerRoutes(
     res.setTimeout(60000);
     try {
       const user = req.user!;
-      const leadShip = await storage.isTeamLead(user as any);
-      if (user.role === 'agent' && !leadShip) {
+      if (user.role === 'agent') {
         return res.status(403).json({ message: "Les agents ne peuvent pas expédier en masse" });
       }
 
@@ -2558,17 +2360,6 @@ export async function registerRoutes(
       }
 
       const storeId = user.storeId!;
-
-      // Same scope check as bulk-assign: shipping is irreversible at the
-      // carrier, so a lead must not be able to ship an order outside their team.
-      if (leadShip) {
-        const scope = await storage.getVisibleAgentIds(user as any);
-        const team = Array.isArray(scope) ? scope : [user.id];
-        const check = await storage.assertOrdersInAgentScope(orderIds.map(Number), storeId, team);
-        if (!check.ok) {
-          return res.status(403).json({ message: `Certaines commandes ne font pas partie de votre équipe (${check.offending.slice(0, 5).join(', ')}).` });
-        }
-      }
 
       // ── If user explicitly selected an account, pin all orders to it ──────
       let pinnedCreds: Record<string, any> | null = null;
@@ -2861,27 +2652,6 @@ export async function registerRoutes(
                   }
                 }
 
-                // Nearya: resolve the city onto their `region` id. Unlike the
-                // carriers above there is NO text fallback — their API takes an
-                // id only, so an unresolved city must fail loudly here rather
-                // than create a parcel with an empty destination.
-                let nearyaRegionId: string | undefined;
-                if (provider.toLowerCase() === 'nearya') {
-                  const resolvedN = await storage.resolveNearyaRegion(resolvedCity);
-                  if (!resolvedN) {
-                    return {
-                      success:        false,
-                      error:          `Ville « ${resolvedCity} » non reconnue par Nearya. Synchronisez les villes dans Intégrations → Transporteurs, puis réessayez.`,
-                      carrierMessage: 'City not found in nearya_regions',
-                      httpStatus:     0,
-                      rawResponse:    null,
-                      permanent:      true,
-                    };
-                  }
-                  nearyaRegionId = resolvedN.regionId;
-                  console.log(`[NEARYA-CITY] order=${order.id} city="${resolvedCity}" → region=${nearyaRegionId} ("${resolvedN.name}")`);
-                }
-
                 let vitipsCityAbbr: string | undefined;
                 if (provider.toLowerCase() === 'vitipsexpress') {
                   const resolved = await getVitipsCityAbbrWithTimeout(storeId, resolvedCity, order.id);
@@ -2916,21 +2686,6 @@ export async function registerRoutes(
                   }
                 }
 
-                // Ameex "stock-managed" fulfillment: prefer a per-order
-                // override (orders.ameexProductId, set by the Google Sheets
-                // webhook) if present, otherwise fall back to the product
-                // catalog's own ameexProductId (new — applies to every order
-                // source, not just Google Sheets). First item with one set,
-                // for multi-item orders.
-                const orderAmeexProductId = (order as any).ameexProductId
-                  || (order as any).items?.find((it: any) => it.product?.ameexProductId)?.product?.ameexProductId
-                  || undefined;
-                // Experimental (see CarrierShipInput.productReference comment):
-                // the linked product's own "Référence" field, appended to
-                // Ameex's product text as an unconfirmed matching attempt.
-                const orderProductReference = (order as any).items?.find((it: any) => it.product?.reference)?.product?.reference
-                  || undefined;
-
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -2954,11 +2709,6 @@ export async function registerRoutes(
                   cityId:           ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr ?? waselexCityId,
                   ecSettings,
                   ozonSettings,
-                  ameexProductId:   orderAmeexProductId,
-                  ameexProductKey:  (orderCreds as any).settings?.ameexProductKey || 'id',
-                  ...resolveAmeexStockLines(order, orderCreds),
-                  nearyaRegionId,
-                  productReference: orderProductReference,
                 });
               })
             );
@@ -3044,15 +2794,8 @@ export async function registerRoutes(
                   .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
                 // Static delivery fee fallback (skipped for EC — per-city table takes priority)
                 const fee = (orderCreds as any).deliveryFee || 0;
-                if (fee > 0 && !['expresscoursier', 'nearya'].includes(provider.toLowerCase())) {
+                if (fee > 0 && provider.toLowerCase() !== 'expresscoursier') {
                   allDbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
-                }
-                // Nearya fixed tariff requested by the merchant:
-                // Casablanca = 20 DH, all other cities = 30 DH.
-                if (provider.toLowerCase() === 'nearya') {
-                  const nearyaFee = getNearyaShippingCost((order as any).customerCity || resolvedCity);
-                  console.log(`[NEARYA-COST] Order #${ref} city="${(order as any).customerCity || resolvedCity}" → shippingCost=${nearyaFee} centimes`);
-                  allDbUpdates.push(storage.updateOrder(order.id, { shippingCost: nearyaFee }));
                 }
                 // Try to get real per-city delivery cost from Digylog
                 if (provider === 'digylog') {
@@ -3232,18 +2975,6 @@ export async function registerRoutes(
       res.json({ ok: true, deleted });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Suppression en masse échouée" });
-    }
-  });
-
-  app.get("/api/orders/deletion-history", requireAuth, async (req, res) => {
-    try {
-      const user = req.user!;
-      if (!['owner', 'admin', 'super_admin'].includes(user.role)) {
-        return res.status(403).json({ message: "Accès refusé" });
-      }
-      res.json(await storage.getOrderDeletionHistory(user.storeId!));
-    } catch (err: any) {
-      res.status(500).json({ message: err.message || "Corbeille indisponible" });
     }
   });
 
@@ -3430,14 +3161,7 @@ export async function registerRoutes(
 
   app.get(api.agents.list.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    let agentsList = await storage.getUsersByStore(storeId);
-    // A team lead's Équipe dropdown lists their team, not the whole store —
-    // matching what they can actually filter on. Owners and admins see all.
-    const scope = await storage.getVisibleAgentIds(req.user! as any);
-    if (scope !== undefined) {
-      const allowed = new Set(Array.isArray(scope) ? scope : [scope]);
-      agentsList = agentsList.filter(u => allowed.has(u.id));
-    }
+    const agentsList = await storage.getUsersByStore(storeId);
     res.json(agentsList.map(({ password, ...rest }) => rest));
   });
 
@@ -3592,73 +3316,6 @@ export async function registerRoutes(
   });
 
   // ============================================================
-  // GENERAL CHARGES — fixed/operating expenses, scoped per store
-  // ============================================================
-  const requireChargesAccess = async (req: any, res: any, next: any) => {
-    const storeId = req.user?.storeId;
-    if (!storeId) return res.status(401).json({ message: "Non authentifié" });
-    if (req.user?.isSuperAdmin) return next();
-    const store = await storage.getStore(storeId);
-    const enabled = (store?.settings as any)?.chargesEnabled !== false;
-    if (!enabled) return res.status(403).json({ message: "Les Charges sont désactivées pour cette boutique." });
-    next();
-  };
-
-  app.get("/api/charges", requireAuth, requireChargesAccess, async (req, res) => {
-    const storeId = req.user!.storeId!;
-    const { dateFrom, dateTo, month } = req.query as Record<string, string>;
-    const conditions: any[] = [eq(generalCharges.storeId, storeId)];
-    if (month && /^\\d{4}-\\d{2}$/.test(month)) {
-      conditions.push(gte(generalCharges.expenseDate, month + "-01"));
-      conditions.push(lte(generalCharges.expenseDate, month + "-31"));
-    } else {
-      if (dateFrom) conditions.push(gte(generalCharges.expenseDate, dateFrom));
-      if (dateTo) conditions.push(lte(generalCharges.expenseDate, dateTo));
-    }
-    const rows = await db.select().from(generalCharges).where(and(...conditions))
-      .orderBy(desc(generalCharges.expenseDate), desc(generalCharges.id));
-    res.json(rows);
-  });
-
-  app.post("/api/charges", requireAuth, requireAdmin, requireChargesAccess, async (req, res) => {
-    try {
-      const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
-      const storeId = req.user!.storeId;
-      if (!storeId) return res.status(400).json({ message: "Aucune boutique active." });
-
-      // Do not write created_by here: older production user IDs / restored DBs
-      // can violate that optional FK even though the charge itself is valid.
-      const [row] = await db.insert(generalCharges).values({
-        storeId,
-        name: parsed.name,
-        amount: Math.round(parsed.amount * 100),
-        expenseDate: parsed.expenseDate,
-        note: parsed.note || null,
-      }).returning();
-      res.json(row);
-    } catch (err: any) {
-      console.error("[CHARGES] create failed:", err?.message, err?.code, err?.detail);
-      const msg = err instanceof z.ZodError
-        ? err.issues.map((x: any) => x.message).join(", ")
-        : (err?.code === "42P01" ? "Table des charges absente. Redéployez la dernière version." : "Impossible d'enregistrer la charge.");
-      res.status(err instanceof z.ZodError ? 400 : 500).json({ message: msg });
-    }
-  });
-
-  app.patch("/api/charges/:id", requireAuth, requireAdmin, requireChargesAccess, async (req, res) => {
-    const parsed = z.object({ name: z.string().trim().min(1).max(160), amount: z.coerce.number().positive(), expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), note: z.string().trim().max(1000).nullable().optional() }).parse(req.body);
-    const [row] = await db.update(generalCharges).set({ name: parsed.name, amount: Math.round(parsed.amount * 100), expenseDate: parsed.expenseDate, note: parsed.note || null }).where(and(eq(generalCharges.id, Number(req.params.id)), eq(generalCharges.storeId, req.user!.storeId!))).returning();
-    if (!row) return res.status(404).json({ message: "Charge introuvable" });
-    res.json(row);
-  });
-
-  app.delete("/api/charges/:id", requireAuth, requireAdmin, requireChargesAccess, async (req, res) => {
-    const [row] = await db.delete(generalCharges).where(and(eq(generalCharges.id, Number(req.params.id)), eq(generalCharges.storeId, req.user!.storeId!))).returning({ id: generalCharges.id });
-    if (!row) return res.status(404).json({ message: "Charge introuvable" });
-    res.json({ ok: true });
-  });
-
-  // ============================================================
   // AD SPEND — Publicités module (all authenticated users)
   // ============================================================
   app.get("/api/publicites", requireAuth, async (req, res) => {
@@ -3680,62 +3337,7 @@ export async function registerRoutes(
       opts.userId = user.id;
     }
     const entries = await storage.getAdSpendEntries(storeId, opts);
-
-    // Merge in the automatic Meta import so the page shows one list. Only for
-    // admins and only when the source filter allows it: a media buyer sees
-    // their own manual entries, not the store's whole ad account.
-    const wantsMeta = !source || source === 'all'
-      || /^(meta|facebook)/i.test(source);
-    const metaEntries = (isAdmin && wantsMeta)
-      ? await storage.getMetaSpendAsEntries(storeId, { productId: opts.productId, dateFrom, dateTo })
-      : [];
-
-    const all = [...metaEntries, ...entries];
-
-    // The Par Produit tab answers "what did this product cost over this
-    // period" — so it returns one row per product, manual and imported spend
-    // summed together. Listing every entry meant the same product appeared a
-    // dozen times and the figure had to be added up by hand.
-    // Par Source keeps the raw entries, which is where they stay editable.
-    if (tab === 'produit') {
-      const grouped = new Map<string, any>();
-      for (const e of all) {
-        const key = String(e.productId ?? 'none');
-        const cur = grouped.get(key);
-        if (cur) {
-          cur.amount += Number(e.amount ?? 0);
-          cur.entryCount += 1;
-          if (e.campaignCount) cur.campaignCount = (cur.campaignCount || 0) + e.campaignCount;
-          if (!e.readOnly) cur.hasManual = true;
-          if (e.readOnly)  cur.hasImported = true;
-          if (e.date && (!cur.firstDate || e.date < cur.firstDate)) cur.firstDate = e.date;
-          if (e.date && (!cur.date || e.date > cur.date)) cur.date = e.date;
-        } else {
-          grouped.set(key, {
-            ...e,
-            id: -(grouped.size + 1000),
-            magasinName: e.magasinName ?? null,
-            entryCount: 1,
-            hasManual:   !e.readOnly,
-            hasImported: !!e.readOnly,
-            firstDate: e.firstDate || e.date,
-            // An aggregate is never editable: it isn't a stored row. The
-            // individual entries remain editable under Par Source.
-            readOnly: true,
-          });
-        }
-      }
-      const rows = Array.from(grouped.values())
-        .map(g => ({
-          ...g,
-          periodLabel: g.firstDate === g.date ? g.date : `${g.firstDate} → ${g.date}`,
-          source: g.hasManual && g.hasImported ? 'Mixte' : g.source,
-        }))
-        .sort((a, b) => b.amount - a.amount);
-      return res.json(rows);
-    }
-
-    res.json(all);
+    res.json(entries);
   });
 
   app.post("/api/publicites", requireAuth, async (req, res) => {
@@ -4067,8 +3669,8 @@ export async function registerRoutes(
         timeZone: "Africa/Casablanca",
         year: "numeric", month: "2-digit", day: "2-digit",
       }).format(new Date());
-      const from = moroccoDayStart(ymd);
-      const to = moroccoDayEnd(ymd);
+      const from = new Date(`${ymd}T00:00:00.000+01:00`);
+      const to = new Date(`${ymd}T23:59:59.999+01:00`);
 
       const allStoreOrders = await storage.getOrdersByStore(thisStoreId);
       const todays = allStoreOrders.filter(o => {
@@ -4106,8 +3708,7 @@ export async function registerRoutes(
 
   // ── PART A diagnostic — exposes the truth behind CONFIRMÉES/LIVRÉES numbers ──
   // Read-only. Computes every candidate definition for the CURRENTLY SELECTED
-  // range (dateFrom/dateTo query params, Africa/Casablanca day boundary —
-  // the offset is resolved per date, since Morocco drops to UTC+0 for Ramadan)
+  // range (dateFrom/dateTo query params, Africa/Casablanca +01:00 boundary)
   // plus duplicate Shopify orders, so support/admins can see exactly why two
   // cards might disagree. Does not modify any data.
   app.get("/api/admin/diag/stats-truth", requireAuth, requireAdmin, async (req, res) => {
@@ -4117,14 +3718,14 @@ export async function registerRoutes(
 
       let allOrders = await storage.getOrdersByStore(storeId);
 
-      // Apply the SAME Africa/Casablanca date-boundary semantics used
+      // Apply the SAME +01:00 Africa/Casablanca date-boundary semantics used
       // by the rest of the diag/stats endpoints.
       if (dateFrom) {
-        const from = moroccoDayStart(dateFrom.substring(0, 10));
+        const from = new Date(`${dateFrom.substring(0, 10)}T00:00:00.000+01:00`);
         allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt as any) >= from);
       }
       if (dateTo) {
-        const to = moroccoDayEnd(dateTo.substring(0, 10));
+        const to = new Date(`${dateTo.substring(0, 10)}T23:59:59.999+01:00`);
         allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt as any) <= to);
       }
 
@@ -4170,7 +3771,7 @@ export async function registerRoutes(
       }
 
       res.json({
-        range: { dateFrom: dateFrom ?? null, dateTo: dateTo ?? null, timezone: `Africa/Casablanca (${moroccoOffsetString()})` },
+        range: { dateFrom: dateFrom ?? null, dateTo: dateTo ?? null, timezone: "Africa/Casablanca (+01:00)" },
         total,
         duplicates: { groups: duplicates, duplicateExtra },
         confirmedCount,
@@ -4471,400 +4072,8 @@ export async function registerRoutes(
   });
 
   // ============================================================
-  // META ADS — daily spend import
-  // ============================================================
-
-  /** Read the saved Meta credentials for a store, if any. */
-  const getMetaCreds = async (storeId: number): Promise<{ adAccountId: string; accessToken: string; adAccountIds: string[] } | null> => {
-    const rows = await storage.getIntegrationsByStore(storeId, 'ads');
-    const meta = rows.find((i: any) => i.provider === 'meta' && i.isActive !== 0);
-    if (!meta) return null;
-    try {
-      const c = JSON.parse((meta as any).credentials || '{}');
-      if (!c.adAccountId || !c.accessToken) return null;
-      // One Business Manager can hold several ad accounts. adAccountIds is the
-      // full list the merchant chose to import; adAccountId stays as the first
-      // one for anything still expecting a single value.
-      const ids: string[] = Array.isArray(c.adAccountIds) && c.adAccountIds.length
-        ? c.adAccountIds
-        : [c.adAccountId];
-      return { adAccountId: c.adAccountId, accessToken: c.accessToken, adAccountIds: ids };
-    } catch { return null; }
-  };
-
-  // Which ad accounts this token can see — used to offer the list at connect
-  // time instead of making the merchant paste each id by hand.
-  app.post("/api/meta-ads/accounts", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const token = String(req.body?.accessToken || '');
-      if (!token) return res.status(400).json({ message: "Token requis." });
-      const { accounts, error } = await listMetaAdAccounts(token);
-      if (error) return res.status(400).json({ message: error });
-      res.json({ accounts });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  /**
-   * Remember the outcome of the last import on the integration row.
-   *
-   * A token that has been revoked makes the sync fail silently: the merchant
-   * keeps seeing yesterday's spend and a profit figure that quietly drifts. The
-   * last error is stored so the Publicités page can say so.
-   */
-  const recordMetaSyncResult = async (storeId: number, rowCount: number, error: string | null) => {
-    try {
-      const existing: any = (await storage.getIntegrationsByStore(storeId, 'ads'))
-        .find((i: any) => i.provider === 'meta');
-      if (!existing) return;
-      const c = JSON.parse(existing.credentials || '{}');
-      c.lastSyncAt = new Date().toISOString();
-      c.lastSyncRows = rowCount;
-      c.lastError = error;
-      await storage.updateIntegration(existing.id, { credentials: JSON.stringify(c) } as any);
-    } catch (e: any) {
-      console.warn(`[META] could not record sync result: ${e?.message}`);
-    }
-  };
-
-  // Status for the Publicités page. Never returns the token — only whether one
-  // is stored, matching how carrier credentials are handled.
-  app.get("/api/meta-ads/status", requireAuth, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const rows = await storage.getIntegrationsByStore(storeId, 'ads');
-      const meta: any = rows.find((i: any) => i.provider === 'meta');
-      if (!meta) return res.json({ connected: false });
-      let c: any = {};
-      try { c = JSON.parse(meta.credentials || '{}'); } catch {}
-      res.json({
-        connected:    !!(c.adAccountId && c.accessToken),
-        adAccountId:  c.adAccountId || '',
-        // Every account being imported, with the names cached at connect time
-        // so the card can list them without calling Meta on every page load.
-        adAccountIds: Array.isArray(c.adAccountIds) && c.adAccountIds.length ? c.adAccountIds : (c.adAccountId ? [c.adAccountId] : []),
-        accountNames: c.accountNames || {},
-        accountName:  c.accountName || null,
-        currency:     c.currency || null,
-        timezone:     c.timezone || null,
-        lastSyncAt:   c.lastSyncAt || null,
-        lastSyncRows: c.lastSyncRows ?? null,
-        lastError:    c.lastError || null,
-        isActive:     meta.isActive !== 0,
-      });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  // Save credentials. The pair is verified against Meta first: storing a bad
-  // token means a silent zero in the profit report days later.
-  app.post("/api/meta-ads/connect", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const { adAccountId, accessToken } = req.body || {};
-      if (!adAccountId || !accessToken) {
-        return res.status(400).json({ message: "Identifiant de compte publicitaire et token requis." });
-      }
-
-      const test = await testMetaConnection(String(adAccountId), String(accessToken));
-      if (!test.ok) return res.status(400).json({ message: test.error });
-
-      const credentials = JSON.stringify({
-        adAccountId: normalizeAdAccountId(String(adAccountId)),
-        accessToken: String(accessToken),
-        accountName: test.accountName || null,
-        currency:    test.currency || null,
-        timezone:    test.timezone || null,
-        // Which magasin this ad account's spend belongs to. An ad account has
-        // no notion of magasin, so the merchant says once and every imported
-        // row inherits it — otherwise the Magasin column and filter are empty
-        // for half the spend.
-        magasinId:   req.body?.magasinId ? Number(req.body.magasinId) : null,
-        // Every account to import from. Defaults to the one entered, so a
-        // single-account merchant sees no change.
-        adAccountIds: Array.isArray(req.body?.adAccountIds) && req.body.adAccountIds.length
-          ? req.body.adAccountIds.map((v: any) => normalizeAdAccountId(String(v)))
-          : [normalizeAdAccountId(String(adAccountId))],
-        accountNames: req.body?.accountNames && typeof req.body.accountNames === 'object'
-          ? req.body.accountNames
-          : { [normalizeAdAccountId(String(adAccountId))]: test.accountName || '' },
-      });
-
-      const existing = (await storage.getIntegrationsByStore(storeId, 'ads'))
-        .find((i: any) => i.provider === 'meta');
-
-      if (existing) {
-        await storage.updateIntegration((existing as any).id, { credentials, isActive: 1 } as any);
-      } else {
-        await storage.createIntegration({
-          storeId, type: 'ads', provider: 'meta', credentials, isActive: 1,
-        } as any);
-      }
-
-      res.json({ connected: true, accountName: test.accountName, currency: test.currency, timezone: test.timezone });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  /**
-   * Add or remove one ad account on an existing connection.
-   *
-   * Reconnecting to add a second account meant re-pasting the token and losing
-   * the magasin — and a mistyped token would have dropped a working connection.
-   */
-  app.post("/api/meta-ads/accounts/manage", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const action = String(req.body?.action || 'add');
-      const rawId = String(req.body?.adAccountId || '');
-      if (!rawId) return res.status(400).json({ message: "Identifiant de compte requis." });
-      const acct = normalizeAdAccountId(rawId);
-
-      const existing: any = (await storage.getIntegrationsByStore(storeId, 'ads'))
-        .find((i: any) => i.provider === 'meta');
-      if (!existing) return res.status(400).json({ message: "Meta Ads n'est pas connecté." });
-
-      const c = JSON.parse(existing.credentials || '{}');
-      const ids: string[] = Array.isArray(c.adAccountIds) && c.adAccountIds.length
-        ? c.adAccountIds : (c.adAccountId ? [c.adAccountId] : []);
-      c.accountNames = c.accountNames || {};
-
-      if (action === 'remove') {
-        if (ids.length <= 1) {
-          return res.status(400).json({ message: "Impossible de retirer le dernier compte — déconnectez Meta Ads à la place." });
-        }
-        c.adAccountIds = ids.filter(i => i !== acct);
-        delete c.accountNames[acct];
-        if (c.adAccountId === acct) c.adAccountId = c.adAccountIds[0];
-      } else {
-        if (ids.includes(acct)) return res.status(400).json({ message: "Ce compte est déjà ajouté." });
-        // Verify with the existing token before adding: an account the token
-        // can't read would import nothing and look like a silent failure.
-        const test = await testMetaConnection(acct, c.accessToken);
-        if (!test.ok) return res.status(400).json({ message: test.error });
-        c.adAccountIds = [...ids, acct];
-        c.accountNames[acct] = test.accountName || '';
-      }
-
-      await storage.updateIntegration(existing.id, { credentials: JSON.stringify(c) } as any);
-      res.json({ adAccountIds: c.adAccountIds, accountNames: c.accountNames });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  /**
-   * Manual Facebook entries that overlap the Meta import.
-   *
-   * A merchant who typed their Facebook spend by hand before connecting Meta
-   * now has it twice over the overlapping days: once by hand, once imported.
-   * Both land in the profit calculation, so the ad budget is overstated and
-   * the net profit understated by the same amount.
-   *
-   * Read-only: this reports what overlaps so the merchant decides, rather than
-   * deleting figures they may have entered deliberately.
-   */
-  app.get("/api/meta-ads/duplicates", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const rows = await storage.getFacebookManualOverlappingMeta(storeId);
-      res.json(rows);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.post("/api/meta-ads/duplicates/delete", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
-      if (!ids.length) return res.status(400).json({ message: "Aucune entrée sélectionnée." });
-      const deleted = await storage.deleteAdSpendEntries(storeId, ids);
-      res.json({ deleted });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.post("/api/meta-ads/disconnect", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const existing = (await storage.getIntegrationsByStore(storeId, 'ads'))
-        .find((i: any) => i.provider === 'meta');
-      if (existing) await storage.deleteIntegration((existing as any).id);
-      res.json({ disconnected: true });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  // Manual import. `days` defaults to 7; Meta restates figures for up to 72h,
-  // so re-reading a trailing window is deliberate and the upsert overwrites.
-  app.post("/api/meta-ads/sync", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const creds = await getMetaCreds(storeId);
-      if (!creds) return res.status(400).json({ message: "Meta Ads n'est pas connecté." });
-
-      // An explicit range wins over `days`, so the page can import exactly the
-      // period the merchant is looking at rather than a rolling window.
-      const isDate = (v: any) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
-      let sinceStr: string, untilStr: string;
-
-      if (isDate(req.body?.since) && isDate(req.body?.until)) {
-        sinceStr = req.body.since;
-        untilStr = req.body.until;
-        if (sinceStr > untilStr) [sinceStr, untilStr] = [untilStr, sinceStr];
-        // Meta refuses very long ranges and they are slow to page through.
-        const spanDays = (Date.parse(untilStr) - Date.parse(sinceStr)) / 86400000;
-        if (spanDays > 400) {
-          return res.status(400).json({ message: "Période trop longue (400 jours maximum)." });
-        }
-      } else {
-        const days = Math.min(400, Math.max(1, Number(req.body?.days) || 7));
-        const untilD = new Date();
-        const sinceD = new Date(untilD.getTime() - (days - 1) * 86400000);
-        // Local date: toISOString() rolls back an hour in Morocco, so a
-        // window meant to start today began yesterday.
-        const fmt = (d: Date) =>
-          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-        sinceStr = fmt(sinceD);
-        untilStr = fmt(untilD);
-      }
-
-      const fmt = (d: Date) =>
-        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      const since = new Date(sinceStr), until = new Date(untilStr);
-      // Import every configured account, not just the first: missing one would
-      // under-report the ad budget and overstate the profit.
-      let saved = 0;
-      let lastError: string | null = null;
-      let anyRows = false;
-
-      for (const acct of creds.adAccountIds) {
-        const { rows, error } = await fetchMetaDailySpend(acct, creds.accessToken, sinceStr, untilStr);
-        if (error && !rows.length) { lastError = `${acct}: ${error}`; continue; }
-        if (rows.length) anyRows = true;
-        saved += await storage.upsertMetaAdSpend(storeId, rows, acct);
-      }
-
-      if (!anyRows && lastError) {
-        await recordMetaSyncResult(storeId, 0, lastError);
-        return res.status(502).json({ message: lastError });
-      }
-      const error = lastError;
-      await recordMetaSyncResult(storeId, saved, error || null);
-      res.json({ synced: saved, since: fmt(since), until: fmt(until), warning: error || null });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  /**
-   * Campaigns that have spend, with their mapped product.
-   *
-   * Amounts are converted to MAD here using the rate the merchant set, so the
-   * whole app shows one currency. The raw figure stays untouched in the
-   * database: converting on import would bake one day's rate into history.
-   */
-  app.get("/api/meta-ads/campaigns", requireAuth, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const { since, until } = req.query as Record<string, string>;
-      const rows = await storage.getMetaCampaignsWithMapping(storeId, since, until);
-
-      const store: any = await storage.getStore(storeId);
-      const rate = (store?.usdToMadRate ?? 1000) / 100;
-
-      res.json({
-        rate,
-        campaigns: rows.map(c => ({
-          ...c,
-          // amountMad is centimes of MAD, like every other money field here.
-          amountMad: c.currency === 'MAD' ? c.totalAmount : Math.round(c.totalAmount * rate),
-        })),
-        unmappedCount: rows.filter(c => !c.productId).length,
-      });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.post("/api/meta-ads/campaigns/map", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const { campaignId, campaignName, productId } = req.body || {};
-      if (!campaignId) return res.status(400).json({ message: "campaignId requis." });
-
-      if (productId != null) {
-        // Guard the store boundary: a product id from another store would
-        // silently attribute this store's spend to someone else's catalogue.
-        const p: any = await storage.getProduct(Number(productId));
-        if (!p || p.storeId !== storeId) {
-          return res.status(400).json({ message: "Produit introuvable dans votre boutique." });
-        }
-      }
-
-      await storage.setCampaignProductMapping(
-        storeId, String(campaignId), String(campaignName || campaignId),
-        productId == null ? null : Number(productId),
-      );
-      res.json({ mapped: productId != null });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  // The merchant settles USD spend at a rate they negotiate, so they set it.
-  app.post("/api/meta-ads/rate", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const rate = Number(req.body?.rate);
-      if (!Number.isFinite(rate) || rate <= 0 || rate > 100) {
-        return res.status(400).json({ message: "Taux invalide." });
-      }
-      await storage.updateStore(storeId, { usdToMadRate: Math.round(rate * 100) } as any);
-      res.json({ rate });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  // Spend rows for the Publicités page.
-  app.get("/api/meta-ads/spend", requireAuth, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const { since, until } = req.query as Record<string, string>;
-      res.json(await storage.getMetaAdSpend(storeId, since, until));
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  // ============================================================
   // CARRIER ACCOUNTS (Multi-account per carrier)
   // ============================================================
-
-  /**
-   * Strip carrier secrets from a row before it leaves the server.
-   *
-   * GET /api/carrier-accounts already did this, but the create and update
-   * responses returned the row verbatim — so every save echoed the raw apiKey
-   * and apiSecret back into the browser, where anyone with access to the
-   * account could read them from the network tab. The shape matches the GET so
-   * the frontend needs no change.
-   */
-  const maskCarrierAccount = (row: any) => {
-    const { apiKey, apiSecret, ...rest } = row || {};
-    return {
-      ...rest,
-      hasApiKey:    !!(apiKey && apiKey.length > 0),
-      apiKeyMasked: apiKey ? (apiKey.slice(0, 4) + "•".repeat(Math.max(0, apiKey.length - 4))) : "",
-    };
-  };
 
   app.get("/api/carrier-accounts", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
@@ -4915,11 +4124,6 @@ export async function registerRoutes(
         isDefault:      a.isDefault,
         isActive:       a.isActive,
         assignmentRule: a.assignmentRule,
-        // Which boutique this connection belongs to. With several shops on one
-        // account the connection name alone ("Connection 1") doesn't say which
-        // shop you're about to ship from.
-        storeName:      a.storeName || null,
-        magasinId:      a.magasinId ?? null,
       })));
     } catch (err: any) {
       console.error(`[DISPATCH-ERROR]: Exception in /api/shipping/active-accounts — ${err.message}`);
@@ -5000,7 +4204,7 @@ export async function registerRoutes(
         message: `Compte transporteur "${name}" créé pour ${carrierName}`,
       }).catch(e => console.error('[LOG-ERROR] createIntegrationLog:', e));
 
-      res.json(maskCarrierAccount(acct));
+      res.json(acct);
 
       // Fire-and-forget: pull live status for every existing order shipped via this
       // carrier so historical (pre-integration) orders catch up automatically.
@@ -5018,33 +4222,14 @@ export async function registerRoutes(
         (async () => {
           try {
             const axiosLib = (await import('axios')).default;
-            // Same endpoint as the manual "Synchroniser les villes" route
-            // (app.post("/api/carrier-accounts/:id/sync-cities") below) — NOT
-            // app.ameex.ma, which doesn't match the domain used everywhere
-            // else for Ameex (api.ameex.app, confirmed working for shipping/
-            // tracking) and was returning an unrelated/incomplete city list.
-            const resp = await axiosLib.get('https://api.ameex.app/customer/Delivery/Cities/Action/Type/Get', {
+            const resp = await axiosLib.get('https://app.ameex.ma/api/v1/cities', {
               headers: { 'Authorization': `Bearer ${acct.apiKey}`, 'Accept': 'application/json' },
               timeout: 15000,
               validateStatus: () => true,
             });
             if (resp.status === 200 && resp.data) {
-              // Ameex's real shape (confirmed by the manual "Synchroniser les
-              // villes" route below): {"api":{"cities":{"1":{"name":"Marrakech"}}}}
-              // — an OBJECT keyed by id, not an array. The old parsing here
-              // expected resp.data / resp.data.data / resp.data.cities to be
-              // an array, which they never are for Ameex — cityNames always
-              // came back empty from this specific fetch (silently falling
-              // through to whatever was already cached, or nothing).
-              const citiesObj = resp.data?.api?.cities || resp.data?.cities || {};
-              const rawNames: string[] = Object.values(citiesObj as Record<string, any>)
-                .map((c: any) => (c?.name || c?.ville || "").trim())
-                .filter(Boolean);
-              // Dedupe — Ameex's response can list the same city name more
-              // than once (e.g. distinct sub-district/commune entries sharing
-              // a display name), which showed up as repeated entries in the
-              // city picker dropdown.
-              const cityNames: string[] = Array.from(new Set(rawNames));
+              const cityData = Array.isArray(resp.data) ? resp.data : (resp.data.data || resp.data.cities || []);
+              const cityNames: string[] = cityData.map((c: any) => c.name || c.ville || c.label || c).filter(Boolean);
               if (cityNames.length > 0) {
                 await storage.upsertCarrierCities(storeId, 'ameex', acct.id, cityNames);
                 console.log(`[AMEEX-CITIES-BG] Synced ${cityNames.length} cities for new account #${acct.id}`);
@@ -5111,7 +4296,7 @@ export async function registerRoutes(
       } else {
         console.log(`[CARRIER-UPDATE] Account #${id} updated (no token change) — fields: ${Object.keys(req.body).join(', ')}`);
       }
-      res.json({ ...maskCarrierAccount(updated), tokenUpdated });
+      res.json({ ...updated, tokenUpdated });
     } catch (error: any) {
       console.error('[DB-ERROR] PATCH /api/carrier-accounts:', error?.message || error);
       res.status(500).json({ message: error?.message || 'Erreur serveur lors de la mise à jour du compte' });
@@ -5498,45 +4683,6 @@ export async function registerRoutes(
         citiesUrl = `${base}/cities`;
       } else if (carrierKey === "expresscoursier") {
         citiesUrl = `https://expresscoursier.ma/v1.0/cities/${encodeURIComponent(apiKey)}`;
-      } else if (carrierKey === "olivraison") {
-        // Olivraison requires a JWT obtained with both saved credentials before
-        // its reference endpoint can return the cities it serves.
-        const secretKey = sanitize((acct as any).apiSecret || "");
-        if (!secretKey) {
-          return res.status(400).json({ message: "Secret Key Olivraison manquant sur ce compte." });
-        }
-
-        const { token, error } = await loginOlivraison(apiKey, secretKey, accountId);
-        if (error || !token) {
-          return res.status(401).json({ message: error || "Connexion Olivraison impossible. Vérifiez vos identifiants." });
-        }
-
-        const axiosOlivraison = (await import("axios")).default;
-        const olivraisonResp = await axiosOlivraison.get("https://partners.olivraison.com/cities", {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-          timeout: 20_000,
-          validateStatus: () => true,
-        });
-        if (olivraisonResp.status !== 200) {
-          console.error(`[OLIVRAISON-CITIES-SYNC] HTTP ${olivraisonResp.status}: ${JSON.stringify(olivraisonResp.data).slice(0, 300)}`);
-          return res.status(olivraisonResp.status >= 400 ? olivraisonResp.status : 502).json({
-            message: `L'API Olivraison a répondu avec HTTP ${olivraisonResp.status}`,
-          });
-        }
-
-        const rawCities = Array.isArray(olivraisonResp.data) ? olivraisonResp.data : [];
-        const cities = Array.from(new Set(
-          rawCities
-            .map((city: any) => (typeof city === "string" ? city : city?.name || city?.city || "").trim())
-            .filter(Boolean),
-        )).sort();
-        if (!cities.length) {
-          return res.status(422).json({ message: "Aucune ville reçue de Olivraison. Vérifiez vos identifiants et réessayez." });
-        }
-
-        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, cities);
-        console.log(`[OLIVRAISON-CITIES-SYNC] ✅ Saved ${cities.length} cities for account #${accountId}`);
-        return res.json({ count: cities.length, cities, syncedAt: new Date().toISOString() });
       } else if (carrierKey === "ozonexpress") {
         // ── Ozon Express city sync ────────────────────────────────────────────
         // Confirmed working endpoint: GET https://api.ozonexpress.ma/cities (public, no auth)
@@ -5714,47 +4860,6 @@ export async function registerRoutes(
         await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, senditCityNames);
         console.log(`[Sendit-SyncCities] ✅ ${result.count} districts → ${senditCityNames.length} unique cities for account #${accountId}`);
         return res.json({ count: senditCityNames.length, cities: senditCityNames, syncedAt: new Date().toISOString() });
-      } else if (acct.carrierName === 'nearya') {
-        // Nearya calls them "regions", not cities. Their ids are opaque strings,
-        // so they live in their own table rather than carrier_cities — which is
-        // still refreshed afterwards so the provider card shows a count.
-        const nCreds = { apiKey: acct.apiKey || '', apiSecret: acct.apiSecret || '' };
-        // Name the missing field: an empty Compte ID used to reach Nearya as a
-        // blank x-api-id header and come back as an opaque 502.
-        const missing: string[] = [];
-        if (!nCreds.apiKey)    missing.push("Clé API (x-api-key)");
-        if (!nCreds.apiSecret) missing.push("Compte ID (x-api-id)");
-        if (missing.length) {
-          return res.status(422).json({ message: `${missing.join(' et ')} manquant(s). Ouvrez Modifier et renseignez-les, puis réessayez.` });
-        }
-        const { regions, error } = await fetchNearyaRegions(nCreds);
-        if (error) {
-          console.error(`[Nearya-SyncCities] ❌ ${error}`);
-          return res.status(502).json({ message: `Nearya: ${error}` });
-        }
-        if (!regions.length) {
-          return res.status(502).json({ message: "Nearya n'a renvoyé aucune région. Vérifiez vos identifiants." });
-        }
-        // Persist separately from the fetch: if the nearya_regions table is
-        // missing (migration not run) the throw used to escape the handler and
-        // Railway answered with an HTML 502, which tells the merchant nothing.
-        let saved = 0;
-        const nearyaCityNames = regions.map(r => r.name).sort();
-        try {
-          saved = await storage.upsertNearyaRegions(regions);
-          await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, nearyaCityNames);
-        } catch (dbErr: any) {
-          const msg = String(dbErr?.message || dbErr);
-          console.error(`[Nearya-SyncCities] ❌ DB error: ${msg}`);
-          if (/nearya_regions/i.test(msg) && /exist/i.test(msg)) {
-            return res.status(500).json({
-              message: "La table nearya_regions n'existe pas. Exécutez la migration migrations/2026_09_16_nearya_express.sql sur la base, puis réessayez.",
-            });
-          }
-          return res.status(500).json({ message: `Enregistrement des régions Nearya impossible : ${msg}` });
-        }
-        console.log(`[Nearya-SyncCities] ✅ ${saved} region(s) for account #${accountId}`);
-        return res.json({ count: saved, cities: nearyaCityNames, syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }
@@ -5893,7 +4998,7 @@ export async function registerRoutes(
             nameNorm:   normName((c.name || c.ville || "").trim()),
           }))
           .filter(e => e.name);
-        cities = Array.from(new Set(ameexCityEntries.map(e => e.name))).sort();
+        cities = ameexCityEntries.map(e => e.name).sort();
       } else {
         // Other carriers: array or wrapped array
         const raw = resp.data;
@@ -6968,10 +6073,7 @@ export async function registerRoutes(
       // carrier_account row instead of silently falling through to the
       // default account.
       const normalizedCarrierName = CARRIER_NAME_ALIASES[carrierName] || carrierName;
-      // `let`, not `const`: the Ameex payload detection below reassigns this.
-      // As a const it threw "Assignment to constant variable" at runtime and the
-      // whole webhook came back as a 500.
-      let account = rows.find(r => r.carrierName.toLowerCase() === normalizedCarrierName)
+      const account = rows.find(r => r.carrierName.toLowerCase() === normalizedCarrierName)
         || rows.find(r => r.isDefault === 1)
         || rows[0];
 
@@ -7001,137 +6103,6 @@ export async function registerRoutes(
       }
 
       // ── Ozon Express: fields differ from all other carriers ─────────────────
-      // ── Nearya Express ──────────────────────────────────────────────────────
-      // Their webhook payload is undocumented, so the parcel code and status
-      // are searched for by key rather than assumed — the same approach that
-      // /region and the create-parcel response both needed.
-      if (carrierName === "nearya") {
-        console.log(`[NEARYA-WEBHOOK-RAW] ${JSON.stringify(body)}`);
-
-        // Nearya signs each delivery with X-Nearya-Signature, using a secret
-        // shown once when the webhook is created. Verified only when the
-        // merchant has saved it — an unverified delivery is still processed,
-        // since refusing them would silently freeze every status update, but a
-        // MISMATCH is refused: that means someone else is posting.
-        const nSig = String(req.headers['x-nearya-signature'] || '');
-        const nSecret = (account as any)?.settings?.nearyaWebhookSecret;
-        if (nSecret && nSig) {
-          try {
-            const crypto = await import('crypto');
-            const expected = crypto.createHmac('sha256', String(nSecret))
-              .update(JSON.stringify(body)).digest('hex');
-            if (expected !== nSig.replace(/^sha256=/, '')) {
-              console.warn(`[NEARYA-WEBHOOK] signature mismatch — refusing. got=${nSig.slice(0, 16)}…`);
-              return res.status(401).json({ received: false, reason: 'bad signature' });
-            }
-          } catch (e: any) {
-            console.warn(`[NEARYA-WEBHOOK] could not verify signature: ${e?.message}`);
-          }
-        }
-
-        const pick = (re: RegExp): string => {
-          const walk = (node: any, depth = 0): string | null => {
-            if (!node || depth > 5) return null;
-            if (Array.isArray(node)) {
-              for (let i = node.length - 1; i >= 0; i--) {
-                const hit = walk(node[i], depth + 1);
-                if (hit) return hit;
-              }
-              return null;
-            }
-            if (typeof node === 'object') {
-              for (const [k, v] of Object.entries(node)) {
-                if (re.test(k) && (typeof v === 'string' || typeof v === 'number') && String(v).trim()) {
-                  return String(v).trim();
-                }
-              }
-              for (const v of Object.values(node)) {
-                const hit = walk(v, depth + 1);
-                if (hit) return hit;
-              }
-            }
-            return null;
-          };
-          return walk(body) || '';
-        };
-
-        // Field names come from Nearya's own webhook documentation:
-        //   event  — e.g. PARCEL_STATUS_UPDATED
-        //   cab    — "identifiant unique du colis", their word for the code
-        //   status — an OBJECT carrying { id, label, date }, not a string
-        const tracking = pick(/^(cab|parcel|parcelCode|code|tracking|trackingCode|code_suivi|codeSuivi)$/i);
-
-        // `status` being an object is why a plain key search found nothing:
-        // read its label, falling back to its id.
-        const statusObj: any = (body as any)?.status;
-        const rawSt = (statusObj && typeof statusObj === 'object')
-          ? String(statusObj.label ?? statusObj.libelle ?? statusObj.name ?? statusObj.id ?? '').trim()
-          : pick(/^(status|state|statut|etat|situation)$/i);
-        // We send our own order number as `orderId` when creating the parcel,
-        // so Nearya echoes it back. That is a second way in — and the only one
-        // for parcels stored with Nearya's internal id instead of the code.
-        const ourRef   = pick(/^(orderId|order_num|orderNumber|reference)$/i);
-        const evt = String((body as any)?.event ?? '');
-        console.log(`[NEARYA-WEBHOOK] store=${storeId} event="${evt}" cab="${tracking}" ref="${ourRef}" status="${rawSt}"`);
-
-        if (!tracking && !ourRef) {
-          await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
-            action: 'webhook_no_match', status: 'ok',
-            message: `⚠️ Nearya: aucun code de colis reconnu dans le payload`,
-            payload: JSON.stringify(body).slice(0, 1000) });
-          return res.json({ received: true, matched: false });
-        }
-
-        let nOrder = tracking ? await storage.getOrderByTrackingNumber(storeId, tracking) : null;
-
-        // Fall back to our own reference, then repair the stored code. Early
-        // parcels were saved with Nearya's internal ObjectId because the
-        // response parser preferred `_id`, and every status lookup for them
-        // returns "Colis itrouvable!" until the real code replaces it.
-        if (!nOrder && ourRef) {
-          const byRef = await storage.getOrderByNumber(storeId, String(ourRef));
-          if (byRef) {
-            nOrder = byRef;
-            if (tracking && (byRef as any).trackNumber !== tracking) {
-              await storage.updateOrder(byRef.id, { trackNumber: tracking } as any);
-              console.log(`[NEARYA-WEBHOOK] repaired tracking for order ${ourRef}: "${(byRef as any).trackNumber}" → "${tracking}"`);
-            }
-          }
-        }
-
-        if (!nOrder) {
-          await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
-            action: 'webhook_no_match', status: 'ok',
-            message: `⚠️ Nearya: aucune commande pour le colis ${tracking} — statut: "${rawSt}"` });
-          return res.json({ received: true, matched: false });
-        }
-
-        const mapped = mapNearyaStatus(rawSt);
-        if (mapped.label && mapped.label !== (nOrder as any).commentStatus) {
-          await storage.updateOrder(nOrder.id, { commentStatus: mapped.label } as any);
-        }
-        // An unrecognised status leaves the order alone: guessing would mark an
-        // undelivered parcel as delivered and feed a false profit figure.
-        if (mapped.status && mapped.status !== nOrder.status) {
-          await storage.updateOrderStatus(nOrder.id, mapped.status);
-          await storage.createOrderFollowUpLog({
-            orderId: nOrder.id, agentId: null, agentName: 'Nearya Webhook',
-            note: `📦 Statut mis à jour via webhook: ${mapped.label} → ${mapped.status}`,
-          } as any);
-          try {
-            const { broadcastToStore } = await import('./sse');
-            broadcastToStore(storeId, 'order_updated', { orderId: nOrder.id, status: mapped.status, commentStatus: mapped.label });
-          } catch {}
-        }
-
-        await storage.createIntegrationLog({ storeId, integrationId: null, provider: 'nearya',
-          action: 'webhook_received', status: 'success',
-          message: `✅ Commande #${nOrder.id} — colis ${tracking} — "${rawSt}" → ${mapped.status || 'commentaire uniquement'}`,
-          payload: JSON.stringify(body).slice(0, 1000) });
-
-        return res.json({ received: true, matched: true, status: mapped.status });
-      }
-
       if (carrierName === "ozonexpress") {
         // Full raw payload — used to locate driver/livreur field name in Ozon's schema
         console.log(`[OZON-WEBHOOK-RAW] ${JSON.stringify(req.body)}`);
@@ -7222,10 +6193,7 @@ export async function registerRoutes(
           message: `❌ Erreur traitement webhook — ${procErr?.message || procErr}`,
           payload: JSON.stringify(body).slice(0, 1000),
         });
-        // 200, not 500. Carriers retry on 5xx and disable endpoints that keep
-        // failing — Nearya warned they would cut ours off. The delivery was
-        // received; that we could not process it is our problem, logged above.
-        return res.status(200).json({ received: true, processed: false, error: procErr?.message });
+        return res.status(500).json({ message: "Erreur traitement webhook", error: procErr?.message });
       }
 
       await storage.createIntegrationLog({
@@ -7240,9 +6208,7 @@ export async function registerRoutes(
       res.json({ received: true, tracked: result.tracked });
     } catch (err: any) {
       console.error("[Webhook:carrier:permanent]", err);
-      // Acknowledge regardless: a 5xx makes the carrier retry and eventually
-      // disable the webhook, which costs far more than one missed status.
-      res.status(200).json({ received: true, processed: false });
+      res.status(500).json({ message: "Erreur webhook" });
     }
   });
 
@@ -7291,10 +6257,7 @@ export async function registerRoutes(
           message: `❌ Erreur traitement webhook — ${procErr?.message || procErr}`,
           payload: JSON.stringify(body).slice(0, 1000),
         });
-        // 200, not 500. Carriers retry on 5xx and disable endpoints that keep
-        // failing — Nearya warned they would cut ours off. The delivery was
-        // received; that we could not process it is our problem, logged above.
-        return res.status(200).json({ received: true, processed: false, error: procErr?.message });
+        return res.status(500).json({ message: "Erreur traitement webhook", error: procErr?.message });
       }
 
       await storage.createIntegrationLog({
@@ -7309,9 +6272,7 @@ export async function registerRoutes(
       res.json({ received: true, tracked: result.tracked });
     } catch (err: any) {
       console.error("[Webhook:carrier]", err);
-      // Acknowledge regardless: a 5xx makes the carrier retry and eventually
-      // disable the webhook, which costs far more than one missed status.
-      res.status(200).json({ received: true, processed: false });
+      res.status(500).json({ message: "Erreur webhook" });
     }
   });
 
@@ -7446,7 +6407,7 @@ export async function registerRoutes(
             ? `Abonnement expiré. Commande ${parsed.orderNumber} refusée.`
             : `Limite de commandes atteinte (${paywallCheck.current}/${paywallCheck.limit}). Commande ${parsed.orderNumber} refusée.`,
         });
-        // No 402: the order is still created. See the Shopify handler above.
+        return res.status(402).json({ message: paywallCheck.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       }
 
       const rawProductName = parsed.lineItems.length > 0
@@ -7735,7 +6696,7 @@ export async function registerRoutes(
 
       // Paywall check
       const paywallCheck = await storage.checkPaywall(storeId);
-      if (paywallCheck.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${paywallCheck.current}/${paywallCheck.limit}) — order accepted anyway`);
+      if (paywallCheck.isBlocked) return res.status(402).json({ message: paywallCheck.reason === "expired" ? "Subscription expired" : "Order limit reached" });
 
       const customerName = [payload.customer?.first_name, payload.customer?.last_name].filter(Boolean).join(" ") || payload.customer?.full_name || "Client YouCan";
       const customerPhone = payload.customer?.phone || payload.shipping_address?.phone || "";
@@ -7947,11 +6908,8 @@ export async function registerRoutes(
         return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       }
 
-      // Quota/expiry never refuses an incoming order: a 402 here makes Shopify
-      // retry a few times and then drop the lead for good. The wall lives in the
-      // UI (checkPaywall) — ingestion stays open.
       const webhookPaywall = await storage.checkPaywall(storeId);
-      if (webhookPaywall.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${webhookPaywall.current}/${webhookPaywall.limit}) — order accepted anyway`);
+      if (webhookPaywall.isBlocked) return res.status(402).json({ message: webhookPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
 
       const storeProducts = await storage.getProductsByStore(storeId);
       let productCost = 0;
@@ -8212,7 +7170,7 @@ export async function registerRoutes(
           message: `❌ ${wpPaywall.reason === 'expired' ? "Abonnement expiré" : "Limite de commandes atteinte"}`,
           payload: JSON.stringify(data).slice(0, 1000),
         });
-        // No 402: the order is still created. See the Shopify handler above.
+        return res.status(402).json({ message: wpPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       }
       const storeProducts = await storage.getProductsByStore(storeId);
       const allVariantsWP = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
@@ -8294,7 +7252,7 @@ export async function registerRoutes(
       const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       const gsheetsPaywall = await storage.checkPaywall(storeId);
-      if (gsheetsPaywall.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${gsheetsPaywall.current}/${gsheetsPaywall.limit}) — order accepted anyway`);
+      if (gsheetsPaywall.isBlocked) return res.status(402).json({ message: gsheetsPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
       const allVariantsGS1 = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
       const vByProdGS1 = new Map<number, { name: string }[]>();
@@ -8409,7 +7367,7 @@ export async function registerRoutes(
       const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       const paywall = await storage.checkPaywall(storeId);
-      if (paywall.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${paywall.current}/${paywall.limit}) — order accepted anyway`);
+      if (paywall.isBlocked) return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
       const allVariantsGS2 = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
       const vByProdGS2 = new Map<number, { name: string }[]>();
@@ -9107,30 +8065,10 @@ function ensureHeaders(sheet) {
   // ─────────────────────────────────────────────────────────────────────────────
 
   async function refreshYouCanToken(integration: any): Promise<string | null> {
-    // A webhook must never fail just because an old OAuth token was encrypted
-    // with a key that is no longer available. The signed webhook payload is
-    // sufficient to create the order; OAuth is only used to enrich it with
-    // full address/details from YouCan.
-    let accessToken: string | null = null;
-    let refreshToken: string | null = null;
-
-    try {
-      if (integration.oauthAccessToken) accessToken = decrypt(integration.oauthAccessToken);
-    } catch (err: any) {
-      console.warn(`[YOUCAN-OAUTH] Cannot decrypt access token for integration ${integration.id}; webhook will continue from payload only: ${err?.message || err}`);
-    }
-
-    try {
-      if (integration.oauthRefreshToken) refreshToken = decrypt(integration.oauthRefreshToken);
-    } catch (err: any) {
-      console.warn(`[YOUCAN-OAUTH] Cannot decrypt refresh token for integration ${integration.id}; webhook will continue from payload only: ${err?.message || err}`);
-    }
-
-    if (!refreshToken) return accessToken;
-
+    const refreshToken = decrypt(integration.oauthRefreshToken || "");
+    if (!refreshToken) return decrypt(integration.oauthAccessToken || "");
     const expiresAt = integration.oauthExpiresAt ? new Date(integration.oauthExpiresAt).getTime() : 0;
-    if (accessToken && expiresAt - Date.now() > 24 * 60 * 60 * 1000) return accessToken;
-
+    if (expiresAt - Date.now() > 24 * 60 * 60 * 1000) return decrypt(integration.oauthAccessToken || "");
     try {
       const resp = await fetch("https://api.youcan.shop/oauth/token", {
         method: "POST",
@@ -9143,62 +8081,43 @@ function ensureHeaders(sheet) {
         }),
       });
       const tokens = await resp.json() as any;
-      if (!tokens.access_token) return accessToken;
+      if (!tokens.access_token) return decrypt(integration.oauthAccessToken || "");
       await db.update(storeIntegrations).set({
         oauthAccessToken: encrypt(tokens.access_token),
         oauthRefreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : integration.oauthRefreshToken,
         oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
       }).where(eq(storeIntegrations.id, integration.id));
       return tokens.access_token;
-    } catch (err: any) {
-      console.warn(`[YOUCAN-OAUTH] Token refresh failed for integration ${integration.id}; using webhook payload/access token fallback: ${err?.message || err}`);
-      return accessToken;
+    } catch {
+      return decrypt(integration.oauthAccessToken || "");
     }
   }
 
-  function signYouCanState(storeId: number, integrationId?: number): string {
-    const payload = `${storeId}.${Date.now()}.${integrationId ?? 0}`;
+  function signYouCanState(storeId: number): string {
+    const payload = `${storeId}.${Date.now()}`;
     const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
     const sig = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
     return `${payload}.${sig}`;
   }
 
-  function verifyYouCanState(state: string): { storeId: number; integrationId?: number } | null {
+  function verifyYouCanState(state: string): number | null {
     const parts = (state || "").split(".");
-    // Support both old 3-part state (storeId.ts.sig) and new 4-part (storeId.ts.integrationId.sig)
-    if (parts.length === 3) {
-      const [storeIdStr, ts, sig] = parts;
-      const payload = `${storeIdStr}.${ts}`;
-      const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
-      const expected = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
-      if (expected !== sig) return null;
-      if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
-      const storeId = parseInt(storeIdStr, 10);
-      return isNaN(storeId) ? null : { storeId };
-    }
-    if (parts.length === 4) {
-      const [storeIdStr, ts, integrationIdStr, sig] = parts;
-      const payload = `${storeIdStr}.${ts}.${integrationIdStr}`;
-      const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
-      const expected = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
-      if (expected !== sig) return null;
-      if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
-      const storeId = parseInt(storeIdStr, 10);
-      const integrationId = parseInt(integrationIdStr, 10);
-      return isNaN(storeId) ? null : { storeId, integrationId: integrationId || undefined };
-    }
-    return null;
+    if (parts.length !== 3) return null;
+    const [storeIdStr, ts, sig] = parts;
+    const payload = `${storeIdStr}.${ts}`;
+    const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+    const expected = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+    if (expected !== sig) return null;
+    if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
+    const storeId = parseInt(storeIdStr, 10);
+    return isNaN(storeId) ? null : storeId;
   }
 
   app.get("/api/integrations/youcan/oauth/start", requireAuth, (req: any, res: any) => {
     const clientId = process.env.YOUCAN_CLIENT_ID;
     if (!clientId) return res.redirect("/integrations?youcan_error=not_configured");
     const storeId = req.user!.storeId!;
-    // Optional: if the user clicked "Reconnecter" on an existing integration,
-    // include its DB id in the state so the callback updates that row instead
-    // of inserting a new one.
-    const integrationId = req.query.integrationId ? Number(req.query.integrationId) : undefined;
-    const state = signYouCanState(storeId, integrationId);
+    const state = signYouCanState(storeId);
     const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
       `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
     const url = new URL("https://seller-area.youcan.shop/admin/oauth/authorize");
@@ -9218,13 +8137,12 @@ function ensureHeaders(sheet) {
       console.error("[YOUCAN-OAUTH] YouCan returned error:", error);
       return res.redirect(`/integrations?youcan_error=${error}`);
     }
-    const stateResult = verifyYouCanState(state as string);
-    if (!stateResult) {
+    const storeId = verifyYouCanState(state as string);
+    if (!storeId) {
       console.error("[YOUCAN-OAUTH] Invalid or expired state:", state);
       return res.redirect("/integrations?youcan_error=invalid_state");
     }
-    const { storeId, integrationId: stateIntegrationId } = stateResult;
-    console.log(`[YOUCAN-OAUTH] callback verified — storeId=${storeId} integrationId=${stateIntegrationId}`);
+    console.log(`[YOUCAN-OAUTH] callback verified — storeId=${storeId}`);
     const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
       `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
     try {
@@ -9270,20 +8188,14 @@ function ensureHeaders(sheet) {
       }
       if (youcanStoreName) oauthData.connectionName = youcanStoreName;
 
-      // Each YouCan store connection gets its own dedicated webhookKey and row.
-      // If the OAuth flow was started with an existing integrationId (user clicked
-      // "Reconnecter" on a specific store), update that row. Otherwise insert a new one.
-      const baseWebhookKey = await storage.getOrGenerateWebhookKey(storeId);
-      const uniqueWebhookKey = stateIntegrationId ? baseWebhookKey : `${baseWebhookKey}_yc_${Date.now()}`;
-      const finalWebhookKey = uniqueWebhookKey;
-      const finalTargetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${finalWebhookKey}`;
-
-      if (stateIntegrationId) {
-        await db.update(storeIntegrations).set({ ...oauthData, connectionName: youcanStoreName || oauthData.connectionName })
-          .where(and(eq(storeIntegrations.id, stateIntegrationId), eq(storeIntegrations.storeId, storeId)));
+      const existing = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+        .limit(1);
+      if (existing.length > 0) {
+        await db.update(storeIntegrations).set(oauthData).where(eq(storeIntegrations.id, existing[0].id));
       } else {
         await db.insert(storeIntegrations).values({
-          storeId, provider: "youcan", type: "webhook", credentials: "{}", webhookKey: uniqueWebhookKey, ...oauthData,
+          storeId, provider: "youcan", type: "webhook", credentials: "{}", webhookKey, ...oauthData,
         });
       }
 
@@ -9292,7 +8204,7 @@ function ensureHeaders(sheet) {
         const subResp = await fetch("https://api.youcan.shop/resthooks/subscribe", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.access_token}` },
-          body: JSON.stringify({ event: "order.create", target_url: finalTargetUrl }),
+          body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
         });
         const subJson = await subResp.json();
         console.log("[YOUCAN-OAUTH] resthooks/subscribe response:", subJson);
@@ -9307,45 +8219,25 @@ function ensureHeaders(sheet) {
     }
   });
 
-  // GET /api/integrations/youcan/status — returns ALL connected YouCan stores
   app.get("/api/integrations/youcan/status", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const rows = await db.select().from(storeIntegrations)
-      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+      .limit(1);
+    const row = rows[0];
     res.json({
-      // Legacy single-store shape (keeps existing frontend working)
-      connected: rows.some(r => !!r.oauthAccessToken && r.isActive),
-      ordersCount: rows[0]?.ordersCount ?? 0,
-      connectionName: rows[0]?.connectionName ?? null,
-      createdAt: rows[0]?.createdAt ?? null,
-      // Multi-store list
-      // Only return active connections to the UI. Once disconnected, a shop
-      // disappears completely and is shown again only after a fresh OAuth connect.
-      stores: rows.filter(r => !!r.oauthAccessToken && !!r.isActive).map(r => ({
-        id: r.id,
-        connected: true,
-        connectionName: r.connectionName ?? null,
-        ordersCount: r.ordersCount ?? 0,
-        createdAt: r.createdAt,
-        webhookUrl: r.webhookKey ? `${process.env.PUBLIC_URL || ''}/api/webhooks/youcan/order/${r.webhookKey}` : null,
-      })),
+      connected: !!(row?.oauthAccessToken),
+      ordersCount: row?.ordersCount ?? 0,
+      connectionName: row?.connectionName ?? null,
+      createdAt: row?.createdAt ?? null,
     });
   });
 
-  // POST /api/integrations/youcan/disconnect — disconnect a specific store by id
   app.post("/api/integrations/youcan/disconnect", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
-    const integrationId = req.body?.integrationId ? Number(req.body.integrationId) : null;
-    if (integrationId) {
-      await db.update(storeIntegrations)
-        .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
-        .where(and(eq(storeIntegrations.id, integrationId), eq(storeIntegrations.storeId, storeId)));
-    } else {
-      // Legacy: disconnect the first active store
-      await db.update(storeIntegrations)
-        .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
-        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
-    }
+    await db.update(storeIntegrations)
+      .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
     res.json({ success: true });
   });
 
@@ -10722,8 +9614,6 @@ function ensureHeaders(sheet) {
         coutLivraison: z.number().min(0).optional(),
         coutConfirmation: z.number().min(0).optional(),
         stockDate: z.string().datetime().optional(),  // ISO — date du stock initial, défaut = maintenant
-        // Ameex "stock-managed" fulfillment — see products.ameexProductId column comment
-        ameexProductId: z.string().trim().max(200).nullable().optional(),
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
@@ -11295,11 +10185,7 @@ function ensureHeaders(sheet) {
         // says — so it's checked first and wins over an otherwise-ambiguous
         // status.
         const wasShipped = shippedOrderIds.has(orderId) || SHIPPED_STATUS_SET.has(status) || !!trackNumberByOrder.get(orderId);
-        // wasReturned: ledger row (returnedOrderIds) OR status explicitly
-        // containing "retour" — matches isReturnStatus() in storage.ts so
-        // 'En Cours De Retour', 'En cours de réception', etc. are classified
-        // as Refusées/Retournées even without a ledger row yet.
-        const wasReturned = returnedOrderIds.has(orderId) || (typeof status === 'string' && status.toLowerCase().includes('retour'));
+        const wasReturned = returnedOrderIds.has(orderId);
         if (isDeliveredStatus(status)) {
           statusSummary!.deliveredOrders++;
           statusSummary!.deliveredQty += qtyByOrder.get(orderId) || 0;
@@ -11436,8 +10322,8 @@ function ensureHeaders(sheet) {
   app.get("/api/products/profitability", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const { dateFrom, dateTo, dateRange, source } = req.query as Record<string, string>;
-      const result = await computeProfitability(storeId, { dateFrom, dateTo, dateRange, source });
+      const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
+      const result = await computeProfitability(storeId, { dateFrom, dateTo, dateRange });
       res.json({ products: result.products, platforms: result.platforms, totals: result.totals, globalAdSpend: result.globalAdSpend });
     } catch (err) {
       throw err;
@@ -11509,10 +10395,6 @@ function ensureHeaders(sheet) {
         coutLivraison: z.number().min(0).optional(),
         coutConfirmation: z.number().min(0).optional(),
         hasVariants: z.number().optional(),
-        // Ameex "stock-managed" fulfillment — see the column comment on
-        // products.ameexProductId (shared/schema.ts) and the ship-order
-        // fallback logic in this file (search "stock-managed fulfillment").
-        ameexProductId: z.string().trim().max(200).nullable().optional(),
         variants: z.array(z.object({
           name: z.string().min(1),
           sku: z.string().optional().default(''),
@@ -13277,7 +12159,7 @@ function ensureHeaders(sheet) {
     // refusal reason (status itself is the fallback bucket).
     const REFUSED_STATUSES = new Set([
       'refused', 'retourné',
-      'Annulé', 'Annulé (fake)', 'Annulé par client', 'Annulé (faux numéro)', 'Annulé (double)',
+      'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)',
       'Injoignable', 'boite vocale',
     ]);
 
@@ -13612,7 +12494,6 @@ function ensureHeaders(sheet) {
         distributionMethod: z.enum(["auto", "pourcentage", "produit", "region"]).optional(),
         isActive: z.number().int().min(0).max(1).optional(),
         roleInStore: z.enum(["confirmation", "suivi", "both"]).optional(),
-        isTeamLead: z.union([z.boolean(), z.number()]).optional(),
         leadPercentage: z.number().min(0).max(100).optional(),
         allowedProductIds: z.array(z.number()).optional(),
         allowedRegions: z.array(z.string()).optional(),
@@ -13646,7 +12527,6 @@ function ensureHeaders(sheet) {
       const distAffected =
         data.leadPercentage !== undefined ||
         data.roleInStore !== undefined ||
-        data.isTeamLead !== undefined ||
         data.allowedProductIds !== undefined ||
         data.allowedRegions !== undefined ||
         data.isActive !== undefined;
@@ -13654,10 +12534,6 @@ function ensureHeaders(sheet) {
       if (agent.role === 'agent') {
         const settingsPayload: any = {};
         if (data.roleInStore !== undefined) settingsPayload.roleInStore = data.roleInStore;
-        // The team page saves through PUT /api/users/:id, not the store-settings
-        // endpoint — the schema accepted isTeamLead here but nothing wrote it,
-        // so the checkbox silently reverted on every save.
-        if (data.isTeamLead !== undefined) settingsPayload.isTeamLead = (data.isTeamLead === true || data.isTeamLead === 1) ? 1 : 0;
         if (data.leadPercentage !== undefined) settingsPayload.leadPercentage = data.leadPercentage;
         if (data.allowedProductIds !== undefined) settingsPayload.allowedProductIds = JSON.stringify(data.allowedProductIds);
         if (data.allowedRegions !== undefined) settingsPayload.allowedRegions = JSON.stringify(data.allowedRegions);
@@ -13691,23 +12567,7 @@ function ensureHeaders(sheet) {
     if (!agent) return res.status(404).json({ message: "Agent non trouvé" });
     if (agent.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
     if (agent.role === 'owner') return res.status(400).json({ message: "Impossible de supprimer le propriétaire" });
-    if (agentId === req.user!.id) return res.status(400).json({ message: "Vous ne pouvez pas supprimer votre propre compte." });
-
-    // No try/catch here meant any database failure surfaced as a bare
-    // "Une erreur s'est produite" with nothing to act on.
-    try {
-      await storage.deleteUser(agentId);
-    } catch (err: any) {
-      const msg = String(err?.message || err);
-      console.error(`[AGENT-DELETE] agent ${agentId} failed: ${msg}`);
-      if (/foreign key|violates/i.test(msg)) {
-        return res.status(409).json({
-          message: `Impossible de supprimer ${agent.username} : des données y sont encore rattachées. Signalez-le au support avec ce détail : ${msg.slice(0, 200)}`,
-        });
-      }
-      return res.status(500).json({ message: `Suppression impossible : ${msg.slice(0, 200)}` });
-    }
-
+    await storage.deleteUser(agentId);
     // Removing an agent changes the eligible pool — reset windows on affected magasins.
     const n = await bumpAgentRelatedEpochs(req.user!.id, agentId);
     console.log(`[DIST-EPOCH] agent ${agentId} deleted → bumped ${n} magasin(s)`);
@@ -13748,7 +12608,6 @@ function ensureHeaders(sheet) {
       if (!agent || agent.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
       const schema = z.object({
         roleInStore: z.enum(["confirmation", "suivi", "both"]).optional(),
-        isTeamLead: z.union([z.boolean(), z.number()]).optional(),
         leadPercentage: z.number().min(0).max(100).optional(),
         allowedProductIds: z.array(z.number()).optional(),
         allowedRegions: z.array(z.string()).optional(),
@@ -13757,7 +12616,6 @@ function ensureHeaders(sheet) {
       const data = schema.parse(req.body);
       const payload: any = {};
       if (data.roleInStore !== undefined) payload.roleInStore = data.roleInStore;
-      if ((data as any).isTeamLead !== undefined) payload.isTeamLead = ((data as any).isTeamLead === true || (data as any).isTeamLead === 1) ? 1 : 0;
       if (data.leadPercentage !== undefined) payload.leadPercentage = data.leadPercentage;
       if (data.allowedProductIds !== undefined) payload.allowedProductIds = JSON.stringify(data.allowedProductIds);
       if (data.allowedRegions !== undefined) payload.allowedRegions = JSON.stringify(data.allowedRegions);
@@ -14149,95 +13007,6 @@ function ensureHeaders(sheet) {
   // ============================================================
   // ORDER FOLLOW-UP LOGS (Journal de Suivi)
   // ============================================================
-  app.get("/api/orders/:id/history", requireAuth, async (req, res) => {
-    try {
-      const orderId = Number(req.params.id);
-      if (!Number.isFinite(orderId)) return res.status(400).json({ message: "ID commande invalide" });
-
-      const order = await storage.getOrder(orderId);
-      if (!order) return res.status(404).json({ message: "Commande non trouvée" });
-      if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
-
-      const logs = await storage.getOrderFollowUpLogs(orderId);
-      const events: any[] = logs.map((log: any) => {
-        const note = String(log.note || "");
-        const transition = note.match(/^Statut:\s*"([^"]*)"\s*→\s*"([^"]*)"/i);
-        const toStatus = transition?.[2] || "";
-        const normalized = toStatus.toLowerCase();
-        let type = "activity";
-        let title = note;
-        if (normalized === "confirme") {
-          type = "confirmed";
-          title = "Commande confirmée";
-        } else if (normalized === "delivered" || normalized.includes("livr")) {
-          type = "delivered";
-          title = "Commande livrée";
-        } else if (normalized.includes("expédi") || normalized.includes("ramass") || normalized.includes("transit") || normalized === "in_progress" || normalized === "attente de ramassage") {
-          type = "shipping";
-          title = normalized === "attente de ramassage" ? "En attente de ramassage" : `Suivi livraison : ${toStatus}`;
-        } else if (transition) {
-          type = "status";
-          title = `Statut : ${toStatus}`;
-        }
-        return {
-          id: `log-${log.id}`,
-          type,
-          title,
-          actor: log.agentName || "Système",
-          at: log.createdAt,
-          raw: note,
-        };
-      });
-
-      // Historical orders created before lifecycle auditing still have these
-      // reliable timestamps on the order row. Add them without inventing dates.
-      if ((order as any).createdAt) {
-        events.push({
-          id: "created",
-          type: "created",
-          title: "Commande créée",
-          actor: (order as any).source ? `Source: ${(order as any).source}` : "Système",
-          at: (order as any).createdAt,
-        });
-      }
-      if ((order as any).pickupDate) {
-        events.push({
-          id: "shipped",
-          type: "shipping",
-          title: `Commande expédiée${(order as any).shippingProvider ? ` via ${(order as any).shippingProvider}` : ""}${(order as any).trackNumber ? ` — Tracking: ${(order as any).trackNumber}` : ""}`,
-          actor: "Expédition",
-          at: (order as any).pickupDate,
-        });
-      }
-      if ((order as any).returnConfirmedAt) {
-        events.push({
-          id: "return-confirmed",
-          type: "return",
-          title: "Retour reçu et confirmé",
-          actor: "Système",
-          at: (order as any).returnConfirmedAt,
-        });
-      }
-
-      events.sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime());
-
-      res.json({
-        order: {
-          id: order.id,
-          orderNumber: order.orderNumber,
-          currentStatus: order.status,
-          commentStatus: (order as any).commentStatus ?? null,
-          trackingNumber: (order as any).trackNumber ?? null,
-          shippingProvider: (order as any).shippingProvider ?? null,
-        },
-        events,
-      });
-    } catch (err: any) {
-      console.error("[ORDER-HISTORY]", err?.message || err);
-      res.status(500).json({ message: "Impossible de charger l'historique" });
-    }
-  });
-
   app.get("/api/orders/:id/followup-logs", requireAuth, async (req, res) => {
     const orderId = Number(req.params.id);
     const order = await storage.getOrder(orderId);
@@ -14722,134 +13491,6 @@ function ensureHeaders(sheet) {
   });
 
   /** POST /api/shipping/waselex/sync — sync manuelle des statuts Waselex (batch) */
-  /**
-   * Pull Nearya parcel statuses on demand.
-   *
-   * The same work the 20-minute poller does, triggered by the merchant. Their
-   * API has no bulk endpoint, so parcels are polled one at a time and spaced
-   * out; a store with many open parcels takes a while rather than hammering
-   * Nearya and getting throttled.
-   */
-  app.post("/api/shipping/nearya/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const accounts = await storage.getCarrierAccounts(storeId, "nearya");
-      const account: any = accounts.find((a: any) => a.isActive === 1) || accounts[0];
-      if (!account) return res.status(400).json({ message: "Aucun compte Nearya configuré." });
-      if (!account.apiKey || !account.apiSecret) {
-        return res.status(400).json({ message: "Clé API et Compte ID Nearya requis." });
-      }
-
-      const allOrders = await storage.getOrdersByStore(storeId);
-
-      // Nearya tariff: Casablanca 20 DH, every other city 30 DH.
-      // Do this before filtering terminal statuses so already-delivered historical
-      // orders with a missing fee are repaired by the same Sync button.
-      let feesUpdated = 0;
-      for (const o of allOrders) {
-        if ((o.shippingProvider || "").toLowerCase().trim() !== "nearya") continue;
-        if ((o.shippingCost || 0) > 0) continue;
-        const fee = getNearyaShippingCost(o.customerCity);
-        await storage.updateOrder(o.id, { shippingCost: fee } as any);
-        feesUpdated++;
-      }
-
-      const pending = allOrders.filter((o: any) => {
-        if (!o.trackNumber || (o.shippingProvider || "").toLowerCase().trim() !== "nearya") return false;
-        const current = String(o.status || "").trim();
-        // "facturé / préfacturé" is only Nearya billing state. Always re-check
-        // those rows so a later LIVRÉ / RETOURNÉ carrier state can replace it.
-        const normalized = current.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-        if (/^(pre\s*)?facture(e)?$/.test(normalized)) return true;
-        return !["delivered", "refused", "Retour Recu"].includes(current);
-      });
-
-      if (!pending.length) {
-        return res.json({ checked: 0, updated: 0, unmapped: [], message: "Aucun colis Nearya en cours." });
-      }
-
-      // One manual Sync must cover every Nearya parcel belonging to the
-      // authenticated user's store. Process sequentially below (with the
-      // existing short delay) instead of silently stopping after 12 orders.
-      // Store scoping is preserved by getOrdersByStore(storeId), so each user
-      // syncs all of their own store's Nearya orders, never another store's.
-      const batch = pending;
-      let updated = 0;
-      const unmapped: string[] = [];
-      // Failures were previously swallowed: a run that reached Nearya and got
-      // nothing back looked identical to a run where nothing had changed.
-      const problems: string[] = [];
-      let failed = 0;
-      let authFailed = false;
-
-      for (const order of batch) {
-        const r = await trackNearyaParcel((order as any).trackNumber, {
-          apiKey: account.apiKey, apiSecret: account.apiSecret,
-          businessId: (account.settings as any)?.nearyaBusinessId || account.carrierStoreName || undefined,
-        });
-        if (r.error === 'NEARYA_401') { authFailed = true; break; }
-        if (r.error) {
-          failed++;
-          // One sample is enough to identify the shape; the rest repeat it.
-          if (problems.length < 2) problems.push(`${(order as any).trackNumber}: ${r.error}`);
-        }
-
-        const carrierStatusChanged = !!r.label && r.label !== (order as any).commentStatus;
-        if (carrierStatusChanged) {
-          // Keep the exact Nearya delivery status visible even when there is no
-          // safe internal status mapping for it.
-          await storage.updateOrder(order.id, { commentStatus: r.label } as any);
-          await storage.createOrderFollowUpLog({
-            orderId: order.id, agentId: null, agentName: 'Nearya Sync',
-            note: `📦 Nearya: ${r.label}`,
-          } as any);
-          try {
-            const { broadcastToStore } = await import('./sse');
-            broadcastToStore(storeId, 'order_updated', {
-              orderId: order.id, status: r.status || order.status, commentStatus: r.label,
-            });
-          } catch {}
-          updated++;
-        }
-        // Unknown raw labels are still shown in commentStatus/history; only the
-        // platform bucket is left unchanged until it can be mapped safely.
-        if (!r.status && r.label) {
-          if (!unmapped.includes(r.label)) unmapped.push(r.label);
-        } else if (r.status && r.status !== order.status) {
-          await storage.updateOrderStatus(order.id, r.status);
-          await storage.createOrderFollowUpLog({
-            orderId: order.id, agentId: null, agentName: 'Nearya Sync',
-            note: `📦 Statut mis à jour: ${r.label} → ${r.status}`,
-          } as any);
-          updated++;
-          try {
-            const { broadcastToStore } = await import('./sse');
-            broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: r.status, commentStatus: r.label });
-          } catch {}
-        }
-        await new Promise(res2 => setTimeout(res2, 75));
-      }
-
-      if (authFailed) {
-        return res.status(401).json({ message: "Identifiants Nearya invalides ou expirés. Reconnectez le compte." });
-      }
-
-      return res.json({
-        checked: batch.length,
-        updated,
-        remaining: Math.max(0, pending.length - batch.length),
-        unmapped,
-        failed,
-        problems,
-        feesUpdated,
-      });
-    } catch (err: any) {
-      console.error("[NEARYA-SYNC]", err);
-      if (!res.headersSent) return res.status(500).json({ message: err.message });
-      console.error("[NEARYA-SYNC] response already sent; skipping second response");
-    }
-  });
-
   app.post("/api/shipping/waselex/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
     try {
       const storeId = req.user!.storeId!;
@@ -17579,17 +16220,7 @@ function ensureHeaders(sheet) {
   });
 
   app.get("/api/magasins", requireAuth, async (req, res) => {
-    // Agents own no store, so asking for "stores owned by me" returned an empty
-    // list and the Magasin filter disappeared from their order list entirely.
-    // Resolve through their store's owner instead, so an agent — and a team
-    // lead in particular — sees the same magasins as the rest of the store.
-    const user = req.user!;
-    let ownerId = user.id;
-    if (user.role === 'agent' && user.storeId) {
-      const store = await storage.getStore(user.storeId);
-      if ((store as any)?.ownerId) ownerId = (store as any).ownerId;
-    }
-    res.json(await storage.getStoresByOwner(ownerId));
+    res.json(await storage.getStoresByOwner(req.user!.id));
   });
 
   app.post("/api/magasins", requireAdmin, async (req, res) => {
@@ -17867,24 +16498,16 @@ function ensureHeaders(sheet) {
   app.patch("/api/admin/stores/:id/settings", requireSuperAdmin, async (req, res) => {
     try {
       const storeId = Number(req.params.id);
-      const body = z.object({
-        allowAttachTracking: z.boolean().optional(),
-        chargesEnabled: z.boolean().optional(),
-      }).refine(v => v.allowAttachTracking !== undefined || v.chargesEnabled !== undefined, {
-        message: "Aucun réglage fourni",
-      }).parse(req.body);
+      const body = z.object({ allowAttachTracking: z.boolean() }).parse(req.body);
       const store = await storage.getStore(storeId);
       if (!store) return res.status(404).json({ message: "Boutique introuvable" });
       const existing = (store.settings as Record<string, any>) || {};
       const updated = await storage.updateStore(storeId, {
-        settings: { ...existing, ...body },
+        settings: { ...existing, allowAttachTracking: body.allowAttachTracking },
       });
-      const savedSettings = (updated?.settings as any) || {};
-      console.log(`[ADMIN-SETTINGS] Store ${storeId} settings updated`, body);
-      res.json({
-        allowAttachTracking: savedSettings.allowAttachTracking ?? false,
-        chargesEnabled: savedSettings.chargesEnabled !== false,
-      });
+      const saved = (updated?.settings as any)?.allowAttachTracking ?? false;
+      console.log(`[ADMIN-SETTINGS] Store ${storeId} allowAttachTracking → ${saved}`);
+      res.json({ allowAttachTracking: saved });
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: "Données invalides" });
       res.status(500).json({ message: err.message || "Erreur serveur" });
@@ -18083,39 +16706,6 @@ function ensureHeaders(sheet) {
         .returning();
 
       console.log(`[ATTACH-TRACKING] Order #${(order as any).orderNumber || orderId} → carrier="${resolvedCarrier}" trackNumber="${updated?.trackNumber}" status="${updated?.status}" user=${user.id}${user.isSuperAdmin ? ' (superAdmin)' : ''}`);
-
-      // ── Backfill the missing 'shipped' ledger row ───────────────────────────
-      // This route sets orders.status directly (raw update above), bypassing
-      // storage.updateOrderStatus()'s RULE 0.5 — the only place that normally
-      // creates the stockMovements 'shipped' row. attachStatus defaults to
-      // 'Attente De Ramassage' (a genuine SHIPPED_STATUS_SET status) even when
-      // no prior webhook is found, so EVERY manually-attached tracking number
-      // was silently leaving Sortie/En cours/Disponible unaware this order
-      // ever shipped. The route already required order.status === 'confirme'
-      // before this call (see the guard above), so this is unambiguously the
-      // order's first-ever shipped transition — no risk of double-counting.
-      if (updated && SHIPPED_STATUS_SET.has(updated.status) && (order as any).items?.length) {
-        for (const item of (order as any).items as any[]) {
-          if (!item.productId) continue;
-          const qty = Number(item.quantity) || 1;
-          const existing = await db.select({ id: stockMovements.id }).from(stockMovements)
-            .where(and(eq(stockMovements.orderId, orderId), eq(stockMovements.productId, item.productId)))
-            .limit(1);
-          if (existing.length > 0) continue; // safety net — should never happen given the 'confirme' guard above
-          await db.update(products).set({ stock: sql`${products.stock} - ${qty}` } as any)
-            .where(eq(products.id, item.productId));
-          await db.insert(stockLogs).values({
-            storeId, productId: item.productId, orderId,
-            changeAmount: -qty,
-            reason: `Expédition commande #${orderId} (tracking attaché manuellement) → ${updated.status}`,
-          });
-          await db.insert(stockMovements).values({
-            storeId, productId: item.productId, type: 'shipped', quantity: -qty,
-            orderId, userId: user.id,
-            reason: `Expédition commande #${orderId} (tracking attaché manuellement) → ${updated.status}`,
-          } as any);
-        }
-      }
 
       await storage.createIntegrationLog({
         storeId,
@@ -19088,17 +17678,6 @@ function ensureHeaders(sheet) {
         console.log(`[WSLX-CITY] order=${orderId} city="${matchedCity}" → city_id=${singleWaselexCityId} ("${resolved.name}")`);
       }
 
-      // Ameex "stock-managed" fulfillment: prefer a per-order override
-      // (orders.ameexProductId, set by the Google Sheets webhook), otherwise
-      // fall back to the product catalog's own ameexProductId (applies to
-      // every order source).
-      const singleOrderAmeexProductId = (order as any).ameexProductId
-        || (order.items as any[] | undefined)?.find((it: any) => it.product?.ameexProductId)?.product?.ameexProductId
-        || undefined;
-      // Experimental (see CarrierShipInput.productReference comment).
-      const singleOrderProductReference = (order.items as any[] | undefined)?.find((it: any) => it.product?.reference)?.product?.reference
-        || undefined;
-
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -19120,10 +17699,6 @@ function ensureHeaders(sheet) {
         cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr ?? singleWaselexCityId,
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
-        ameexProductId:   singleOrderAmeexProductId,
-        ameexProductKey:  (creds as any).settings?.ameexProductKey || 'id',
-        ...resolveAmeexStockLines(order, creds),
-        productReference: singleOrderProductReference,
       });
 
       if (!shipResult.success) {
@@ -19400,11 +17975,8 @@ function ensureHeaders(sheet) {
           const acct = ameexAccts[0];
           if (acct?.apiKey) {
             const axiosLib = (await import('axios')).default;
-            // Same fix as the background sync above (createCarrierAccount):
-            // wrong domain (app.ameex.ma) replaced with the endpoint already
-            // confirmed correct in the manual sync-cities route.
             const resp = await axiosLib.get(
-              'https://api.ameex.app/customer/Delivery/Cities/Action/Type/Get',
+              'https://app.ameex.ma/api/v1/cities',
               {
                 headers: { 'Authorization': `Bearer ${acct.apiKey}`, 'Accept': 'application/json' },
                 timeout: 10000,
@@ -19412,14 +17984,8 @@ function ensureHeaders(sheet) {
               }
             );
             if (resp.status === 200 && resp.data) {
-              // Ameex's real shape: {"api":{"cities":{"1":{"name":"Marrakech"}}}}
-              // — object keyed by id, not an array (see the identical fix in
-              // createCarrierAccount's background sync above).
-              const citiesObj = resp.data?.api?.cities || resp.data?.cities || {};
-              const rawNames: string[] = Object.values(citiesObj as Record<string, any>)
-                .map((c: any) => (c?.name || c?.ville || "").trim())
-                .filter(Boolean);
-              const cityNames: string[] = Array.from(new Set(rawNames)); // dedupe repeated commune/sub-district entries
+              const cityData = Array.isArray(resp.data) ? resp.data : (resp.data.data || resp.data.cities || []);
+              const cityNames: string[] = cityData.map((c: any) => c.name || c.ville || c.label || c).filter(Boolean);
               if (cityNames.length > 0) {
                 await storage.upsertCarrierCities(storeId, 'ameex', acct.id, cityNames);
                 return res.json({ provider: 'ameex', cities: cityNames, isCarrierSpecific: true, source: 'live' });
@@ -19890,89 +18456,6 @@ function ensureHeaders(sheet) {
     const localPath = req.file.path;
     console.log(`[Upload] Product image saved: ${localPath} → URL: ${url}`);
     res.json({ url, localPath });
-  });
-
-  // ── WhatsApp AI content uploads (Automation & AI → Produits WhatsApp) ──────
-  // Wraps a multer .single(field) middleware so upload errors (file too
-  // large, wrong type) return a clear JSON message instead of a generic
-  // failure — multer throws before reaching the route handler, so this
-  // needs to be caught explicitly rather than left to Express defaults.
-  function handleWaUpload(uploader: any, maxLabel: string) {
-    return (req: any, res: any, next: any) => {
-      uploader.single("file")(req, res, (err: any) => {
-        if (err) {
-          if (err.code === "LIMIT_FILE_SIZE") {
-            return res.status(400).json({ message: `Le fichier est trop volumineux (max ${maxLabel}).` });
-          }
-          return res.status(400).json({ message: err.message || "Échec de l'envoi du fichier." });
-        }
-        next();
-      });
-    };
-  }
-
-  app.post("/api/upload/whatsapp-image", requireAuth, handleWaUpload(waImageUpload, "10 Mo"), (req: any, res: any) => {
-    if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
-    res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
-  });
-  app.post("/api/upload/whatsapp-audio", requireAuth, handleWaUpload(waAudioUpload, "20 Mo"), (req: any, res: any) => {
-    if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
-    res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
-  });
-  app.post("/api/upload/whatsapp-video", requireAuth, handleWaUpload(waVideoUpload, "80 Mo"), (req: any, res: any) => {
-    if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
-    res.json({ url: `${req.protocol}://${req.get("host")}/uploads/whatsapp-content/${req.file.filename}` });
-  });
-
-  // GET all products with their WhatsApp AI content (for the product selector + current values)
-  app.get("/api/whatsapp-content/products", requireAuth, async (req: any, res: any) => {
-    const storeId = req.user!.storeId!;
-    try {
-      const rows = await db.select({
-        id: products.id, name: products.name, sku: products.sku,
-        whatsappImageUrls: products.whatsappImageUrls,
-        whatsappAudioUrls: products.whatsappAudioUrls,
-        whatsappVideoUrls: products.whatsappVideoUrls,
-        whatsappDescription: products.whatsappDescription,
-        whatsappPrice: products.whatsappPrice,
-        sellingPrice: products.sellingPrice,
-      }).from(products).where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`));
-      res.json(rows);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  // PATCH WhatsApp AI content for one product — now supports multiple images/audio/video
-  app.patch("/api/whatsapp-content/products/:id", requireAuth, async (req: any, res: any) => {
-    const storeId = req.user!.storeId!;
-    const productId = Number(req.params.id);
-    const schema = z.object({
-      whatsappImageUrls: z.array(z.string().trim().max(500)).max(10).optional(),
-      whatsappAudioUrls: z.array(z.string().trim().max(500)).max(10).optional(),
-      whatsappVideoUrls: z.array(z.string().trim().max(500)).max(10).optional(),
-      whatsappDescription: z.string().trim().max(2000).nullable().optional(),
-      whatsappPriceDh: z.number().nullable().optional(), // DH from the form, converted to cents below
-    });
-    try {
-      const { whatsappPriceDh, ...rest } = schema.parse(req.body);
-      const data: Record<string, unknown> = { ...rest };
-      if (whatsappPriceDh !== undefined) {
-        data.whatsappPrice = whatsappPriceDh === null ? null : Math.round(whatsappPriceDh * 100);
-      }
-      // Keep the legacy single-URL fields loosely in sync (first item), in
-      // case anything old still reads them
-      if (rest.whatsappImageUrls) data.whatsappImageUrl = rest.whatsappImageUrls[0] ?? null;
-      if (rest.whatsappAudioUrls) data.whatsappAudioUrl = rest.whatsappAudioUrls[0] ?? null;
-      if (rest.whatsappVideoUrls) data.whatsappVideoUrl = rest.whatsappVideoUrls[0] ?? null;
-      const [updated] = await db.update(products).set(data as any)
-        .where(and(eq(products.id, productId), eq(products.storeId, storeId)))
-        .returning();
-      if (!updated) return res.status(404).json({ message: "Produit introuvable" });
-      res.json(updated);
-    } catch (err: any) {
-      res.status(400).json({ message: err.message });
-    }
   });
 
   // Create a payment record (pending)
@@ -20563,132 +19046,39 @@ function ensureHeaders(sheet) {
   app.get("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     const settings = await storage.getAiSettings(req.user!.storeId!);
     const DEFAULT_PROMPT = "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب (المقاس، اللون، المدينة) مع الزبون على واتساب، والإجابة على أسئلتهم بشكل طبيعي. إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.";
-    const base = settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [], aiModel: "openai/gpt-4o-mini", scopeMode: "all_sources" };
+    const base = settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [], aiModel: "openai/gpt-4o-mini" };
     res.json({
       ...base,
-      scopeMode: (base as any).scopeMode || "all_sources",
       hasOpenRouterKey: !!(settings?.openrouterApiKey),
       hasOpenAiKey: !!(settings?.openaiApiKey),
-      hasGreenApiCreds: !!((settings as any)?.greenApiInstanceId && (settings as any)?.greenApiApiToken),
-      greenApiInstanceId: (settings as any)?.greenApiInstanceId || undefined, // instance id isn't a secret, keep it visible
       openaiApiKey: undefined,
       openrouterApiKey: undefined,
-      greenApiApiToken: undefined,
     });
   });
 
   app.put("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     try {
-      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel, scopeMode, greenApiInstanceId, greenApiApiToken } = req.body;
+      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel } = req.body;
       // Allow explicitly clearing the key by passing empty string
       const oaiKeyToSave = openaiApiKey === "" ? null : (openaiApiKey?.trim() || undefined);
       const orKeyToSave  = openrouterApiKey === "" ? null : (openrouterApiKey?.trim() || undefined);
-      const gaInstanceToSave = greenApiInstanceId === "" ? null : (greenApiInstanceId?.trim() || undefined);
-      const gaTokenToSave    = greenApiApiToken === ""   ? null : (greenApiApiToken?.trim()   || undefined);
       const s = await storage.upsertAiSettings(req.user!.storeId!, {
         enabled, systemPrompt, enabledProductIds,
         ...(oaiKeyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: oaiKeyToSave } : {}),
         ...(orKeyToSave  !== undefined || openrouterApiKey === "" ? { openrouterApiKey: orKeyToSave } : {}),
         ...(aiModel ? { aiModel } : {}),
-        ...(scopeMode === "all_sources" || scopeMode === "whatsapp_only" ? { scopeMode } : {}),
-        ...(gaInstanceToSave !== undefined || greenApiInstanceId === "" ? { greenApiInstanceId: gaInstanceToSave } : {}),
-        ...(gaTokenToSave    !== undefined || greenApiApiToken === ""   ? { greenApiApiToken: gaTokenToSave }       : {}),
-      } as any);
-      // Auto-configure Green API's webhookUrl to point at our incoming
-      // webhook — without this, Green API never pushes incoming messages to
-      // us at all (confirmed: this was never done automatically anywhere in
-      // this codebase, and is the most likely reason a test message got no
-      // reply and never appeared in Live Chat). Fire-and-forget: the save
-      // itself should never fail because of this external call.
-      const finalInstanceId = (s as any).greenApiInstanceId;
-      const finalApiToken   = (s as any).greenApiApiToken;
-      if (finalInstanceId && finalApiToken) {
-        const webhookUrl = `${req.protocol}://${req.get("host")}/api/webhooks/whatsapp-incoming`;
-        fetch(`https://api.green-api.com/waInstance${finalInstanceId}/setSettings/${finalApiToken}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            webhookUrl,
-            incomingWebhook: "yes",
-            outgoingMessageWebhook: "no",
-            outgoingAPIMessageWebhook: "no",
-            stateWebhook: "no",
-          }),
-          signal: AbortSignal.timeout(15000),
-        }).then(r => {
-          console.log(`[GREEN-API] webhookUrl auto-configured for store ${req.user!.storeId} (instance ${finalInstanceId}): HTTP ${r.status}`);
-        }).catch(err => {
-          console.error(`[GREEN-API] Failed to auto-configure webhookUrl for store ${req.user!.storeId}:`, err.message);
-        });
-      }
-
+      });
       res.json({
         ...s,
         hasOpenRouterKey: !!(s.openrouterApiKey),
         hasOpenAiKey: !!(s.openaiApiKey),
-        hasGreenApiCreds: !!((s as any).greenApiInstanceId && (s as any).greenApiApiToken),
-        greenApiInstanceId: (s as any).greenApiInstanceId || undefined,
         openaiApiKey: undefined,
         openrouterApiKey: undefined,
-        greenApiApiToken: undefined,
       });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  // ── Test Green API connection (per-store credentials) ──────────────────
-  app.post("/api/automation/green-api-test", requireAuth, async (req: any, res: any) => {
-    try {
-      const { instanceId, apiToken } = req.body;
-      if (!instanceId || !apiToken) return res.status(400).json({ ok: false, message: "Instance ID et Token requis." });
-      const r = await fetch(`https://api.green-api.com/waInstance${instanceId}/getStateInstance/${apiToken}`, {
-        signal: AbortSignal.timeout(10000),
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) return res.json({ ok: false, message: `Erreur Green API (HTTP ${r.status})` });
-      if (data.stateInstance === "authorized") {
-        // Also (re)configure the webhook URL here — covers stores that saved
-        // their credentials before this auto-config existed, by re-testing.
-        const webhookUrl = `${req.protocol}://${req.get("host")}/api/webhooks/whatsapp-incoming`;
-        fetch(`https://api.green-api.com/waInstance${instanceId}/setSettings/${apiToken}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            webhookUrl, incomingWebhook: "yes",
-            outgoingMessageWebhook: "no", outgoingAPIMessageWebhook: "no", stateWebhook: "no",
-          }),
-          signal: AbortSignal.timeout(15000),
-        }).catch(err => console.error(`[GREEN-API] webhookUrl config on test failed:`, err.message));
-        return res.json({ ok: true, message: "✅ Connecté et autorisé." });
-      }
-      return res.json({ ok: false, message: `Statut: ${data.stateInstance || "inconnu"} — scannez le QR code sur green-api.com pour autoriser.` });
-    } catch (err: any) {
-      res.json({ ok: false, message: err.message || "Erreur de connexion" });
-    }
-  });
-
-  // ── Get Green API QR code (base64 image) — lets the merchant scan without
-  // leaving the platform. Only useful when stateInstance isn't "authorized"
-  // yet; Green API returns { type: "qrCode", message: "<base64>" }.
-  app.post("/api/automation/green-api-qr", requireAuth, async (req: any, res: any) => {
-    try {
-      const { instanceId, apiToken } = req.body;
-      if (!instanceId || !apiToken) return res.status(400).json({ ok: false, message: "Instance ID et Token requis." });
-      const r = await fetch(`https://api.green-api.com/waInstance${instanceId}/qr/${apiToken}`, {
-        signal: AbortSignal.timeout(15000),
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) return res.json({ ok: false, message: `Erreur Green API (HTTP ${r.status})` });
-      if (data.type === "alreadyLogged") {
-        return res.json({ ok: true, alreadyLogged: true, message: "Déjà connecté — aucun QR code nécessaire." });
-      }
-      if (data.type === "qrCode" && data.message) {
-        return res.json({ ok: true, qrBase64: data.message });
-      }
-      return res.json({ ok: false, message: `Réponse inattendue: ${data.type || "inconnu"}` });
-    } catch (err: any) {
-      res.json({ ok: false, message: err.message || "Erreur de connexion" });
-    }
-  });
+  /* ── Nouveau orders for AI ──────────────────────────────────────── */
   app.get("/api/automation/nouveau-orders", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const rows = await db.select({
@@ -20856,76 +19246,18 @@ function ensureHeaders(sheet) {
       if (!senderData || !messageData) return;
 
       const phone = senderData.sender?.replace("@c.us", "").replace(/^212/, "0");
-
-      // Button click (Green API sendInteractiveButtonsReply flow, beta) —
-      // map known button IDs to the exact Darija words the existing
-      // is_confirmed/is_cancelled prompt rules already recognize, so this
-      // reuses all downstream confirm/cancel logic instead of duplicating it.
-      let text = messageData.textMessageData?.textMessage || messageData.extendedTextMessageData?.text || "";
-      const btnReply = messageData.templateButtonReplyMessage;
-      if (!text && btnReply?.selectedId) {
-        if (btnReply.selectedId === "confirm") text = "واخا";
-        else if (btnReply.selectedId === "cancel") text = "بلاش";
-        else text = btnReply.selectedDisplayText || "";
-        console.log(`[WA Webhook] Button click: selectedId=${btnReply.selectedId} → text="${text}"`);
-      }
+      const text = messageData.textMessageData?.textMessage || messageData.extendedTextMessageData?.text || "";
       if (!phone || !text) return;
 
-      // Identify which store this message belongs to — Green API is now
-      // per-store (each merchant has their own Instance ID), so match the
-      // webhook's own instance ID against ai_settings.greenApiInstanceId.
-      // CRITICAL: always call handleIncomingMessage regardless of whether an
-      // active conversation already exists — the old version only forwarded
-      // messages for phones that ALREADY had one, which meant the cold-lead
-      // pathway (handleIncomingMessage's own 'no conversation yet' branch)
-      // could never run at all, since it was filtered out before ever being
-      // reached. handleIncomingMessage already has the correct logic for
-      // both cases internally.
-      const incomingInstanceId = String(body.instanceData?.idInstance || "");
-      let targetStoreId: number | null = null;
-
-      if (incomingInstanceId) {
-        const [matched] = await db.select({ storeId: aiSettings.storeId })
-          .from(aiSettings)
-          .where(eq(aiSettings.greenApiInstanceId, incomingInstanceId))
-          .limit(1);
-        if (matched) targetStoreId = matched.storeId;
+      // Find which store has an active conversation with this phone
+      // We search across all stores — in production each store has its own Green API instance
+      // so we can identify via the instance ID in the request or use a simpler lookup
+      const activeConvs = await db.select().from(aiConversations).where(
+        and(eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active"))
+      );
+      for (const conv of activeConvs) {
+        await handleIncomingMessage(conv.storeId, phone, text).catch(console.error);
       }
-
-      if (!targetStoreId) {
-        // Fallback: no store has this instance ID configured (e.g. still
-        // using the shared global GREENAPI_INSTANCE_ID/TOKEN fallback) — try
-        // an existing active conversation for this phone, across all stores,
-        // same as before. This only helps ongoing conversations, not new
-        // cold leads, for stores that haven't set their own instance ID yet.
-        const [activeConv] = await db.select({ storeId: aiConversations.storeId })
-          .from(aiConversations)
-          .where(and(eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active")))
-          .limit(1);
-        if (activeConv) targetStoreId = activeConv.storeId;
-      }
-
-      if (!targetStoreId) {
-        // Final safety net: if exactly ONE store on the whole platform has
-        // Green API configured, it's almost certainly the right one — use
-        // it rather than silently dropping a genuine new cold-lead message
-        // just because that store's instance ID wasn't saved/matched yet.
-        // Confirmed live: this exact silent-drop path was losing real leads.
-        const configuredStores = await db.select({ storeId: aiSettings.storeId })
-          .from(aiSettings)
-          .where(sql`${aiSettings.greenApiInstanceId} IS NOT NULL AND ${aiSettings.greenApiInstanceId} != ''`);
-        if (configuredStores.length === 1) {
-          targetStoreId = configuredStores[0].storeId;
-          console.warn(`[WA Webhook] instanceId=${incomingInstanceId || "none"} didn't match any store, but only one store has Green API configured (storeId=${targetStoreId}) — using it as a safety-net fallback instead of dropping`);
-        }
-      }
-
-      if (!targetStoreId) {
-        console.warn(`[WA Webhook] Could not identify store for instanceId=${incomingInstanceId || "none"}, phone=${phone} — message dropped`);
-        return;
-      }
-
-      await handleIncomingMessage(targetStoreId, phone, text).catch(console.error);
     } catch (err: any) { console.error("[WA Webhook]", err.message); }
   });
 
@@ -22108,7 +20440,9 @@ function submitOrder(e){
       }
 
       const paywall = await storage.checkPaywall(storeId);
-      if (paywall.isBlocked) console.warn(`[PAYWALL] store=${storeId} over plan (${paywall.current}/${paywall.limit}) — orders accepted anyway`);
+      if (paywall.isBlocked) {
+        return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
+      }
 
       const allIntegrations = await db.select().from(storeIntegrations)
         .where(and(
