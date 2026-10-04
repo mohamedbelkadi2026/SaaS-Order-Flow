@@ -2351,7 +2351,10 @@ export async function registerRoutes(
     try {
       const user = req.user!;
       if (user.role === 'agent') {
-        return res.status(403).json({ message: "Les agents ne peuvent pas expédier en masse" });
+        const permissions = await storage.getAgentPermissions(user.id);
+        if (!permissions.can_ship_orders) {
+          return res.status(403).json({ message: "Vous n'avez pas la permission d'expédier les commandes" });
+        }
       }
 
       const { orderIds, provider, accountId } = req.body;
@@ -12729,6 +12732,8 @@ function ensureHeaders(sheet) {
         show_top_products: z.boolean().optional(),
         show_inventory: z.boolean().optional(),
         show_all_orders: z.boolean().optional(),
+        can_edit_shipping_fee: z.boolean().optional(),
+        can_ship_orders: z.boolean().optional(),
       });
       const permissions = schema.parse(req.body);
       await storage.updateAgentPermissions(agentId, permissions);
@@ -17543,6 +17548,13 @@ function ensureHeaders(sheet) {
       const orderId = Number(req.params.id);
       const { provider } = z.object({ provider: z.string().min(1) }).parse(req.body);
       const storeId = req.user!.storeId!;
+
+      if (req.user!.role === 'agent') {
+        const permissions = await storage.getAgentPermissions(req.user!.id);
+        if (!permissions.can_ship_orders) {
+          return res.status(403).json({ message: "Vous n'avez pas la permission d'expédier les commandes" });
+        }
+      }
 
       const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ message: "Commande non trouvée" });
