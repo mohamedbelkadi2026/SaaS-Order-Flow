@@ -528,20 +528,38 @@ export default function ProfitAnalyzer() {
       // component against Stock independently.
       const parts = r.designation.split(/\s+\+\s+/).map(x => x.trim()).filter(Boolean);
       const components = parts.length > 1 ? parts : [r.designation];
-      const share = 1 / components.length;
 
-      for (const component of components) {
+      // IMPORTANT: a carrier row quantity is the TOTAL physical units in the
+      // parcel, not "that quantity of every component". For a 3-unit bundle
+      // "A + B", never turn it into 3×A + 3×B. Allocate the total units across
+      // the components. Extra units go to the first component, matching the
+      // carrier designation order (e.g. "Drops + Glass cleaner", qty 3 =>
+      // 2 Drops + 1 Glass cleaner).
+      const componentQtys = components.length === 1
+        ? [r.qty]
+        : components.map((_, index) => {
+            const base = Math.floor(r.qty / components.length);
+            const remainder = r.qty % components.length;
+            return base + (index < remainder ? 1 : 0);
+          });
+
+      // Allocate order-level COD/shipping by physical-unit share. This keeps
+      // the totals conserved exactly: component revenues add to r.cod and
+      // component shipping adds to r.shipping, with no double counting.
+      const totalAllocatedQty = componentQtys.reduce((sum, q) => sum + q, 0) || 1;
+
+      components.forEach((component, index) => {
+        const componentQty = componentQtys[index];
+        const share = componentQty / totalAllocatedQty;
         const key = norm(component);
         if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: component };
-        // CSV quantity describes parcel/item quantity. Each component in a
-        // bundle is present that many times.
-        groupMap[key].qty += r.qty;
+        groupMap[key].qty += componentQty;
         groupMap[key].rev += r.cod * share;
         groupMap[key].ship += r.shipping * share;
-        // Shared packaging/confirmation are also allocated via rowCount so
-        // their sum across bundle components equals one order, not two.
+        // Packaging/confirmation are order-level costs: allocate one command
+        // across the components with the same share.
         groupMap[key].count += share;
-      }
+      });
     }
 
     return Object.entries(groupMap).map(([, d]) => ({
