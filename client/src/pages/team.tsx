@@ -29,6 +29,7 @@ const DEFAULT_PERMISSIONS: Record<string, boolean> = {
   show_inventory: false,
   show_all_orders: false,
   can_edit_shipping_fee: false,
+  can_ship_orders: false,
 };
 
 const PERMISSION_LABELS: Record<string, { label: string; description: string }> = {
@@ -40,6 +41,7 @@ const PERMISSION_LABELS: Record<string, { label: string; description: string }> 
   show_inventory: { label: "Accès au Stock / Inventaire", description: "Voir et gérer les niveaux de stock" },
   show_all_orders: { label: "Page Commandes (Toutes)", description: "Accéder à la vue centrale de toutes les commandes" },
   can_edit_shipping_fee: { label: "Modifier les frais de livraison", description: "Autoriser l'agent à changer le montant des frais de livraison sur une commande" },
+  can_ship_orders: { label: "Expédier les commandes", description: "Autoriser l'agent de confirmation à envoyer les commandes confirmées vers la société de livraison" },
 };
 
 const MOROCCAN_REGIONS = [
