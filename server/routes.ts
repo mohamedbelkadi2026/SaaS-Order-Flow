@@ -4752,6 +4752,23 @@ export async function registerRoutes(
           .replace(/api\.digylog\.ma/i, "api.digylog.com")
           .replace(/app\.digylog\.com/i, "api.digylog.com");
         citiesUrl = `${base}/cities`;
+      } else if (carrierKey === "nearya") {
+        // Nearya exposes delivery destinations as regions (opaque string ids).
+        // This button used to work through this endpoint; restore the dedicated
+        // Nearya path instead of falling through to the generic 422.
+        const { fetchNearyaRegions } = await import("./services/carrier-service");
+        const result = await fetchNearyaRegions({
+          apiKey: stripHtml(acct.apiKey || ""),
+          apiSecret: stripHtml((acct as any).apiSecret || ""),
+        });
+        if (result.error) {
+          return res.status(422).json({ message: `Nearya: ${result.error}` });
+        }
+        const count = await storage.upsertNearyaRegions(result.regions);
+        const names = result.regions.map((r: any) => r.name);
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, names);
+        console.log(`[Nearya-SyncCities] ✅ ${count} regions synced for account #${accountId}`);
+        return res.json({ count, cities: names, syncedAt: new Date().toISOString() });
       } else if (carrierKey === "expresscoursier") {
         citiesUrl = `https://expresscoursier.ma/v1.0/cities/${encodeURIComponent(apiKey)}`;
       } else if (carrierKey === "ozonexpress") {
