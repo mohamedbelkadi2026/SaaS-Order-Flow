@@ -38,6 +38,8 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   ameex:          "https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add",
   expresscoursier: "https://expresscoursier.ma/v1.0/batch",
   speedex:        "https://api.speedex.ma/api/v1/orders",
+  // Speedaf Express Morocco — dedicated handler below; kept here for diagnostics/fallback only.
+  speedaf:        "https://apis.speedaf.com/open-api/express/order/createOrder",
   kargoexpress:   "https://api.kargoexpress.ma/api/v1/orders",
   forcelog:       "https://api.forcelog.ma/api/v1/orders",
   livo:           "https://api.livo.ma/api/v1/orders",
@@ -380,6 +382,9 @@ export interface CarrierShipInput {
   productReference?: string;
   // Express Coursier: settings JSONB object from carrierAccounts (contains expressCoursierStoreId)
   ecSettings?: Record<string, unknown>;
+  // Speedaf Open API credentials/settings are carried by the selected carrier account.
+  speedafAppCode?: string;
+  speedafCustomerCode?: string;
   // Ozon Express: settings JSONB object from carrierAccounts (contains ozonExpressCustomerId)
   ozonSettings?: Record<string, unknown>;
 }
@@ -1309,7 +1314,70 @@ export async function shipOrderToCarrier(
   }
 
   // ── Nearya Express: x-api-id / x-api-key headers, dedicated handler ──────
-  if (providerKey === 'nearya') {
+    // ── Speedaf Express: Open API dedicated create-order handler ───────────────
+  // Credentials: apiKey = secretKey; settings.speedafAppCode = appCode;
+  // settings.speedafCustomerCode = customerCode. Kept isolated from every
+  // existing carrier so adding Speedaf cannot alter Nearya/Ameex behaviour.
+  if (providerKey === 'speedaf') {
+    const settings = (creds as any).settings || {};
+    const secretKey = (creds as any).apiKey || '';
+    const appCode = settings.speedafAppCode || (creds as any).apiSecret || '';
+    const customerCode = settings.speedafCustomerCode || (creds as any).carrierStoreName || '';
+    if (!secretKey || !appCode || !customerCode) {
+      const msg = 'Speedaf: appCode, secretKey et customerCode sont requis.';
+      return { success: false, error: msg, carrierMessage: msg, httpStatus: 0, rawResponse: null, permanent: true };
+    }
+
+    const endpoint = (creds as any).apiUrl || CARRIER_ENDPOINTS.speedaf;
+    const priceDH = +(input.totalPrice / 100).toFixed(2);
+    const payload: Record<string, unknown> = {
+      appCode,
+      customerCode,
+      customerOrderNo: String(input.orderNumber || input.orderId),
+      receiverName: cleanText(input.customerName),
+      receiverMobile: sanitizePhone(input.phone),
+      receiverCountryCode: 'MA',
+      receiverCityName: cleanText(input.city),
+      receiverAddress: cleanText(input.address) || cleanText(input.city),
+      goodsName: cleanText(input.productName) || 'Produit',
+      goodsQty: input.quantity ?? 1,
+      codAmount: priceDH,
+      remark: cleanText(input.note || ''),
+    };
+
+    // Speedaf's Open API signing fields vary by account/API generation.
+    // Preserve the documented credential names and send them explicitly; the
+    // production account can override apiUrl without affecting other carriers.
+    const sHeaders: Record<string,string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'appCode': String(appCode),
+      'secretKey': String(secretKey),
+    };
+    try {
+      const resp = await axios.post(endpoint, payload, {
+        headers: sHeaders,
+        timeout: TIMEOUT_MS,
+        validateStatus: () => true,
+      });
+      const body = resp.data;
+      if (resp.status >= 400 || body?.success === false || body?.code === 'FAIL') {
+        const msg = extractCarrierErrorMsg(body) || `HTTP ${resp.status}`;
+        return { success: false, error: `Speedaf: ${msg}`, carrierMessage: String(msg), httpStatus: resp.status, rawResponse: body, permanent: resp.status >= 400 && resp.status < 500 };
+      }
+      const tracking = body?.data?.waybillNo || body?.data?.trackingNo || body?.waybillNo || body?.trackingNo || body?.data?.orderNo || extractTracking(body);
+      if (!tracking) {
+        const warn = 'Speedaf a accepté la commande mais aucun numéro de suivi n’a été retourné.';
+        return { success: true, warning: warn, httpStatus: resp.status, rawResponse: body };
+      }
+      return { success: true, trackingNumber: String(tracking), httpStatus: resp.status, rawResponse: body };
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      return { success: false, error: `Speedaf: ${msg}`, carrierMessage: msg, httpStatus: 0, rawResponse: null };
+    }
+  }
+
+if (providerKey === 'nearya') {
     const nKey    = (creds as any).apiKey || '';
     const nId     = (creds as any).apiSecret || '';
     const nSet    = (creds as any).settings || {};
