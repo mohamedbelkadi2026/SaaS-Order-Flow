@@ -4171,9 +4171,14 @@ export async function registerRoutes(
       // dispatch dropdown. carrier_accounts.storeId is the parent account;
       // carrier_accounts.magasinId is the actual boutique linkage.
       const requestedMagasinId = req.query.magasin_id ? Number(req.query.magasin_id) : null;
-      const scoped = requestedMagasinId
-        ? active.filter((a: any) => Number(a.magasinId) === requestedMagasinId)
-        : active;
+
+      // IMPORTANT: the dispatch selector must show every active delivery
+      // connection the authenticated account is allowed to use. In particular,
+      // agents/team-leads linked to several boutiques must be able to choose
+      // between all of those Nearya connections. The MAGASIN filter above the
+      // orders table is an order filter, not a permission filter for carriers.
+      // Filtering carrier accounts here made agents see only one connection.
+      const scoped = active;
 
       const ownerStore = await storage.getStore(storeId);
       const ownerId = ownerStore?.ownerId ?? req.user!.id;
