@@ -37,6 +37,7 @@ const PROVIDERS = [
   { id: "ameex",          name: "Ameex",             cities: 420, logo: "/carriers/ameex.svg"    },
   { id: "cathedis",       name: "Cathedis",          cities: 520, logo: "/carriers/cathidis.svg" },
   { id: "speedex",        name: "Speedex",           cities: 439, logo: "/carriers/speedx.png"   },
+  { id: "speedaf",        name: "Speedaf Express",    cities: 0,   logo: "/carriers/speedaf.png", initials: "SE", color: "#ff7900" },
   { id: "kargoexpress",   name: "KargoExpress",      cities: 335, logo: "/carriers/cargo.svg"    },
   { id: "forcelog",       name: "ForceLog",          cities: 468, logo: "/carriers/forcelog.png" },
   { id: "livo",           name: "Livo",              cities: 369, logo: null, initials: "LI"       },
@@ -219,6 +220,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   // ── Sendit-specific fields ────────────────────────────────────────────────
   const isSendit = providerId === "sendit";
   const isNearya = providerId === "nearya";
+  const isSpeedaf = providerId === "speedaf";
+  const [speedafAppCode, setSpeedafAppCode] = useState<string>((existingAccount?.settings as any)?.speedafAppCode || existingAccount?.apiSecret || "");
+  const [speedafCustomerCode, setSpeedafCustomerCode] = useState<string>((existingAccount?.settings as any)?.speedafCustomerCode || existingAccount?.carrierStoreName || "");
   // Nearya: x-api-id (Compte/Client ID) + x-api-key, plus the Business ID that
   // goes in every request body as `company`.
   const [nearyaClientId, setNearyaClientId] = useState<string>(existingAccount?.apiSecret || "");
@@ -479,6 +483,15 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         } else if (isOlivraison) {
           if (apiKey.trim())               body.apiKey    = apiKey;
           if (olivraisonSecretKey.trim())  body.apiSecret = olivraisonSecretKey;
+        } else if (isSpeedaf) {
+          if (apiKey.trim()) body.apiKey = apiKey; // secretKey
+          if (speedafAppCode.trim()) body.apiSecret = speedafAppCode.trim();
+          body.carrierStoreName = speedafCustomerCode.trim() || null;
+          body.settings = {
+            ...((existingAccount?.settings as object) || {}),
+            speedafAppCode: speedafAppCode.trim(),
+            speedafCustomerCode: speedafCustomerCode.trim(),
+          };
         } else if (isNearya) {
           if (apiKey.trim())         body.apiKey    = apiKey;
           if (nearyaClientId.trim()) body.apiSecret = nearyaClientId;
@@ -536,6 +549,15 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         } else if (isOlivraison) {
           payload.apiSecret = olivraisonSecretKey.trim() || undefined;
           payload.storeName = resolvedStoreName;
+        } else if (isSpeedaf) {
+          payload.apiKey = apiKey.trim();
+          payload.apiSecret = speedafAppCode.trim() || undefined;
+          payload.carrierStoreName = speedafCustomerCode.trim() || undefined;
+          payload.storeName = resolvedStoreName;
+          payload.settings = {
+            speedafAppCode: speedafAppCode.trim(),
+            speedafCustomerCode: speedafCustomerCode.trim(),
+          };
         } else if (isNearya) {
           payload.apiSecret        = nearyaClientId.trim() || undefined;
           payload.carrierStoreName = nearyaBusinessId.trim() || undefined;
@@ -657,6 +679,19 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       }
       if (!ameexStoreName.trim()) {
         setSubmitError("Le Store Name est requis.");
+        return;
+      }
+    } else if (isSpeedaf) {
+      if (!existingAccount && !apiKey.trim()) {
+        setSubmitError("Le secretKey Speedaf est requis.");
+        return;
+      }
+      if (!speedafAppCode.trim()) {
+        setSubmitError("Le appCode Speedaf est requis.");
+        return;
+      }
+      if (!speedafCustomerCode.trim()) {
+        setSubmitError("Le customerCode Speedaf est requis.");
         return;
       }
     } else if (isNearya) {
@@ -1704,6 +1739,25 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 )}
               </div>
             </>
+          ) : isSpeedaf ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label className="font-semibold text-sm" style={{ color: NAVY }}>secretKey Speedaf</Label>
+                  <Input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                    placeholder="secretKey fourni par Speedaf" className="h-10 text-xs font-mono" data-testid="input-speedaf-secret-key" />
+                  {existingAccount?.hasApiKey && <p className="text-[10px] text-muted-foreground">Laissez vide pour conserver la clé actuelle.</p>}
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="font-semibold text-sm" style={{ color: NAVY }}>appCode</Label>
+                  <Input value={speedafAppCode} onChange={e => setSpeedafAppCode(e.target.value)}
+                    placeholder="appCode Speedaf" className="h-10 text-xs font-mono" data-testid="input-speedaf-app-code" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="font-semibold text-sm" style={{ color: NAVY }}>customerCode</Label>
+                  <Input value={speedafCustomerCode} onChange={e => setSpeedafCustomerCode(e.target.value)}
+                    placeholder="customerCode Speedaf" className="h-10 text-xs font-mono" data-testid="input-speedaf-customer-code" />
+                </div>
+              </>
           ) : isNearya ? (
               <>
                 <div className="space-y-1.5">
