@@ -2615,19 +2615,6 @@ export async function registerRoutes(
                   console.log(`[NEARYA-REGION] order=${order.id} city="${resolvedCity}" → region="${nearyaRegionId}"`);
                 }
 
-                // Nearya requires the mapped opaque region id on single dispatch too.
-      let singleNearyaRegionId: string | undefined;
-      if (provider.toLowerCase() === 'nearya') {
-        const resolved = await storage.resolveNearyaRegion(matchedCity);
-        if (!resolved) {
-          return res.status(422).json({
-            message: `Nearya: Ville « ${matchedCity} » non reconnue. Synchronisez les régions Nearya puis réessayez.`,
-          });
-        }
-        singleNearyaRegionId = resolved.regionId;
-        console.log(`[NEARYA-REGION] order=${orderId} city="${matchedCity}" → region="${singleNearyaRegionId}"`);
-      }
-
       // For Express Coursier: resolve city name → numeric city ID.
                 // EC rejects city names, so fail fast if no numeric ID is found.
                 let ecCityId: string | undefined;
