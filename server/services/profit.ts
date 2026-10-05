@@ -169,6 +169,26 @@ export async function computeProfitability(
     storeOrders = storeOrders.filter((o: any) => normalizeSource(o) === requestedSource);
   }
 
+  // A logical order must contribute at most once to profitability. Some store
+  // imports can leave duplicate rows for the same external order/reference;
+  // the orders pages may intentionally show those duplicates, but financial
+  // analytics must use the same one-order source of truth as delivered counts.
+  // Prefer the newest DB row when a stable external key is available.
+  const uniqueOrders = new Map<string, any>();
+  for (const o of storeOrders) {
+    const externalKey = String(
+      (o as any).externalOrderId ||
+      (o as any).orderNumber ||
+      (o as any).reference ||
+      (o as any).code ||
+      ''
+    ).trim();
+    const key = externalKey ? `external:${externalKey}` : `id:${(o as any).id}`;
+    const prev = uniqueOrders.get(key);
+    if (!prev || Number((o as any).id) > Number((prev as any).id)) uniqueOrders.set(key, o);
+  }
+  storeOrders = Array.from(uniqueOrders.values());
+
   const orderIds = storeOrders.map(o => o.id);
 
   // ── Ad spend ─────────────────────────────────────────────────────────────────
