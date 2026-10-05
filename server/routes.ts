@@ -2595,7 +2595,40 @@ export async function registerRoutes(
                   ameexCityId = resolved;
                 }
 
-                // For Express Coursier: resolve city name → numeric city ID.
+                // Nearya requires its opaque region id, not the free-text city.
+                // This mapping already exists in nearya_regions; it was accidentally
+                // omitted from the bulk dispatch path, causing Nearya shipments to fail.
+                let nearyaRegionId: string | undefined;
+                if (provider.toLowerCase() === 'nearya') {
+                  const resolved = await storage.resolveNearyaRegion(resolvedCity);
+                  if (!resolved) {
+                    return {
+                      success: false,
+                      error: `Nearya: Ville « ${resolvedCity} » non reconnue. Synchronisez les régions Nearya puis réessayez.`,
+                      carrierMessage: 'Nearya region not found',
+                      httpStatus: 0,
+                      rawResponse: null,
+                      permanent: true,
+                    };
+                  }
+                  nearyaRegionId = resolved.regionId;
+                  console.log(`[NEARYA-REGION] order=${order.id} city="${resolvedCity}" → region="${nearyaRegionId}"`);
+                }
+
+                // Nearya requires the mapped opaque region id on single dispatch too.
+      let singleNearyaRegionId: string | undefined;
+      if (provider.toLowerCase() === 'nearya') {
+        const resolved = await storage.resolveNearyaRegion(matchedCity);
+        if (!resolved) {
+          return res.status(422).json({
+            message: `Nearya: Ville « ${matchedCity} » non reconnue. Synchronisez les régions Nearya puis réessayez.`,
+          });
+        }
+        singleNearyaRegionId = resolved.regionId;
+        console.log(`[NEARYA-REGION] order=${orderId} city="${matchedCity}" → region="${singleNearyaRegionId}"`);
+      }
+
+      // For Express Coursier: resolve city name → numeric city ID.
                 // EC rejects city names, so fail fast if no numeric ID is found.
                 let ecCityId: string | undefined;
                 if (provider.toLowerCase() === 'expresscoursier') {
@@ -2723,7 +2756,8 @@ export async function registerRoutes(
                     ameexMissingRefs:     ameexStock.ameexMissingRefs,
                     ameexProductKey:      (orderCreds as any).settings?.ameexProductKey || (orderCreds as any).ameexProductKey || 'id',
                   } : {}),
-                  cityId:           ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr ?? waselexCityId,
+                  cityId:           nearyaRegionId ?? ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr ?? waselexCityId,
+                  nearyaRegionId,
                   ecSettings,
                   ozonSettings,
                 });
@@ -4133,14 +4167,29 @@ export async function registerRoutes(
         );
       }
 
+      // Honour the MAGASIN filter and include the boutique name in the
+      // dispatch dropdown. carrier_accounts.storeId is the parent account;
+      // carrier_accounts.magasinId is the actual boutique linkage.
+      const requestedMagasinId = req.query.magasin_id ? Number(req.query.magasin_id) : null;
+      const scoped = requestedMagasinId
+        ? active.filter((a: any) => Number(a.magasinId) === requestedMagasinId)
+        : active;
+
+      const ownerStore = await storage.getStore(storeId);
+      const ownerId = ownerStore?.ownerId ?? req.user!.id;
+      const magasins = ownerId ? await storage.getStoresByOwner(ownerId) : [];
+      const magasinNames = new Map<number, string>(magasins.map((m: any) => [Number(m.id), String(m.name || 'Magasin')]));
+
       // Return safe subset — never expose raw API key to frontend
-      res.json(active.map((a: any) => ({
+      res.json(scoped.map((a: any) => ({
         id:             a.id,
         carrierName:    a.carrierName,
         connectionName: a.connectionName,
         isDefault:      a.isDefault,
         isActive:       a.isActive,
         assignmentRule: a.assignmentRule,
+        magasinId:      a.magasinId ?? null,
+        storeName:      a.magasinId ? (magasinNames.get(Number(a.magasinId)) || null) : null,
       })));
     } catch (err: any) {
       console.error(`[DISPATCH-ERROR]: Exception in /api/shipping/active-accounts — ${err.message}`);
@@ -17761,7 +17810,8 @@ function ensureHeaders(sheet) {
           ameexMissingRefs:     singleAmeexStock.ameexMissingRefs,
           ameexProductKey:      (creds as any).settings?.ameexProductKey || (creds as any).ameexProductKey || 'id',
         } : {}),
-        cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr ?? singleWaselexCityId,
+        cityId:           singleNearyaRegionId ?? singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr ?? singleWaselexCityId,
+        nearyaRegionId:   singleNearyaRegionId,
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
       });
