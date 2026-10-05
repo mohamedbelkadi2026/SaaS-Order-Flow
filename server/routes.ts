@@ -16239,7 +16239,32 @@ function ensureHeaders(sheet) {
   });
 
   app.get("/api/magasins", requireAuth, async (req, res) => {
-    res.json(await storage.getStoresByOwner(req.user!.id));
+    const user = req.user!;
+
+    // Owners/admins keep the normal owner-scoped list.
+    if (user.role !== 'agent') {
+      return res.json(await storage.getStoresByOwner(user.id));
+    }
+
+    // Agents (including team leads) do not own magasin rows themselves.
+    // Resolve the account owner from their parent store, then expose only the
+    // magasins to which the agent is linked through stores.agentIds.
+    // Previously this endpoint used getStoresByOwner(agent.id), which could
+    // return 0/1 magasin and made a team lead linked to two boutiques lose one
+    // from the Dashboard "MAGASIN" filter.
+    const parentStore = user.storeId ? await storage.getStore(user.storeId) : null;
+    const ownerId = parentStore?.ownerId ?? null;
+    if (!ownerId) return res.json([]);
+
+    const accountMagasins = await storage.getStoresByOwner(ownerId);
+    const linked = accountMagasins.filter((m: any) => {
+      const ids: number[] = Array.isArray(m.agentIds) ? m.agentIds.map(Number) : [];
+      // Empty agentIds is the legacy "all account agents" mode, matching the
+      // distribution engine and Team page semantics.
+      return ids.length === 0 || ids.includes(user.id);
+    });
+
+    return res.json(linked);
   });
 
   app.post("/api/magasins", requireAdmin, async (req, res) => {
