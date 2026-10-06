@@ -2191,7 +2191,7 @@ export async function registerRoutes(
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 25,
     };
-    const agentOnly = user.role === 'agent' ? user.id : undefined;
+    const agentOnly = user.role === 'agent' ? await storage.getVisibleAgentIds(user) : undefined;
     // Media buyers only see their own attributed orders (by ID or UTM pattern CODE*%)
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
@@ -2283,7 +2283,7 @@ export async function registerRoutes(
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 25,
     };
-    const agentOnly = user.role === 'agent' ? user.id : undefined;
+    const agentOnly = user.role === 'agent' ? await storage.getVisibleAgentIds(user) : undefined;
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
       const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
@@ -2327,7 +2327,8 @@ export async function registerRoutes(
   app.post("/api/orders/bulk-assign", requireAuth, async (req, res) => {
     try {
       const user = req.user!;
-      if (user.role === 'agent') {
+      const teamLead = user.role === 'agent' ? await storage.isTeamLead(user) : false;
+      if (user.role === 'agent' && !teamLead) {
         return res.status(403).json({ message: "Agents cannot bulk assign orders" });
       }
       const { orderIds, agentId } = req.body;
@@ -2337,6 +2338,17 @@ export async function registerRoutes(
       const targetAgent = await storage.getUserById(Number(agentId));
       if (!targetAgent || targetAgent.storeId !== user.storeId) {
         return res.status(400).json({ message: "Agent not found in your store" });
+      }
+      if (teamLead) {
+        const visible = await storage.getVisibleAgentIds(user);
+        const allowedIds = Array.isArray(visible) ? visible : [user.id];
+        if (!allowedIds.includes(Number(agentId))) {
+          return res.status(403).json({ message: "Vous pouvez assigner uniquement aux agents de votre équipe" });
+        }
+        const scope = await storage.assertOrdersInAgentScope(orderIds.map(Number), user.storeId!, allowedIds);
+        if (!scope.ok) {
+          return res.status(403).json({ message: "Une ou plusieurs commandes sont hors de votre équipe" });
+        }
       }
       const updated = await storage.bulkAssignOrders(orderIds, Number(agentId), user.storeId!);
       res.json({ updated });
