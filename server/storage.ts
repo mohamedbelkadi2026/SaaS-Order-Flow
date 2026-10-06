@@ -76,6 +76,7 @@ export interface IStorage {
   
   getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]>;
   getOrdersSince(storeId: number, since: Date): Promise<Order[]>;
+  getCarrierOrdersForSync(storeId: number, provider: string): Promise<Order[]>;
   getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]>;
   getOrdersByPhone(storeId: number, phone: string): Promise<OrderWithDetails[]>;
   getActiveOrdersByPhone(storeId: number, phone: string): Promise<Order[]>;
@@ -749,6 +750,24 @@ export class DatabaseStorage implements IStorage {
       (o as any).duplicateOrderDates = info.dates;
     }
     return hydrated;
+  }
+
+  /**
+   * Lightweight carrier polling source. Background jobs only need the order
+   * row itself, never items/products/agents/magasin hydration or duplicate
+   * metadata. Keeping cron traffic on this path prevents carrier sync from
+   * competing with interactive users for DB/CPU.
+   */
+  async getCarrierOrdersForSync(storeId: number, provider: string): Promise<Order[]> {
+    return db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        eq(orders.shippingProvider, provider),
+        sql`${orders.trackNumber} IS NOT NULL`,
+        sql`${orders.trackNumber} <> ''`,
+        sql`LOWER(COALESCE(${orders.status}, '')) NOT IN ('delivered', 'livré', 'livrée', 'refused', 'refusé', 'retour recu', 'retour reçu', 'returned', 'retourné', 'retournée')`
+      ))
+      .orderBy(desc(orders.createdAt));
   }
 
   async getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]> {
