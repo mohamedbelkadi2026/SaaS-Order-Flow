@@ -331,6 +331,16 @@ app.use((req, res, next) => {
 // infrastructure/proxy timeouts remain the hard network safety net.
 app.use((req, res, next) => {
   if (req.path === '/health' || req.path === '/api/health') return next();
+
+  // SSE endpoints are intentionally long-lived (minutes/hours). Treating them
+  // as a 25s "slow request" creates false alarms and log storms when several
+  // users have Live Monitoring open. They do not hold a DB connection.
+  const isEventStream =
+    req.path.endsWith('/events') &&
+    (req.path.startsWith('/api/automation/') || req.path.startsWith('/api/'));
+
+  if (isEventStream) return next();
+
   const slowTimer = setTimeout(() => {
     if (!res.writableEnded) {
       console.warn(`[SLOW_REQUEST] ${req.method} ${req.path} still running after 25s`);
