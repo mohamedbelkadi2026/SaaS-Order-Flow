@@ -497,7 +497,9 @@ export default function Team() {
       paymentAmount: agent.paymentAmount ? String(agent.paymentAmount / 100) : "",
       distributionMethod: (agent.distributionMethod || "auto") as DistMethod,
       roleInStore: setting?.roleInStore || "confirmation",
-      isTeamLead: (setting as any)?.isTeamLead === 1,
+      // PostgreSQL/Drizzle can expose this flag as 1, true, or a string depending
+      // on the deployed schema/driver. Treat every persisted truthy form as checked.
+      isTeamLead: (setting as any)?.isTeamLead === 1 || (setting as any)?.isTeamLead === true || (setting as any)?.isTeamLead === "1" || (setting as any)?.isTeamLead === "true",
       isActive: agent.isActive === 1 || agent.isActive === true,
       leadPercentage: String(setting?.leadPercentage || 50),
       allowedProductIds: parsedProductIds,
