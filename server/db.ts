@@ -67,11 +67,11 @@ export const pool = new Pool({
 // orders kept being stored an hour ahead. A statement issued on each new
 // connection can't be stripped the same way, so this is the one that actually
 // guarantees now() resolves to UTC.
-pool.on('connect', (client) => {
-  client.query("SET TIME ZONE 'UTC'").catch((err: any) =>
-    console.error(`[DB] could not set session time zone to UTC: ${err?.message}`)
-  );
-});
+// Set the session timezone through PostgreSQL startup options above.
+// Do not fire client.query() from the pool "connect" event: node-postgres can
+// hand that same client to application code immediately, causing concurrent
+// queries on one client and the pg9 deprecation warning seen in production.
+
 
 // Surface DB connection errors as warnings — never crash the process.
 pool.on("error", (err) => {
