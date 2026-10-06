@@ -229,6 +229,15 @@ export const orders = pgTable("orders", {
   shopifyOrderNumberUnique: uniqueIndex("orders_shopify_order_number_unique")
     .on(table.storeId, table.orderNumber)
     .where(sql`${table.source} = 'shopify'`),
+
+  // Hot paths on the orders screens always scope by store, then sort/filter.
+  // These indexes keep pagination/count/filter queries from scanning the full
+  // orders table as data grows; they do not change any application behavior.
+  storeCreatedAtIdx: index("orders_store_created_at_idx").on(table.storeId, table.createdAt),
+  storeStatusCreatedAtIdx: index("orders_store_status_created_at_idx").on(table.storeId, table.status, table.createdAt),
+  storeAgentCreatedAtIdx: index("orders_store_agent_created_at_idx").on(table.storeId, table.assignedToId, table.createdAt),
+  storeMagasinCreatedAtIdx: index("orders_store_magasin_created_at_idx").on(table.storeId, table.magasinId, table.createdAt),
+  storePhoneIdx: index("orders_store_phone_idx").on(table.storeId, table.customerPhone),
 }));
 
 export const orderItems = pgTable("order_items", {
