@@ -394,6 +394,16 @@ export async function initializeDatabase(): Promise<void> {
         WHERE pickup_date IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_orders_store_provider
         ON public.orders (store_id, shipping_provider);
+      CREATE INDEX IF NOT EXISTS idx_orders_store_assigned_created
+        ON public.orders (store_id, assigned_to_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_orders_store_status_assigned_created
+        ON public.orders (store_id, status, assigned_to_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_order_items_order_id
+        ON public.order_items (order_id);
+      CREATE INDEX IF NOT EXISTS idx_order_items_product_order
+        ON public.order_items (product_id, order_id);
+      CREATE INDEX IF NOT EXISTS idx_stock_movements_store_order_type
+        ON public.stock_movements (store_id, order_id, type);
     `);
     console.log("[Migration] dashboard/order hot-path indexes ensured ✅");
 
