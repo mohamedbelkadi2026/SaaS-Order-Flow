@@ -1137,13 +1137,17 @@ export class DatabaseStorage implements IStorage {
     const limit = filters.limit || 25;
     const offset = (page - 1) * limit;
 
-    const [{ value: total }] = await db.select({ value: count() }).from(orders).where(whereClause);
-
-    const allOrders = await db.select().from(orders)
-      .where(whereClause)
-      .orderBy(desc(orders.createdAt))
-      .limit(limit)
-      .offset(offset);
+    // Count and page lookup are independent. Run them concurrently so the
+    // orders screen waits for the slower query once instead of serially.
+    const [countRows, allOrders] = await Promise.all([
+      db.select({ value: count() }).from(orders).where(whereClause),
+      db.select().from(orders)
+        .where(whereClause)
+        .orderBy(desc(orders.createdAt))
+        .limit(limit)
+        .offset(offset),
+    ]);
+    const total = countRows[0]?.value ?? 0;
 
     const hydrated = await this.hydrateOrders(allOrders);
     await this.injectDuplicateCountsFromDB(storeId, hydrated);
