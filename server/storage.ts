@@ -3375,7 +3375,10 @@ export class DatabaseStorage implements IStorage {
       .from(orders).where(inArray(orders.id, orderIds));
     const allowed = new Set(allowedAgentIds);
     const offending = rows
-      .filter(r => r.storeId !== storeId || !r.assignedToId || !allowed.has(r.assignedToId))
+      // A team lead may take an unassigned/new order and distribute it to a
+      // confirmation agent. Assigned orders remain restricted to the lead's
+      // own team so they still cannot pull work from another team.
+      .filter(r => r.storeId !== storeId || (r.assignedToId != null && !allowed.has(r.assignedToId)))
       .map(r => r.id);
     // An id that doesn't exist at all is also out of scope.
     const found = new Set(rows.map(r => r.id));
