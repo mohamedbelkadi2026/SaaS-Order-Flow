@@ -714,7 +714,7 @@ app.use((req, res, next) => {
   async function runDigylogSync(label: string) {
     try {
       const { storage: st } = await import('./storage');
-      const { trackDigylogShipment } = await import('./services/carrier-service');
+      const { trackDigylogShipment, getNearyaShippingCost } = await import('./services/carrier-service');
       const { db: dbInst } = await import('./db');
       const { carrierAccounts: caTable } = await import('@shared/schema');
       const { eq: eqFn } = await import('drizzle-orm');
