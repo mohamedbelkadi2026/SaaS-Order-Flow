@@ -323,17 +323,21 @@ app.use((req, res, next) => {
   next();
 });
 
-// ── Global request timeout — 25s max (Cloudflare 524 / Railway hang protection) ──
+// ── Global request timeout ──────────────────────────────────────────────────
+// Do not send a 504 while an async route is still running. The old middleware
+// sent a response at 25s, then the route later called res.json(), producing
+// ERR_HTTP_HEADERS_SENT and, in the worst case, an uncaught exception that
+// destabilised the whole process. We still log slow requests for diagnostics;
+// infrastructure/proxy timeouts remain the hard network safety net.
 app.use((req, res, next) => {
   if (req.path === '/health' || req.path === '/api/health') return next();
-  const timeout = setTimeout(() => {
-    if (!res.headersSent) {
-      console.error(`[TIMEOUT] ${req.method} ${req.path} timed out after 25s`);
-      res.status(504).json({ message: 'Request timeout' });
+  const slowTimer = setTimeout(() => {
+    if (!res.writableEnded) {
+      console.warn(`[SLOW_REQUEST] ${req.method} ${req.path} still running after 25s`);
     }
   }, 25000);
-  res.on('finish', () => clearTimeout(timeout));
-  res.on('close', () => clearTimeout(timeout));
+  res.on('finish', () => clearTimeout(slowTimer));
+  res.on('close', () => clearTimeout(slowTimer));
   next();
 });
 
