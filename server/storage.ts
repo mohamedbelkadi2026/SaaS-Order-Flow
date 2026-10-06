@@ -770,6 +770,21 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(orders.createdAt));
   }
 
+  /**
+   * Nearya fee repair source. Unlike carrier polling, fee backfill MUST include
+   * terminal orders (delivered/refused/returned) because those are precisely
+   * the rows users need for monthly delivery-cost reporting.
+   */
+  async getNearyaOrdersMissingShippingCost(storeId: number): Promise<Order[]> {
+    return db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        sql`LOWER(TRIM(COALESCE(${orders.shippingProvider}, ''))) = 'nearya'`,
+        sql`COALESCE(${orders.shippingCost}, 0) <= 0`
+      ))
+      .orderBy(desc(orders.createdAt));
+  }
+
   async getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]> {
     const allOrders = await db.select().from(orders)
       .where(eq(orders.assignedToId, agentId))
