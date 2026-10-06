@@ -61,6 +61,7 @@ export const ORDER_STATUSES = [
   { value: 'Pas de réponse 2',                  label: 'Pas de réponse 2',              color: C.indigo       },
   { value: 'Pas de réponse 3',                  label: 'Pas de réponse 3',              color: C.indigo       },
   { value: 'Pas de réponse 4',                  label: 'Pas de réponse 4',              color: C.indigo       },
+  { value: 'Pas de réponse 5',                  label: 'Pas de réponse 5',              color: C.indigo       },
   { value: "Client n'a pas commandé",           label: "Client n'a pas commandé",       color: C.rose         },
   { value: 'Produit non disponible',            label: 'Produit non disponible',        color: C.rose         },
 
