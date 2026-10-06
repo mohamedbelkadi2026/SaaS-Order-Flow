@@ -53,7 +53,7 @@ export const pool = new Pool({
   // UTC, showing an hour late. Morocco also drops to UTC+0 for Ramadan, so
   // "local" isn't even a fixed offset.
   options: '-c timezone=UTC',
-  max: 5,
+  // 5 connections became a hard bottleneck once dashboard stats, order lists and\n  // carrier webhooks ran concurrently. Keep it configurable for small DB plans.\n  max: Math.max(5, Number(process.env.DB_POOL_MAX || 10)),
   idleTimeoutMillis: 60_000,
   connectionTimeoutMillis: 8_000,
   statement_timeout: 20_000,
@@ -83,7 +83,7 @@ try {
   const parsed = new URL(process.env.DATABASE_URL ?? "");
   const safeUrl = `${parsed.protocol}//${parsed.username}:***@${parsed.hostname}:${parsed.port || 5432}${parsed.pathname}`;
   console.log(`[DB] Target: ${safeUrl}`);
-  console.log(`[DB] SSL: ${useSSL} | rejectUnauthorized: false | pool max: 5`);
+  console.log(`[DB] SSL: ${useSSL} | rejectUnauthorized: false | pool max: ${Math.max(5, Number(process.env.DB_POOL_MAX || 10))}`);
 } catch {
   console.log("[DB] DATABASE_URL could not be parsed — check Railway Variables");
 }
@@ -376,6 +376,26 @@ export async function initializeDatabase(): Promise<void> {
         ON public.orders (store_id);
     `);
     console.log("[Migration] order_items/orders join indexes ensured ✅");
+
+    // ── Dashboard/order-list hot-path indexes ──────────────────────────────
+    // These are idempotent and preserve all data/behaviour; they only let
+    // PostgreSQL avoid full scans for the filters used throughout the SaaS.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_store_created
+        ON public.orders (store_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_orders_store_status_created
+        ON public.orders (store_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_orders_store_agent_created
+        ON public.orders (store_id, assigned_to_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_orders_store_magasin_created
+        ON public.orders (store_id, magasin_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_orders_store_pickup
+        ON public.orders (store_id, pickup_date DESC)
+        WHERE pickup_date IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_orders_store_provider
+        ON public.orders (store_id, shipping_provider);
+    `);
+    console.log("[Migration] dashboard/order hot-path indexes ensured ✅");
 
     // ── 6. orders: add carrier tracking columns ───────────────────────────────
     await client.query(`
