@@ -861,9 +861,8 @@ app.use((req, res, next) => {
         const storeId = (account as any).storeId;
         const apiKey  = (account as any).apiKey;
         if (!apiKey) continue;
-        const allOrders = await st.getOrdersByStore(storeId);
+        const allOrders = await st.getCarrierOrdersForSync(storeId, 'waselex');
         const toSync = allOrders.filter((o: any) =>
-          o.shippingProvider === 'waselex' &&
           o.trackNumber &&
           !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
         );
@@ -1007,7 +1006,7 @@ app.use((req, res, next) => {
         const apiSecret = (account as any).apiSecret;
         if (!apiKey || !apiSecret) continue;
 
-        const allOrders = await st.getOrdersByStore(storeId);
+        const allOrders = await st.getCarrierOrdersForSync(storeId, 'nearya');
 
         // Nearya safety rule:
         // "préfacture" is a carrier billing state, not a delivery regression.
@@ -1039,7 +1038,6 @@ app.use((req, res, next) => {
         }
 
         const toSync = allOrders.filter((o: any) =>
-          o.shippingProvider === 'nearya' &&
           o.trackNumber &&
           !['delivered', 'refused', 'Retour Recu'].includes(o.status || '') &&
           !String(o.status || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes('prefacture')
