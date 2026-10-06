@@ -1018,13 +1018,12 @@ app.use((req, res, next) => {
 
         const allOrders = await st.getCarrierOrdersForSync(storeId, 'nearya');
 
-        // Repair/display delivery fees for every Nearya order, including
-        // delivered/refused terminal parcels that are intentionally not polled.
-        // getCarrierOrdersForSync is already carrier-scoped, so this is cheap
-        // and avoids depending on the unrelated Digylog background job.
+        // Fee backfill is intentionally separate from status polling:
+        // polling excludes terminal rows, while monthly fee reporting needs
+        // delivered/refused/returned Nearya orders too.
+        const missingFeeOrders = await st.getNearyaOrdersMissingShippingCost(storeId);
         let feesUpdated = 0;
-        for (const order of allOrders) {
-          if ((order.shippingCost || 0) > 0) continue;
+        for (const order of missingFeeOrders) {
           const fee = getNearyaShippingCost(order.customerCity);
           await st.updateOrder(order.id, { shippingCost: fee });
           feesUpdated++;
