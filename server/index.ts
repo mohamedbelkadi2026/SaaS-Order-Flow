@@ -1018,6 +1018,28 @@ app.use((req, res, next) => {
 
         const allOrders = await st.getCarrierOrdersForSync(storeId, 'nearya');
 
+        // Repair/display delivery fees for every Nearya order, including
+        // delivered/refused terminal parcels that are intentionally not polled.
+        // getCarrierOrdersForSync is already carrier-scoped, so this is cheap
+        // and avoids depending on the unrelated Digylog background job.
+        let feesUpdated = 0;
+        for (const order of allOrders) {
+          if ((order.shippingCost || 0) > 0) continue;
+          const fee = getNearyaShippingCost(order.customerCity);
+          await st.updateOrder(order.id, { shippingCost: fee });
+          feesUpdated++;
+          try {
+            const { broadcastToStore } = await import('./sse');
+            broadcastToStore(storeId, 'order_updated', {
+              orderId: order.id,
+              shippingCost: fee,
+            });
+          } catch {}
+        }
+        if (feesUpdated > 0) {
+          console.log(`[NEARYA-FEE][${label}] store=${storeId}: filled ${feesUpdated} missing delivery fee(s)`);
+        }
+
         // Nearya safety rule:
         // "préfacture" is a carrier billing state, not a delivery regression.
         // Historical Nearya orders that were incorrectly moved from delivered
