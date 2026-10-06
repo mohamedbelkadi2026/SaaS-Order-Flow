@@ -32,6 +32,11 @@ export function useFilterOptions(magasinId?: number | null, enabled: boolean = t
     enabled,
     retry: false,
     throwOnError: false,
+    // Filter choices change rarely; do not hydrate the whole order history on
+    // every dashboard remount/focus.
+    staleTime: 5 * 60_000,
+    gcTime: 15 * 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -52,6 +57,13 @@ export function useFilteredStats(filters: Record<string, string>, enabled: boole
     enabled,
     retry: false,
     throwOnError: false,
+    // Dashboard stats are expensive and already invalidated after mutations.
+    // Keep a short freshness window so remounts/focus changes do not launch
+    // duplicate 20–30s calculations and exhaust the PostgreSQL pool.
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 }
 
@@ -64,6 +76,11 @@ export function useOrders(status?: string) {
       if (!res.ok) throw new Error("Failed to fetch orders");
       return res.json();
     },
+    // Order mutations/socket updates already patch or invalidate this cache.
+    // Avoid refetch storms when several screens/components mount together.
+    staleTime: 15_000,
+    gcTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -537,6 +554,9 @@ export function useAgentPerformanceByAssignment(
     enabled,
     retry: false,
     throwOnError: false,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 
