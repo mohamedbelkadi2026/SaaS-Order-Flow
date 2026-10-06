@@ -228,6 +228,27 @@ export async function initializeDatabase(): Promise<void> {
         ON public.general_charges (store_id, expense_date);
     `);
     console.log("[DATABASE]: general_charges table verified/created.");
+    // ── Orders hot-path indexes ───────────────────────────────────────────────
+    // Keep the busiest list/filter queries fast as order volume grows. These
+    // indexes are idempotent and change no business logic or returned data.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS orders_store_created_at_idx
+        ON public.orders (store_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS orders_store_status_created_at_idx
+        ON public.orders (store_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS orders_store_agent_created_at_idx
+        ON public.orders (store_id, assigned_to_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS orders_store_magasin_created_at_idx
+        ON public.orders (store_id, magasin_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS orders_store_phone_idx
+        ON public.orders (store_id, customer_phone);
+      CREATE INDEX IF NOT EXISTS order_items_order_id_idx
+        ON public.order_items (order_id);
+      CREATE INDEX IF NOT EXISTS order_items_product_order_idx
+        ON public.order_items (product_id, order_id);
+    `);
+    console.log("[DATABASE]: orders hot-path indexes verified/created.");
+
 
     // ── 5. carrier_cities — live city cache synced from carrier API ───────────
     await client.query(`
