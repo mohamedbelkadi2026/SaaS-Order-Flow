@@ -12621,6 +12621,7 @@ function ensureHeaders(sheet) {
       if (agent.role === 'agent') {
         const settingsPayload: any = {};
         if (data.roleInStore !== undefined) settingsPayload.roleInStore = data.roleInStore;
+        if (data.isTeamLead !== undefined) settingsPayload.isTeamLead = data.isTeamLead ? 1 : 0;
         if (data.leadPercentage !== undefined) settingsPayload.leadPercentage = data.leadPercentage;
         if (data.allowedProductIds !== undefined) settingsPayload.allowedProductIds = JSON.stringify(data.allowedProductIds);
         if (data.allowedRegions !== undefined) settingsPayload.allowedRegions = JSON.stringify(data.allowedRegions);
