@@ -1277,20 +1277,29 @@ export default function Orders() {
     es.addEventListener("shipping_progress", (e: MessageEvent) => {
       try {
         const d = JSON.parse(e.data);
+        // Some carriers emit total=0 on progress events even though the
+        // original request contained N orders. Preserve the original total.
+        // The final event can also omit complete; completed per-order results
+        // are sufficient to finish the modal without a manual page refresh.
+        const expectedTotal = shipProgress.total;
+        const reportedDone = typeof d.done === "number" ? d.done : shipProgress.done;
+        const resultCount = Array.isArray(d.results) ? d.results.length : 0;
+        const finished = d.complete === true ||
+          (expectedTotal > 0 && reportedDone >= expectedTotal && resultCount >= expectedTotal);
         setShipProgress(prev => prev ? {
           ...prev,
           done:    d.done    ?? prev.done,
-          total:   d.total   ?? prev.total,
+          total:   d.total > 0 ? d.total : prev.total,
           shipped: d.shipped ?? prev.shipped,
           failed:  d.failed  ?? prev.failed,
           retries: d.retries ?? prev.retries,
-          results: d.results ?? (prev as any).results,
-          active:  !d.complete,
+          results: d.results ?? prev.results,
+          active:  !finished,
         } : null);
         // Only hide orders after the carrier actually reports success.
         const shippedIds = (d.results || []).filter((r: any) => r.status === 'shipped').map((r: any) => Number(r.orderId)).filter(Number.isFinite);
         if (shippedIds.length) setJustShippedIds(prev => new Set([...prev, ...shippedIds]));
-        if (d.complete) {
+        if (finished) {
           es.close();
           // Invalidate order cache so the updated statuses appear immediately
           queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
