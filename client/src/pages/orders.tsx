@@ -1284,8 +1284,11 @@ export default function Orders() {
         const expectedTotal = shipProgress.total;
         const reportedDone = typeof d.done === "number" ? d.done : shipProgress.done;
         const resultCount = Array.isArray(d.results) ? d.results.length : 0;
+        const outcomeCount = (typeof d.shipped === "number" ? d.shipped : shipProgress.shipped) +
+          (typeof d.failed === "number" ? d.failed : shipProgress.failed);
         const finished = d.complete === true ||
-          (expectedTotal > 0 && reportedDone >= expectedTotal && resultCount >= expectedTotal);
+          (expectedTotal > 0 && reportedDone >= expectedTotal &&
+            (resultCount >= expectedTotal || outcomeCount >= expectedTotal));
         setShipProgress(prev => prev ? {
           ...prev,
           done:    d.done    ?? prev.done,
