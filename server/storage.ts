@@ -1185,15 +1185,25 @@ export class DatabaseStorage implements IStorage {
     const total = countRows[0]?.value ?? 0;
 
     const queryMs = Date.now() - queryStartedAt;
-    const hydrationStartedAt = Date.now();
-    const hydrated = await this.hydrateOrders(allOrders);
-    const hydrationMs = Date.now() - hydrationStartedAt;
-    const duplicateStartedAt = Date.now();
-    await this.injectDuplicateCountsFromDB(storeId, hydrated);
-    const duplicatesMs = Date.now() - duplicateStartedAt;
-    if (queryMs + hydrationMs + duplicatesMs >= 1500) {
+    // Hydration and duplicate metadata only read the database and are independent.
+    // Run both concurrently to avoid adding their latencies on every orders page.
+    // Enrich the original rows with duplicate metadata, then preserve those fields
+    // when hydrateOrders spreads each order into its returned object.
+    const enrichmentStartedAt = Date.now();
+    const [hydrated] = await Promise.all([
+      this.hydrateOrders(allOrders),
+      this.injectDuplicateCountsFromDB(storeId, allOrders),
+    ]);
+    // hydrateOrders constructs its result after asynchronous queries; ensure the
+    // duplicate metadata is present regardless of which operation finished first.
+    for (let i = 0; i < hydrated.length; i++) {
+      (hydrated[i] as any).duplicateCount = (allOrders[i] as any).duplicateCount;
+      (hydrated[i] as any).duplicateOrderDates = (allOrders[i] as any).duplicateOrderDates;
+    }
+    const enrichmentMs = Date.now() - enrichmentStartedAt;
+    if (queryMs + enrichmentMs >= 1500) {
       // No customer details or search terms in logs; only timings and page size.
-      console.warn(`[ORDERS-PERF] store=${storeId} page=${page} rows=${allOrders.length} query=${queryMs}ms hydrate=${hydrationMs}ms duplicates=${duplicatesMs}ms`);
+      console.warn(`[ORDERS-PERF] store=${storeId} page=${page} rows=${allOrders.length} query=${queryMs}ms enrichment=${enrichmentMs}ms`);
     }
     return { orders: hydrated, total };
   }
