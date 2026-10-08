@@ -1881,7 +1881,7 @@ export default function Orders() {
           </div>
 
           {/* ── Magasin ── */}
-          {Array.isArray(magasins) && magasins.length > 1 && (
+          {Array.isArray(magasins) && magasins.length > 0 && (
             <div className="flex flex-col shrink-0">
               <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Magasin</span>
               <Select value={selectedMagasin ? String(selectedMagasin) : 'all'} onValueChange={(v) => {
