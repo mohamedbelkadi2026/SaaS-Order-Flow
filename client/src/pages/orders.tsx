@@ -1240,25 +1240,31 @@ export default function Orders() {
   // and immediately refreshes the order list without requiring a page reload.
   useEffect(() => {
     const es = new EventSource("/api/automation/events", { withCredentials: true });
-
-    es.addEventListener("order_updated", (e: MessageEvent) => {
-      try {
+    // Carrier sync can emit hundreds of events in a burst. Coalesce them into
+    // one refetch instead of issuing a new orders query for every parcel.
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let refreshLogs = false;
+    const scheduleRefresh = (includeLogs: boolean) => {
+      refreshLogs = refreshLogs || includeLogs;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
         queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
-      } catch {}
-    });
+        if (refreshLogs) queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+        refreshLogs = false;
+        refreshTimer = undefined;
+      }, 1000);
+    };
 
-    es.addEventListener("new_order", () => {
-      try {
-        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-      } catch {}
-    });
+    es.addEventListener("order_updated", () => scheduleRefresh(true));
+    es.addEventListener("new_order", () => scheduleRefresh(false));
 
     es.onerror = () => { /* keep alive — reconnects automatically */ };
-    return () => es.close();
-  }, []);
+    return () => {
+      es.close();
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [queryClient]);
 
   // ── SSE listener for real-time shipping progress ──────────────────
   useEffect(() => {
