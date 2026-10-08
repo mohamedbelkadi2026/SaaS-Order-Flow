@@ -313,9 +313,9 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (p.startsWith("/api")) {
       let logLine = `${req.method} ${p} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse).substring(0, 200)}`;
-      }
+      // Never serialize response bodies in request logs: they may contain
+      // customer PII, and JSON.stringify large order payloads blocks the event loop.
+      // Keep route, HTTP status and duration for latency diagnostics.
       log(logLine);
     }
   });
