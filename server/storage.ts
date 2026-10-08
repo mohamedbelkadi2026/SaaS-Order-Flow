@@ -1173,6 +1173,7 @@ export class DatabaseStorage implements IStorage {
 
     // Count and page lookup are independent. Run them concurrently so the
     // orders screen waits for the slower query once instead of serially.
+    const queryStartedAt = Date.now();
     const [countRows, allOrders] = await Promise.all([
       db.select({ value: count() }).from(orders).where(whereClause),
       db.select().from(orders)
@@ -1183,8 +1184,17 @@ export class DatabaseStorage implements IStorage {
     ]);
     const total = countRows[0]?.value ?? 0;
 
+    const queryMs = Date.now() - queryStartedAt;
+    const hydrationStartedAt = Date.now();
     const hydrated = await this.hydrateOrders(allOrders);
+    const hydrationMs = Date.now() - hydrationStartedAt;
+    const duplicateStartedAt = Date.now();
     await this.injectDuplicateCountsFromDB(storeId, hydrated);
+    const duplicatesMs = Date.now() - duplicateStartedAt;
+    if (queryMs + hydrationMs + duplicatesMs >= 1500) {
+      // No customer details or search terms in logs; only timings and page size.
+      console.warn(`[ORDERS-PERF] store=${storeId} page=${page} rows=${allOrders.length} query=${queryMs}ms hydrate=${hydrationMs}ms duplicates=${duplicatesMs}ms`);
+    }
     return { orders: hydrated, total };
   }
 

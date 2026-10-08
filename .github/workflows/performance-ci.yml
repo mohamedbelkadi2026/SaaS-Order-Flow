@@ -1,0 +1,36 @@
+name: Performance safety checks
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: TypeScript check (diagnostic; repository baseline contains errors)
+        id: typecheck
+        continue-on-error: true
+        run: pnpm run check
+      - name: Production build (required)
+        run: pnpm run build
+      - name: Report TypeScript baseline
+        if: always()
+        run: |
+          echo "TypeScript diagnostic outcome: ${{ steps.typecheck.outcome }}"
+          echo "TypeScript failures are not ignored for release approval; compare against main before merging."

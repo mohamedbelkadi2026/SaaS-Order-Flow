@@ -714,7 +714,7 @@ app.use((req, res, next) => {
   async function runDigylogSync(label: string) {
     try {
       const { storage: st } = await import('./storage');
-      const { trackDigylogShipment, getNearyaShippingCost } = await import('./services/carrier-service');
+      const { trackDigylogShipment } = await import('./services/carrier-service');
       const { db: dbInst } = await import('./db');
       const { carrierAccounts: caTable } = await import('@shared/schema');
       const { eq: eqFn } = await import('drizzle-orm');
@@ -725,23 +725,9 @@ app.use((req, res, next) => {
       for (const account of accounts) {
         const storeId = (account as any).storeId;
         const apiKey  = (account as any).apiKey;
-        const allOrders = await st.getOrdersByStore(storeId);
-
-        // Keep Nearya delivery fees complete even for terminal orders, which are
-        // intentionally excluded from status polling below.
-        for (const o of allOrders) {
-          if ((o.shippingProvider || '').toLowerCase().trim() !== 'nearya') continue;
-          if ((o.shippingCost || 0) > 0) continue;
-          const fee = getNearyaShippingCost(o.customerCity);
-          await st.updateOrder(o.id, { shippingCost: fee });
-          console.log(`[NEARYA-FEE] #${o.orderNumber} city="${o.customerCity || ''}" → ${fee / 100} DH`);
-        }
-
-        const toSync = allOrders.filter((o: any) =>
-          o.shippingProvider === 'digylog' &&
-          o.trackNumber &&
-          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
-        );
+        // Query only active Digylog parcels, without hydrating every store order.
+        // NearYa fee backfill runs in the dedicated NearYa sync job.
+        const toSync = await st.getCarrierOrdersForSync(storeId, 'digylog');
         if (!toSync.length) continue;
 
         console.log(`[AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
@@ -810,12 +796,8 @@ app.use((req, res, next) => {
       for (const account of accounts) {
         const storeId = (account as any).storeId;
         const apiKey  = (account as any).apiKey;
-        const allOrders = await st.getOrdersByStore(storeId);
-        const toSync = allOrders.filter((o: any) =>
-          o.shippingProvider === 'vitipsexpress' &&
-          o.trackNumber &&
-          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
-        );
+        // Avoid full-store order hydration for scheduled carrier polling.
+        const toSync = await st.getCarrierOrdersForSync(storeId, 'vitipsexpress');
         if (!toSync.length) continue;
 
         console.log(`[VITIPS-AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
