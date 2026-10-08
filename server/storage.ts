@@ -765,9 +765,7 @@ export class DatabaseStorage implements IStorage {
         eq(orders.shippingProvider, provider),
         sql`${orders.trackNumber} IS NOT NULL`,
         sql`${orders.trackNumber} <> ''`,
-        // Match the original polling exclusion exactly. Broader terminal-state
-        // exclusions could silently stop tracking parcels that were polled before.
-        sql`${orders.status} IS NULL OR ${orders.status} NOT IN ('delivered', 'refused', 'Retour Recu')`
+        sql`LOWER(COALESCE(${orders.status}, '')) NOT IN ('delivered', 'livré', 'livrée', 'refused', 'refusé', 'retour recu', 'retour reçu', 'returned', 'retourné', 'retournée')`
       ))
       .orderBy(desc(orders.createdAt));
   }
