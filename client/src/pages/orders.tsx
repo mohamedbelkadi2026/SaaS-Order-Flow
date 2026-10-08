@@ -1246,7 +1246,9 @@ export default function Orders() {
     let refreshLogs = false;
     const scheduleRefresh = (includeLogs: boolean) => {
       refreshLogs = refreshLogs || includeLogs;
-      if (refreshTimer) clearTimeout(refreshTimer);
+      // Schedule from the first event, not the last: continuous carrier events
+      // must not postpone the orders refresh indefinitely.
+      if (refreshTimer) return;
       refreshTimer = setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
         queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
