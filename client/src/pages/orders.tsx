@@ -915,6 +915,8 @@ export default function Orders() {
   const [historyOrder, setHistoryOrder] = useState<any | null>(null);
   const [callHistoryOrder, setCallHistoryOrder] = useState<any | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());
+  // Hide only carrier-confirmed shipped orders immediately, without waiting for a page reload.
+  const [justShippedIds, setJustShippedIds] = useState<Set<number>>(new Set());
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
   const [customerHistoryPhone, setCustomerHistoryPhone] = useState<string | null>(null);
   const [shippingProvider, setShippingProvider] = useState<string>("");
@@ -1149,7 +1151,7 @@ export default function Orders() {
   }, [dayTick]);
 
   const filteredOrders = useMemo(() => {
-    let visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
+    let visible = ordersList.filter((o: any) => !hiddenOrderIds.has(o.id) && !(urlStatus === 'confirme' && justShippedIds.has(o.id)));
     if (showDuplicatesOnly) visible = visible.filter((o: any) => (o.duplicateCount ?? 1) > 1);
     // selectedMagasin is now applied server-side via actualFilters — no client filter here.
     const applyConfirmeReporteSort = (rows: any[]) => {
@@ -1192,7 +1194,7 @@ export default function Orders() {
       return true;
     });
     return applyConfirmeReporteSort(colFiltered);
-  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds, urlStatus, dayTick]);
+  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds, justShippedIds, urlStatus, dayTick]);
 
   /**
    * Urgency level for a Confirmé Reporté row, used both for the page banner
@@ -1285,6 +1287,9 @@ export default function Orders() {
           results: d.results ?? (prev as any).results,
           active:  !d.complete,
         } : null);
+        // Only hide orders after the carrier actually reports success.
+        const shippedIds = (d.results || []).filter((r: any) => r.status === 'shipped').map((r: any) => Number(r.orderId)).filter(Number.isFinite);
+        if (shippedIds.length) setJustShippedIds(prev => new Set([...prev, ...shippedIds]));
         if (d.complete) {
           es.close();
           // Invalidate order cache so the updated statuses appear immediately
@@ -1545,6 +1550,8 @@ export default function Orders() {
             done: data.total ?? prev.done,
             results: data.results ?? [],
           } : null);
+          const shippedIds = (data.results || []).filter((r: any) => r.status === 'shipped').map((r: any) => Number(r.orderId)).filter(Number.isFinite);
+          if (shippedIds.length) setJustShippedIds(prev => new Set([...prev, ...shippedIds]));
           setSelectedIds(new Set());
           setBulkShipProvider("");
           setBulkShipAccountId(null);
@@ -3190,7 +3197,9 @@ export default function Orders() {
                         });
                         const data = await res.json();
                         setAmeexShipOrderId(null);
+                        setJustShippedIds(prev => new Set([...prev, ameexShipOrderId]));
                         queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+                        queryClient.invalidateQueries({ queryKey: ['/api/orders/filtered'] });
                         toast({
                           title: "✅ Expédié via Ameex",
                           description: data.trackingNumber
