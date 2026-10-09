@@ -776,10 +776,22 @@ app.use((req, res, next) => {
     }
   }
 
+  // Scheduled carrier polling is enabled by default for backward compatibility.
+  // When deploying a dedicated scheduler service, set CARRIER_SYNC_ROLE=web on
+  // the HTTP service and CARRIER_SYNC_ROLE=worker on ONE scheduler instance.
+  // This only separates scheduled polling; webhooks remain on the HTTP service.
+  const carrierSyncRole = process.env.CARRIER_SYNC_ROLE || 'both';
+  const runScheduledCarrierSync = carrierSyncRole !== 'web';
+  if (!['web', 'worker', 'both'].includes(carrierSyncRole)) {
+    console.warn('[CARRIER-SYNC] Unknown CARRIER_SYNC_ROLE; scheduled polling remains enabled');
+  }
+
   // Run once after 2 minutes on startup, then every 15 minutes
-  setTimeout(() => runDigylogSync('initial'), 2 * 60 * 1000);
-  const autoDigylogSync = setInterval(() => runDigylogSync('interval'), 15 * 60 * 1000);
-  intervals.push(autoDigylogSync);
+  if (runScheduledCarrierSync) {
+    setTimeout(() => runDigylogSync('initial'), 2 * 60 * 1000);
+    const autoDigylogSync = setInterval(() => runDigylogSync('interval'), 15 * 60 * 1000);
+    intervals.push(autoDigylogSync);
+  }
 
   // ── Auto Vitipsexpress status sync ─────────────────────────────────────────
   async function runVitipsSync(label: string) {
@@ -833,9 +845,11 @@ app.use((req, res, next) => {
     }
   }
   // Run once after 3 minutes on startup, then every 10 minutes
-  setTimeout(() => runVitipsSync('initial'), 3 * 60 * 1000);
-  const autoVitipsSync = setInterval(() => runVitipsSync('interval'), 10 * 60 * 1000);
-  intervals.push(autoVitipsSync);
+  if (runScheduledCarrierSync) {
+    setTimeout(() => runVitipsSync('initial'), 3 * 60 * 1000);
+    const autoVitipsSync = setInterval(() => runVitipsSync('interval'), 10 * 60 * 1000);
+    intervals.push(autoVitipsSync);
+  }
 
   // ── Auto Waselex status sync (polling — Waselex n'a pas de webhook) ────────
   async function runWaselexSync(label: string) {
@@ -901,9 +915,11 @@ app.use((req, res, next) => {
     }
   }
   // Run once after 4 minutes on startup, then every 20 minutes (doc Waselex: 15-30 min)
-  setTimeout(() => runWaselexSync('initial'), 4 * 60 * 1000);
-  const autoWaselexSync = setInterval(() => runWaselexSync('interval'), 20 * 60 * 1000);
-  intervals.push(autoWaselexSync);
+  if (runScheduledCarrierSync) {
+    setTimeout(() => runWaselexSync('initial'), 4 * 60 * 1000);
+    const autoWaselexSync = setInterval(() => runWaselexSync('interval'), 20 * 60 * 1000);
+    intervals.push(autoWaselexSync);
+  }
 
   // ── Meta Ads: import yesterday's spend once a day ─────────────────────────
   // A trailing window is re-read every run on purpose: Meta restates spend for
@@ -1117,9 +1133,11 @@ app.use((req, res, next) => {
       console.error(`[NEARYA-AUTO-SYNC][${label}] Error:`, err?.message);
     }
   }
-  setTimeout(() => runNearyaSync('initial'), 5 * 60 * 1000);
-  const autoNearyaSync = setInterval(() => runNearyaSync('interval'), 20 * 60 * 1000);
-  intervals.push(autoNearyaSync);
+  if (runScheduledCarrierSync) {
+    setTimeout(() => runNearyaSync('initial'), 5 * 60 * 1000);
+    const autoNearyaSync = setInterval(() => runNearyaSync('interval'), 20 * 60 * 1000);
+    intervals.push(autoNearyaSync);
+  }
 
   // Ozon Express delivers status via WEBHOOK only — polling endpoints return auth errors.
   // No polling job registered; statuses update automatically via
