@@ -1110,7 +1110,7 @@ export class DatabaseStorage implements IStorage {
         ]));
       } else if (filters.status === 'retour ready') {
         // Carrier variants can differ in case and use spaces or underscores.
-        conditions.push(sql`LOWER(REPLACE(TRIM(${orders.status}), '_', ' ')) IN ('retour ready', 'return ready')`);
+        conditions.push(sql`LOWER(REPLACE(TRIM(${orders.status}), '_', ' ')) IN ('retour ready', 'return ready', 'ready')`);
       } else if (filters.status === 'returned') {
         conditions.push(sql`LOWER(TRIM(${orders.status})) = 'returned'`);
       } else if (filters.status === 'mis en distribution') {
