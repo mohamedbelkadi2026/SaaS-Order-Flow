@@ -34,6 +34,7 @@ const PROVIDERS = [
   { id: "ozonexpress",    name: "Ozon Express",      cities: 628, logo: "/carriers/ozonexpress.png" },
   { id: "sendit",         name: "Sendit",            cities: 500, logo: "/carriers/sendit.png"   },
   { id: "nearya",         name: "Nearya Express",    cities: 0,   logo: "/carriers/nearya.png"   },
+  { id: "expressrelais",  name: "Express Relais",     cities: 0,   logo: null, initials: "ER", color: "#d91e36" },
   { id: "ameex",          name: "Ameex",             cities: 420, logo: "/carriers/ameex.svg"    },
   { id: "cathedis",       name: "Cathedis",          cities: 520, logo: "/carriers/cathidis.svg" },
   { id: "speedex",        name: "Speedex",           cities: 439, logo: "/carriers/speedx.png"   },
