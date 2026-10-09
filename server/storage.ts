@@ -791,7 +791,12 @@ export class DatabaseStorage implements IStorage {
         eq(orders.shippingProvider, provider),
         sql`${orders.trackNumber} IS NOT NULL`,
         sql`${orders.trackNumber} <> ''`,
-        sql`LOWER(COALESCE(${orders.status}, '')) NOT IN ('delivered', 'livré', 'livrée', 'refused', 'refusé', 'retour recu', 'retour reçu', 'returned', 'retourné', 'retournée')`
+        // Nearya may progress from REFUSÉ to preparation/ready/returned.
+        // Keep polling refused and return parcels until the return is physically
+        // confirmed; other carriers retain their existing terminal exclusions.
+        provider.toLowerCase() === 'nearya'
+          ? sql`LOWER(TRIM(COALESCE(${orders.status}, ''))) NOT IN ('delivered', 'livré', 'livrée', 'livré *', 'livrée *', 'livraison effectuée', 'remis au client', 'livré au client', 'retour recu', 'retour reçu') AND ${orders.returnConfirmedAt} IS NULL`
+          : sql`LOWER(COALESCE(${orders.status}, '')) NOT IN ('delivered', 'livré', 'livrée', 'refused', 'refusé', 'retour recu', 'retour reçu', 'returned', 'retourné', 'retournée')`
       ))
       .orderBy(desc(orders.createdAt));
   }
