@@ -301,22 +301,25 @@ app.use("/uploads", express.static(uploadsDir));
 app.use((req, res, next) => {
   const start = Date.now();
   const p = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
+  // Do not wrap res.json: this middleware only needs response completion.
+  // Never log raw URLs (which may contain customer phone numbers, tokens,
+  // order IDs or query parameters). Use the Express route template instead.
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (p.startsWith("/api")) {
-      let logLine = `${req.method} ${p} ${res.statusCode} in ${duration}ms`;
-      // Never serialize response bodies in request logs: they may contain
-      // customer PII, and JSON.stringify large order payloads blocks the event loop.
-      // Keep route, HTTP status and duration for latency diagnostics.
-      log(logLine);
+    if (!p.startsWith("/api")) return;
+    const routePath = req.route?.path;
+    const safePath = typeof routePath === "string"
+      ? (req.baseUrl || "") + routePath
+      : p.replace(/\\/g, "/")
+          .replace(/\\b\\d{4,}\\b/g, ":id")
+          .replace(/\\b[a-f0-9]{24,}\\b/gi, ":id");
+    // Avoid SSE long-polling false positives and request-log flooding.
+    const isStream = String(res.getHeader("Content-Type") || "").includes("text/event-stream");
+    if (isStream) return;
+    if (duration >= 3000) {
+      console.warn(`[API-SLOW] ${req.method} ${safePath} status=${res.statusCode} duration_ms=${duration}`);
+    } else if (res.statusCode >= 500) {
+      console.error(`[API-ERROR] ${req.method} ${safePath} status=${res.statusCode} duration_ms=${duration}`);
     }
   });
 
