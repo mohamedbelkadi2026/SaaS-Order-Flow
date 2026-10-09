@@ -536,7 +536,15 @@ export async function registerRoutes(
 
   app.get(api.stats.get.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    const ordersList = await storage.getOrdersByStore(storeId);
+    // Read only the columns used by this summary. Avoid loading items, products,
+    // agents, magasins and duplicate histories for every dashboard refresh.
+    const ordersList = await db.select({
+      status: orders.status,
+      totalPrice: orders.totalPrice,
+      productCost: orders.productCost,
+      adSpend: orders.adSpend,
+      scheduledFor: orders.scheduledFor,
+    }).from(orders).where(eq(orders.storeId, storeId));
 
     // Cumulative confirmed statuses: once an order is confirmed it stays "confirmed"
     // regardless of shipping progress (expédié, in_progress, delivered, refused, retourné)
@@ -595,7 +603,9 @@ export async function registerRoutes(
 
   app.get("/api/stats/daily", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    const ordersList = await storage.getOrdersByStore(storeId);
+    // Daily chart only needs creation timestamps; do not hydrate every order.
+    const ordersList = await db.select({ createdAt: orders.createdAt })
+      .from(orders).where(eq(orders.storeId, storeId));
     const dailyMap: Record<string, number> = {};
     const now = new Date();
     for (let i = 29; i >= 0; i--) {
