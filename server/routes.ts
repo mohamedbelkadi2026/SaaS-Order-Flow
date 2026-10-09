@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
+import { singleFlight } from "./utils/single-flight";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { createHmac } from "crypto";
@@ -538,13 +539,13 @@ export async function registerRoutes(
     const storeId = req.user!.storeId!;
     // Read only the columns used by this summary. Avoid loading items, products,
     // agents, magasins and duplicate histories for every dashboard refresh.
-    const ordersList = await db.select({
+    const ordersList = await singleFlight(`dashboard:summary:${storeId}`, () => db.select({
       status: orders.status,
       totalPrice: orders.totalPrice,
       productCost: orders.productCost,
       adSpend: orders.adSpend,
       scheduledFor: orders.scheduledFor,
-    }).from(orders).where(eq(orders.storeId, storeId));
+    }).from(orders).where(eq(orders.storeId, storeId)));
 
     // Cumulative confirmed statuses: once an order is confirmed it stays "confirmed"
     // regardless of shipping progress (expédié, in_progress, delivered, refused, retourné)
@@ -604,8 +605,10 @@ export async function registerRoutes(
   app.get("/api/stats/daily", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     // Daily chart only needs creation timestamps; do not hydrate every order.
-    const ordersList = await db.select({ createdAt: orders.createdAt })
-      .from(orders).where(eq(orders.storeId, storeId));
+    const ordersList = await singleFlight(`dashboard:daily:${storeId}`, () =>
+      db.select({ createdAt: orders.createdAt })
+        .from(orders).where(eq(orders.storeId, storeId))
+    );
     const dailyMap: Record<string, number> = {};
     const now = new Date();
     for (let i = 29; i >= 0; i--) {
