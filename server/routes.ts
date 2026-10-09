@@ -16434,6 +16434,10 @@ function ensureHeaders(sheet) {
     if (!ownerId) return res.json([]);
 
     const accountMagasins = await storage.getStoresByOwner(ownerId);
+    // Display-only option list for Mes Commandes: show every account magasin,
+    // including for newly created agents. This does NOT grant order access;
+    // the orders endpoint continues enforcing assignment/role permissions.
+    if (req.query.filterOptions === '1') return res.json(accountMagasins);
     const linked = accountMagasins.filter((m: any) => {
       const ids: number[] = Array.isArray(m.agentIds) ? m.agentIds.map(Number) : [];
       // Empty agentIds is the legacy "all account agents" mode, matching the

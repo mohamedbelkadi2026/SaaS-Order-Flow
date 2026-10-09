@@ -852,7 +852,17 @@ export default function Orders() {
   });
   const [dateRange, setDateRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
 
-  const { data: magasins } = useMagasins();
+  // Order filter options are display-only; selecting a magasin never expands
+  // the orders the authenticated agent is allowed to see.
+  const { data: magasins } = useQuery<any[]>({
+    queryKey: ["/api/magasins", "filterOptions"],
+    queryFn: async () => {
+      const response = await fetch("/api/magasins?filterOptions=1", { credentials: "include" });
+      if (!response.ok) throw new Error("Impossible de charger les magasins");
+      return response.json();
+    },
+    staleTime: 60_000,
+  });
   const [selectedMagasin, setSelectedMagasin] = useState<number | null>(null);
 
   const actualFilters = useMemo(() => ({
