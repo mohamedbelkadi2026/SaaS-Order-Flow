@@ -704,7 +704,18 @@ export async function registerRoutes(
       }
     }
 
-    let allOrders = await storage.getOrdersByStore(storeId);
+    // Push exact-match non-date filters to PostgreSQL before expensive order
+    // hydration. Keep product and date filtering below for exact legacy
+    // matching and pickup-date cohort behavior.
+    let allOrders = await storage.getStatsOrdersByStore(storeId, {
+      city: city && city !== 'all' ? city : undefined,
+      agentId: agentId && agentId !== 'all' ? Number(agentId) : undefined,
+      source: source && source !== 'all' ? source : undefined,
+      shippingProvider: shippingProvider && shippingProvider !== 'all' ? shippingProvider : undefined,
+      utmSource: utmSource && utmSource !== 'all' ? utmSource : undefined,
+      utmCampaign: utmCampaign && utmCampaign !== 'all' ? utmCampaign : undefined,
+      magasinId: magasinId && magasinId !== 'all' ? Number(magasinId) : undefined,
+    });
 
     if (city && city !== 'all') {
       allOrders = allOrders.filter(o => o.customerCity === city);
