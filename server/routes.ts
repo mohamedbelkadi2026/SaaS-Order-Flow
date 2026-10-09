@@ -3111,6 +3111,14 @@ export async function registerRoutes(
         trackNumber: orders.trackNumber,
       }).from(orders).where(and(eq(orders.id, id), eq(orders.storeId, storeId))).limit(1);
       if (!order) return res.status(404).json({ message: "Commande introuvable" });
+      // Keep history access consistent with GET /api/orders/:id.
+      if (req.user!.role === "agent") {
+        const [assigned] = await db.select({ assignedToId: orders.assignedToId })
+          .from(orders).where(eq(orders.id, id)).limit(1);
+        if (assigned?.assignedToId !== req.user!.id) {
+          return res.status(403).json({ message: "Accès refusé" });
+        }
+      }
 
       const logs = await db.select({
         id: orderFollowUpLogs.id,
@@ -3176,6 +3184,9 @@ export async function registerRoutes(
 
   app.get("/api/orders/:id", requireAuth, async (req, res) => {
     const orderId = Number(req.params.id);
+    if (!Number.isSafeInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ message: "Identifiant de commande invalide" });
+    }
     const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
     // Super admins may access any store; all other users are strictly scoped to their store
