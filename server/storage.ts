@@ -75,6 +75,10 @@ export interface IStorage {
   decrementStockForOrder(orderId: number, storeId: number, movementType?: 'shipped' | 'delivered'): Promise<void>;
   
   getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]>;
+  getStatsOrdersByStore(storeId: number, filters: {
+    city?: string; agentId?: number; source?: string; shippingProvider?: string;
+    utmSource?: string; utmCampaign?: string; magasinId?: number;
+  }): Promise<OrderWithDetails[]>;
   getOrdersSince(storeId: number, since: Date): Promise<Order[]>;
   getCarrierOrdersForSync(storeId: number, provider: string): Promise<Order[]>;
   getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]>;
@@ -714,6 +718,28 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(orders).where(
       and(eq(orders.storeId, storeId), gte(orders.createdAt, since)),
     );
+  }
+
+  /**
+   * Dashboard-specific order lookup: push exact-match non-date filters to SQL
+   * before hydration. Product/date filters stay in the route to preserve
+   * unlinked-product matching and shipping-date cohort semantics.
+   */
+  async getStatsOrdersByStore(storeId: number, filters: {
+    city?: string; agentId?: number; source?: string; shippingProvider?: string;
+    utmSource?: string; utmCampaign?: string; magasinId?: number;
+  }): Promise<OrderWithDetails[]> {
+    const predicates = [eq(orders.storeId, storeId)];
+    if (filters.city) predicates.push(eq(orders.customerCity, filters.city));
+    if (filters.agentId !== undefined) predicates.push(eq(orders.assignedToId, filters.agentId));
+    if (filters.source) predicates.push(eq(orders.source, filters.source));
+    if (filters.shippingProvider) predicates.push(eq(orders.shippingProvider, filters.shippingProvider));
+    if (filters.utmSource) predicates.push(eq(orders.utmSource, filters.utmSource));
+    if (filters.utmCampaign) predicates.push(eq(orders.utmCampaign, filters.utmCampaign));
+    if (filters.magasinId !== undefined) predicates.push(eq(orders.magasinId, filters.magasinId));
+    const rows = await db.select().from(orders)
+      .where(and(...predicates)).orderBy(desc(orders.createdAt));
+    return this.hydrateOrders(rows);
   }
 
   async getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]> {
