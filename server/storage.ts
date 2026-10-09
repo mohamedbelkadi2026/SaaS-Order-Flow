@@ -1108,6 +1108,17 @@ export class DatabaseStorage implements IStorage {
           'Pas de réponse + SMS', 'Boîte vocale', 'Pas réponse 1 (Suivi)',
           'Pas réponse 2 (Suivi)', 'Pas réponse 3 (Suivi)', 'Demande retour',
         ]));
+      } else if (filters.status === 'retour ready') {
+        // Carrier variants can differ in case and use spaces or underscores.
+        conditions.push(sql`LOWER(REPLACE(TRIM(${orders.status}), '_', ' ')) IN ('retour ready', 'return ready')`);
+      } else if (filters.status === 'returned') {
+        conditions.push(sql`LOWER(TRIM(${orders.status})) = 'returned'`);
+      } else if (filters.status === 'mis en distribution') {
+        conditions.push(sql`LOWER(TRIM(${orders.status})) = 'mis en distribution'`);
+      } else if (filters.status === 'expédié') {
+        conditions.push(sql`LOWER(TRIM(${orders.status})) IN ('expédié', 'expedie')`);
+      } else if (filters.status === 'Reporté' || filters.status === 'Hors zone') {
+        conditions.push(sql`LOWER(TRIM(${orders.status})) = ${filters.status.toLowerCase()}`);
       } else if (filters.status === 'in_progress') {
         conditions.push(eq(orders.status, 'in_progress'));
         conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
