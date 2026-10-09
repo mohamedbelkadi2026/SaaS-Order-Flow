@@ -3090,6 +3090,73 @@ export async function registerRoutes(
     }
   });
 
+  // Timeline requested by OrderHistoryDialog. This route must precede the
+  // generic /api/orders/:id handler. Only report timestamps actually stored
+  // in the database; do not invent historical status transitions.
+  app.get("/api/orders/:id/history", requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        return res.status(400).json({ message: "Commande invalide" });
+      }
+      const storeId = req.user!.storeId!;
+      const [order] = await db.select({
+        id: orders.id,
+        orderNumber: orders.orderNumber,
+        status: orders.status,
+        createdAt: orders.createdAt,
+        updatedAt: orders.updatedAt,
+        pickupDate: orders.pickupDate,
+        shippingProvider: orders.shippingProvider,
+        trackNumber: orders.trackNumber,
+      }).from(orders).where(and(eq(orders.id, id), eq(orders.storeId, storeId))).limit(1);
+      if (!order) return res.status(404).json({ message: "Commande introuvable" });
+
+      const logs = await db.select({
+        id: orderFollowUpLogs.id,
+        note: orderFollowUpLogs.note,
+        at: orderFollowUpLogs.createdAt,
+        actor: orderFollowUpLogs.agentName,
+      }).from(orderFollowUpLogs)
+        .where(eq(orderFollowUpLogs.orderId, id))
+        .orderBy(orderFollowUpLogs.createdAt);
+
+      const events: Array<{ id: string; type: string; title: string; at: Date | null; actor?: string }> = [];
+      if (order.createdAt) {
+        events.push({ id: "created", type: "created", title: "Commande créée", at: order.createdAt });
+      }
+      for (const log of logs) {
+        events.push({
+          id: `followup-${log.id}`,
+          type: "update",
+          title: log.note,
+          at: log.at,
+          actor: log.actor ?? undefined,
+        });
+      }
+      if (order.pickupDate) {
+        events.push({ id: "pickup", type: "shipping", title: "Date de ramassage enregistrée", at: order.pickupDate });
+      }
+      if (order.updatedAt) {
+        events.push({ id: "current", type: "update", title: `Statut actuel : ${order.status}`, at: order.updatedAt });
+      }
+      events.sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0));
+      return res.json({
+        order: {
+          id: order.id,
+          orderNumber: order.orderNumber,
+          currentStatus: order.status,
+          shippingProvider: order.shippingProvider,
+          trackingNumber: order.trackNumber,
+        },
+        events,
+      });
+    } catch (error: any) {
+      console.error("[ORDER-HISTORY] Failed:", error?.message ?? error);
+      return res.status(500).json({ message: "Historique indisponible" });
+    }
+  });
+
   // Customer order history — MUST be before /api/orders/:id to avoid route conflict
   app.get("/api/orders/customer/:phone", requireAuth, async (req, res) => {
     try {
