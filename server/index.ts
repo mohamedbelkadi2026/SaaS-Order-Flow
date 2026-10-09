@@ -1068,7 +1068,7 @@ app.use((req, res, next) => {
 
         const toSync = allOrders.filter((o: any) =>
           o.trackNumber &&
-          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '') &&
+          !['delivered', 'Retour Recu'].includes(o.status || '') &&
           !String(o.status || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes('prefacture')
         );
         if (!toSync.length) continue;
@@ -1086,6 +1086,10 @@ app.use((req, res, next) => {
             if (r.error === 'NEARYA_401') {
               console.error(`[NEARYA-AUTO-SYNC][${label}] store=${storeId}: identifiants invalides — reconnectez Nearya.`);
               break;
+            }
+            if (r.error) {
+              console.warn(`[NEARYA-AUTO-SYNC][${label}] store=${storeId} order=${(order as any).orderNumber}: tracking failed: ${r.error}`);
+              continue;
             }
             const carrierStatusChanged = !!r.label && r.label !== (order as any).commentStatus;
             if (carrierStatusChanged) {
