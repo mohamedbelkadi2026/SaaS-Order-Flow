@@ -796,9 +796,13 @@ export async function registerRoutes(
     let pasReponse = 0, rappel = 0, confirmeReporte = 0;
     let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0, totalAgentCommissions = 0;
 
-    // Fetch agent compensation settings for accurate profit calc.
-    const agentSettingsList = await storage.getStoreAgentSettings(storeId);
-    const storeAgents = (await storage.getUsersByStore(storeId)).filter((candidate: any) =>
+    // Independent read-only lookups can run concurrently; profit formulas remain unchanged.
+    const [agentSettingsList, storeUsers, storeProducts] = await Promise.all([
+      storage.getStoreAgentSettings(storeId),
+      storage.getUsersByStore(storeId),
+      storage.getProductsByStore(storeId),
+    ]);
+    const storeAgents = storeUsers.filter((candidate: any) =>
       candidate.role === "agent" && (!agentId || agentId === "all" || candidate.id === Number(agentId))
     );
 
@@ -815,7 +819,7 @@ export async function registerRoutes(
       deliveredInFilter.map(o => ({ id: o.id, productCost: (o as any).productCost ?? 0 }))
     );
 
-    const storeProducts = await storage.getProductsByStore(storeId);
+
     const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));
 
     // Per-product packaging map (DH/commande) for accurate profit calc
