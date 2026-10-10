@@ -224,6 +224,19 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const isExpressRelais = providerId === "expressrelais";
   const [expressRelaisPassword, setExpressRelaisPassword] = useState("");
   const [expressRelaisHost, setExpressRelaisHost] = useState("api-aio-prod.relaisexpress.ma");
+  const [expressRelaisTesting, setExpressRelaisTesting] = useState(false);
+  const [expressRelaisResult, setExpressRelaisResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const testExpressRelais = async () => {
+    setExpressRelaisTesting(true);
+    setExpressRelaisResult(null);
+    try {
+      const response = await apiRequest("POST", "/api/shipping/expressrelais/test", { login: apiKey.trim(), password: expressRelaisPassword });
+      const data = await response.json();
+      setExpressRelaisResult({ ok: response.ok && data.ok, message: data.message || "Erreur de connexion" });
+    } catch (error: any) {
+      setExpressRelaisResult({ ok: false, message: error?.message || "Connexion impossible" });
+    } finally { setExpressRelaisTesting(false); }
+  };
   const isSpeedaf = providerId === "speedaf";
   const [speedafAppCode, setSpeedafAppCode] = useState<string>((existingAccount?.settings as any)?.speedafAppCode || existingAccount?.apiSecret || "");
   const [speedafCustomerCode, setSpeedafCustomerCode] = useState<string>((existingAccount?.settings as any)?.speedafCustomerCode || existingAccount?.carrierStoreName || "");
@@ -921,6 +934,8 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     <div className="space-y-1"><Label>Hôte API</Label><Input value={expressRelaisHost} readOnly className="font-mono text-xs" /></div>
     <div className="space-y-1"><Label>Login</Label><Input value={apiKey} onChange={e => setApiKey(e.target.value)} autoComplete="off" placeholder="Login fourni par Express Relais" /></div>
     <div className="space-y-1"><Label>Mot de passe</Label><Input type="password" value={expressRelaisPassword} onChange={e => setExpressRelaisPassword(e.target.value)} autoComplete="new-password" placeholder={existingAccount ? "Laisser vide pour conserver" : "Mot de passe API"} /></div>
+    <Button type="button" variant="outline" onClick={testExpressRelais} disabled={expressRelaisTesting || !apiKey.trim() || !expressRelaisPassword.trim()}>{expressRelaisTesting ? "Vérification..." : "Tester la connexion"}</Button>
+    {expressRelaisResult && <p role="status" className={expressRelaisResult.ok ? "text-xs text-green-700" : "text-xs text-red-700"}>{expressRelaisResult.message}</p>}
     <p className="text-xs text-muted-foreground">L'adresse IP publique du serveur doit être autorisée par Express Relais. L'enregistrement ne confirme pas la connexion.</p>
   </div>
 )}
@@ -1791,6 +1806,8 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     <div className="space-y-1"><Label>Hôte API</Label><Input value={expressRelaisHost} readOnly className="font-mono text-xs" /></div>
     <div className="space-y-1"><Label>Login</Label><Input value={apiKey} onChange={e => setApiKey(e.target.value)} autoComplete="off" placeholder="Login fourni par Express Relais" /></div>
     <div className="space-y-1"><Label>Mot de passe</Label><Input type="password" value={expressRelaisPassword} onChange={e => setExpressRelaisPassword(e.target.value)} autoComplete="new-password" placeholder={existingAccount ? "Laisser vide pour conserver" : "Mot de passe API"} /></div>
+    <Button type="button" variant="outline" onClick={testExpressRelais} disabled={expressRelaisTesting || !apiKey.trim() || !expressRelaisPassword.trim()}>{expressRelaisTesting ? "Vérification..." : "Tester la connexion"}</Button>
+    {expressRelaisResult && <p role="status" className={expressRelaisResult.ok ? "text-xs text-green-700" : "text-xs text-red-700"}>{expressRelaisResult.message}</p>}
     <p className="text-xs text-muted-foreground">L'adresse IP publique du serveur doit être autorisée par Express Relais. L'enregistrement ne confirme pas la connexion.</p>
   </div>
 )}</>
