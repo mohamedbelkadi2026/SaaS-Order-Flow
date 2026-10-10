@@ -221,6 +221,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   // ── Sendit-specific fields ────────────────────────────────────────────────
   const isSendit = providerId === "sendit";
   const isNearya = providerId === "nearya";
+  const isExpressRelais = providerId === "expressrelais";
+  const [expressRelaisPassword, setExpressRelaisPassword] = useState("");
+  const [expressRelaisHost, setExpressRelaisHost] = useState("api-aio-prod.relaisexpress.ma");
   const isSpeedaf = providerId === "speedaf";
   const [speedafAppCode, setSpeedafAppCode] = useState<string>((existingAccount?.settings as any)?.speedafAppCode || existingAccount?.apiSecret || "");
   const [speedafCustomerCode, setSpeedafCustomerCode] = useState<string>((existingAccount?.settings as any)?.speedafCustomerCode || existingAccount?.carrierStoreName || "");
@@ -493,6 +496,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             speedafAppCode: speedafAppCode.trim(),
             speedafCustomerCode: speedafCustomerCode.trim(),
           };
+        } else if (isExpressRelais) {
+          if (apiKey.trim()) body.apiKey = apiKey.trim();
+          if (expressRelaisPassword.trim()) body.apiSecret = expressRelaisPassword;
+          body.apiUrl = "https://" + expressRelaisHost;
         } else if (isNearya) {
           if (apiKey.trim())         body.apiKey    = apiKey;
           if (nearyaClientId.trim()) body.apiSecret = nearyaClientId;
@@ -559,6 +566,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             speedafAppCode: speedafAppCode.trim(),
             speedafCustomerCode: speedafCustomerCode.trim(),
           };
+        } else if (isExpressRelais) {
+          payload.apiSecret = expressRelaisPassword;
+          payload.apiUrl = "https://" + expressRelaisHost;
+          payload.storeName = resolvedStoreName;
         } else if (isNearya) {
           payload.apiSecret        = nearyaClientId.trim() || undefined;
           payload.carrierStoreName = nearyaBusinessId.trim() || undefined;
@@ -693,6 +704,11 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       }
       if (!speedafCustomerCode.trim()) {
         setSubmitError("Le customerCode Speedaf est requis.");
+        return;
+      }
+    } else if (isExpressRelais) {
+      if (!existingAccount && (!apiKey.trim() || !expressRelaisPassword.trim())) {
+        setSubmitError("Login et mot de passe Express Relais sont requis.");
         return;
       }
     } else if (isNearya) {
@@ -899,6 +915,15 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             ) : (
             <>
             {/* ══════════════ AMEEX EDIT FIELDS ══════════════ */}
+{isExpressRelais && (
+  <div className="space-y-3 p-3 rounded-lg border border-rose-200 bg-rose-50/30">
+    <div className="text-sm font-semibold">Express Relais — Intégration API</div>
+    <div className="space-y-1"><Label>Hôte API</Label><Input value={expressRelaisHost} readOnly className="font-mono text-xs" /></div>
+    <div className="space-y-1"><Label>Login</Label><Input value={apiKey} onChange={e => setApiKey(e.target.value)} autoComplete="off" placeholder="Login fourni par Express Relais" /></div>
+    <div className="space-y-1"><Label>Mot de passe</Label><Input type="password" value={expressRelaisPassword} onChange={e => setExpressRelaisPassword(e.target.value)} autoComplete="new-password" placeholder={existingAccount ? "Laisser vide pour conserver" : "Mot de passe API"} /></div>
+    <p className="text-xs text-muted-foreground">L'adresse IP publique du serveur doit être autorisée par Express Relais. L'enregistrement ne confirme pas la connexion.</p>
+  </div>
+)}
             {isNearya ? (
               <>
                 <div className="space-y-1.5">
@@ -1759,6 +1784,16 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     placeholder="customerCode Speedaf" className="h-10 text-xs font-mono" data-testid="input-speedaf-customer-code" />
                 </div>
               </>
+          ) : isExpressRelais ? (
+              <>{isExpressRelais && (
+  <div className="space-y-3 p-3 rounded-lg border border-rose-200 bg-rose-50/30">
+    <div className="text-sm font-semibold">Express Relais — Intégration API</div>
+    <div className="space-y-1"><Label>Hôte API</Label><Input value={expressRelaisHost} readOnly className="font-mono text-xs" /></div>
+    <div className="space-y-1"><Label>Login</Label><Input value={apiKey} onChange={e => setApiKey(e.target.value)} autoComplete="off" placeholder="Login fourni par Express Relais" /></div>
+    <div className="space-y-1"><Label>Mot de passe</Label><Input type="password" value={expressRelaisPassword} onChange={e => setExpressRelaisPassword(e.target.value)} autoComplete="new-password" placeholder={existingAccount ? "Laisser vide pour conserver" : "Mot de passe API"} /></div>
+    <p className="text-xs text-muted-foreground">L'adresse IP publique du serveur doit être autorisée par Express Relais. L'enregistrement ne confirme pas la connexion.</p>
+  </div>
+)}</>
           ) : isNearya ? (
               <>
                 <div className="space-y-1.5">
