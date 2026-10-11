@@ -12,8 +12,16 @@ export function registerExpressRelaisRoutes(app: Express) {
       const info = await client.testConnection();
       return res.json({ ok: true, message: "Connexion Express Relais réussie", account: info });
     } catch (error: any) {
-      const status = error?.status === 401 || error?.status === 403 ? 400 : 502;
-      return res.status(status).json({ ok: false, message: error?.status === 401 || error?.status === 403 ? "Accès refusé : vérifiez vos identifiants et l'IP autorisée." : "Impossible de joindre Express Relais. Vérifiez l'accès réseau et les identifiants." });
+      const upstreamStatus = Number(error?.status) || null;
+      const wafBlocked = String(error?.message || "").includes("EXPRESS_RELAIS_WAF_BLOCKED");
+      const reason = wafBlocked ? "cloudflare_waf" : upstreamStatus === 401 ? "invalid_credentials" : upstreamStatus === 403 ? "access_denied" : "upstream_error";
+      console.warn("[ExpressRelais-ConnectionTest]", { reason, upstreamStatus });
+      const message = wafBlocked
+        ? "Cloudflare bloque les requêtes sortantes de ce serveur. Vérifiez l'autorisation des IPs Railway auprès d'Express Relais."
+        : upstreamStatus === 401 ? "Identifiants Express Relais refusés (HTTP 401)."
+        : upstreamStatus === 403 ? "Accès Express Relais refusé (HTTP 403). Vérifiez les droits API et les IPs autorisées."
+        : "Connexion Express Relais impossible. Consultez les logs du serveur.";
+      return res.status(wafBlocked ? 502 : upstreamStatus === 401 ? 401 : upstreamStatus === 403 ? 403 : 502).json({ ok: false, reason, upstreamStatus, message });
     }
   });
 }
