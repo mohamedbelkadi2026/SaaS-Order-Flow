@@ -74,7 +74,18 @@ export class ExpressRelaisClient {
         signal: controller.signal,
       });
       const raw = await response.text();
-      if (!response.ok) throw new ExpressRelaisError(response.status, "Express Relais HTTP " + response.status + ": " + raw.slice(0, 350));
+      if (!response.ok) {
+        // Cloudflare HTML is a network-access denial, not a business/API response.
+        // Do not expose the raw HTML, credentials or request body in logs.
+        const cloudflareBlock = response.status === 403 &&
+          (/cloudflare/i.test(response.headers.get("server") || "") ||
+           /cloudflare|you have been blocked|unable to access/i.test(raw));
+        if (cloudflareBlock) throw new ExpressRelaisError(403,
+          "EXPRESS_RELAIS_WAF_BLOCKED: Cloudflare refuse l'IP sortante du serveur. Vérifiez l'autorisation de cette IP auprès d'Express Relais. Aucun nouvel essai automatique.");
+        throw new ExpressRelaisError(response.status,
+          "Express Relais HTTP " + response.status + ": " +
+          (raw.trimStart().startsWith("<") ? "réponse HTML non-API" : raw.slice(0, 250)));
+      }
       try { return JSON.parse(raw) as T; }
       catch { throw new ExpressRelaisError(response.status, "Express Relais returned non-JSON response"); }
     } finally { clearTimeout(timeout); }
