@@ -4888,7 +4888,11 @@ export async function registerRoutes(
           return res.json({ count: names.length, cities: names, syncedAt: new Date().toISOString() });
         } catch (error: any) {
           console.error("[ExpressRelais-SyncCities] Failed", { accountId, status: error?.status, message: error?.message });
-          return res.status(502).json({ message: "Échec de synchronisation Express Relais : vérifiez le login, le mot de passe et l'IP autorisée." });
+          return res.status(error?.status === 403 ? 403 : 502).json({
+            message: String(error?.message || "").includes("EXPRESS_RELAIS_WAF_BLOCKED")
+              ? "Express Relais bloque l'IP publique sortante du serveur (Cloudflare 403). La synchronisation nécessite une IP autorisée ; aucune ville n'a été modifiée."
+              : "Échec de synchronisation Express Relais : vérifiez le login, le mot de passe et l'IP autorisée."
+          });
         }
       } else if (carrierKey === "nearya") {
         // Nearya exposes delivery destinations as regions (opaque string ids).
