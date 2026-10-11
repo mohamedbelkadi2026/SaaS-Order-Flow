@@ -4857,6 +4857,39 @@ export async function registerRoutes(
           .replace(/api\.digylog\.ma/i, "api.digylog.com")
           .replace(/app\.digylog\.com/i, "api.digylog.com");
         citiesUrl = `${base}/cities`;
+      } else if (carrierKey === "expressrelais") {
+        // Express Relais AIO v2.7 — GET /getCityDelivery, Basic Auth.
+        // Isolated branch: no changes to any other carrier's sync behavior.
+        const password = sanitize(String((acct as any).apiSecret || ""));
+        if (!password) return res.status(400).json({ message: "Mot de passe Express Relais manquant." });
+        try {
+          const { ExpressRelaisClient } = await import("./integrations/express-relais");
+          const client = new ExpressRelaisClient({ login: apiKey, password, environment: "prod" });
+          const response: any = await client.getCities();
+          const rows: any[] = Array.isArray(response) ? response
+            : Array.isArray(response?.data) ? response.data
+            : Array.isArray(response?.cities) ? response.cities
+            : Array.isArray(response?.result) ? response.result
+            : Array.isArray(response?.results) ? response.results
+            : Array.isArray(response?.data?.cities) ? response.data.cities
+            : [];
+          const names = [...new Set(rows.map((row: any) =>
+            typeof row === "string" ? row.trim()
+              : String(row?.city ?? row?.name ?? row?.cityName ?? "").trim()
+          ).filter((name: string) => name.length > 0))].sort();
+          if (!names.length) {
+            console.warn("[ExpressRelais-SyncCities] Unexpected or empty API response shape", {
+              accountId, shape: Array.isArray(response) ? "array" : Object.keys(response || {}).slice(0, 12)
+            });
+            return res.status(502).json({ message: "Express Relais n'a retourné aucune ville reconnue. Aucune donnée existante modifiée." });
+          }
+          await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, names);
+          console.log(`[ExpressRelais-SyncCities] ${names.length} cities synced for account #${accountId}`);
+          return res.json({ count: names.length, cities: names, syncedAt: new Date().toISOString() });
+        } catch (error: any) {
+          console.error("[ExpressRelais-SyncCities] Failed", { accountId, status: error?.status, message: error?.message });
+          return res.status(502).json({ message: "Échec de synchronisation Express Relais : vérifiez le login, le mot de passe et l'IP autorisée." });
+        }
       } else if (carrierKey === "nearya") {
         // Nearya exposes delivery destinations as regions (opaque string ids).
         // This button used to work through this endpoint; restore the dedicated
