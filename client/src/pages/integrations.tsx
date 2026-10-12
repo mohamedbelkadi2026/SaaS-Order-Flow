@@ -1659,8 +1659,10 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
     setStoreLoading(id);
     try {
       const response = await fetch("/api/lightfunnels/stores/" + id, {
+        method: "POST",
         credentials: "include",
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: "{}",
         cache: "no-store",
       });
       const contentType = response.headers.get("content-type") || "";
