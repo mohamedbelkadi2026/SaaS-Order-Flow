@@ -1711,7 +1711,7 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
           <div key={connection.id} className="flex items-center gap-3 border rounded-lg p-3 text-sm">
             <Badge variant={connection.connected ? "default" : "secondary"}>{connection.connected ? "Connectée" : "À reconnecter"}</Badge>
             <span>Lightfunnels — {connection.magasinId ? (stores.find((st: any) => st.id === connection.magasinId)?.name || "Magasin " + connection.magasinId) : "Compte principal"}</span>
-            {connection.connected && <Button variant="outline" size="sm" className="ml-auto" onClick={() => disconnect(connection.id)}>Déconnecter</Button>
+            {connection.connected && <Button variant="outline" size="sm" className="ml-auto" onClick={() => disconnect(connection.id)}>Déconnecter</Button>}
           </div>
         ))}
       </div>
