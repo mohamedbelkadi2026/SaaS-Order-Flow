@@ -714,6 +714,19 @@ app.use((req, res, next) => {
   startWooCommerceSync(intervals);
   startRecoveryJob(intervals);
 
+  // Prevent long-running carrier polls from overlapping their next scheduled run.
+  // A slow carrier API must not multiply concurrent jobs and saturate the DB pool.
+  const activeCarrierPolls = new Set<string>();
+  async function runCarrierPollOnce(name: string, job: () => Promise<void>): Promise<void> {
+    if (activeCarrierPolls.has(name)) {
+      console.warn(`[CARRIER-POLL] Skipping overlapping ${name} run`);
+      return;
+    }
+    activeCarrierPolls.add(name);
+    try { await job(); }
+    finally { activeCarrierPolls.delete(name); }
+  }
+
   // ── Auto Digylog status sync ───────────────────────────────────────────────
   async function runDigylogSync(label: string) {
     try {
@@ -792,8 +805,8 @@ app.use((req, res, next) => {
 
   // Run once after 2 minutes on startup, then every 15 minutes
   if (runScheduledCarrierSync) {
-    setTimeout(() => runDigylogSync('initial'), 2 * 60 * 1000);
-    const autoDigylogSync = setInterval(() => runDigylogSync('interval'), 15 * 60 * 1000);
+    setTimeout(() => runCarrierPollOnce("digylog", () => runDigylogSync('initial')), 2 * 60 * 1000);
+    const autoDigylogSync = setInterval(() => runCarrierPollOnce("digylog", () => runDigylogSync('interval')), 15 * 60 * 1000);
     intervals.push(autoDigylogSync);
   }
 
@@ -850,8 +863,8 @@ app.use((req, res, next) => {
   }
   // Run once after 3 minutes on startup, then every 10 minutes
   if (runScheduledCarrierSync) {
-    setTimeout(() => runVitipsSync('initial'), 3 * 60 * 1000);
-    const autoVitipsSync = setInterval(() => runVitipsSync('interval'), 10 * 60 * 1000);
+    setTimeout(() => runCarrierPollOnce("vitips", () => runVitipsSync('initial')), 3 * 60 * 1000);
+    const autoVitipsSync = setInterval(() => runCarrierPollOnce("vitips", () => runVitipsSync('interval')), 10 * 60 * 1000);
     intervals.push(autoVitipsSync);
   }
 
@@ -920,8 +933,8 @@ app.use((req, res, next) => {
   }
   // Run once after 4 minutes on startup, then every 20 minutes (doc Waselex: 15-30 min)
   if (runScheduledCarrierSync) {
-    setTimeout(() => runWaselexSync('initial'), 4 * 60 * 1000);
-    const autoWaselexSync = setInterval(() => runWaselexSync('interval'), 20 * 60 * 1000);
+    setTimeout(() => runCarrierPollOnce("waselex", () => runWaselexSync('initial')), 4 * 60 * 1000);
+    const autoWaselexSync = setInterval(() => runCarrierPollOnce("waselex", () => runWaselexSync('interval')), 20 * 60 * 1000);
     intervals.push(autoWaselexSync);
   }
 
@@ -1142,8 +1155,8 @@ app.use((req, res, next) => {
     }
   }
   if (runScheduledCarrierSync) {
-    setTimeout(() => runNearyaSync('initial'), 5 * 60 * 1000);
-    const autoNearyaSync = setInterval(() => runNearyaSync('interval'), 20 * 60 * 1000);
+    setTimeout(() => runCarrierPollOnce("nearya", () => runNearyaSync('initial')), 5 * 60 * 1000);
+    const autoNearyaSync = setInterval(() => runCarrierPollOnce("nearya", () => runNearyaSync('interval')), 20 * 60 * 1000);
     intervals.push(autoNearyaSync);
   }
 
