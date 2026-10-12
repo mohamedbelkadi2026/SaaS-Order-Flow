@@ -101,7 +101,7 @@ export function registerLightfunnelsRoutes(app:Express) {
     const url=new URL("https://app.lightfunnels.com/admin/oauth");
     url.searchParams.set("client_id",CLIENT_ID());
     url.searchParams.set("redirect_uri",CALLBACK());
-    url.searchParams.set("scope","orders,products,customers");
+    url.searchParams.set("scope","orders,products,customers,funnels");
     url.searchParams.set("state",payload+"."+sign(payload));
     return res.json({url:url.toString()});
   });
@@ -153,7 +153,18 @@ export function registerLightfunnelsRoutes(app:Express) {
     try {
       const stores=await listRemoteStores(await currentAccessToken(entry));
       return res.json({stores});
-    } catch(err:any) { console.error("[LIGHTFUNNELS] list stores",err.message);return res.status(502).json({message:"Impossible de charger les boutiques Lightfunnels : "+err.message}); }
+    } catch(err:any) {
+      const reason=String(err?.message||"");
+      if(/don't have access|access to this resource|permission|unauthori[sz]ed|forbidden/i.test(reason)) {
+        console.warn("[LIGHTFUNNELS] stores: missing funnels OAuth scope; reauthorization required");
+        return res.status(403).json({
+          code:"LIGHTFUNNELS_FUNNELS_SCOPE_REQUIRED",
+          message:"Lightfunnels refuse l'accès aux boutiques. Reconnectez Lightfunnels pour autoriser la nouvelle permission « funnels » (accès aux boutiques).",
+        });
+      }
+      console.error("[LIGHTFUNNELS] list stores",reason);
+      return res.status(502).json({message:"Impossible de charger les boutiques Lightfunnels : "+reason});
+    }
   };
   // Prefer POST for the store selector: some PWA/CDN navigation fallbacks
   // incorrectly answer uncached GETs with index.html (HTTP 200).
