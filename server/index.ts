@@ -843,9 +843,20 @@ app.use((req, res, next) => {
         if (!toSync.length) continue;
 
         console.log(`[VITIPS-AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
+        // Circuit breaker per account: an unreachable carrier must not keep
+        // dozens of 15-second HTTP requests alive during peak user traffic.
+        // Successful responses (including empty tracking data) reset the streak.
+        let consecutiveNetworkFailures = 0;
         for (const order of toSync) {
           try {
             const result = await trackVitipsShipment(order.trackNumber!, apiKey);
+            const networkFailure = !!result.error &&
+              /ETIMEDOUT|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ECONNRESET|timeout|socket hang up/i.test(result.error);
+            consecutiveNetworkFailures = networkFailure ? consecutiveNetworkFailures + 1 : 0;
+            if (consecutiveNetworkFailures >= 3) {
+              console.warn(`[VITIPS-AUTO-SYNC] store=${storeId}: carrier network unavailable (3 consecutive failures); deferring remaining parcels until next scheduled sync`);
+              break;
+            }
             if (result.status && result.status !== order.status) {
               await st.updateOrderStatus(order.id, result.status);
               await st.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
