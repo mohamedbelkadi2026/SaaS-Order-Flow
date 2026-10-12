@@ -1633,7 +1633,7 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
 
   const { data, isLoading, refetch } = useQuery<{
     configured: boolean;
-    connections: { id: number; magasinId: number | null; connected: boolean; remoteStoreId: string | null; name: string }[];
+    connections: { id: number; magasinId: number | null; connected: boolean; canSelectStore: boolean; state: "connected" | "select_store" | "reauthorize"; remoteStoreId: string | null; name: string }[];
   }>({
     queryKey: ["/api/lightfunnels/status"],
     queryFn: async () => {
@@ -1743,11 +1743,14 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
         {data?.connections.map(connection => (
           <div key={connection.id} className="space-y-3 border rounded-lg p-3 text-sm">
             <div className="flex items-center gap-3">
-              <Badge variant={connection.connected ? "default" : "secondary"}>{connection.connected ? "Connectée" : "Boutique à sélectionner"}</Badge>
+              <Badge variant={connection.connected ? "default" : "secondary"}>{connection.connected ? "Connectée" : connection.canSelectStore ? "Choisir la boutique" : "Autorisation OAuth nécessaire"}</Badge>
               <span>{connection.name || "Lightfunnels"} — {connection.magasinId ? (stores.find((st:any) => st.id === connection.magasinId)?.name || "Magasin " + connection.magasinId) : "Compte principal"}</span>
               {connection.connected && <Button variant="outline" size="sm" className="ml-auto" onClick={() => disconnect(connection.id)}>Déconnecter</Button>}
             </div>
-            {!connection.connected && (
+            {!connection.connected && !connection.canSelectStore && (
+              <p className="text-xs text-amber-700">L'autorisation Lightfunnels n'a pas fourni de token actif. Cliquez sur « Connecter Lightfunnels » ci-dessus pour autoriser à nouveau le compte. Aucun ordre n'est importé depuis cette connexion.</p>
+            )}
+            {!connection.connected && connection.canSelectStore && (
               <div className="space-y-2 rounded-md border bg-muted/20 p-3">
                 <p className="text-xs font-medium">Choisissez exactement la boutique Lightfunnels à importer dans ce magasin TajerGrow.</p>
                 <Button variant="outline" size="sm" disabled={storeLoading === connection.id} onClick={() => loadLightfunnelsStores(connection.id)}>
