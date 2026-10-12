@@ -648,6 +648,14 @@ app.use((req, res, next) => {
   await registerRoutes(httpServer, app);
   console.log("[Startup] API routes registered");
 
+  // Never let an unhandled Lightfunnels API path fall through to the React
+  // index.html fallback. The UI would otherwise attempt to parse HTML as JSON
+  // and hide the actual routing/deploy issue.
+  app.use("/api/lightfunnels", (req, res) => {
+    console.warn("[LIGHTFUNNELS] unmatched API route", { method: req.method, path: req.path });
+    res.status(404).json({ message: "Route API Lightfunnels indisponible. Vérifiez la version déployée sur Railway." });
+  });
+
   // 3. Global error handler (must come after routes, before static)
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
