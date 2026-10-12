@@ -1658,10 +1658,26 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
   const loadLightfunnelsStores = async (id: number) => {
     setStoreLoading(id);
     try {
-      const response = await fetch("/api/lightfunnels/stores/" + id, {credentials:"include"});
+      const response = await fetch("/api/lightfunnels/stores/" + id, {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const contentType = response.headers.get("content-type") || "";
+      // The hosting/CDN might return the site's HTML fallback or a login page
+      // instead of JSON. Explain the real problem rather than displaying
+      // "Unexpected token '<'" from response.json().
+      if (!contentType.toLowerCase().includes("application/json")) {
+        throw new Error(
+          response.status === 401 || response.status === 403
+            ? "Votre session a expiré. Reconnectez-vous à TajerGrow."
+            : `Le serveur a renvoyé une page HTML au lieu de l'API Lightfunnels (HTTP ${response.status}). Vérifiez le dernier déploiement Railway et les règles Cloudflare sur /api/lightfunnels/.`
+        );
+      }
       const data = await response.json();
-      if(!response.ok) throw new Error(data.message || "Impossible de charger les boutiques");
-      setRemoteStores(previous => ({...previous,[id]:data.stores || []}));
+      if (!response.ok) throw new Error(data.message || `Impossible de charger les boutiques (HTTP ${response.status})`);
+      if (!Array.isArray(data.stores)) throw new Error("Réponse des boutiques Lightfunnels invalide.");
+      setRemoteStores(previous => ({...previous,[id]:data.stores}));
     } catch(err:any) {
       toast({title:"Lightfunnels",description:err.message,variant:"destructive"});
     } finally {setStoreLoading(null);}
