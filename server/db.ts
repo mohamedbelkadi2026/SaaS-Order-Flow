@@ -232,6 +232,9 @@ export async function initializeDatabase(): Promise<void> {
     // Keep the busiest list/filter queries fast as order volume grows. These
     // indexes are idempotent and change no business logic or returned data.
     await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS orders_lightfunnels_order_number_unique
+        ON public.orders (store_id, order_number)
+        WHERE source = 'lightfunnels';
       CREATE INDEX IF NOT EXISTS orders_store_created_at_idx
         ON public.orders (store_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS orders_store_status_created_at_idx
