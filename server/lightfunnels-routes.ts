@@ -3,7 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "./db";
 import { storeIntegrations } from "@shared/schema";
-import { encrypt, decrypt } from "./crypto";
+import { encrypt } from "./crypto";
 import { storage } from "./storage";
 
 const CLIENT_ID = () => process.env.LIGHTFUNNELS_CLIENT_ID || "";
@@ -52,6 +52,15 @@ export function registerLightfunnelsRoutes(app:Express) {
     url.searchParams.set("scope","orders,products,customers");
     url.searchParams.set("state",payload+"."+sign(payload));
     return res.json({url:url.toString()});
+  });
+  app.post("/api/lightfunnels/disconnect",async(req:any,res)=>{
+    if(!req.isAuthenticated?.()) return res.sendStatus(401);
+    const id=Number(req.body?.integrationId);
+    if(!Number.isInteger(id)||id<=0) return res.sendStatus(400);
+    const row=(await db.select().from(storeIntegrations).where(eq(storeIntegrations.id,id)))[0];
+    if(!row||row.provider!=="lightfunnels"||row.storeId!==req.user.storeId) return res.sendStatus(404);
+    await db.update(storeIntegrations).set({isActive:0,oauthAccessToken:null,oauthRefreshToken:null,oauthExpiresAt:null}).where(eq(storeIntegrations.id,id));
+    return res.json({ok:true,message:"Lightfunnels déconnectée. Les commandes existantes sont conservées."});
   });
   app.get("/api/lightfunnels/callback",async(req:any,res)=>{
     const [payload,signature]=String(req.query.state||"").split(".");
