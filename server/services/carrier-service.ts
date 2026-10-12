@@ -2359,8 +2359,9 @@ export async function trackDigylogShipment(
       validateStatus: () => true,
     });
 
-    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${histResp.status}: ${JSON.stringify(histResp.data).slice(0, 300)}`);
-    console.log(`[DIGYLOG-HISTORICS-FULL] ${trackingNumber} → ${JSON.stringify(histResp.data)}`);
+    // Avoid serializing and logging complete carrier history on every poll.
+    // Those responses can be large and contain customer personal details.
+    console.log(`[DIGYLOG-TRACK] history HTTP ${histResp.status}`);
 
     // Detect Digylog API outage: server returned an HTML error page instead of JSON.
     // Without this guard the function falls through to /infos and re-burns 15s on a dead API.
@@ -3478,7 +3479,8 @@ export async function trackVitipsShipment(
       validateStatus: () => true,
     });
     const body = response.data;
-    console.log(`[VITIPS-TRACK] ${trackingCode} → HTTP ${response.status}: ${JSON.stringify(body).slice(0, 300)}`);
+    // Log the response code, not the carrier payload (contains recipient PII).
+    console.log(`[VITIPS-TRACK] HTTP ${response.status}`);
     if (response.status >= 400) {
       const errMsg = (body?.message || body?.error || `HTTP ${response.status}`).toString();
       return { status: null, rawStatus: null, rawResponse: body, error: errMsg };
