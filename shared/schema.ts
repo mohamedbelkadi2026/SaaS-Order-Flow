@@ -229,6 +229,11 @@ export const orders = pgTable("orders", {
   shopifyOrderNumberUnique: uniqueIndex("orders_shopify_order_number_unique")
     .on(table.storeId, table.orderNumber)
     .where(sql`${table.source} = 'shopify'`),
+  // Lightfunnels webhook deliveries are retried; enforce idempotency across
+  // multiple Railway workers, not only via an in-memory or SELECT guard.
+  lightfunnelsOrderNumberUnique: uniqueIndex("orders_lightfunnels_order_number_unique")
+    .on(table.storeId, table.orderNumber)
+    .where(sql`${table.source} = 'lightfunnels'`),
 
   // Hot paths on the orders screens always scope by store, then sort/filter.
   // These indexes keep pagination/count/filter queries from scanning the full
