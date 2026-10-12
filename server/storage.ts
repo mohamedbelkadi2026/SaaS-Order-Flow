@@ -788,7 +788,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(orders)
       .where(and(
         eq(orders.storeId, storeId),
-        eq(orders.shippingProvider, provider),
+        // Legacy integrations have stored carrier labels with mixed case or
+        // whitespace. A strict equality silently excluded those parcels from
+        // polling forever (especially some older NearYa connections).
+        provider.toLowerCase() === 'nearya'
+          ? sql`LOWER(TRIM(COALESCE(${orders.shippingProvider}, ''))) = 'nearya'`
+          : eq(orders.shippingProvider, provider),
         sql`${orders.trackNumber} IS NOT NULL`,
         sql`${orders.trackNumber} <> ''`,
         // Nearya may progress from REFUSÉ to preparation/ready/returned.
