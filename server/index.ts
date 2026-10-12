@@ -1030,8 +1030,20 @@ app.use((req, res, next) => {
       console.error(`[META-SYNC][${label}] Error:`, err?.message);
     }
   }
-  setTimeout(() => runMetaAdsSync('initial'), 3 * 60 * 1000);
-  const autoMetaSync = setInterval(() => runMetaAdsSync('interval'), 6 * 60 * 60 * 1000);
+  // The import can take longer than its cadence when many ad accounts exist.
+  // Avoid overlapping spend imports without changing any accounting semantics.
+  let metaSyncRunning = false;
+  async function runMetaAdsSyncOnce(label: string): Promise<void> {
+    if (metaSyncRunning) {
+      console.warn("[META-SYNC] Previous run still active; skipping overlapping tick");
+      return;
+    }
+    metaSyncRunning = true;
+    try { await runMetaAdsSync(label); }
+    finally { metaSyncRunning = false; }
+  }
+  setTimeout(() => { void runMetaAdsSyncOnce('initial'); }, 3 * 60 * 1000);
+  const autoMetaSync = setInterval(() => { void runMetaAdsSyncOnce('interval'); }, 6 * 60 * 60 * 1000);
   intervals.push(autoMetaSync);
 
   // ── Nearya Express: poll GET /docParcelStatus/v1 per parcel ───────────────
