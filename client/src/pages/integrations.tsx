@@ -1626,9 +1626,14 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
   const { toast } = useToast();
   const [magasinId, setMagasinId] = useState<string>("none");
   const [connecting, setConnecting] = useState(false);
+  const [remoteStores, setRemoteStores] = useState<Record<number, {id:string;name:string;domain:string}[]>>({});
+  const [selectedRemotes, setSelectedRemotes] = useState<Record<number,string>>({});
+  const [storeLoading, setStoreLoading] = useState<number | null>(null);
+  const [storeSaving, setStoreSaving] = useState<number | null>(null);
+
   const { data, isLoading, refetch } = useQuery<{
     configured: boolean;
-    connections: { id: number; magasinId: number | null; connected: boolean; name: string }[];
+    connections: { id: number; magasinId: number | null; connected: boolean; remoteStoreId: string | null; name: string }[];
   }>({
     queryKey: ["/api/lightfunnels/status"],
     queryFn: async () => {
@@ -1643,13 +1648,41 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
     const result = params.get("lightfunnels");
     if (!result) return;
     toast({
-      title: result === "connected" ? "Lightfunnels connectée ✅" : "Connexion Lightfunnels incomplète",
-      description: result === "webhook_error" ? "Webhook non enregistré : reconnectez votre boutique." : result === "connected" ? "Les nouvelles commandes confirmées seront importées automatiquement." : "Vérifiez les paramètres OAuth et réessayez.",
-      variant: result === "connected" ? "default" : "destructive",
+      title: result === "select_store" ? "Autorisation Lightfunnels reçue" : result === "connected" ? "Lightfunnels connectée ✅" : "Connexion Lightfunnels incomplète",
+      description: result === "select_store" ? "Sélectionnez maintenant la boutique Lightfunnels exacte dans la liste ci-dessous, puis cliquez sur Activer." : result === "webhook_error" ? "Webhook non enregistré : reconnectez votre boutique." : result === "connected" ? "Les nouvelles commandes confirmées seront importées automatiquement." : "Vérifiez les paramètres OAuth et réessayez.",
+      variant: result === "connected" || result === "select_store" ? "default" : "destructive",
     });
     window.history.replaceState(null, "", window.location.pathname);
     void refetch();
   }, [refetch, toast]);
+  const loadLightfunnelsStores = async (id: number) => {
+    setStoreLoading(id);
+    try {
+      const response = await fetch("/api/lightfunnels/stores/" + id, {credentials:"include"});
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.message || "Impossible de charger les boutiques");
+      setRemoteStores(previous => ({...previous,[id]:data.stores || []}));
+    } catch(err:any) {
+      toast({title:"Lightfunnels",description:err.message,variant:"destructive"});
+    } finally {setStoreLoading(null);}
+  };
+  const chooseLightfunnelsStore = async (integrationId:number) => {
+    const remoteStoreId=selectedRemotes[integrationId];
+    if(!remoteStoreId) {toast({title:"Choisissez une boutique Lightfunnels",variant:"destructive"});return;}
+    setStoreSaving(integrationId);
+    try {
+      const response=await fetch("/api/lightfunnels/select-store",{
+        method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({integrationId,remoteStoreId}),
+      });
+      const result=await response.json();
+      if(!response.ok) throw new Error(result.message || "Connexion impossible");
+      toast({title:"Boutique Lightfunnels connectée ✅",description:result.storeName+" → TajerGrow"});
+      void refetch();
+    } catch(err:any) {
+      toast({title:"Connexion refusée",description:err.message,variant:"destructive"});
+    } finally {setStoreSaving(null);}
+  };
   const disconnect = async (integrationId: number) => {
     if (!window.confirm("Déconnecter Lightfunnels ? Les commandes déjà importées seront conservées.")) return;
     try {
@@ -1708,10 +1741,35 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
       </Button>
       <div className="space-y-2">
         {data?.connections.map(connection => (
-          <div key={connection.id} className="flex items-center gap-3 border rounded-lg p-3 text-sm">
-            <Badge variant={connection.connected ? "default" : "secondary"}>{connection.connected ? "Connectée" : "À reconnecter"}</Badge>
-            <span>Lightfunnels — {connection.magasinId ? (stores.find((st: any) => st.id === connection.magasinId)?.name || "Magasin " + connection.magasinId) : "Compte principal"}</span>
-            {connection.connected && <Button variant="outline" size="sm" className="ml-auto" onClick={() => disconnect(connection.id)}>Déconnecter</Button>}
+          <div key={connection.id} className="space-y-3 border rounded-lg p-3 text-sm">
+            <div className="flex items-center gap-3">
+              <Badge variant={connection.connected ? "default" : "secondary"}>{connection.connected ? "Connectée" : "Boutique à sélectionner"}</Badge>
+              <span>{connection.name || "Lightfunnels"} — {connection.magasinId ? (stores.find((st:any) => st.id === connection.magasinId)?.name || "Magasin " + connection.magasinId) : "Compte principal"}</span>
+              {connection.connected && <Button variant="outline" size="sm" className="ml-auto" onClick={() => disconnect(connection.id)}>Déconnecter</Button>}
+            </div>
+            {!connection.connected && (
+              <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                <p className="text-xs font-medium">Choisissez exactement la boutique Lightfunnels à importer dans ce magasin TajerGrow.</p>
+                <Button variant="outline" size="sm" disabled={storeLoading === connection.id} onClick={() => loadLightfunnelsStores(connection.id)}>
+                  {storeLoading === connection.id ? "Chargement..." : "Afficher les boutiques Lightfunnels"}
+                </Button>
+                {remoteStores[connection.id] && (
+                  <>
+                    <Select value={selectedRemotes[connection.id] || ""} onValueChange={value => setSelectedRemotes(p => ({...p,[connection.id]:value}))}>
+                      <SelectTrigger><SelectValue placeholder="Sélectionner une boutique précise" /></SelectTrigger>
+                      <SelectContent>
+                        {remoteStores[connection.id].map(remote => (
+                          <SelectItem key={remote.id} value={remote.id}>{remote.name}{remote.domain ? " — " + remote.domain : ""}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button size="sm" disabled={!selectedRemotes[connection.id] || storeSaving === connection.id} onClick={() => chooseLightfunnelsStore(connection.id)}>
+                      {storeSaving === connection.id ? "Activation..." : "Activer cette boutique uniquement"}
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>
