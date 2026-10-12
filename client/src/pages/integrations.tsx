@@ -1650,6 +1650,21 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
     window.history.replaceState(null, "", window.location.pathname);
     void refetch();
   }, [refetch, toast]);
+  const disconnect = async (integrationId: number) => {
+    if (!window.confirm("Déconnecter Lightfunnels ? Les commandes déjà importées seront conservées.")) return;
+    try {
+      const response = await fetch("/api/lightfunnels/disconnect", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ integrationId }),
+      });
+      if (!response.ok) throw new Error("Déconnexion impossible");
+      toast({ title: "Lightfunnels déconnectée", description: "Les commandes existantes sont conservées." });
+      void refetch();
+    } catch (error: any) {
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+    }
+  };
   const connect = async () => {
     setConnecting(true);
     try {
@@ -1696,6 +1711,7 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
           <div key={connection.id} className="flex items-center gap-3 border rounded-lg p-3 text-sm">
             <Badge variant={connection.connected ? "default" : "secondary"}>{connection.connected ? "Connectée" : "À reconnecter"}</Badge>
             <span>Lightfunnels — {connection.magasinId ? (stores.find((st: any) => st.id === connection.magasinId)?.name || "Magasin " + connection.magasinId) : "Compte principal"}</span>
+            {connection.connected && <Button variant="outline" size="sm" className="ml-auto" onClick={() => disconnect(connection.id)}>Déconnecter</Button>
           </div>
         ))}
       </div>
