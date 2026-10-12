@@ -103,12 +103,11 @@ export function registerLightfunnelsRoutes(app:Express) {
     if(!Number.isInteger(state.storeId)||state.storeId<=0||!Number.isFinite(state.ts)||Date.now()-state.ts>600000||state.ts>Date.now()+30000) return res.sendStatus(400);
     try {
       const auth=await tokenGrant({grant_type:"authorization_code",code,redirect_uri:CALLBACK()});
-      const entries=await db.select().from(storeIntegrations).where(and(eq(storeIntegrations.storeId,state.storeId),eq(storeIntegrations.provider,"lightfunnels")));
-      const prev=entries.find(r=>(r.magasinId??null)===(state.magasinId??null));
-      const values={oauthAccessToken:encrypt(auth.access_token),oauthRefreshToken:encrypt(auth.refresh_token),oauthExpiresAt:new Date(Date.now()+(Number(auth.expires_in)||7200)*1000),isActive:0,connectionName:"Lightfunnels"};
-      const linked=prev
-        ? (await db.update(storeIntegrations).set(values).where(eq(storeIntegrations.id,prev.id)).returning())[0]
-        : (await db.insert(storeIntegrations).values({storeId:state.storeId,magasinId:state.magasinId??null,type:"store",provider:"lightfunnels",credentials:"{}",...values}).returning())[0];
+      // Never overwrite an active boutique when a user starts another OAuth
+      // connection. One Lightfunnels account can host many boutiques, and the
+      // previous mapping must remain active until the new selection is complete.
+      const values={oauthAccessToken:encrypt(auth.access_token),oauthRefreshToken:encrypt(auth.refresh_token),oauthExpiresAt:new Date(Date.now()+(Number(auth.expires_in)||7200)*1000),isActive:0,connectionName:"Lightfunnels — boutique à sélectionner"};
+      await db.insert(storeIntegrations).values({storeId:state.storeId,magasinId:state.magasinId??null,type:"store",provider:"lightfunnels",credentials:"{}",...values});
       // OAuth authorizes an account, NOT a specific boutique. Keep the
       // integration inactive until the user explicitly selects a Lightfunnels
       // Store ID and we verify that the authorized account owns that store.
