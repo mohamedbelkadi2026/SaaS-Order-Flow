@@ -1256,19 +1256,26 @@ export class DatabaseStorage implements IStorage {
     const phones = [...new Set(orderList.map((o: any) => o.customerPhone).filter(Boolean))] as string[];
     if (!phones.length) return;
 
-    const phoneOrders = await db
-      .select({ phone: orders.customerPhone, id: orders.id, createdAt: orders.createdAt })
+    // Aggregate in PostgreSQL instead of fetching every historical duplicate
+    // as an individual JS object. The result is one row per page phone and
+    // preserves all dates in descending order for the duplicate details UI.
+    const phoneGroups = await db
+      .select({
+        phone: orders.customerPhone,
+        duplicateCount: sql<number>`count(*)::integer`,
+        dates: sql<Date[]>`array_agg(${orders.createdAt} ORDER BY ${orders.createdAt} DESC) FILTER (WHERE ${orders.createdAt} IS NOT NULL)`,
+      })
       .from(orders)
       .where(and(eq(orders.storeId, storeId), inArray(orders.customerPhone, phones)))
-      .orderBy(desc(orders.createdAt));
+      .groupBy(orders.customerPhone);
 
     const map = new Map<string, { count: number; dates: string[] }>();
-    for (const row of phoneOrders) {
-      if (!row.phone) continue;
-      if (!map.has(row.phone)) map.set(row.phone, { count: 0, dates: [] });
-      const e = map.get(row.phone)!;
-      e.count++;
-      if (row.createdAt) e.dates.push(row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt));
+    for (const group of phoneGroups) {
+      if (!group.phone) continue;
+      map.set(group.phone, {
+        count: Number(group.duplicateCount),
+        dates: (group.dates ?? []).map(d => d instanceof Date ? d.toISOString() : String(d)),
+      });
     }
 
     for (const o of orderList) {
