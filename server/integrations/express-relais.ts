@@ -106,6 +106,17 @@ export class ExpressRelaisClient {
     if (order.typeDelivery === "ADDRESS" && (!order.cityDelivery || !order.addressDelivery)) throw new Error("ADDRESS requires cityDelivery and addressDelivery");
     if (order.typeDelivery === "LOCKER" && !order.smartLocker) throw new Error("LOCKER requires smartLocker");
     if (order.weightParcel !== undefined && (order.weightParcel < 1 || order.weightParcel > 20)) throw new Error("Parcel weight must be 1-20 kg");
-    return this.request("createAioOrder", order as unknown as Record<string, string | number | undefined>, "POST");
+    const params = order as unknown as Record<string, string | number | undefined>;
+    // The published AIO v2.7 contract permits POST and GET. Certain gateway
+    // deployments return business code 910 ("Fonction API incorrect ou
+    // introuvable") when routing POST, even when GET endpoints work.
+    // Retry with GET ONLY for that explicit rejection, which confirms the
+    // first request did not create a shipment. Never retry on network timeouts,
+    // ambiguous responses or other business errors (duplicate shipment risk).
+    return this.request<any>("createAioOrder", params, "POST").then(async (response) => {
+      if (String(response?.codeApi ?? response?.data?.codeApi ?? "") !== "910") return response;
+      console.warn("[EXPRESS-RELAIS] POST createAioOrder returned codeApi=910; trying documented GET route once");
+      return this.request("createAioOrder", params, "GET");
+    });
   }
 }
