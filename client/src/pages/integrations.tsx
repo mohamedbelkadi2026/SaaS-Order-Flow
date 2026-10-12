@@ -1726,7 +1726,7 @@ export default function Integrations() {
   const { toast } = useToast();
   const { data: webhookData } = useWebhookKey();
   const { data: magasins } = useMagasins();
-  const [activeTab, setActiveTab] = useState<PlatformId>("gsheets");
+  const [activeTab, setActiveTab] = useState<PlatformId>(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("lightfunnels") ? "lightfunnels" : "gsheets");
   const [wpUrlCopied, setWpUrlCopied] = useState(false);
 
   // Fetch the canonical public URL from the backend (Railway sets RAILWAY_PUBLIC_DOMAIN).
