@@ -1171,7 +1171,7 @@ export async function shipOrderToCarrier(
   // ── Express Relais AIO v2.7: isolated Basic Auth /createAioOrder route ─────
   // Must run before the generic bearer-token/JSON transport and URL lookup.
   // The existing connection test and city synchronization use this same client.
-  if (provider.toLowerCase().replace(/[\\s_-]+/g, "") === "expressrelais") {
+  if (provider.toLowerCase().replace(/[\s_-]+/g, "") === "expressrelais") {
     const { ExpressRelaisClient } = await import("../integrations/express-relais");
     const settings = ((creds as any).settings || {}) as Record<string, unknown>;
     const pickupCity = String(settings.expressRelaisPickupCity || "").trim();
@@ -1197,7 +1197,7 @@ export async function shipOrderToCarrier(
     // API expects the 00212XXXXXXXXX international Moroccan phone format.
     const toExpressPhone = (raw: string): string | null => {
       const local = sanitizePhone(raw);
-      return /^0[67]\\d{8}$/.test(local) ? "00212" + local.slice(1) : null;
+      return /^0[67]\d{8}$/.test(local) ? "00212" + local.slice(1) : null;
     };
     const recipientPhone = toExpressPhone(input.phone);
     const pickupPhone = toExpressPhone(pickupPhoneRaw);
@@ -1206,7 +1206,7 @@ export async function shipOrderToCarrier(
       return { success: false, error, carrierMessage: error, permanent: true, httpStatus: 422 };
     }
     const fullName = String(input.customerName || "").trim();
-    const nameParts = fullName.split(/\\s+/).filter(Boolean);
+    const nameParts = fullName.split(/\s+/).filter(Boolean);
     const firstName = nameParts[0] || "Client";
     const lastName = nameParts.slice(1).join(" ") || firstName;
     try {
@@ -1237,7 +1237,7 @@ export async function shipOrderToCarrier(
         result?.success === true || result?.ok === true;
       const explicitError = result?.success === false || result?.ok === false ||
         (normalizedCode !== "" && !acknowledged) ||
-        /erreur|incorrect|introuvable|invalide|refus\\u00e9|manquant/i.test(message);
+        /erreur|incorrect|introuvable|invalide|refus\u00e9|manquant/i.test(message);
       if (explicitError) {
         const error = `Express Relais a refusé l'expédition (codeApi=${normalizedCode || "?"}): ${message || "Erreur API"}`;
         console.warn("[EXPRESS-RELAIS-SHIP] rejected", { codeApi: normalizedCode || null });
