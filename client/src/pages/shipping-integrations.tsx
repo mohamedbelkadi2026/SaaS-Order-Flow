@@ -224,6 +224,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const isExpressRelais = providerId === "expressrelais";
   const [expressRelaisPassword, setExpressRelaisPassword] = useState("");
   const [expressRelaisHost, setExpressRelaisHost] = useState("api-aio-prod.relaisexpress.ma");
+  // Required by Express Relais createAioOrder (pickup is not inferred from the recipient).
+  const [expressRelaisPickupCity, setExpressRelaisPickupCity] = useState(String((existingAccount?.settings as any)?.expressRelaisPickupCity || ""));
+  const [expressRelaisPickupAddress, setExpressRelaisPickupAddress] = useState(String((existingAccount?.settings as any)?.expressRelaisPickupAddress || ""));
+  const [expressRelaisPickupContact, setExpressRelaisPickupContact] = useState(String((existingAccount?.settings as any)?.expressRelaisPickupContact || ""));
+  const [expressRelaisPickupPhone, setExpressRelaisPickupPhone] = useState(String((existingAccount?.settings as any)?.expressRelaisPickupPhone || ""));
+
   const [expressRelaisTesting, setExpressRelaisTesting] = useState(false);
   const [expressRelaisResult, setExpressRelaisResult] = useState<{ ok: boolean; message: string } | null>(null);
   const testExpressRelais = async () => {
@@ -513,6 +519,13 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           if (apiKey.trim()) body.apiKey = apiKey.trim();
           if (expressRelaisPassword.trim()) body.apiSecret = expressRelaisPassword;
           body.apiUrl = "https://" + expressRelaisHost;
+          body.settings = {
+            ...((existingAccount?.settings as object) || {}),
+            expressRelaisPickupCity: expressRelaisPickupCity.trim(),
+            expressRelaisPickupAddress: expressRelaisPickupAddress.trim(),
+            expressRelaisPickupContact: expressRelaisPickupContact.trim(),
+            expressRelaisPickupPhone: expressRelaisPickupPhone.trim(),
+          };
         } else if (isNearya) {
           if (apiKey.trim())         body.apiKey    = apiKey;
           if (nearyaClientId.trim()) body.apiSecret = nearyaClientId;
@@ -582,6 +595,13 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         } else if (isExpressRelais) {
           payload.apiSecret = expressRelaisPassword;
           payload.apiUrl = "https://" + expressRelaisHost;
+          payload.settings = {
+            ...((existingAccount?.settings as object) || {}),
+            expressRelaisPickupCity: expressRelaisPickupCity.trim(),
+            expressRelaisPickupAddress: expressRelaisPickupAddress.trim(),
+            expressRelaisPickupContact: expressRelaisPickupContact.trim(),
+            expressRelaisPickupPhone: expressRelaisPickupPhone.trim(),
+          };
           payload.storeName = resolvedStoreName;
         } else if (isNearya) {
           payload.apiSecret        = nearyaClientId.trim() || undefined;
@@ -722,6 +742,11 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     } else if (isExpressRelais) {
       if (!existingAccount && (!apiKey.trim() || !expressRelaisPassword.trim())) {
         setSubmitError("Login et mot de passe Express Relais sont requis.");
+        return;
+      }
+      if (!expressRelaisPickupCity.trim() || !expressRelaisPickupAddress.trim() ||
+          !expressRelaisPickupContact.trim() || !expressRelaisPickupPhone.trim()) {
+        setSubmitError("Express Relais : ville, adresse, contact et téléphone de ramassage sont obligatoires pour expédier.");
         return;
       }
     } else if (isNearya) {
@@ -934,6 +959,11 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     <div className="space-y-1"><Label>Hôte API</Label><Input value={expressRelaisHost} readOnly className="font-mono text-xs" /></div>
     <div className="space-y-1"><Label>Login</Label><Input value={apiKey} onChange={e => setApiKey(e.target.value)} autoComplete="off" placeholder="Login fourni par Express Relais" /></div>
     <div className="space-y-1"><Label>Mot de passe</Label><Input type="password" value={expressRelaisPassword} onChange={e => setExpressRelaisPassword(e.target.value)} autoComplete="new-password" placeholder={existingAccount ? "Laisser vide pour conserver" : "Mot de passe API"} /></div>
+    <p className="text-xs text-muted-foreground">Informations de ramassage — obligatoires pour créer une expédition Express Relais.</p>
+    <div className="space-y-1"><Label>Ville de ramassage</Label><Input value={expressRelaisPickupCity} onChange={e => setExpressRelaisPickupCity(e.target.value)} placeholder="Ex. Casablanca" /></div>
+    <div className="space-y-1"><Label>Adresse de ramassage</Label><Input value={expressRelaisPickupAddress} onChange={e => setExpressRelaisPickupAddress(e.target.value)} placeholder="Adresse complète du dépôt" /></div>
+    <div className="space-y-1"><Label>Nom du contact de ramassage</Label><Input value={expressRelaisPickupContact} onChange={e => setExpressRelaisPickupContact(e.target.value)} placeholder="Nom et prénom du contact" /></div>
+    <div className="space-y-1"><Label>Téléphone du contact de ramassage</Label><Input value={expressRelaisPickupPhone} onChange={e => setExpressRelaisPickupPhone(e.target.value)} placeholder="Ex. 0612345678" /></div>
     <Button type="button" variant="outline" onClick={testExpressRelais} disabled={expressRelaisTesting || !apiKey.trim() || !expressRelaisPassword.trim()}>{expressRelaisTesting ? "Vérification..." : "Tester la connexion"}</Button>
     {expressRelaisResult && <p role="status" className={expressRelaisResult.ok ? "text-xs text-green-700" : "text-xs text-red-700"}>{expressRelaisResult.message}</p>}
     <p className="text-xs text-muted-foreground">L'adresse IP publique du serveur doit être autorisée par Express Relais. L'enregistrement ne confirme pas la connexion.</p>
@@ -1806,6 +1836,11 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     <div className="space-y-1"><Label>Hôte API</Label><Input value={expressRelaisHost} readOnly className="font-mono text-xs" /></div>
     <div className="space-y-1"><Label>Login</Label><Input value={apiKey} onChange={e => setApiKey(e.target.value)} autoComplete="off" placeholder="Login fourni par Express Relais" /></div>
     <div className="space-y-1"><Label>Mot de passe</Label><Input type="password" value={expressRelaisPassword} onChange={e => setExpressRelaisPassword(e.target.value)} autoComplete="new-password" placeholder={existingAccount ? "Laisser vide pour conserver" : "Mot de passe API"} /></div>
+    <p className="text-xs text-muted-foreground">Informations de ramassage — obligatoires pour créer une expédition Express Relais.</p>
+    <div className="space-y-1"><Label>Ville de ramassage</Label><Input value={expressRelaisPickupCity} onChange={e => setExpressRelaisPickupCity(e.target.value)} placeholder="Ex. Casablanca" /></div>
+    <div className="space-y-1"><Label>Adresse de ramassage</Label><Input value={expressRelaisPickupAddress} onChange={e => setExpressRelaisPickupAddress(e.target.value)} placeholder="Adresse complète du dépôt" /></div>
+    <div className="space-y-1"><Label>Nom du contact de ramassage</Label><Input value={expressRelaisPickupContact} onChange={e => setExpressRelaisPickupContact(e.target.value)} placeholder="Nom et prénom du contact" /></div>
+    <div className="space-y-1"><Label>Téléphone du contact de ramassage</Label><Input value={expressRelaisPickupPhone} onChange={e => setExpressRelaisPickupPhone(e.target.value)} placeholder="Ex. 0612345678" /></div>
     <Button type="button" variant="outline" onClick={testExpressRelais} disabled={expressRelaisTesting || !apiKey.trim() || !expressRelaisPassword.trim()}>{expressRelaisTesting ? "Vérification..." : "Tester la connexion"}</Button>
     {expressRelaisResult && <p role="status" className={expressRelaisResult.ok ? "text-xs text-green-700" : "text-xs text-red-700"}>{expressRelaisResult.message}</p>}
     <p className="text-xs text-muted-foreground">L'adresse IP publique du serveur doit être autorisée par Express Relais. L'enregistrement ne confirme pas la connexion.</p>
