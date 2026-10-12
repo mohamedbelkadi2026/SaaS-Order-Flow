@@ -1168,6 +1168,102 @@ export async function shipOrderToCarrier(
     return { success: false, error: validationError, carrierMessage: validationError };
   }
 
+  // ── Express Relais AIO v2.7: isolated Basic Auth /createAioOrder route ─────
+  // Must run before the generic bearer-token/JSON transport and URL lookup.
+  // The existing connection test and city synchronization use this same client.
+  if (provider.toLowerCase().replace(/[\\s_-]+/g, "") === "expressrelais") {
+    const { ExpressRelaisClient } = await import("../integrations/express-relais");
+    const settings = ((creds as any).settings || {}) as Record<string, unknown>;
+    const pickupCity = String(settings.expressRelaisPickupCity || "").trim();
+    const pickupAddress = String(settings.expressRelaisPickupAddress || "").trim();
+    const pickupContact = String(settings.expressRelaisPickupContact || "").trim();
+    const pickupPhoneRaw = String(settings.expressRelaisPickupPhone || "").trim();
+    const login = String(creds.apiKey || "").trim();
+    const password = String(creds.apiSecret || "");
+    const missing = [
+      !pickupCity && "Ville de ramassage",
+      !pickupAddress && "Adresse de ramassage",
+      !pickupContact && "Contact de ramassage",
+      !pickupPhoneRaw && "Téléphone de ramassage",
+    ].filter(Boolean);
+    if (missing.length) {
+      const error = `Express Relais: complétez les informations de ramassage dans Intégrations → Transporteurs : ${missing.join(", ")}.`;
+      return { success: false, error, carrierMessage: error, permanent: true, httpStatus: 422 };
+    }
+    if (!login || !password) {
+      const error = "Express Relais: login ou mot de passe manquant sur le compte transporteur.";
+      return { success: false, error, carrierMessage: error, permanent: true, httpStatus: 422 };
+    }
+    // API expects the 00212XXXXXXXXX international Moroccan phone format.
+    const toExpressPhone = (raw: string): string | null => {
+      const local = sanitizePhone(raw);
+      return /^0[67]\\d{8}$/.test(local) ? "00212" + local.slice(1) : null;
+    };
+    const recipientPhone = toExpressPhone(input.phone);
+    const pickupPhone = toExpressPhone(pickupPhoneRaw);
+    if (!recipientPhone || !pickupPhone) {
+      const error = "Express Relais: téléphone destinataire ou contact de ramassage invalide (mobile marocain requis).";
+      return { success: false, error, carrierMessage: error, permanent: true, httpStatus: 422 };
+    }
+    const fullName = String(input.customerName || "").trim();
+    const nameParts = fullName.split(/\\s+/).filter(Boolean);
+    const firstName = nameParts[0] || "Client";
+    const lastName = nameParts.slice(1).join(" ") || firstName;
+    try {
+      const client = new ExpressRelaisClient({ login, password, environment: "prod" });
+      const result: any = await client.createOrder({
+        idParcelClient: String(input.orderNumber || input.orderId).slice(0, 50),
+        cityPickup: pickupCity,
+        addressPickup: pickupAddress,
+        contactPickup: pickupContact,
+        contactPickupPhone: pickupPhone,
+        typeDelivery: "ADDRESS",
+        firstNameRecipient: firstName.slice(0, 25),
+        lastNameRecipient: lastName.slice(0, 25),
+        mobileRecipient: recipientPhone,
+        cityDelivery: String(input.city).trim(),
+        addressDelivery: String(input.address).trim(),
+        cashOnDelivery: +(input.totalPrice / 100).toFixed(2),
+        productName: String(input.productName || "Produit").trim(),
+        commentParcel: String(input.note || "").trim(),
+        allowOpenParcel: input.canOpen ? 1 : 0,
+      });
+      // Express Relais uses business-level codeApi even on HTTP 200.
+      // Do not mark the order shipped if the carrier reported a functional error.
+      const codeApi = result?.codeApi ?? result?.data?.codeApi;
+      const message = String(result?.message || result?.data?.message || "");
+      const normalizedCode = codeApi == null ? "" : String(codeApi).trim();
+      const acknowledged = normalizedCode === "0" || normalizedCode === "200" ||
+        result?.success === true || result?.ok === true;
+      const explicitError = result?.success === false || result?.ok === false ||
+        (normalizedCode !== "" && !acknowledged) ||
+        /erreur|incorrect|introuvable|invalide|refus\\u00e9|manquant/i.test(message);
+      if (explicitError) {
+        const error = `Express Relais a refusé l'expédition (codeApi=${normalizedCode || "?"}): ${message || "Erreur API"}`;
+        console.warn("[EXPRESS-RELAIS-SHIP] rejected", { codeApi: normalizedCode || null });
+        return { success: false, error, carrierMessage: error, httpStatus: 422, permanent: true };
+      }
+      // Avoid a fake tracking number. Express Relais identifies parcels by
+      // idParcelClient; use the same stable reference to query status later.
+      const tracking = String(result?.trackingNumber || result?.tracking || result?.idParcelExpress ||
+        result?.data?.trackingNumber || result?.data?.idParcelExpress || "").trim();
+      if (!acknowledged && !tracking) {
+        const error = "Express Relais: réponse de création ambiguë. Vérifiez la commande sur le portail Express Relais avant de réessayer pour éviter un doublon.";
+        console.warn("[EXPRESS-RELAIS-SHIP] ambiguous acceptance", { hasCodeApi: codeApi != null });
+        return { success: false, error, carrierMessage: error, httpStatus: 502 };
+      }
+      return {
+        success: true,
+        trackingNumber: tracking || String(input.orderNumber || input.orderId),
+        rawResponse: { codeApi: codeApi ?? null },
+      };
+    } catch (err: any) {
+      const error = `Express Relais: ${err?.message || "échec de création du colis"}`;
+      console.warn("[EXPRESS-RELAIS-SHIP] request failed", { status: err?.status || null });
+      return { success: false, error, carrierMessage: error, httpStatus: Number(err?.status) || 502 };
+    }
+  }
+
   // ── 2. Resolve & sanitize URL ────────────────────────────────────
   const providerKey = provider.toLowerCase().replace(/\s+/g, "");
   const defaultUrl  = CARRIER_ENDPOINTS[providerKey];
