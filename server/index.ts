@@ -1208,31 +1208,78 @@ app.use((req, res, next) => {
     } catch {}
   }, 5 * 60 * 1000); // clear queue every 5 min
 
-  // ── Google Sheets OAuth polling — every 5 min ─────────────────────────────
-  const gsheetsSync = setInterval(() => {
-    syncAllGoogleSheets().catch((err: any) =>
-      console.error("[GSHEETS-CRON] Error:", err.message)
-    );
-  }, 5 * 60 * 1000);
+  // ── Google Sheets polling — never overlap runs for the same integration type.
+  // Slow Google API responses can otherwise stack new 5-minute jobs on top
+  // of old ones and amplify DB and event-loop load during peak traffic.
+  let gsheetsOAuthRunning = false;
+  async function runGsheetsOAuthOnce(): Promise<void> {
+    if (gsheetsOAuthRunning) {
+      console.warn("[GSHEETS-CRON] Previous run still active; skipping overlapping tick");
+      return;
+    }
+    gsheetsOAuthRunning = true;
+    try { await syncAllGoogleSheets(); }
+    catch (err: any) { console.error("[GSHEETS-CRON] Error:", err?.message); }
+    finally { gsheetsOAuthRunning = false; }
+  }
+  const gsheetsSync = setInterval(() => { void runGsheetsOAuthOnce(); }, 5 * 60 * 1000);
   intervals.push(gsheetsSync);
 
-  // ── Google Sheets public URL polling — every 5 min ────────────────────────
-  const GSHEETS_CRON_INTERVAL_MS = 5 * 60 * 1000;
-  setTimeout(() => {
-    console.log("[GSHEETS-PUBLIC-CRON] Initial sync starting...");
-    syncAllPublicSheets()
-      .then(() => console.log("[GSHEETS-PUBLIC-CRON] Initial sync complete"))
-      .catch((err: any) => console.error("[GSHEETS-PUBLIC-CRON] Initial sync failed:", err.message, err.stack));
-  }, 30_000);
-  const gsheetsPublicSync = setInterval(() => {
+  let gsheetsPublicRunning = false;
+  async function runGsheetsPublicOnce(label: string): Promise<void> {
+    if (gsheetsPublicRunning) {
+      console.warn(`[GSHEETS-PUBLIC-CRON] Previous run still active; skipping ${label} tick`);
+      return;
+    }
+    gsheetsPublicRunning = true;
     const startTime = Date.now();
-    console.log(`[GSHEETS-PUBLIC-CRON] Tick starting at ${new Date().toISOString()}`);
-    syncAllPublicSheets()
-      .then(() => console.log(`[GSHEETS-PUBLIC-CRON] Tick complete in ${Date.now() - startTime}ms`))
-      .catch((err: any) => console.error("[GSHEETS-PUBLIC-CRON] Tick failed:", err.message, err.stack));
+    try {
+      await syncAllPublicSheets();
+      console.log(`[GSHEETS-PUBLIC-CRON] ${label} complete in ${Date.now() - startTime}ms`);
+    } catch (err: any) {
+      console.error(`[GSHEETS-PUBLIC-CRON] ${label} failed:`, err?.message);
+    } finally {
+      gsheetsPublicRunning = false;
+    }
+  }
+  const GSHEETS_CRON_INTERVAL_MS = 5 * 60 * 1000;
+  setTimeout(() => { void runGsheetsPublicOnce("Initial sync"); }, 30_000);
+  const gsheetsPublicSync = setInterval(() => {
+    void runGsheetsPublicOnce("Tick");
   }, GSHEETS_CRON_INTERVAL_MS);
   intervals.push(gsheetsPublicSync);
   console.log(`[GSHEETS-PUBLIC-CRON] Registered — initial sync in 30s, then every ${GSHEETS_CRON_INTERVAL_MS / 1000}s`);
+
+  // ── Event-loop delay monitor: detect Node.js saturation independently of DB.
+  // Samples every second, reports once per minute, and never exposes user data.
+  let loopExpectedAt = Date.now() + 1000;
+  let loopMaxDelayMs = 0;
+  const loopMonitor = setInterval(() => {
+    const now = Date.now();
+    const delay = Math.max(0, now - loopExpectedAt);
+    loopMaxDelayMs = Math.max(loopMaxDelayMs, delay);
+    loopExpectedAt = now + 1000;
+  }, 1000);
+  intervals.push(loopMonitor);
+  const loopReport = setInterval(() => {
+    const delayMs = loopMaxDelayMs;
+    loopMaxDelayMs = 0;
+    const mem = process.memoryUsage();
+    const rssMb = Math.round(mem.rss / 1048576);
+    if (delayMs >= 200 || rssMb >= 1024 || pool.waitingCount > 0) {
+      console.warn("[PERF-RUNTIME]", JSON.stringify({
+        eventLoopMaxDelayMs: delayMs,
+        rssMb,
+        heapUsedMb: Math.round(mem.heapUsed / 1048576),
+        externalMb: Math.round(mem.external / 1048576),
+        arrayBuffersMb: Math.round(mem.arrayBuffers / 1048576),
+        dbPoolTotal: pool.totalCount,
+        dbPoolIdle: pool.idleCount,
+        dbPoolWaiting: pool.waitingCount,
+      }));
+    }
+  }, 60_000);
+  intervals.push(loopReport);
 
   // ── Memory monitor — log every 2 min, GC + clear WA queue if heap > 400 MB ──
   setInterval(() => {
