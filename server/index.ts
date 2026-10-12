@@ -928,6 +928,21 @@ app.use((req, res, next) => {
             if (r.rawStatus && r.rawStatus !== (order as any).commentStatus) {
               await st.updateOrder(order.id, { commentStatus: r.statusLabel || r.rawStatus });
             }
+            // An outdated or partial carrier history must not move an already
+            // returned parcel back to pickup. Preserve return/delivered stages
+            // until Nearya confirms a newer meaningful state.
+            const normalizeNearyaLabel = (v: unknown) => String(v || '').toLowerCase()
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const oldStatus = normalizeNearyaLabel(order.status);
+            const nextStatus = normalizeNearyaLabel(r.status);
+            const isReturnStage = /(retour|return)/.test(oldStatus);
+            const isDeliveredStage = /(livre|delivered)/.test(oldStatus);
+            const isEarlyStage = /(attente|ramass|ready|nouveau|confirme|expedie|transit|distribution)/.test(nextStatus)
+              && !/(retour|return)/.test(nextStatus);
+            if ((isReturnStage || isDeliveredStage) && isEarlyStage) {
+              console.warn(`[NEARYA-AUTO-SYNC] ignoring stale regression store=${storeId} order=${order.id}`);
+              continue;
+            }
             if (r.status && r.status !== order.status) {
               await st.updateOrderStatus(order.id, r.status);
               await st.createOrderFollowUpLog({
@@ -1058,8 +1073,9 @@ app.use((req, res, next) => {
       const { trackNearyaParcel, getNearyaShippingCost } = await import('./services/carrier-service');
       const { storage: st } = await import("./storage");
 
+      const { sql: sqlFn } = await import('drizzle-orm');
       const accounts = await dbInst.select().from(caTable)
-        .where(eqFn(caTable.carrierName, 'nearya'));
+        .where(sqlFn`LOWER(TRIM(${caTable.carrierName})) = 'nearya'`);
 
       for (const account of accounts) {
         const storeId   = (account as any).storeId;
