@@ -3355,6 +3355,25 @@ export default function Orders() {
             )}
           </div>
 
+          {/* Show carrier rejection prominently; users should never need Railway logs
+              to find out why a shipment failed. Include only this store's own
+              completed SSE result, not credentials or request payloads. */}
+          {shipProgress && !shipProgress.active && shipProgress.failed > 0 && shipProgress.results && (
+            <div className="mx-6 mt-3 rounded-lg border border-red-300 bg-red-50 dark:bg-red-950/30 dark:border-red-800 p-3" role="alert">
+              <p className="text-sm font-semibold text-red-800 dark:text-red-200 mb-1">
+                Expédition refusée — détails
+              </p>
+              <ul className="space-y-1 max-h-40 overflow-y-auto">
+                {shipProgress.results.filter(r => r.status === 'failed').slice(0, 5).map(r => (
+                  <li key={r.orderId} className="text-xs text-red-800 dark:text-red-200 break-words">
+                    #{r.orderNumber || r.orderId} : {r.error || "Le transporteur n'a pas fourni de motif."}
+                  </li>
+                ))}
+              </ul>
+              {shipProgress.failed > 5 && <p className="text-xs text-red-700 mt-1">Voir les autres erreurs ci-dessous.</p>}
+            </div>
+          )}
+
           {/* Banner for blocked (non-confirmed) orders */}
           {shipProgress && !shipProgress.active && shipProgress.results && shipProgress.results.some(r => r.status === 'failed' && r.error?.includes("doit être")) && (
             <div className="mx-6 mt-4 mb-1 flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-xl px-3 py-2.5">
