@@ -66,7 +66,25 @@ export function registerLightfunnelsRoutes(app:Express) {
   app.get("/api/lightfunnels/status",async(req:any,res)=>{
     if(!req.isAuthenticated?.()) return res.sendStatus(401);
     const rows=await db.select().from(storeIntegrations).where(and(eq(storeIntegrations.storeId,req.user.storeId),eq(storeIntegrations.provider,"lightfunnels")));
-    return res.json({configured:!!(CLIENT_ID()&&CLIENT_SECRET()&&process.env.SESSION_SECRET),connections:rows.map(r=>({id:r.id,magasinId:r.magasinId,connected:r.isActive===1&&!!r.oauthRefreshToken&&!!selectedRemoteStore(r),remoteStoreId:selectedRemoteStore(r)||null,name:r.connectionName}))});
+    // Show all live boutiques, but only the newest unfinished OAuth attempt
+    // per destination magasin. Old drafts remain in DB for audit and never
+    // affect an active integration or existing orders.
+    const visible=rows.filter(r=>r.isActive===1);
+    const pending=rows.filter(r=>r.isActive!==1).sort((a,b)=>Number(b.id)-Number(a.id));
+    const seenMagasins=new Set<string>();
+    for(const row of pending) {
+      const key=String(row.magasinId??"main");
+      if(seenMagasins.has(key)) continue;
+      seenMagasins.add(key);
+      visible.push(row);
+    }
+    return res.json({configured:!!(CLIENT_ID()&&CLIENT_SECRET()&&process.env.SESSION_SECRET),connections:visible.map(r=>({
+      id:r.id,magasinId:r.magasinId,
+      state:r.isActive===1&&!!selectedRemoteStore(r)?"connected":r.oauthRefreshToken?"select_store":"reauthorize",
+      connected:r.isActive===1&&!!r.oauthRefreshToken&&!!selectedRemoteStore(r),
+      canSelectStore:!!r.oauthRefreshToken,
+      remoteStoreId:selectedRemoteStore(r)||null,name:r.connectionName,
+    }))});
   });
   app.post("/api/lightfunnels/connect",async(req:any,res)=>{
     if(!req.isAuthenticated?.()) return res.sendStatus(401);
@@ -107,7 +125,16 @@ export function registerLightfunnelsRoutes(app:Express) {
       // connection. One Lightfunnels account can host many boutiques, and the
       // previous mapping must remain active until the new selection is complete.
       const values={oauthAccessToken:encrypt(auth.access_token),oauthRefreshToken:encrypt(auth.refresh_token),oauthExpiresAt:new Date(Date.now()+(Number(auth.expires_in)||7200)*1000),isActive:0,connectionName:"Lightfunnels — boutique à sélectionner"};
-      await db.insert(storeIntegrations).values({storeId:state.storeId,magasinId:state.magasinId??null,type:"store",provider:"lightfunnels",credentials:"{}",...values});
+      const pendingRows=await db.select().from(storeIntegrations).where(and(eq(storeIntegrations.storeId,state.storeId),eq(storeIntegrations.provider,"lightfunnels")));
+      // Reuse a prior unfinished attempt for the same destination instead
+      // of adding a new "À reconnecter" row for every OAuth retry.
+      // Never overwrite a connected boutique.
+      const oldPending=pendingRows.filter(r=>r.isActive!==1&&(r.magasinId??null)===(state.magasinId??null)).sort((a,b)=>b.id-a.id)[0];
+      if(oldPending) {
+        await db.update(storeIntegrations).set({...values,credentials:"{}"}).where(eq(storeIntegrations.id,oldPending.id));
+      } else {
+        await db.insert(storeIntegrations).values({storeId:state.storeId,magasinId:state.magasinId??null,type:"store",provider:"lightfunnels",credentials:"{}",...values});
+      }
       // OAuth authorizes an account, NOT a specific boutique. Keep the
       // integration inactive until the user explicitly selects a Lightfunnels
       // Store ID and we verify that the authorized account owns that store.
