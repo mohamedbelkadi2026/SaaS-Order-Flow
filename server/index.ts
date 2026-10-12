@@ -319,6 +319,19 @@ app.use((req, res, next) => {
       // customer PII, and JSON.stringify large order payloads blocks the event loop.
       // Keep route, HTTP status and duration for latency diagnostics.
       log(logLine);
+      // Structured, low-overhead diagnostics for real multi-user bottlenecks.
+      // Only emit slow requests; never log query strings, response bodies or user data.
+      if (duration >= 2000 && !p.includes("/webhook")) {
+        console.warn("[PERF-SLOW-API]", JSON.stringify({
+          method: req.method,
+          path: p,
+          durationMs: duration,
+          status: res.statusCode,
+          dbPoolTotal: pool.totalCount,
+          dbPoolIdle: pool.idleCount,
+          dbPoolWaiting: pool.waitingCount,
+        }));
+      }
     }
   });
 
