@@ -36,7 +36,9 @@ async function listRemoteStores(accessToken:string):Promise<{id:string;name:stri
   const response=await fetch(GQL,{
     method:"POST",
     headers:{Authorization:"Bearer "+accessToken,"Content-Type":"application/json"},
-    body:JSON.stringify({query:"query TajerGrowLightfunnelsStores { account { stores { id name defaultDomain } } }"}),
+    // The order/confirmed webhook uses node.store_id ("store_..."). GraphQL
+    // Store.id may be a different/global ID, so use Store.uid for matching.
+    body:JSON.stringify({query:"query TajerGrowLightfunnelsStores { account { stores { id uid name defaultDomain } } }"}),
     signal:AbortSignal.timeout(15000),
   });
   if(!response.ok) throw new Error("Lightfunnels stores HTTP "+response.status);
@@ -44,8 +46,8 @@ async function listRemoteStores(accessToken:string):Promise<{id:string;name:stri
   if(data.errors?.length) throw new Error("Lightfunnels stores: "+String(data.errors[0]?.message||"Query failed"));
   if(!Array.isArray(data.data?.account?.stores)) throw new Error("Lightfunnels returned no stores list");
   return data.data.account.stores
-    .filter((row:any)=>typeof row?.id==="string"&&row.id)
-    .map((row:any)=>({id:String(row.id),name:String(row.name||row.id),domain:String(row.defaultDomain||"")}));
+    .filter((row:any)=>typeof (row?.uid||row?.id)==="string"&&(row.uid||row.id))
+    .map((row:any)=>({id:String(row.uid||row.id),name:String(row.name||row.uid||row.id),domain:String(row.defaultDomain||"")}));
 }
 async function currentAccessToken(entry:typeof storeIntegrations.$inferSelect):Promise<string> {
   const {decrypt}=await import("./crypto");
