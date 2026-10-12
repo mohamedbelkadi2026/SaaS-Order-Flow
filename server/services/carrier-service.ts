@@ -4712,9 +4712,13 @@ export async function trackNearyaParcel(
       // Strip French accents correctly: ramassé -> ramasse, expédié -> expedie,
       // livré -> livre, reporté -> reporte, etc.
       const n = value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      // Terminal / exception statuses from the Nearya UI.
-      if (/(livre|delivered|retourne|returned|retour|refuse|refused|annule|cancel|supprime|rembourse|remplace)/i.test(n)) return 100;
-      if (/(preparation de retour|pas de reponse|injoignable|no answer|unreachable|reporte|postponed|hors zone)/i.test(n)) return 90;
+      // An actual return takes precedence over a prior "refusé" when Nearya
+      // sends undated history. Otherwise the old refusal may win forever.
+      // Handle return preparation/ready before generic return/refused labels.
+      if (/(retour|return|retourne|returned)/i.test(n)) return 120;
+      if (/(livre|delivered)/i.test(n)) return 115;
+      if (/(refuse|refused|annule|cancel|supprime|rembourse|remplace)/i.test(n)) return 100;
+      if (/(pas de reponse|injoignable|no answer|unreachable|reporte|postponed|hors zone)/i.test(n)) return 90;
       if (/(mis en distribution|distribution|out for delivery|sorti|en cours de livraison)/i.test(n)) return 80;
       if (/(expedie|shipped|transit|hub|transfert|en route)/i.test(n)) return 70;
       if (/(ramasse|picked|collect|recupere)/i.test(n)) return 60;
@@ -4726,7 +4730,9 @@ export async function trackNearyaParcel(
     candidates.sort((a,b)=>{
       // A real event timestamp is strongest. If dates are missing/equal, use
       // delivery progression before the generic field score.
-      if (a.date || b.date) {
+      // Only compare event dates if BOTH events have usable timestamps.
+      // An undated latest return must not lose to a dated historical refusal.
+      if (a.date && b.date) {
         const byDate = b.date - a.date;
         if (byDate) return byDate;
       }
