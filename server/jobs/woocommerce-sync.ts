@@ -142,11 +142,21 @@ async function runWooCommerceSync() {
 
 export function startWooCommerceSync(intervals?: NodeJS.Timeout[]) {
   console.log(`[WooCommerce Sync] Starting polling job (every ${WC_POLL_INTERVAL / 1000}s)`);
+  // A slow shop must not start a second full import while the first is still running.
+  // This bounds concurrent API calls, product hydration and database writes.
+  let running = false;
   const run = async () => {
+    if (running) {
+      console.warn('[WooCommerce Sync] Previous run still active; skipping overlapping tick');
+      return;
+    }
+    running = true;
     try {
       await runWooCommerceSync();
     } catch (err) {
       console.error('[WooCommerce Sync] Job error (continuing):', err);
+    } finally {
+      running = false;
     }
   };
   run();
