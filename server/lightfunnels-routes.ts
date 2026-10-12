@@ -142,7 +142,7 @@ export function registerLightfunnelsRoutes(app:Express) {
       return res.redirect("/integrations?lightfunnels=select_store");
     }catch(err:any){console.error("[LIGHTFUNNELS] OAuth/setup:",err?.message);return res.redirect("/integrations?lightfunnels=error");}
   });
-  app.get("/api/lightfunnels/stores/:id",async(req:any,res)=>{
+  const getAuthorizedLightfunnelsStores = async(req:any,res:any) => {
     if(!req.isAuthenticated?.()) return res.sendStatus(401);
     const id=Number(req.params.id);
     if(!Number.isInteger(id)||id<=0) return res.sendStatus(400);
@@ -152,7 +152,12 @@ export function registerLightfunnelsRoutes(app:Express) {
       const stores=await listRemoteStores(await currentAccessToken(entry));
       return res.json({stores});
     } catch(err:any) { console.error("[LIGHTFUNNELS] list stores",err.message);return res.status(502).json({message:"Impossible de charger les boutiques Lightfunnels : "+err.message}); }
-  });
+  };
+  // Prefer POST for the store selector: some PWA/CDN navigation fallbacks
+  // incorrectly answer uncached GETs with index.html (HTTP 200).
+  // Both verbs remain authenticated and tenant-scoped.
+  app.get("/api/lightfunnels/stores/:id", getAuthorizedLightfunnelsStores);
+  app.post("/api/lightfunnels/stores/:id", getAuthorizedLightfunnelsStores);
   app.post("/api/lightfunnels/select-store",async(req:any,res)=>{
     if(!req.isAuthenticated?.()) return res.sendStatus(401);
     const id=Number(req.body?.integrationId);
