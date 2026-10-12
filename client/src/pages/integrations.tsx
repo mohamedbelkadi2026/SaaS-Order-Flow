@@ -1621,6 +1621,89 @@ function WebhookTab({ platform, webhookKey, stores, origin }: { platform: Platfo
   );
 }
 
+// Native Lightfunnels OAuth2 integration (no unsigned manual webhook shortcuts).
+function LightfunnelsTab({ stores }: { stores: any[] }) {
+  const { toast } = useToast();
+  const [magasinId, setMagasinId] = useState<string>("none");
+  const [connecting, setConnecting] = useState(false);
+  const { data, isLoading, refetch } = useQuery<{
+    configured: boolean;
+    connections: { id: number; magasinId: number | null; connected: boolean; name: string }[];
+  }>({
+    queryKey: ["/api/lightfunnels/status"],
+    queryFn: async () => {
+      const resp = await fetch("/api/lightfunnels/status", { credentials: "include" });
+      if (!resp.ok) throw new Error("Connexion requise");
+      return resp.json();
+    },
+    retry: false,
+  });
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("lightfunnels");
+    if (!result) return;
+    toast({
+      title: result === "connected" ? "Lightfunnels connectée ✅" : "Connexion Lightfunnels incomplète",
+      description: result === "webhook_error" ? "Webhook non enregistré : reconnectez votre boutique." : result === "connected" ? "Les nouvelles commandes confirmées seront importées automatiquement." : "Vérifiez les paramètres OAuth et réessayez.",
+      variant: result === "connected" ? "default" : "destructive",
+    });
+    window.history.replaceState(null, "", window.location.pathname);
+    void refetch();
+  }, [refetch, toast]);
+  const connect = async () => {
+    setConnecting(true);
+    try {
+      const resp = await fetch("/api/lightfunnels/connect", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ magasinId: magasinId === "none" ? null : Number(magasinId) }),
+      });
+      const body = await resp.json();
+      if (!resp.ok || !body.url) throw new Error(body.message || "Connexion impossible");
+      window.location.assign(body.url);
+    } catch (err: any) {
+      toast({ title: "Lightfunnels", description: err.message, variant: "destructive" });
+      setConnecting(false);
+    }
+  };
+  return (
+    <div className="space-y-5 rounded-xl border p-5">
+      <div>
+        <h2 className="text-lg font-semibold">Lightfunnels — Intégration OAuth2</h2>
+        <p className="text-sm text-muted-foreground">Connectez votre boutique via Lightfunnels Partners. Les commandes sont importées au stade order/confirmed, après les upsells et downsells.</p>
+      </div>
+      {!isLoading && !data?.configured && (
+        <div className="text-sm border border-amber-300 rounded-lg p-3 text-amber-800">
+          Configuration administrateur requise dans Railway : LIGHTFUNNELS_CLIENT_ID, LIGHTFUNNELS_CLIENT_SECRET et Redirect URI.
+        </div>
+      )}
+      <div className="space-y-2 max-w-sm">
+        <Label>Magasin destinataire des commandes</Label>
+        <Select value={magasinId} onValueChange={setMagasinId}>
+          <SelectTrigger><SelectValue placeholder="Choisir magasin" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">Compte principal</SelectItem>
+            {stores.map((store: any) => <SelectItem key={store.id} value={String(store.id)}>{store.name || store.storeName || "Magasin " + store.id}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+      <Button onClick={connect} disabled={connecting || !data?.configured}>
+        {connecting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Link2 className="w-4 h-4 mr-2" />}
+        Connecter Lightfunnels
+      </Button>
+      <div className="space-y-2">
+        {data?.connections.map(connection => (
+          <div key={connection.id} className="flex items-center gap-3 border rounded-lg p-3 text-sm">
+            <Badge variant={connection.connected ? "default" : "secondary"}>{connection.connected ? "Connectée" : "À reconnecter"}</Badge>
+            <span>Lightfunnels — {connection.magasinId ? (stores.find((st: any) => st.id === connection.magasinId)?.name || "Magasin " + connection.magasinId) : "Compte principal"}</span>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground">Les tokens sont conservés côté serveur. Les Webhooks sont vérifiés avec HMAC-SHA256. Aucun webhook non signé n'est accepté.</p>
+    </div>
+  );
+}
+
 // ---- Main page ----
 export default function Integrations() {
   const { user } = useAuth();
@@ -1717,7 +1800,8 @@ export default function Integrations() {
         {activeTab === "youcan" && (
           <YouCanTab />
         )}
-        {platform.webhookBased && activeTab !== "gsheets" && activeTab !== "youcan" && (
+        {activeTab === "lightfunnels" && <LightfunnelsTab stores={stores} />}
+        {platform.webhookBased && activeTab !== "gsheets" && activeTab !== "youcan" && activeTab !== "lightfunnels" && (
           <WebhookTab platform={platform} webhookKey={webhookKey} stores={stores} origin={origin} />
         )}
       </div>
