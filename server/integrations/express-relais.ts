@@ -60,6 +60,12 @@ export class ExpressRelaisClient {
     const values = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== null) values.set(key, String(value));
     if (method === "GET") url.search = values.toString();
+    // Express Relais confirmed that createAioOrder requires JSON, not form data.
+    // Keep all existing read-only GET endpoints unchanged.
+    const isCreateOrder = endpoint === "createAioOrder" && method === "POST";
+    const postBody = isCreateOrder
+      ? JSON.stringify(Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined && value !== null)))
+      : values.toString();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
     try {
@@ -68,9 +74,9 @@ export class ExpressRelaisClient {
         headers: {
           Authorization: this.auth,
           Accept: "application/json",
-          ...(method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
+          ...(method === "POST" ? { "Content-Type": isCreateOrder ? "application/json" : "application/x-www-form-urlencoded" } : {}),
         },
-        ...(method === "POST" ? { body: values.toString() } : {}),
+        ...(method === "POST" ? { body: postBody } : {}),
         signal: controller.signal,
       });
       const raw = await response.text();
@@ -107,16 +113,8 @@ export class ExpressRelaisClient {
     if (order.typeDelivery === "LOCKER" && !order.smartLocker) throw new Error("LOCKER requires smartLocker");
     if (order.weightParcel !== undefined && (order.weightParcel < 1 || order.weightParcel > 20)) throw new Error("Parcel weight must be 1-20 kg");
     const params = order as unknown as Record<string, string | number | undefined>;
-    // The published AIO v2.7 contract permits POST and GET. Certain gateway
-    // deployments return business code 910 ("Fonction API incorrect ou
-    // introuvable") when routing POST, even when GET endpoints work.
-    // Retry with GET ONLY for that explicit rejection, which confirms the
-    // first request did not create a shipment. Never retry on network timeouts,
-    // ambiguous responses or other business errors (duplicate shipment risk).
-    return this.request<any>("createAioOrder", params, "POST").then(async (response) => {
-      if (String(response?.codeApi ?? response?.data?.codeApi ?? "") !== "910") return response;
-      console.warn("[EXPRESS-RELAIS] POST createAioOrder returned codeApi=910; trying documented GET route once");
-      return this.request("createAioOrder", params, "GET");
-    });
+    // JSON POST only. Never fall back to a second creation request via GET;
+    // ambiguous HTTP failures can otherwise generate duplicate shipments.
+    return this.request<any>("createAioOrder", params, "POST");
   }
 }
