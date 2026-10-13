@@ -3425,6 +3425,10 @@ export default function Orders() {
               /codeApi\s*[:=() ]+\s*999|une erreur interne est survenue|vérifiez d'abord si elle existe|ne relancez pas l'expédition/i.test(r.error || '')
             );
             const transient          = failures.filter(r =>
+              // Express Relais codeApi 999 is ambiguous: even the explicit
+              // 999 matcher can vary across upstream error translations.
+              // Never offer a blind retry for this carrier in this dialog.
+              !/express[\s_-]*relais/i.test(shipProgress.provider || "") &&
               !requiresManualCheck.includes(r) &&
               !blacklisted.includes(r) && !duplicates.includes(r) && !addressBad.includes(r) && !validationFailures.includes(r)
             );
@@ -3571,7 +3575,7 @@ export default function Orders() {
               r.status === 'failed' &&
               // Never offer blind retries for Express Relais: even HTTP 400/codeApi 999
               // may be ambiguous and would create duplicate COD shipments.
-              !/expressrelais/i.test(shipProgress?.provider || '') &&
+              !/express[\s_-]*relais/i.test(shipProgress?.provider || '') &&
               !/double|existe déjà|already exists/i.test(r.error || '') &&
               !/blacklist|liste noire/i.test(r.error || '') &&
               !/adresse|ville/i.test(r.error || '') &&
