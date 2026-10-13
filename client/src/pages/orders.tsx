@@ -3418,7 +3418,14 @@ export default function Orders() {
             const duplicates         = failures.filter(r => r.error?.includes('double') || r.error?.includes('existe déjà') || r.error?.includes('⚠️ Commande'));
             const addressBad         = failures.filter(r => /adresse|ville/i.test(r.error || '') || r.error?.includes('📍'));
             const validationFailures = failures.filter(r => /Données manquantes|Destinataire.*obligatoire/i.test(r.error || ''));
+            // Carrier codeApi 999 may have created a parcel before failing.
+            // Always verify the parcel reference on the carrier portal first.
+            const requiresManualCheck = failures.filter(r =>
+              /expressrelais/i.test(shipProgress.provider || '') &&
+              /codeApi\\s*[:=]\\s*999|une erreur interne est survenue/i.test(r.error || '')
+            );
             const transient          = failures.filter(r =>
+              !requiresManualCheck.includes(r) &&
               !blacklisted.includes(r) && !duplicates.includes(r) && !addressBad.includes(r) && !validationFailures.includes(r)
             );
             return (
@@ -3497,6 +3504,14 @@ export default function Orders() {
                   </div>
                 )}
 
+                {requiresManualCheck.length > 0 && (
+                  <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-950/20 p-3 text-xs text-red-800 dark:text-red-200">
+                    <strong>Express Relais — vérification obligatoire.</strong> Le transporteur a répondu avec une erreur interne (codeApi 999).
+                    Vérifiez d'abord chaque référence de commande dans le portail Express Relais, puis contactez leur support.
+                    Ne cliquez pas sur Réessayer avant cette vérification pour éviter des expéditions en double.
+                  </div>
+                )}
+
                 {transient.length > 0 && transient.some(r => /ameex/i.test(r.error || '') && /numéro de suivi/i.test(r.error || '')) && (
                   <div className="mt-2 p-2 rounded bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-[11px] text-blue-900 dark:text-blue-200">
                     💡 <strong>Astuce Ameex :</strong> Ameex peut créer la commande dans son portail sans renvoyer le numéro de suivi immédiatement. Vérifiez votre portail Ameex avant de cliquer "Réessayer" pour éviter les doublons.
@@ -3554,6 +3569,7 @@ export default function Orders() {
           {(() => {
             const retryable = (shipProgress?.results || []).filter(r =>
               r.status === 'failed' &&
+              !(/expressrelais/i.test(shipProgress?.provider || '') && /codeApi\\s*[:=]\\s*999|une erreur interne est survenue/i.test(r.error || '')) &&
               !/double|existe déjà|already exists/i.test(r.error || '') &&
               !/blacklist|liste noire/i.test(r.error || '') &&
               !/adresse|ville/i.test(r.error || '') &&
