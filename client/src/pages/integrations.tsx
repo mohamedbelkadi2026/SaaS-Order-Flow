@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -1630,6 +1630,7 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
   const [selectedRemotes, setSelectedRemotes] = useState<Record<number,string>>({});
   const [storeLoading, setStoreLoading] = useState<number | null>(null);
   const [storeSaving, setStoreSaving] = useState<number | null>(null);
+  const attemptedStoreLoads = useRef(new Set<number>());
   const [storeErrors, setStoreErrors] = useState<Record<number,string>>({});
 
   const { data, isLoading, refetch } = useQuery<{
@@ -1691,6 +1692,17 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
       toast({title:"Lightfunnels",description:err.message,variant:"destructive"});
     } finally {setStoreLoading(null);}
   };
+  // OAuth completed: discover the remote stores without forcing a second manual click.
+  // Only attempt once per pending connection. The button still allows explicit retry.
+  useEffect(() => {
+    for (const connection of data?.connections || []) {
+      if (connection.canSelectStore && !connection.connected && !attemptedStoreLoads.current.has(connection.id)) {
+        attemptedStoreLoads.current.add(connection.id);
+        void loadLightfunnelsStores(connection.id);
+      }
+    }
+  }, [data?.connections]);
+
   const chooseLightfunnelsStore = async (integrationId:number) => {
     const remoteStoreId=selectedRemotes[integrationId];
     if(!remoteStoreId) {toast({title:"Choisissez une boutique Lightfunnels",variant:"destructive"});return;}
