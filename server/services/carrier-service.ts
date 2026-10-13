@@ -1247,11 +1247,17 @@ export async function shipOrderToCarrier(
         hasTracking: !!(result?.trackingNumber || result?.tracking || result?.idParcelExpress || result?.data?.trackingNumber || result?.data?.idParcelExpress),
         message: message.slice(0, 120),
       });
-      const acknowledged = normalizedCode === "0" || normalizedCode === "200" ||
-        result?.success === true || result?.ok === true;
+      // Express Relais AIO returns codeApi=5000 for a successful order
+      // creation ("Succes - Ordre enregistré avec succès"). It is a
+      // business-specific status, not an HTTP 5000 error.
+      // An explicit carrier error code still takes precedence over vague
+      // message text or generic success flags.
+      const knownSuccessCodes = new Set(["0", "200", "5000"]);
+      const acknowledged = knownSuccessCodes.has(normalizedCode) ||
+        (normalizedCode === "" && (result?.success === true || result?.ok === true));
       const explicitError = result?.success === false || result?.ok === false ||
-        (normalizedCode !== "" && !acknowledged) ||
-        /erreur|incorrect|introuvable|invalide|refus\u00e9|manquant/i.test(message);
+        (normalizedCode !== "" && !knownSuccessCodes.has(normalizedCode)) ||
+        (!acknowledged && /erreur|incorrect|introuvable|invalide|refus\u00e9|manquant/i.test(message));
       if (explicitError) {
         const error = `Express Relais a refusé l'expédition (codeApi=${normalizedCode || "?"}): ${message || "Erreur API"}`;
         console.warn("[EXPRESS-RELAIS-SHIP] rejected", { codeApi: normalizedCode || null });
