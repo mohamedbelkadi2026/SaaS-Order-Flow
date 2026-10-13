@@ -1200,9 +1200,12 @@ export async function shipOrderToCarrier(
       return /^0[67]\d{8}$/.test(local) ? "00212" + local.slice(1) : null;
     };
     const recipientPhone = toExpressPhone(input.phone);
-    const pickupPhone = toExpressPhone(pickupPhoneRaw);
+    // Pickup contact may be a Moroccan fixed line (05...) per Express
+    // Relais documentation; recipient remains a Moroccan mobile number.
+    const pickupLocal = sanitizePhone(pickupPhoneRaw);
+    const pickupPhone = /^0[567]\d{8}$/.test(pickupLocal) ? "00212" + pickupLocal.slice(1) : null;
     if (!recipientPhone || !pickupPhone) {
-      const error = "Express Relais: téléphone destinataire ou contact de ramassage invalide (mobile marocain requis).";
+      const error = "Express Relais: téléphone destinataire invalide (06/07), ou téléphone ramassage invalide (05/06/07).";
       return { success: false, error, carrierMessage: error, permanent: true, httpStatus: 422 };
     }
     const fullName = String(input.customerName || "").trim();
@@ -1210,6 +1213,11 @@ export async function shipOrderToCarrier(
     const firstName = nameParts[0] || "Client";
     const lastName = nameParts.slice(1).join(" ") || firstName;
     try {
+      console.info("[EXPRESS-RELAIS-SHIP] starting", {
+        accountId: (creds as any).id ?? null,
+        storeId: input.storeId,
+        hasPickupSettings: true,
+      });
       const client = new ExpressRelaisClient({ login, password, environment: "prod" });
       const result: any = await client.createOrder({
         idParcelClient: String(input.orderNumber || input.orderId).slice(0, 50),
@@ -1233,6 +1241,12 @@ export async function shipOrderToCarrier(
       const codeApi = result?.codeApi ?? result?.data?.codeApi;
       const message = String(result?.message || result?.data?.message || "");
       const normalizedCode = codeApi == null ? "" : String(codeApi).trim();
+      console.info("[EXPRESS-RELAIS-SHIP] response", {
+        accountId: (creds as any).id ?? null,
+        codeApi: normalizedCode || null,
+        hasTracking: !!(result?.trackingNumber || result?.tracking || result?.idParcelExpress || result?.data?.trackingNumber || result?.data?.idParcelExpress),
+        message: message.slice(0, 120),
+      });
       const acknowledged = normalizedCode === "0" || normalizedCode === "200" ||
         result?.success === true || result?.ok === true;
       const explicitError = result?.success === false || result?.ok === false ||
