@@ -3422,7 +3422,7 @@ export default function Orders() {
             // Always verify the parcel reference on the carrier portal first.
             const requiresManualCheck = failures.filter(r =>
               /expressrelais/i.test(shipProgress.provider || '') &&
-              /codeApi\\s*[:=]\\s*999|une erreur interne est survenue/i.test(r.error || '')
+              /codeApi\s*[:=]\s*999|une erreur interne est survenue/i.test(r.error || '')
             );
             const transient          = failures.filter(r =>
               !requiresManualCheck.includes(r) &&
@@ -3569,7 +3569,7 @@ export default function Orders() {
           {(() => {
             const retryable = (shipProgress?.results || []).filter(r =>
               r.status === 'failed' &&
-              !(/expressrelais/i.test(shipProgress?.provider || '') && /codeApi\\s*[:=]\\s*999|une erreur interne est survenue/i.test(r.error || '')) &&
+              !(/expressrelais/i.test(shipProgress?.provider || '') && /codeApi\s*[:=]\s*999|une erreur interne est survenue/i.test(r.error || '')) &&
               !/double|existe déjà|already exists/i.test(r.error || '') &&
               !/blacklist|liste noire/i.test(r.error || '') &&
               !/adresse|ville/i.test(r.error || '') &&
