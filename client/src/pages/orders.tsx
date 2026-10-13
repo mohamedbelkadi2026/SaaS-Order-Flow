@@ -1294,11 +1294,13 @@ export default function Orders() {
         const expectedTotal = shipProgress.total;
         const reportedDone = typeof d.done === "number" ? d.done : shipProgress.done;
         const resultCount = Array.isArray(d.results) ? d.results.length : 0;
-        const outcomeCount = (typeof d.shipped === "number" ? d.shipped : shipProgress.shipped) +
-          (typeof d.failed === "number" ? d.failed : shipProgress.failed);
+        // Do not complete/close SSE on an intermediate 1/1 counter event.
+        // The server broadcasts counters before flushing DB writes, then
+        // broadcasts complete=true with per-order errors. Closing early
+        // silently loses why Express Relais (and other carriers) rejected it.
         const finished = d.complete === true ||
           (expectedTotal > 0 && reportedDone >= expectedTotal &&
-            (resultCount >= expectedTotal || outcomeCount >= expectedTotal));
+            Array.isArray(d.results) && resultCount >= expectedTotal);
         setShipProgress(prev => prev ? {
           ...prev,
           done:    d.done    ?? prev.done,
