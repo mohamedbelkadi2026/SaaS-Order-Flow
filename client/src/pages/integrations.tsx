@@ -1630,6 +1630,7 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
   const [selectedRemotes, setSelectedRemotes] = useState<Record<number,string>>({});
   const [storeLoading, setStoreLoading] = useState<number | null>(null);
   const [storeSaving, setStoreSaving] = useState<number | null>(null);
+  const [storeErrors, setStoreErrors] = useState<Record<number,string>>({});
 
   const { data, isLoading, refetch } = useQuery<{
     configured: boolean;
@@ -1656,6 +1657,7 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
     void refetch();
   }, [refetch, toast]);
   const loadLightfunnelsStores = async (id: number) => {
+    setStoreErrors(previous => ({...previous, [id]: ""}));
     setStoreLoading(id);
     try {
       const response = await fetch("/api/lightfunnels/stores/" + id, {
@@ -1680,7 +1682,12 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
       if (!response.ok) throw new Error(data.message || `Impossible de charger les boutiques (HTTP ${response.status})`);
       if (!Array.isArray(data.stores)) throw new Error("Réponse des boutiques Lightfunnels invalide.");
       setRemoteStores(previous => ({...previous,[id]:data.stores}));
+      setSelectedRemotes(previous => data.stores.some((store: {id:string}) => store.id === previous[id]) ? previous : {...previous, [id]: ""});
+      if (data.stores.length === 0) {
+        setStoreErrors(previous => ({...previous, [id]: "Aucune boutique Lightfunnels trouvée pour ce compte. Vérifiez le compte autorisé ou reconnectez-vous avec les permissions nécessaires."}));
+      }
     } catch(err:any) {
+      setStoreErrors(previous => ({...previous, [id]: err.message || "Impossible de charger les boutiques."}));
       toast({title:"Lightfunnels",description:err.message,variant:"destructive"});
     } finally {setStoreLoading(null);}
   };
@@ -1774,7 +1781,10 @@ function LightfunnelsTab({ stores }: { stores: any[] }) {
                 <Button variant="outline" size="sm" disabled={storeLoading === connection.id} onClick={() => loadLightfunnelsStores(connection.id)}>
                   {storeLoading === connection.id ? "Chargement..." : "Afficher les boutiques Lightfunnels"}
                 </Button>
-                {remoteStores[connection.id] && (
+                {storeErrors[connection.id] && (
+                  <p role="alert" className="text-xs text-destructive">{storeErrors[connection.id]}</p>
+                )}
+                {remoteStores[connection.id] && remoteStores[connection.id].length > 0 && (
                   <>
                     <Select value={selectedRemotes[connection.id] || ""} onValueChange={value => setSelectedRemotes(p => ({...p,[connection.id]:value}))}>
                       <SelectTrigger><SelectValue placeholder="Sélectionner une boutique précise" /></SelectTrigger>
