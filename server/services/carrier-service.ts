@@ -1277,7 +1277,7 @@ export async function shipOrderToCarrier(
       // the parcel despite returning an error. Require checking the carrier
       // dashboard by idParcelClient first to prevent duplicate COD shipments.
       const detail = String(err?.message || "échec de création du colis");
-      const isCarrierInternal999 = /(?:codeApi["'\\s:]*999|["']?codeApi["']?\\s*:\\s*999|une erreur interne est survenue)/i.test(detail);
+      const isCarrierInternal999 = /(?:codeApi["'\s:]*999|["']?codeApi["']?\s*:\s*999|une erreur interne est survenue)/i.test(detail);
       const reference = String(input.orderNumber || input.orderId);
       const error = isCarrierInternal999
         ? `Express Relais (codeApi 999): erreur interne signalée par le transporteur pour la commande #${reference}. Vérifiez d'abord si elle existe sur le portail Express Relais (idParcelClient=${reference}), puis contactez leur support si nécessaire. Ne relancez pas l'expédition avant vérification pour éviter un doublon.`
