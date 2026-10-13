@@ -1272,9 +1272,27 @@ export async function shipOrderToCarrier(
         rawResponse: { codeApi: codeApi ?? null },
       };
     } catch (err: any) {
-      const error = `Express Relais: ${err?.message || "échec de création du colis"}`;
-      console.warn("[EXPRESS-RELAIS-SHIP] request failed", { status: err?.status || null });
-      return { success: false, error, carrierMessage: error, httpStatus: Number(err?.status) || 502 };
+      // The carrier sometimes answers HTTP 400 + codeApi 999 ("internal error").
+      // Do not suggest automatic retries: an upstream failure may have created
+      // the parcel despite returning an error. Require checking the carrier
+      // dashboard by idParcelClient first to prevent duplicate COD shipments.
+      const detail = String(err?.message || "échec de création du colis");
+      const isCarrierInternal999 = /(?:codeApi["'\\s:]*999|["']?codeApi["']?\\s*:\\s*999|une erreur interne est survenue)/i.test(detail);
+      const reference = String(input.orderNumber || input.orderId);
+      const error = isCarrierInternal999
+        ? `Express Relais (codeApi 999): erreur interne signalée par le transporteur pour la commande #${reference}. Vérifiez d'abord si elle existe sur le portail Express Relais (idParcelClient=${reference}), puis contactez leur support si nécessaire. Ne relancez pas l'expédition avant vérification pour éviter un doublon.`
+        : `Express Relais: ${detail}`;
+      console.warn("[EXPRESS-RELAIS-SHIP] request failed", {
+        httpStatus: Number(err?.status) || null,
+        codeApi: isCarrierInternal999 ? "999" : null,
+        orderRef: reference,
+        requiresManualVerification: isCarrierInternal999,
+      });
+      return {
+        success: false, error, carrierMessage: error,
+        httpStatus: Number(err?.status) || 502,
+        permanent: isCarrierInternal999,
+      };
     }
   }
 
