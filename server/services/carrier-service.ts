@@ -1279,6 +1279,42 @@ export async function shipOrderToCarrier(
       const detail = String(err?.message || "échec de création du colis");
       const isCarrierInternal999 = /(?:codeApi["'\s:]*999|["']?codeApi["']?\s*:\s*999|une erreur interne est survenue)/i.test(detail);
       const reference = String(input.orderNumber || input.orderId);
+      if (isCarrierInternal999) {
+        // A 999/HTTP 400 may occur AFTER Express Relais persisted the parcel.
+        // Only perform a read-only lookup; never issue a second create request.
+        try {
+          const client = new ExpressRelaisClient({ login, password, environment: "prod" });
+          const check: any = await client.getStatus(reference);
+          // Different API versions wrap their rows differently. Require an
+          // exact idParcelClient match AND a carrier-generated order/status,
+          // not just an echoed input or a generic success code.
+          const rows: any[] = Array.isArray(check) ? check :
+            Array.isArray(check?.data) ? check.data :
+            Array.isArray(check?.data?.records) ? check.data.records :
+            Array.isArray(check?.result) ? check.result :
+            Array.isArray(check?.parcels) ? check.parcels :
+            [check?.data, check?.result, check].filter(Boolean);
+          const confirmed = rows.find(row => row && typeof row === "object" &&
+            String(row.idParcelClient || "") === reference &&
+            !!(row.idOrder || row.numExpedition || row.status || row.dateOrder));
+          if (confirmed) {
+            const tracking = String(confirmed.numExpedition || confirmed.idParcelClient || reference);
+            console.warn("[EXPRESS-RELAIS-SHIP] recovered accepted shipment via read-only status lookup", {
+              accountId: (creds as any).id ?? null, orderRef: reference,
+            });
+            return { success: true, trackingNumber: tracking,
+              rawResponse: { recoveredFromStatus: true, idParcelClient: reference } };
+          }
+          console.warn("[EXPRESS-RELAIS-SHIP] codeApi 999: status lookup found no confirmed matching shipment", {
+            accountId: (creds as any).id ?? null, orderRef: reference,
+          });
+        } catch (checkError: any) {
+          console.warn("[EXPRESS-RELAIS-SHIP] codeApi 999: read-only status lookup unavailable", {
+            accountId: (creds as any).id ?? null, orderRef: reference,
+            status: Number(checkError?.status) || null,
+          });
+        }
+      }
       const error = isCarrierInternal999
         ? `Express Relais (codeApi 999): erreur interne signalée par le transporteur pour la commande #${reference}. Vérifiez d'abord si elle existe sur le portail Express Relais (idParcelClient=${reference}), puis contactez leur support si nécessaire. Ne relancez pas l'expédition avant vérification pour éviter un doublon.`
         : `Express Relais: ${detail}`;
