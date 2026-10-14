@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Loader2, X, Trash2, Plus, Phone, MessageCircle, RotateCcw, CheckCircle, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { CityCombobox } from "@/components/city-combobox";
 import { MOROCCAN_CITIES, getDefaultCitiesForCarrier, findBestCityMatch } from "@/lib/carrier-cities";
@@ -296,6 +296,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [newItemCounter, setNewItemCounter] = useState(0);
   const [manualPriceOverride, setManualPriceOverride] = useState(false);
   const [attachTrackNum, setAttachTrackNum] = useState("");
+  const [selectedCityCarrier, setSelectedCityCarrier] = useState<string>("");
   const [attachCarrier, setAttachCarrier]   = useState<string>(""); // explicit override when store has multiple carriers
   // Track the last order ID so we only reset the manual override when a
   // different order is opened — NOT when the same order's data refreshes
@@ -344,8 +345,32 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         ? activeCarrierAccounts.find((account: any) => account.isDefault === 1 || account.isDefault === true)
         : null
     : null;
+  const multiCarrierAccounts = !orderCarrier && activeCarrierAccounts.length > 1
+    ? Array.from(new Map(activeCarrierAccounts
+        .map((account: any) => [canonicalCarrierName(account.carrierName), account] as const)
+        .filter(([name]) => !!name)).values())
+    : [];
+  const multiCarrierQueries = useQueries({
+    queries: multiCarrierAccounts.map((account: any) => ({
+      queryKey: ["/api/carriers/cities", canonicalCarrierName(account.carrierName), "multi-carrier-options"],
+      queryFn: async () => {
+        const response = await fetch(`/api/carriers/cities?provider=${encodeURIComponent(canonicalCarrierName(account.carrierName) || "")}`, {credentials:"include"});
+        if (!response.ok) throw new Error("Carrier cities unavailable");
+        return response.json() as Promise<{cities:string[];isCarrierSpecific:boolean}>;
+      },
+      staleTime: 3 * 60 * 1000,
+    })),
+  });
+  const multiCarrierCityOptions = multiCarrierAccounts.flatMap((account: any, index) => {
+    const carrier = canonicalCarrierName(account.carrierName);
+    const result = multiCarrierQueries[index];
+    if (!carrier || !result?.data?.cities?.length) return [];
+    return result.data.cities.map((city:string) => ({city,carrier,logo:getCarrierLogo(carrier)}));
+  });
   const effectiveOrderCarrier = orderCarrier
-    ?? canonicalCarrierName(defaultCarrierAccount?.carrierName);
+    ?? (multiCarrierAccounts.some((account:any) => canonicalCarrierName(account.carrierName) === selectedCityCarrier)
+      ? selectedCityCarrier
+      : canonicalCarrierName(defaultCarrierAccount?.carrierName));
   const isWaselexCarrier = effectiveOrderCarrier === "waselex";
   const cityProvider = isWaselexCarrier ? "waselex" : effectiveOrderCarrier;
   const { data: carrierData, isLoading: citiesLoading } = useQuery<{
@@ -510,6 +535,8 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     setLocalItems(mappedItems);
   }, [order]);
 
+  useEffect(() => { setSelectedCityCarrier(""); }, [order?.id]);
+
   // ── Save mutation ──
   const saveOrder = useMutation({
     mutationFn: async () => {
@@ -540,7 +567,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         customerPhone: fields.customerPhone,
         customerAddress: fields.customerAddress,
         customerCity: fields.customerCity,
-        ...(defaultCarrierAccount && !orderCarrier ? {
+        ...(!orderCarrier && effectiveOrderCarrier && (defaultCarrierAccount || selectedCityCarrier) ? {
           shippingProvider: effectiveOrderCarrier,
           carrierName: effectiveOrderCarrier,
         } : {}),
@@ -874,6 +901,8 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   value={fields.customerCity || ""}
                   onChange={v => set("customerCity", v)}
                   cities={carrierCities}
+                   carrierOptions={multiCarrierCityOptions.length > 0 ? multiCarrierCityOptions : undefined}
+                   onCarrierCitySelect={(_city, carrier) => { if (!orderCarrier) setSelectedCityCarrier(carrier); }}
                   isCarrierSpecific={isCarrierSpecific}
                   carrierLogo={getCarrierLogo(carrierData?.provider ?? effectiveOrderCarrier)}
                   isLoading={citiesLoading}
