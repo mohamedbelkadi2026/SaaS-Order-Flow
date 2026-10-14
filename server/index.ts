@@ -244,8 +244,9 @@ const heavyReadLimits = {
 };
 app.use((req, res, next) => {
   if (req.method !== "GET") return next();
-  const group = /^\\/api\\/stats\\/filtered\\/?$/.test(req.path) ? heavyReadLimits.stats
-    : /^\\/api\\/orders(?:\\/filtered)?\\/?$/.test(req.path) ? heavyReadLimits.orders
+  const path = req.path.replace(/\/$/, "");
+  const group = path === "/api/stats/filtered" ? heavyReadLimits.stats
+    : (path === "/api/orders" || path === "/api/orders/filtered") ? heavyReadLimits.orders
     : null;
   if (!group) return next();
 
