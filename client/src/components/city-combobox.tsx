@@ -15,6 +15,8 @@ interface CityComboboxProps {
   placeholder?: string;
   className?: string;
   "data-testid"?: string;
+  carrierOptions?: Array<{city:string;carrier:string;logo?:string|null}>;
+  onCarrierCitySelect?: (city:string,carrier:string) => void;
 }
 
 /**
@@ -35,6 +37,8 @@ export function CityCombobox({
   placeholder = "Sélectionner une ville...",
   className,
   "data-testid": testId,
+  carrierOptions,
+  onCarrierCitySelect,
 }: CityComboboxProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -47,6 +51,13 @@ export function CityCombobox({
       s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
     return !cities.some(c => norm(c) === norm(value));
   }, [value, cities, isCarrierSpecific]);
+
+  const filteredCarrierOptions = useMemo(() => {
+    if (!carrierOptions?.length) return null;
+    const norm = (v:string) => v.toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "");
+    const q = norm(search.trim());
+    return carrierOptions.filter(o => !q || norm(o.city).includes(q) || norm(o.carrier).includes(q));
+  }, [carrierOptions, search]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return cities;
@@ -85,7 +96,11 @@ export function CityCombobox({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") { setOpen(false); setSearch(""); }
-    if (e.key === "Enter" && filtered.length === 1) handleSelect(filtered[0]);
+    if (e.key === "Enter" && filteredCarrierOptions?.length === 1) {
+      const option = filteredCarrierOptions[0];
+      onCarrierCitySelect?.(option.city, option.carrier);
+      handleSelect(option.city);
+    } else if (e.key === "Enter" && !filteredCarrierOptions && filtered.length === 1) handleSelect(filtered[0]);
     if (e.key === "ArrowDown" && !open) setOpen(true);
   };
 
@@ -150,12 +165,20 @@ export function CityCombobox({
           style={{ maxHeight: 240 }}
         >
           <div className="overflow-y-auto" style={{ maxHeight: 240 }}>
-            {filtered.length === 0 ? (
+            {(filteredCarrierOptions ? filteredCarrierOptions.length === 0 : filtered.length === 0) ? (
               <div className="px-3 py-2 text-sm text-muted-foreground text-center">
                 Aucune ville trouvée
               </div>
             ) : (
-              filtered.map(city => {
+              filteredCarrierOptions ? filteredCarrierOptions.map((option, index) => (
+                <button key={`${option.carrier}-${option.city}-${index}`} type="button"
+                  onClick={() => { onCarrierCitySelect?.(option.city, option.carrier); handleSelect(option.city); }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-accent hover:text-accent-foreground">
+                  {option.logo && <img src={option.logo} alt="" className="object-contain shrink-0" style={{height:14,width:30}} />}
+                  <span className="flex-1">{option.city}</span>
+                  <span className="text-xs text-muted-foreground shrink-0">{option.carrier}</span>
+                </button>
+              )) : filtered.map(city => {
                 const cityPrice = priceMap?.[city] ?? null;
                 return (
                 <button
