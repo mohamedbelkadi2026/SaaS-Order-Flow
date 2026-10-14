@@ -54,7 +54,7 @@ export function CityCombobox({
 
   const filteredCarrierOptions = useMemo(() => {
     if (!carrierOptions?.length) return null;
-    const norm = (v:string) => v.toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "");
+    const norm = (v:string) => v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const q = norm(search.trim());
     return carrierOptions.filter(o => !q || norm(o.city).includes(q) || norm(o.carrier).includes(q));
   }, [carrierOptions, search]);
