@@ -893,6 +893,97 @@ app.use((req, res, next) => {
     intervals.push(autoDigylogSync);
   }
 
+  // ── Express Relais AIO: poll parcel statuses (no shipping side effects) ──
+  async function runExpressRelaisSync(label: string) {
+    try {
+      const { db: dbInst } = await import("./db");
+      const { carrierAccounts, orders: orderTable } = await import("@shared/schema");
+      const { eq, and, sql, desc } = await import("drizzle-orm");
+      const { ExpressRelaisClient } = await import("./integrations/express-relais");
+      const { storage: st } = await import("./storage");
+      const { broadcastToStore } = await import("./sse");
+      const accounts = await dbInst.select().from(carrierAccounts).where(
+        sql`LOWER(REGEXP_REPLACE(${carrierAccounts.carrierName}, '[^a-zA-Z]', '', 'g')) = 'expressrelais'`
+      );
+      for (const account of accounts) {
+        if (account.isActive === 0 || !account.apiKey || !account.apiSecret) continue;
+        const storeId = account.storeId;
+        // Only this transporter's parcels, scoped to the owning merchant.
+        // Terminal deliveries are left untouched; returns/refusals are still
+        // polled while they await final confirmation.
+        const parcels = await dbInst.select({
+          id: orderTable.id, orderNumber: orderTable.orderNumber,
+          trackNumber: orderTable.trackNumber, status: orderTable.status,
+          commentStatus: orderTable.commentStatus,
+        }).from(orderTable).where(and(
+          eq(orderTable.storeId, storeId),
+          sql`LOWER(REGEXP_REPLACE(COALESCE(${orderTable.shippingProvider}, ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
+          sql`COALESCE(${orderTable.trackNumber}, '') <> ''`,
+          sql`LOWER(COALESCE(${orderTable.status}, '')) NOT IN ('delivered','livré','livrée','retour recu','retour reçu','returned','retourné','retournée')`
+        )).orderBy(desc(orderTable.createdAt)).limit(150);
+        if (!parcels.length) continue;
+        const client = new ExpressRelaisClient({ login: account.apiKey, password: account.apiSecret, environment: "prod" });
+        let updated = 0;
+        for (const parcel of parcels) {
+          try {
+            // createAioOrder used idParcelClient=orderNumber, not trackNumber.
+            const response: any = await client.getStatus(String(parcel.orderNumber));
+            const code = response?.codeApi ?? response?.data?.codeApi;
+            if (code != null && !['0','200','5000'].includes(String(code))) {
+              console.warn("[EXPRESS-RELAIS-SYNC] API code", { storeId, orderId: parcel.id, code: String(code) });
+              continue;
+            }
+            const payload = response?.data?.parcel ?? response?.data?.colis ?? response?.data ?? response?.parcel ?? response;
+            const record = Array.isArray(payload) ? payload.find((item:any) =>
+              String(item?.idParcelClient ?? item?.reference ?? "") === String(parcel.orderNumber)
+            ) : payload;
+            if (!record || typeof record !== "object") continue;
+            const raw = [record.statusParcel, record.statutColis, record.deliveryStatus, record.status, record.statut, record.etat]
+              .find((value:unknown) => typeof value === "string" && value.trim()) as string | undefined;
+            if (!raw) continue;
+            const normalized = raw.toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").trim();
+            const nextStatus =
+              /retour (recu|receptionne)|returned|retourne/.test(normalized) ? "retourné" :
+              /retour (ready|pret|en cours)|return (ready|pending)/.test(normalized) ? "RETOUR READY" :
+              /livre|delivered|distribue au client/.test(normalized) ? "delivered" :
+              /refuse|refused/.test(normalized) ? "refused" :
+              /annule par client|cancelled by customer/.test(normalized) ? "Annulé par client" :
+              /annule|cancelled/.test(normalized) ? "Annulé" :
+              /en cours de livraison|mise? en distribution|out for delivery/.test(normalized) ? "Mis en distribution" :
+              /ramasse|picked up|pris en charge/.test(normalized) ? "Ramassé" :
+              /attente ramassage|pending pickup/.test(normalized) ? "Attente De Ramassage" : null;
+            // An unknown code/label must never modify the business status.
+            if (!nextStatus) {
+              console.info("[EXPRESS-RELAIS-SYNC] unmapped status", {storeId, orderId:parcel.id, raw:raw.slice(0,100)});
+              continue;
+            }
+            if (nextStatus === parcel.status && raw === parcel.commentStatus) continue;
+            if (nextStatus !== parcel.status) await st.updateOrderStatus(parcel.id, nextStatus);
+            if (raw !== parcel.commentStatus) await st.updateOrder(parcel.id, {commentStatus: raw});
+            await st.createOrderFollowUpLog({
+              orderId: parcel.id, agentId: null, agentName: "Express Relais Auto-Sync",
+              note: `📦 Express Relais: ${raw} → ${nextStatus}`,
+            });
+            broadcastToStore(storeId, "order_updated", {orderId:parcel.id, status:nextStatus, commentStatus:raw});
+            updated++;
+          } catch (error:any) {
+            console.warn("[EXPRESS-RELAIS-SYNC] tracking error", {storeId, orderId:parcel.id, error:String(error?.message || error).slice(0,140)});
+            if (/401|403|WAF_BLOCKED/.test(String(error?.message || ""))) break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        console.info("[EXPRESS-RELAIS-SYNC]", {label, storeId, checked:parcels.length, updated});
+      }
+    } catch (error:any) {
+      console.error("[EXPRESS-RELAIS-SYNC] failed", error?.message);
+    }
+  }
+  if (runScheduledCarrierSync) {
+    setTimeout(() => void runCarrierPollOnce("expressrelais", () => runExpressRelaisSync("initial")), 6 * 60 * 1000);
+    const expressRelaisTimer = setInterval(() => void runCarrierPollOnce("expressrelais", () => runExpressRelaisSync("interval")), 15 * 60 * 1000);
+    intervals.push(expressRelaisTimer);
+  }
+
   // ── Auto Vitipsexpress status sync ─────────────────────────────────────────
   async function runVitipsSync(label: string) {
     try {
