@@ -232,6 +232,65 @@ app.use("/api/stats",              heavyLimiter);
 app.use("/api/agents/performance", heavyLimiter);
 app.use("/api/exports",            heavyLimiter);
 
+// ── Bounded concurrency for expensive read-only endpoints ───────────────────
+// The DB pool is shared with authentication, webhooks and order writes.
+// Do not allow an unbounded stampede of long-running dashboard reads to exhaust
+// all ten connections. Preserve existing route handlers and their results.
+// This gate runs before authentication and the route handlers, but is restricted
+// to GET requests: order updates, shipping and webhook writes are untouched.
+const heavyReadLimits = {
+  stats: {active: 0, max: Math.max(1, Math.min(4, Number(process.env.STATS_READ_CONCURRENCY) || 2)), waiting: [] as Array<() => void>},
+  orders: {active: 0, max: Math.max(1, Math.min(6, Number(process.env.ORDERS_READ_CONCURRENCY) || 4)), waiting: [] as Array<() => void>},
+};
+app.use((req, res, next) => {
+  if (req.method !== "GET") return next();
+  const group = /^\\/api\\/stats\\/filtered\\/?$/.test(req.path) ? heavyReadLimits.stats
+    : /^\\/api\\/orders(?:\\/filtered)?\\/?$/.test(req.path) ? heavyReadLimits.orders
+    : null;
+  if (!group) return next();
+
+  let started = false;
+  let released = false;
+  let queueTimeout: NodeJS.Timeout | undefined;
+  const release = () => {
+    if (released) return;
+    released = true;
+    if (queueTimeout) clearTimeout(queueTimeout);
+    if (!started) {
+      const position = group.waiting.indexOf(start);
+      if (position !== -1) group.waiting.splice(position, 1);
+      return;
+    }
+    group.active = Math.max(0, group.active - 1);
+    const nextRequest = group.waiting.shift();
+    if (nextRequest) nextRequest();
+  };
+  const start = () => {
+    if (released || res.destroyed || res.writableEnded) return;
+    if (queueTimeout) clearTimeout(queueTimeout);
+    started = true;
+    group.active++;
+    next();
+  };
+
+  res.once("finish", release);
+  res.once("close", release);
+  if (group.active < group.max && group.waiting.length === 0) return start();
+  if (group.waiting.length >= 40) {
+    res.setHeader("Retry-After", "3");
+    return res.status(503).json({message:"Serveur occupé, réessayez dans quelques secondes."});
+  }
+  group.waiting.push(start);
+  queueTimeout = setTimeout(() => {
+    if (started || released) return;
+    release();
+    if (!res.headersSent && !res.destroyed) {
+      res.setHeader("Retry-After", "3");
+      res.status(503).json({message:"Serveur occupé, réessayez dans quelques secondes."});
+    }
+  }, 12000);
+});
+
 // ── Webhook raw-body capture (MUST come before express.json / express.urlencoded) ──
 // express.urlencoded() only parses when Content-Type is exactly
 // application/x-www-form-urlencoded. Some carriers (Ameex, etc.) send with a
