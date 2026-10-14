@@ -941,7 +941,7 @@ app.use((req, res, next) => {
             const raw = [record.statusParcel, record.statutColis, record.deliveryStatus, record.status, record.statut, record.etat]
               .find((value:unknown) => typeof value === "string" && value.trim()) as string | undefined;
             if (!raw) continue;
-            const normalized = raw.toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").trim();
+            const normalized = raw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
             const nextStatus =
               /retour (recu|receptionne)|returned|retourne/.test(normalized) ? "retourné" :
               /retour (ready|pret|en cours)|return (ready|pending)/.test(normalized) ? "RETOUR READY" :
