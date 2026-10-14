@@ -4829,16 +4829,21 @@ export async function trackNearyaParcel(
       }
     }
 
-    // Nearya's return screen can expose the return phase separately from the
-    // generic parcel state: the UI shows "RETOUR" + "READY" while the status
-    // candidate alone is just "READY". Preserve the carrier-visible combined
-    // label so Orders shows "RETOUR READY" and the parcel is no longer mistaken
-    // for a normal READY shipment.
-    if (rawStatus && /^ready$/i.test(rawStatus.trim())) {
-      const bodyText = JSON.stringify(res.data ?? null)
-        .toLowerCase()
-        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      if (/retour|return/.test(bodyText)) rawStatus = 'RETOUR READY';
+    // Nearya may expose the return workflow as separate "RETOUR" and "READY"
+    // fields, including "RETOUR READY (REMPLACÉ)". An old cancellation can
+    // otherwise win when only the older event has a date. Detect the *paired*
+    // return-ready labels, not merely any occurrence of "retour" in history.
+    // Never infer a delivery or a return from a billing/invoice label.
+    const normalizedBody = JSON.stringify(res.data ?? null)
+      .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const hasReturnReady = /(?:retour|return)[^a-z0-9]{0,100}ready|ready[^a-z0-9]{0,100}(?:retour|return)/i.test(normalizedBody)
+      || /(?:retour|return)\\s*ready/i.test(normalizedBody);
+    if (hasReturnReady && rawStatus && !/(livre|delivered)/i.test(
+      rawStatus.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    )) {
+      rawStatus = /remplac/i.test(normalizedBody) ? 'RETOUR READY (REMPLACÉ)' : 'RETOUR READY';
+    } else if (rawStatus && /^ready$/i.test(rawStatus.trim()) && /retour|return/.test(normalizedBody)) {
+      rawStatus = 'RETOUR READY';
     }
 
     if (!rawStatus) {
