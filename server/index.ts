@@ -1205,9 +1205,12 @@ app.use((req, res, next) => {
           console.log(`[NEARYA-AUTO-SYNC][${label}] store=${storeId}: restored ${nearyaPrefacture.length} préfacture order(s) to delivered`);
         }
 
+        // Recently delivered parcels must still be monitored: Nearya can
+        // subsequently change LIVRÉ to RETOUR READY (REMPLACÉ). Storage limits
+        // delivered rows to a rolling 45-day window to avoid unbounded polling.
         const toSync = allOrders.filter((o: any) =>
           o.trackNumber &&
-          !['delivered', 'Retour Recu'].includes(o.status || '') &&
+          !['Retour Recu', 'Retour Reçu'].includes(o.status || '') &&
           !String(o.status || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes('prefacture')
         );
         if (!toSync.length) continue;
@@ -1247,6 +1250,21 @@ app.use((req, res, next) => {
                   orderId: order.id, status: r.status || order.status, commentStatus: r.label,
                 });
               } catch {}
+            }
+            // A prior LIVRÉ must never be reversed by a stale pickup/refusal
+            // or a billing state. Only a carrier-confirmed return stage is a
+            // permitted post-delivery transition.
+            const previous = String(order.status || '').toLowerCase()
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const incoming = String(r.status || '').toLowerCase()
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const wasDelivered = /^(delivered|livre|livree|livraison effectuee|remis au client|livre au client)/.test(previous);
+            const isReturn = /retour|return|returned|retourne/.test(incoming);
+            if (wasDelivered && !isReturn) {
+              if (r.status && r.status !== order.status) {
+                console.warn(`[NEARYA-AUTO-SYNC] preserved delivered order=${order.id} (carrier label=${r.label})`);
+              }
+              continue;
             }
             // r.status is only the safe internal bucket. The raw carrier label
             // above remains visible for every Nearya delivery status.
