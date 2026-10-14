@@ -1402,10 +1402,19 @@ export default function Inventory() {
   const handleDelete = async (product: any) => {
     setDeleteDialogLoading(true);
     try {
-      const usage = await apiRequest("GET", `/api/products/${product.id}/usage`);
+      const response = await apiRequest("GET", `/api/products/${product.id}/usage`);
+      const usage = await response.json();
+      if (typeof usage?.ordersCount !== "number" || !Number.isFinite(usage.ordersCount)) {
+        throw new Error("Réponse d'utilisation du produit invalide");
+      }
       setDeleteDialog({ product, usage });
-    } catch {
-      setDeleteDialog({ product, usage: { ordersCount: 0, deliveredCount: 0, inStockOrders: 0, totalRevenue: 0 } });
+    } catch (err: any) {
+      // Never assume zero linked orders when the usage check fails.
+      toast({
+        title: "Vérification impossible",
+        description: err?.message || "Impossible de vérifier les commandes liées à ce produit. Réessayez.",
+        variant: "destructive",
+      });
     } finally {
       setDeleteDialogLoading(false);
     }
