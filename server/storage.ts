@@ -800,7 +800,13 @@ export class DatabaseStorage implements IStorage {
         // Keep polling refused and return parcels until the return is physically
         // confirmed; other carriers retain their existing terminal exclusions.
         provider.toLowerCase() === 'nearya'
-          ? sql`LOWER(TRIM(COALESCE(${orders.status}, ''))) NOT IN ('delivered', 'livré', 'livrée', 'livré *', 'livrée *', 'livraison effectuée', 'remis au client', 'livré au client', 'retour recu', 'retour reçu') AND ${orders.returnConfirmedAt} IS NULL`
+          ? sql`${orders.returnConfirmedAt} IS NULL AND (
+              LOWER(TRIM(COALESCE(${orders.status}, ''))) NOT IN ('retour recu', 'retour reçu')
+              AND (
+                LOWER(TRIM(COALESCE(${orders.status}, ''))) NOT IN ('delivered', 'livré', 'livrée', 'livré *', 'livrée *', 'livraison effectuée', 'remis au client', 'livré au client')
+                OR COALESCE(${orders.updatedAt}, ${orders.createdAt}) >= NOW() - INTERVAL '45 days'
+              )
+            )`
           : sql`LOWER(COALESCE(${orders.status}, '')) NOT IN ('delivered', 'livré', 'livrée', 'refused', 'refusé', 'retour recu', 'retour reçu', 'returned', 'retourné', 'retournée')`
       ))
       .orderBy(desc(orders.createdAt));
