@@ -60,6 +60,8 @@ export function registerExpressRelaisRoutes(app: Express) {
       }
       const norm = raw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
       const status =
+        /^(parcel_in_transport|parcel_in_final_agency|parcel_in_delivery)$/.test(norm)
+          ? (norm === "parcel_in_delivery" ? "Mis en distribution" : norm === "parcel_in_final_agency" ? "En agence finale" : "En transport") :
         /retour (recu|receptionne)|returned|retourne/.test(norm) ? "retourné" :
         /retour (ready|pret|en cours)|return (ready|pending)/.test(norm) ? "RETOUR READY" :
         /livre|delivered|distribue au client/.test(norm) ? "delivered" :
@@ -69,20 +71,24 @@ export function registerExpressRelaisRoutes(app: Express) {
         /en cours de livraison|mise? en distribution|out for delivery/.test(norm) ? "Mis en distribution" :
         /ramasse|picked up|pris en charge/.test(norm) ? "Ramassé" :
         /attente ramassage|pending pickup/.test(norm) ? "Attente De Ramassage" : null;
-      if (!status) {
-        console.info("[EXPRESS-RELAIS-WEBHOOK] Unmapped verified status",{storeId,orderId:order.id,raw:raw.slice(0,100)});
-        return res.status(202).json({received:true,verified:true,mapped:false});
-      }
-      if (status !== order.status) await storage.updateOrderStatus(order.id,status);
-      if (raw !== order.commentStatus) await storage.updateOrder(order.id,{commentStatus:raw});
-      if (status !== order.status || raw !== order.commentStatus) {
+      // Always keep the exact verified carrier label visible, including future
+      // Express Relais status codes not yet mapped to a business bucket.
+      // Do not manufacture a delivery/refusal/return for unknown codes.
+      const rawChanged = raw !== order.commentStatus;
+      const statusChanged = !!status && status !== order.status;
+      if (statusChanged) await storage.updateOrderStatus(order.id,status);
+      if (rawChanged) await storage.updateOrder(order.id,{commentStatus:raw});
+      if (statusChanged || rawChanged) {
         await storage.createOrderFollowUpLog({
           orderId:order.id,agentId:null,agentName:"Express Relais Webhook",
-          note:`📦 Express Relais: ${raw} → ${status}`,
+          note:`📦 Express Relais: ${raw}${status ? " → "+status : " (statut transporteur)"}`,
         });
-        broadcastToStore(storeId,"order_updated",{orderId:order.id,status,commentStatus:raw});
+        broadcastToStore(storeId,"order_updated",{
+          orderId:order.id,status:status || order.status,commentStatus:raw,
+        });
       }
-      return res.json({received:true,verified:true,updated:status !== order.status || raw !== order.commentStatus});
+      if (!status) console.info("[EXPRESS-RELAIS-WEBHOOK] Preserved unmapped verified status",{storeId,orderId:order.id,raw:raw.slice(0,100)});
+      return res.json({received:true,verified:true,updated:statusChanged || rawChanged,mapped:!!status});
     } catch (error:any) {
       console.error("[EXPRESS-RELAIS-WEBHOOK] Failed", {storeId,error:String(error?.message || error).slice(0,160)});
       return res.status(502).json({received:false,message:"Carrier verification temporarily unavailable"});
