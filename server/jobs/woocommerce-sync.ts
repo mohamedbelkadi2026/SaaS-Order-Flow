@@ -78,22 +78,22 @@ async function syncWooCommerceStore(integration: any) {
       const totalPrice = Math.round(parseFloat(wcOrder.total || '0') * 100);
 
       let productCost = 0;
-      const orderItemsToCreate: { productId: number; quantity: number; price: number; rawProductName: string }[] = [];
+      const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string }[] = [];
 
       for (const item of (wcOrder.line_items || [])) {
         const matchedProduct = storeProducts.find(
           p => (item.sku && p.sku === item.sku) || p.name === item.name
         );
-        if (matchedProduct) {
-          const qty = item.quantity || 1;
-          orderItemsToCreate.push({
-            productId: matchedProduct.id,
-            quantity: qty,
-            price: Math.round(parseFloat(item.price || '0') * 100),
-            rawProductName: item.name || matchedProduct.name,
-          });
-          productCost += matchedProduct.costPrice * qty;
-        }
+        // All WooCommerce line items belong in the order, even when the
+        // product does not yet exist in TajerGrow's local catalogue.
+        const qty = Math.max(1, Number(item.quantity) || 1);
+        orderItemsToCreate.push({
+          productId: matchedProduct?.id ?? null,
+          quantity: qty,
+          price: Math.round(Number(item.price || 0) * 100),
+          rawProductName: item.name || matchedProduct?.name || "Produit WooCommerce",
+        });
+        if (matchedProduct) productCost += matchedProduct.costPrice * qty;
       }
 
       // Order-level product name (the UI reads order.rawProductName first), built
@@ -157,6 +157,7 @@ async function syncWooCommerceStore(integration: any) {
         customerAddress,
         customerCity,
         rawProductName: wooProductName,
+        rawQuantity: orderItemsToCreate.reduce((sum, item) => sum + item.quantity, 0),
         status: 'nouveau',
         totalPrice,
         productCost,
