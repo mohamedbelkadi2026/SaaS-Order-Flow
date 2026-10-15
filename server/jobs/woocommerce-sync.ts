@@ -1,4 +1,7 @@
 import { storage } from "../storage";
+import { db } from "../db";
+import { orderItems } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 const WC_POLL_INTERVAL = 10 * 60 * 1000;
 
@@ -17,7 +20,9 @@ async function syncWooCommerceStore(integration: any) {
 
   let baseUrl = creds.storeUrl.replace(/\/$/, '');
   if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
-  const apiUrl = `${baseUrl}/wp-json/wc/v3/orders?status=processing,pending&per_page=50`;
+  // Fetch recently modified orders, including orders amended by post-checkout upsells.
+  // WooCommerce REST does not guarantee a comma-separated status filter.
+  const apiUrl = `${baseUrl}/wp-json/wc/v3/orders?per_page=100&orderby=modified&order=desc`;
 
   const authHeader = 'Basic ' + Buffer.from(`${creds.consumerKey}:${creds.consumerSecret}`).toString('base64');
 
@@ -53,14 +58,16 @@ async function syncWooCommerceStore(integration: any) {
     const storeProducts = await storage.getProductsByStore(storeId);
     let imported = 0;
     let skipped = 0;
+    let reconciled = 0;
 
     for (const wcOrder of wcOrders) {
       const orderNumber = String(wcOrder.number || wcOrder.id);
       const existing = await storage.getOrderByNumber(storeId, orderNumber);
-      if (existing) {
-        skipped++;
-        continue;
-      }
+      const wcStatus = String(wcOrder.status || "").toLowerCase();
+      // This sync imports new open orders; existing WooCommerce orders may
+      // still receive upsell/cross-sell products after their initial webhook.
+      if (!existing && !["processing", "pending", "on-hold"].includes(wcStatus)) continue;
+      if (existing && existing.source !== "woocommerce") { skipped++; continue; }
 
       const billing = wcOrder.billing || {};
       const shipping = wcOrder.shipping || {};
@@ -94,6 +101,54 @@ async function syncWooCommerceStore(integration: any) {
       const wooProductName = (wcOrder.line_items || [])
         .map((li: any) => li.name).filter(Boolean).join(', ') || null;
 
+      if (existing) {
+        // Protect orders already shipped/confirmed/processed in TajerGrow:
+        // only reconcile the original WooCommerce intake before fulfilment.
+        // Also preserve manually edited items rather than replacing them.
+        const editable = ["nouveau", "new"].includes(String(existing.status || "").toLowerCase());
+        if (!editable) { skipped++; continue; }
+        const actual = await db.select().from(orderItems).where(eq(orderItems.orderId, existing.id));
+        const desired = (wcOrder.line_items || []).map((li: any) => ({
+          name: String(li.name || "Produit"),
+          sku: String(li.sku || ""),
+          quantity: Math.max(1, Number(li.quantity) || 1),
+          price: Math.round(Number(li.price || 0) * 100),
+          productId: storeProducts.find(p => (li.sku && p.sku === li.sku) || p.name === li.name)?.id ?? null,
+        }));
+        // Count matching lines as a multiset; allows duplicate line items
+        // while only inserting those added by the cross-sell.
+        const available = [...actual];
+        const missing: typeof desired = [];
+        for (const item of desired) {
+          const matchIndex = available.findIndex(row =>
+            String(row.rawProductName || "") === item.name &&
+            Number(row.quantity) === item.quantity &&
+            Number(row.price) === item.price
+          );
+          if (matchIndex >= 0) available.splice(matchIndex, 1);
+          else missing.push(item);
+        }
+        // A Woo line was removed/edited, or an agent changed an item: do not
+        // silently overwrite or delete the existing TajerGrow lines.
+        if (available.length) { skipped++; continue; }
+        if (!missing.length) { skipped++; continue; }
+        for (const item of missing) {
+          await storage.addOrderItem({
+            orderId: existing.id, productId: item.productId,
+            rawProductName: item.name, sku: item.sku,
+            quantity: item.quantity, price: item.price,
+          });
+        }
+        await storage.updateOrder(existing.id, {
+          totalPrice,
+          rawProductName: wooProductName,
+          rawQuantity: desired.reduce((sum: number, item: any) => sum + item.quantity, 0),
+        } as any);
+        reconciled++;
+        console.log("[WOOCOMMERCE-CROSS-SELL]", {storeId, orderId:existing.id, addedItems:missing.length});
+        continue;
+      }
+
       await storage.createOrder({
         storeId,
         orderNumber,
@@ -117,7 +172,7 @@ async function syncWooCommerceStore(integration: any) {
     await storage.createIntegrationLog({
       storeId, integrationId: integration.id, provider: 'woocommerce',
       action: 'woocommerce_sync', status: 'success',
-      message: `Sync WooCommerce: ${imported} importées, ${skipped} ignorées (déjà existantes)`,
+      message: `Sync WooCommerce: ${imported} importées, ${reconciled} mises à jour (cross-sell), ${skipped} ignorées`,
     });
   } catch (err: any) {
     await storage.createIntegrationLog({
