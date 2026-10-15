@@ -58,7 +58,7 @@ export function registerExpressRelaisRoutes(app: Express) {
         console.info("[EXPRESS-RELAIS-WEBHOOK] Unknown response shape", {storeId,orderId:order.id,keys:Object.keys(verified).slice(0,15)});
         return res.status(202).json({received:true,verified:false});
       }
-      const norm = raw.toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").trim();
+      const norm = raw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
       const status =
         /retour (recu|receptionne)|returned|retourne/.test(norm) ? "retourné" :
         /retour (ready|pret|en cours)|return (ready|pending)/.test(norm) ? "RETOUR READY" :
