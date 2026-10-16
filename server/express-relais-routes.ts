@@ -77,6 +77,19 @@ export function registerExpressRelaisRoutes(app: Express) {
       const rawChanged = raw !== order.commentStatus;
       const statusChanged = !!status && status !== order.status;
       if (statusChanged) await storage.updateOrderStatus(order.id,status);
+      // Charge the agreed Express Relais tariff on confirmed deliveries only.
+      // Protect previously configured/manual positive shipping fees.
+      if (status === "delivered" && !(Number(order.shippingCost) > 0)) {
+        const { orders: orderTable } = await import("@shared/schema");
+        const { and, eq, sql } = await import("drizzle-orm");
+        const city = String(order.customerCity || "").toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g," ").trim();
+        const fee = /^(casablanca|casa|dar beida|dar el beida)$/.test(city) ? 1800 : 2800;
+        await db.update(orderTable).set({shippingCost:fee}).where(and(
+          eq(orderTable.id,order.id), sql`COALESCE(${orderTable.shippingCost},0) <= 0`
+        ));
+        broadcastToStore(storeId,"order_updated",{orderId:order.id,status,shippingCost:fee});
+      }
       if (rawChanged) await storage.updateOrder(order.id,{commentStatus:raw});
       if (statusChanged || rawChanged) {
         await storage.createOrderFollowUpLog({
