@@ -694,6 +694,38 @@ app.use((req, res, next) => {
   setupAuth(app);
   console.log("[Startup] Auth routes registered (/api/auth/login, /api/auth/signup, ...)");
 
+  // Magasin choices for manual order creation. This is deliberately a
+  // separate, read-only endpoint: do not broaden /api/magasins or the agent's
+  // access to existing orders and statistics.
+  app.get("/api/magasins/order-create", async (req, res) => {
+    if (!req.isAuthenticated?.() || !req.user?.storeId) {
+      return res.status(401).json({message:"Connexion requise"});
+    }
+    try {
+      const { db: dbInst } = await import("./db");
+      const { stores: storeTable } = await import("@shared/schema");
+      const { eq: equal, or: either } = await import("drizzle-orm");
+      const main = await dbInst.select({
+        id:storeTable.id, name:storeTable.name, ownerId:storeTable.ownerId,
+      }).from(storeTable).where(equal(storeTable.id, req.user.storeId)).limit(1);
+      if (!main.length) return res.status(404).json({message:"Compte magasin introuvable"});
+      const ownerId = main[0].ownerId || (req.user.role === "owner" ? req.user.id : null);
+      if (!ownerId) {
+        return res.json([{id:main[0].id,name:main[0].name}]);
+      }
+      const accessible = await dbInst.select({
+        id:storeTable.id,name:storeTable.name,
+      }).from(storeTable).where(either(
+        equal(storeTable.ownerId,ownerId),
+        equal(storeTable.id,main[0].id),
+      ));
+      return res.json(accessible.sort((a,b) => a.name.localeCompare(b.name)));
+    } catch (error:any) {
+      console.error("[ORDER-CREATE-MAGASINS]",error?.message);
+      return res.status(500).json({message:"Impossible de charger les boutiques"});
+    }
+  });
+
   // 1b. Manual call-history routes (authenticated via the session above)
   registerCallLogRoutes(app);
   registerAiLandingPageRoutes(app);
