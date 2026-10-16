@@ -842,6 +842,61 @@ app.use((req, res, next) => {
     finally { activeCarrierPolls.delete(name); }
   }
 
+  // Ameex: fill missing fees on already delivered orders and future deliveries.
+  // This is an idempotent, bounded DB-only backfill; never changes a non-zero
+  // fee, shipping provider, order status or another carrier's orders.
+  // Amounts are stored in centimes: Casablanca 20 DH, everywhere else 35 DH.
+  async function fillMissingAmeexDeliveredFees() {
+    try {
+      const { sql } = await import("drizzle-orm");
+      const { db } = await import("./db");
+      const { broadcastToStore } = await import("./sse");
+      const result: any = await db.execute(sql`
+        WITH eligible AS (
+          SELECT id,
+                 CASE
+                   WHEN LOWER(TRIM(REGEXP_REPLACE(TRANSLATE(
+                        COALESCE(customer_city, ''),
+                        'ÀÂÄÁàâäáÉÈÊËéèêëÎÏÍîïíÔÖÓôöóÙÛÜÚùûüúÇç',
+                        'AAAAaaaaEEEEeeeeIIIiiiOOOoooUUUUuuuuCc'
+                      ), '[^a-zA-Z0-9ء-ي]+', ' ', 'g'))) IN
+                        ('casablanca', 'casa', 'dar el beida', 'dar beida', 'الدار البيضاء', 'الدارالبيضاء')
+                     THEN 2000 ELSE 3500
+                 END AS delivery_fee
+          FROM orders
+          WHERE LOWER(TRIM(COALESCE(shipping_provider, carrier_name, ''))) = 'ameex'
+            AND LOWER(TRIM(COALESCE(status, ''))) IN ('delivered','livré','livrée','livre','livree','livraison effectuée')
+            AND COALESCE(shipping_cost, 0) <= 0
+          ORDER BY id
+          LIMIT 200
+        )
+        UPDATE orders AS o
+        SET shipping_cost = eligible.delivery_fee
+        FROM eligible
+        WHERE o.id = eligible.id AND COALESCE(o.shipping_cost, 0) <= 0
+        RETURNING o.id, o.store_id, o.shipping_cost
+      `);
+      const rows: any[] = Array.isArray(result) ? result : result?.rows || [];
+      for (const order of rows) {
+        broadcastToStore(Number(order.store_id), "order_updated", {
+          orderId: Number(order.id), shippingCost: Number(order.shipping_cost),
+        });
+      }
+      if (rows.length) console.info("[AMEEX-FEE-BACKFILL]", {updated:rows.length, casablanca20:rows.filter(r=>Number(r.shipping_cost)===2000).length, other35:rows.filter(r=>Number(r.shipping_cost)===3500).length});
+    } catch (err:any) {
+      console.error("[AMEEX-FEE-BACKFILL] Error:", String(err?.message || err).slice(0,220));
+    }
+  }
+  let ameexFeeRunning = false;
+  async function runAmeexFeeBackfill() {
+    if (ameexFeeRunning) return;
+    ameexFeeRunning = true;
+    try { await fillMissingAmeexDeliveredFees(); }
+    finally { ameexFeeRunning = false; }
+  }
+  setTimeout(() => void runAmeexFeeBackfill(), 45_000);
+  intervals.push(setInterval(() => void runAmeexFeeBackfill(), 10 * 60 * 1000));
+
   // ── Auto Digylog status sync ───────────────────────────────────────────────
   async function runDigylogSync(label: string) {
     try {
