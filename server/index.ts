@@ -920,7 +920,7 @@ app.use((req, res, next) => {
         )).limit(250);
         for (const shipped of deliveredWithoutFee) {
           const city = String(shipped.customerCity || "").toLowerCase()
-            .normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").replace(/[^a-z0-9]+/g," ").trim();
+            .normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g," ").trim();
           const isCasa = /^(casablanca|casa|dar beida|dar el beida)$/.test(city);
           const fee = isCasa ? 1800 : 2800; // centimes
           await dbInst.update(orderTable).set({shippingCost:fee}).where(and(
