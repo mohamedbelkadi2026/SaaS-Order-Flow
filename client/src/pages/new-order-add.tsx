@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
-import { useAgents, useProducts, useStore, useAgentStoreSettings, useMagasins } from "@/hooks/use-store-data";
+import { useAgents, useProducts, useStore, useAgentStoreSettings } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest } from "@/lib/queryClient";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -64,7 +64,17 @@ export default function NewOrderAdd() {
   const { data: allProducts = [] } = useProducts();
   const { data: storeData } = useStore();
   const { data: agentSettings = [] } = useAgentStoreSettings();
-  const { data: magasins = [] } = useMagasins();
+  // Fetch every boutique owned by the account for the order-create selector.
+  // This does not change the agent's order visibility or dashboard permissions.
+  const { data: magasins = [] } = useQuery<Array<{id:number;name:string}>>({
+    queryKey: ["/api/magasins/order-create"],
+    queryFn: async () => {
+      const response = await fetch("/api/magasins/order-create", { credentials: "include" });
+      if (!response.ok) throw new Error("Impossible de charger les boutiques du compte");
+      return response.json();
+    },
+    retry: false,
+  });
 
   const myAgentSetting = (agentSettings as any[]).find((s: any) => s.agentId === user?.id);
   const allowedProductIds: number[] = useMemo(() => {
