@@ -8928,11 +8928,16 @@ function ensureHeaders(sheet) {
         return res.status(403).json({ message: `Limite de commandes atteinte (${limitCheck.current}/${limitCheck.limit}).` });
       }
 
-      // Validate magasinId belongs to this user's account (prevents cross-tenant spoofing)
-      const requestedMagasinId = (data as any).magasinId ?? null;
-      if (requestedMagasinId) {
-        const ownedMagasins = await storage.getStoresByOwner(req.user!.id);
-        if (!ownedMagasins.some(m => m.id === requestedMagasinId)) {
+      // Resolve the authenticated user's account owner (not the agent's own ID).
+      // Agents may create orders in any magasin of their admin, but this endpoint
+      // does not grant access to existing orders or any other tenant.
+      const requestedMagasinId = data.magasinId ?? null;
+      if (requestedMagasinId != null) {
+        const accountStore = await storage.getStore(storeId);
+        if (!accountStore) return res.status(403).json({ message: "Compte magasin introuvable" });
+        const accountOwnerId = accountStore.ownerId ?? (req.user!.role === 'owner' ? req.user!.id : null);
+        const ownedMagasins = accountOwnerId != null ? await storage.getStoresByOwner(accountOwnerId) : [];
+        if (requestedMagasinId !== storeId && !ownedMagasins.some(m => m.id === requestedMagasinId)) {
           return res.status(403).json({ message: "Magasin non autorisé" });
         }
       }
