@@ -908,6 +908,28 @@ app.use((req, res, next) => {
       for (const account of accounts) {
         if (account.isActive === 0 || !account.apiKey || !account.apiSecret) continue;
         const storeId = account.storeId;
+        // Backfill missing delivery fees for already delivered Express Relais
+        // parcels. Never overwrite a positive fee entered by the merchant.
+        const deliveredWithoutFee = await dbInst.select({
+          id: orderTable.id, customerCity: orderTable.customerCity,
+        }).from(orderTable).where(and(
+          eq(orderTable.storeId, storeId),
+          sql`LOWER(REGEXP_REPLACE(COALESCE(${orderTable.shippingProvider}, ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
+          sql`LOWER(TRIM(COALESCE(${orderTable.status}, ''))) IN ('delivered','livré','livrée','livré *','livrée *','livraison effectuée')`,
+          sql`COALESCE(${orderTable.shippingCost}, 0) <= 0`
+        )).limit(250);
+        for (const shipped of deliveredWithoutFee) {
+          const city = String(shipped.customerCity || "").toLowerCase()
+            .normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").replace(/[^a-z0-9]+/g," ").trim();
+          const isCasa = /^(casablanca|casa|dar beida|dar el beida)$/.test(city);
+          const fee = isCasa ? 1800 : 2800; // centimes
+          await dbInst.update(orderTable).set({shippingCost:fee}).where(and(
+            eq(orderTable.id, shipped.id),
+            sql`COALESCE(${orderTable.shippingCost},0) <= 0`
+          ));
+          broadcastToStore(storeId, "order_updated", {orderId:shipped.id,shippingCost:fee});
+        }
+        if (deliveredWithoutFee.length) console.info("[EXPRESS-RELAIS-FEE]", {storeId, updated:deliveredWithoutFee.length});
         // Only this transporter's parcels, scoped to the owning merchant.
         // Terminal deliveries are left untouched; returns/refusals are still
         // polled while they await final confirmation.
