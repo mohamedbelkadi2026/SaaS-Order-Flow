@@ -939,9 +939,17 @@ function YouCanTab() {
     toast({ title: "Boutique YouCan déconnectée" });
   };
 
-  // The API returns active connections only. Disconnected shops must disappear
-  // and remain hidden until the user explicitly connects them again via OAuth.
-  const stores: any[] = (status?.stores || []).filter((store: any) => store.connected);
+  // Support both YouCan API response shapes. The current backend returns
+  // one connection as { connected, connectionName, ordersCount }, while the
+  // UI historically expected { stores: [...] }. Never hide a live OAuth
+  // connection because the response lacks a stores array.
+  const stores: any[] = (
+    Array.isArray(status?.stores)
+      ? status.stores
+      : status?.connected
+        ? [{ connected: true, connectionName: status.connectionName, ordersCount: status.ordersCount, id: status.integrationId }]
+        : []
+  ).filter((store: any) => store.connected);
 
   return (
     <div className="max-w-lg mx-auto space-y-4">
