@@ -393,6 +393,10 @@ export default function ProfitAnalyzer() {
   const liveTotalProfit    = (liveData as any)?.totals?.netProfit != null
     ? Number((liveData as any).totals.netProfit) - (liveData?.globalAdSpend ?? 0)
     : liveProducts.reduce((s: number, p: any) => s + p.netProfit, 0) - (liveData?.globalAdSpend ?? 0);
+  // The shared backend already deducts fixed charges from totals.netProfit.
+  // Display them separately for transparency; never subtract them again.
+  const liveMonthlyCharges = Number((liveData as any)?.totals?.fixedCharges ?? 0);
+  const liveGlobalPub = Number((liveData as any)?.globalAdSpend ?? 0);
   const liveDeliveryRate   = liveTotalOrders > 0 ? ((liveTotalDelivered / liveTotalOrders) * 100).toFixed(1) : "0";
 
   /* ── CSV Step state ── */
@@ -1315,6 +1319,21 @@ export default function ProfitAnalyzer() {
                       })}
                     </tbody>
                   </table>
+                </div>
+                <div className="px-4 py-3 border-t border-white/10 bg-white/5 space-y-2" data-testid="profit-live-expense-breakdown">
+                  <div className="flex justify-between items-center gap-3 text-xs">
+                    <span className="text-slate-300 font-semibold">Les Charges du mois / période</span>
+                    <span className="text-rose-400 font-bold tabular-nums">−{liveMonthlyCharges.toLocaleString('fr-MA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DH</span>
+                  </div>
+                  <div className="flex justify-between items-center gap-3 text-xs">
+                    <span className="text-slate-300 font-semibold">Pub globale non attribuée</span>
+                    <span className="text-violet-400 font-bold tabular-nums">−{liveGlobalPub.toLocaleString('fr-MA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DH</span>
+                  </div>
+                  <div className="flex justify-between items-center gap-3 pt-2 border-t border-white/10">
+                    <span className="text-sm text-white font-bold">Profit net total (après charges)</span>
+                    <span className="text-base font-extrabold tabular-nums" style={{ color: liveTotalProfit >= 0 ? '#10b981' : '#f43f5e' }}>{liveTotalProfit.toLocaleString('fr-MA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DH</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400">Les charges sont déjà déduites dans le profit calculé par le serveur : affichage uniquement, aucun double prélèvement.</p>
                 </div>
               </div>
             )}
