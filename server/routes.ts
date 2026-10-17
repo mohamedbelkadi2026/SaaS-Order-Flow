@@ -2385,6 +2385,43 @@ export async function registerRoutes(
     }
   });
 
+  // Explicit bulk magasin reassignment: changes only the display/analytics
+  // association, never shipping, status, source, or order ownership.
+  app.post("/api/orders/bulk-magasin", requireAuth, requireActiveSubscription, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (!['owner', 'admin', 'super_admin'].includes(user.role)) {
+        return res.status(403).json({ message: "Accès réservé à l'administrateur" });
+      }
+      const storeId = user.storeId!;
+      const { orderIds, magasinId } = req.body || {};
+      if (!Array.isArray(orderIds) || orderIds.length === 0 || orderIds.length > 1000 ||
+          !orderIds.every((v: unknown) => Number.isSafeInteger(v) && (v as number) > 0) ||
+          !Number.isSafeInteger(magasinId) || magasinId <= 0) {
+        return res.status(400).json({ message: "Commandes ou boutique invalides (maximum 1000)" });
+      }
+      const parent = await storage.getStore(storeId);
+      if (!parent) return res.status(404).json({ message: "Compte introuvable" });
+      const ownerId = parent.ownerId ?? user.id;
+      const accountMagasins = await storage.getStoresByOwner(ownerId);
+      if (!accountMagasins.some((m: any) => m.id === magasinId)) {
+        return res.status(403).json({ message: "Cette boutique n'appartient pas à votre compte" });
+      }
+      const ids = Array.from(new Set(orderIds as number[]));
+      const ownedOrders = await storage.getOrdersByIds(ids, storeId);
+      if (ownedOrders.length !== ids.length) {
+        return res.status(403).json({ message: "Certaines commandes ne sont pas accessibles" });
+      }
+      for (const id of ids) {
+        await storage.updateOrder(id, { magasinId } as any);
+      }
+      res.json({ success: true, updated: ids.length, magasinId });
+    } catch (err: any) {
+      console.error("[BULK-MAGASIN] Error:", err);
+      res.status(500).json({ message: "Impossible de changer la boutique" });
+    }
+  });
+
   app.post("/api/orders/bulk-ship", requireAuth, requireActiveSubscription, async (req, res) => {
     req.setTimeout(60000); // 60s for carrier API calls
     res.setTimeout(60000);
