@@ -73,8 +73,12 @@ const RAW_CITY_ALIASES: Record<string, string> = {
   "آسفي": "safi",
   "اسفي": "safi",
   "asfi": "safi",
-  // Mohammedia
+  // Mohammedia — spelling variants only; never map to Casablanca
   "المحمدية": "mohammedia",
+  "mohamedia": "mohammedia",
+  "mohammédia": "mohammedia",
+  "mohammedia": "mohammedia",
+  "mohammadia": "mohammedia",
   // El Jadida
   "الجديدة": "el jadida",
   "eljadida": "el jadida",
@@ -212,8 +216,15 @@ const RAW_CITY_ALIASES: Record<string, string> = {
   "سوق الأربعاء": "souk larbaa",
   "souk el arbaa": "souk larbaa",
   "souk-larbaa": "souk larbaa",
-  // Ain Harrouda
+  // Ain Harrouda — same locality written differently by stores/carriers
   "عين الحروضة": "ain harrouda",
+  "عين حرودة": "ain harrouda",
+  "عين هارودة": "ain harrouda",
+  "ain harouda": "ain harrouda",
+  "ain haroda": "ain harrouda",
+  "ain harrouda": "ain harrouda",
+  "aïn harrouda": "ain harrouda",
+  "ain haroudda": "ain harrouda",
   // Had Soualem
   "هدالسواالم": "had soualem",
   // Oulmes
