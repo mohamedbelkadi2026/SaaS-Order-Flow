@@ -931,6 +931,28 @@ export default function Orders() {
   const [customerHistoryPhone, setCustomerHistoryPhone] = useState<string | null>(null);
   const [shippingProvider, setShippingProvider] = useState<string>("");
   const [editFields, setEditFields] = useState<Record<string, string>>({});
+  const [showMagasinModal, setShowMagasinModal] = useState(false);
+  const [targetMagasinId, setTargetMagasinId] = useState("");
+  const bulkMagasinMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/orders/bulk-magasin", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: Array.from(selectedIds), magasinId: Number(targetMagasinId) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || "Erreur boutique");
+      return data;
+    },
+    onSuccess: (data) => {
+      toast({ title: "Boutique mise à jour", description: `${data.updated} commande(s) modifiée(s)` });
+      setShowMagasinModal(false);
+      setTargetMagasinId("");
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries();
+    },
+    onError: (err: Error) => toast({ title: "Erreur", description: err.message, variant: "destructive" }),
+  });
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showBulkShipModal, setShowBulkShipModal] = useState(false);
   const [assignServiceType, setAssignServiceType] = useState("confirmation");
@@ -1741,6 +1763,14 @@ export default function Orders() {
           )}
           {!isMediaBuyer && (
             <>
+              {['owner', 'admin', 'super_admin'].includes(user?.role ?? '') && (
+                <Button variant="outline" size="icon" className="h-9 w-9 border-violet-200 text-violet-600 hover:bg-violet-50"
+                  title="Changer la boutique des commandes sélectionnées"
+                  onClick={() => selectedIds.size ? setShowMagasinModal(true) : toast({ title: "Sélectionnez des commandes" })}
+                  data-testid="button-bulk-magasin">
+                  <ShoppingBag className="w-4 h-4" />
+                </Button>
+              )}
               <Button variant="outline" size="icon" className="h-9 w-9 border-blue-200 text-blue-500 hover:bg-blue-50" title="Assigner" onClick={() => { if (selectedIds.size > 0) setShowAssignModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-assign">
                 <Headphones className="w-4 h-4" />
               </Button>
@@ -3250,6 +3280,30 @@ export default function Orders() {
           </Dialog>
         );
       })()}
+
+      <Dialog open={showMagasinModal} onOpenChange={setShowMagasinModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Changer la boutique</DialogTitle>
+            <DialogDescription>Associer les {selectedIds.size} commande(s) sélectionnée(s) à une boutique du compte. Le statut, la livraison et la source restent inchangés.</DialogDescription>
+          </DialogHeader>
+          <Select value={targetMagasinId} onValueChange={setTargetMagasinId}>
+            <SelectTrigger><SelectValue placeholder="Choisir une boutique" /></SelectTrigger>
+            <SelectContent>
+              {(magasins || []).map((m: any) => (
+                <SelectItem key={m.id} value={String(m.id)}>{m.name || m.storeName || `Boutique #${m.id}`}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowMagasinModal(false)}>Annuler</Button>
+            <Button disabled={!targetMagasinId || bulkMagasinMutation.isPending}
+              onClick={() => bulkMagasinMutation.mutate()}>
+              {bulkMagasinMutation.isPending ? "Enregistrement..." : "Confirmer"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showAssignModal} onOpenChange={setShowAssignModal}>
         <DialogContent className="sm:max-w-md rounded-xl" data-testid="dialog-bulk-assign">
