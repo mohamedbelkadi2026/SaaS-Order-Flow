@@ -8639,8 +8639,38 @@ function ensureHeaders(sheet) {
         console.error("[YOUCAN-WEBHOOK-REPAIR] rejected", { integrationId, http: response.status, message });
         return res.status(502).json({ message: `YouCan refuse l'abonnement: ${message}` });
       }
-      console.info("[YOUCAN-WEBHOOK-REPAIR] subscription accepted", { integrationId, http: response.status });
-      res.json({ success: true, integrationId, message: "Abonnement order.create accepté par YouCan" });
+      // An HTTP 2xx from /subscribe is not proof that an order.create
+      // subscription was registered. Verify this exact connection's target.
+      let verified = false;
+      let verificationReason = "Liste des resthooks indisponible";
+      try {
+        const hooksResponse = await fetch("https://api.youcan.shop/resthooks", {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (hooksResponse.ok) {
+          const hooksBody: any = await hooksResponse.json();
+          const hooks = Array.isArray(hooksBody) ? hooksBody
+            : Array.isArray(hooksBody?.data) ? hooksBody.data
+            : Array.isArray(hooksBody?.resthooks) ? hooksBody.resthooks : null;
+          if (hooks) {
+            verified = hooks.some((hook: any) =>
+              String(hook.event ?? hook.name ?? hook.topic ?? "") === "order.create"
+              && String(hook.target_url ?? hook.url ?? hook.targetUrl ?? "") === targetUrl
+            );
+            verificationReason = verified ? "Subscription retrouvée" : "Subscription non trouvée dans la liste YouCan";
+          }
+        } else verificationReason = `HTTP ${hooksResponse.status} sur GET /resthooks`;
+      } catch (verifyErr: any) {
+        verificationReason = verifyErr?.message || verificationReason;
+      }
+      console.info("[YOUCAN-WEBHOOK-REPAIR]", { integrationId, http: response.status, verified, verificationReason });
+      res.json({
+        success: true, integrationId, verified,
+        message: verified
+          ? "Webhook order.create confirmé chez YouCan"
+          : "YouCan a accepté la demande mais la présence du webhook n'a pas été confirmée",
+      });
     } catch (err: any) {
       console.error("[YOUCAN-WEBHOOK-REPAIR] failed", err?.message);
       res.status(502).json({ message: `Impossible de configurer le webhook YouCan: ${err?.message || "Erreur réseau"}` });
