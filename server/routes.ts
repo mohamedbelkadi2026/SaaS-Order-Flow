@@ -13,7 +13,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, SHIPPED_STATUS_SET, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, generalCharges, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -519,6 +519,70 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+
+  // Charges management and profitability use the SAME general_charges table.
+  // All amounts are stored in centimes, and expenseDate is YYYY-MM-DD.
+  const chargePayload = z.object({
+    name: z.string().trim().min(1).max(200),
+    amount: z.number().finite().positive().max(100000000),
+    expenseDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+    note: z.string().max(2000).optional().nullable(),
+  });
+  app.get("/api/charges", requireAuth, async (req, res) => {
+    try {
+      const month = String(req.query.month || "");
+      if (!/^\\d{4}-(0[1-9]|1[0-2])$/.test(month)) return res.status(400).json({message:"Mois invalide"});
+      const storeId = req.user!.storeId!;
+      const rows = await db.select().from(generalCharges).where(and(
+        eq(generalCharges.storeId, storeId),
+        gte(generalCharges.expenseDate, month + "-01"),
+        lte(generalCharges.expenseDate, month + "-31")
+      )).orderBy(desc(generalCharges.expenseDate), desc(generalCharges.id));
+      res.json(rows);
+    } catch (err: any) {
+      console.error("[CHARGES] list failed:", err);
+      res.status(500).json({message:"Impossible de charger les charges"});
+    }
+  });
+  app.post("/api/charges", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const body = chargePayload.parse(req.body);
+      const [row] = await db.insert(generalCharges).values({
+        storeId: req.user!.storeId!, createdBy:req.user!.id,
+        name:body.name, amount:Math.round(body.amount*100),
+        expenseDate:body.expenseDate, note:body.note || null,
+      }).returning();
+      res.status(201).json(row);
+    } catch (err: any) {
+      res.status(err instanceof z.ZodError ? 400 : 500).json({message:err instanceof z.ZodError ? "Données de charge invalides" : "Erreur enregistrement charge"});
+    }
+  });
+  app.patch("/api/charges/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({message:"ID invalide"});
+      const body = chargePayload.parse(req.body);
+      const [row] = await db.update(generalCharges).set({
+        name:body.name, amount:Math.round(body.amount*100),
+        expenseDate:body.expenseDate, note:body.note || null,
+      }).where(and(eq(generalCharges.id,id),eq(generalCharges.storeId,req.user!.storeId!))).returning();
+      if (!row) return res.status(404).json({message:"Charge introuvable"});
+      res.json(row);
+    } catch (err: any) {
+      res.status(err instanceof z.ZodError ? 400 : 500).json({message:err instanceof z.ZodError ? "Données de charge invalides" : "Erreur modification charge"});
+    }
+  });
+  app.delete("/api/charges/:id", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({message:"ID invalide"});
+      const rows = await db.delete(generalCharges).where(and(eq(generalCharges.id,id),eq(generalCharges.storeId,req.user!.storeId!))).returning({id:generalCharges.id});
+      if (!rows.length) return res.status(404).json({message:"Charge introuvable"});
+      res.json({success:true});
+    } catch (err) {
+      res.status(500).json({message:"Erreur suppression charge"});
+    }
+  });
 
   /* ── Health check — used by Railway (and load balancers) ─────── */
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
