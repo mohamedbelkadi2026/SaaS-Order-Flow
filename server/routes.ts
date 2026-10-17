@@ -8541,6 +8541,48 @@ function ensureHeaders(sheet) {
     res.json({success:true, integrationId:id});
   });
 
+  // Repair one specific YouCan shop's order.create subscription without
+  // changing the OAuth token or any other shop's connection.
+  app.post("/api/integrations/youcan/repair-webhook", requireAuth, async (req: any, res: any) => {
+    try {
+      const integrationId = Number(req.body?.integrationId);
+      if (!Number.isSafeInteger(integrationId) || integrationId <= 0) {
+        return res.status(400).json({ message: "Boutique YouCan invalide" });
+      }
+      const [integration] = await db.select().from(storeIntegrations).where(and(
+        eq(storeIntegrations.id, integrationId),
+        eq(storeIntegrations.storeId, req.user!.storeId!),
+        eq(storeIntegrations.provider, "youcan"),
+        eq(storeIntegrations.isActive, 1),
+      )).limit(1);
+      if (!integration?.oauthAccessToken || !integration.webhookKey) {
+        return res.status(400).json({ message: "Connexion YouCan non active ou webhook manquant" });
+      }
+      const token = await refreshYouCanToken(integration);
+      if (!token) return res.status(400).json({ message: "Token YouCan indisponible. Reconnectez cette boutique." });
+      const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${integration.webhookKey}`;
+      const response = await fetch("https://api.youcan.shop/resthooks/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const raw = await response.text();
+      let body: any = {};
+      try { body = JSON.parse(raw); } catch {}
+      if (!response.ok || body?.success === false || body?.error || body?.errors) {
+        const message = String(body?.message || body?.error || raw || `HTTP ${response.status}`).slice(0, 400);
+        console.error("[YOUCAN-WEBHOOK-REPAIR] rejected", { integrationId, http: response.status, message });
+        return res.status(502).json({ message: `YouCan refuse l'abonnement: ${message}` });
+      }
+      console.info("[YOUCAN-WEBHOOK-REPAIR] subscription accepted", { integrationId, http: response.status });
+      res.json({ success: true, integrationId, message: "Abonnement order.create accepté par YouCan" });
+    } catch (err: any) {
+      console.error("[YOUCAN-WEBHOOK-REPAIR] failed", err?.message);
+      res.status(502).json({ message: `Impossible de configurer le webhook YouCan: ${err?.message || "Erreur réseau"}` });
+    }
+  });
+
   // Diagnostic: list active YouCan resthook subscriptions for this store.
   app.get("/api/integrations/youcan/resthooks", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
