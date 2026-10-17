@@ -963,7 +963,13 @@ function YouCanTab() {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "Abonnement webhook refusé");
-      toast({ title: "Webhook YouCan configuré", description: "Créez une nouvelle commande test dans cette boutique." });
+      toast({
+        title: result.verified ? "Webhook YouCan vérifié" : "Webhook YouCan à vérifier",
+        description: result.verified
+          ? "Abonnement order.create confirmé. Créez une commande test dans cette boutique."
+          : "Demande envoyée, mais l'abonnement n'est pas confirmé. Cliquez sur Vérifier pour contrôler cette boutique.",
+        variant: result.verified ? "default" : "destructive",
+      });
     } catch (error: any) {
       toast({ title: "Webhook YouCan non configuré", description: error.message, variant: "destructive" });
     } finally {
