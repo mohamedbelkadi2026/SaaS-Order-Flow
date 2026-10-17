@@ -4,7 +4,7 @@ import { storage } from "./storage";
 import { singleFlight } from "./utils/single-flight";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { createHmac } from "crypto";
+import { createHmac, randomBytes } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
@@ -8393,9 +8393,6 @@ function ensureHeaders(sheet) {
         return res.redirect("/integrations?youcan_error=token_exchange_failed");
       }
 
-      const webhookKey = await storage.getOrGenerateWebhookKey(storeId);
-      const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${webhookKey}`;
-
       const oauthData: any = {
         oauthAccessToken: encrypt(tokens.access_token),
         oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
@@ -8403,32 +8400,45 @@ function ensureHeaders(sheet) {
       };
       if (tokens.refresh_token) oauthData.oauthRefreshToken = encrypt(tokens.refresh_token);
 
-      // Try to fetch the YouCan shop name and save it as connectionName
-      let youcanStoreName: string | null = null;
+      // A YouCan OAuth authorization represents ONE YouCan shop, not the
+      // merchant's entire list. Identify that shop before touching DB rows.
+      let shopInfo: any = null;
       try {
         const storeResp = await fetch("https://api.youcan.shop/store", {
           headers: { Authorization: `Bearer ${tokens.access_token}` },
+          signal: AbortSignal.timeout(10000),
         });
-        if (storeResp.ok) {
-          const storeData = await storeResp.json() as any;
-          youcanStoreName = storeData?.name || storeData?.store?.name || storeData?.domain || null;
-        }
+        if (storeResp.ok) shopInfo = await storeResp.json();
       } catch (storeErr: any) {
-        console.warn("[YOUCAN-OAUTH] Could not fetch store name (non-fatal):", storeErr.message);
+        console.warn("[YOUCAN-OAUTH] Shop identification failed:", storeErr.message);
       }
-      if (youcanStoreName) oauthData.connectionName = youcanStoreName;
-
-      const existing = await db.select().from(storeIntegrations)
-        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
-        .limit(1);
-      if (existing.length > 0) {
-        await db.update(storeIntegrations).set(oauthData).where(eq(storeIntegrations.id, existing[0].id));
+      const shop = shopInfo?.store || shopInfo;
+      const shopId = String(shop?.id ?? shop?.uuid ?? "").trim();
+      const shopDomain = String(shop?.domain ?? shop?.subdomain ?? shop?.url ?? "").trim().toLowerCase();
+      const shopName = String(shop?.name ?? "").trim();
+      if (!shopId && !shopDomain) {
+        console.error("[YOUCAN-OAUTH] Cannot distinguish YouCan shop; refusing to overwrite existing connection");
+        return res.redirect("/integrations?youcan_error=shop_identity_unavailable");
+      }
+      const connections = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
+      const existing = connections.find((row: any) => {
+        let saved: any = {};
+        try { saved = JSON.parse(row.credentials || "{}"); } catch {}
+        return (shopId && saved.youcanShopId === shopId)
+          || (shopDomain && saved.youcanShopDomain === shopDomain);
+      });
+      const webhookKey = existing?.webhookKey || randomBytes(24).toString("hex");
+      const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${webhookKey}`;
+      const identity = JSON.stringify({youcanShopId:shopId || null,youcanShopDomain:shopDomain || null});
+      const shopRecord = {...oauthData,credentials:identity,connectionName:shopName || shopDomain || `YouCan ${shopId}`,webhookKey};
+      if (existing) {
+        await db.update(storeIntegrations).set(shopRecord).where(eq(storeIntegrations.id,existing.id));
       } else {
         await db.insert(storeIntegrations).values({
-          storeId, provider: "youcan", type: "webhook", credentials: "{}", webhookKey, ...oauthData,
+          storeId, provider:"youcan", type:"webhook", ...shopRecord,
         });
       }
-
       // Abonner automatiquement au webhook "order.create".
       try {
         const subResp = await fetch("https://api.youcan.shop/resthooks/subscribe", {
@@ -8452,23 +8462,31 @@ function ensureHeaders(sheet) {
   app.get("/api/integrations/youcan/status", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const rows = await db.select().from(storeIntegrations)
-      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
-      .limit(1);
-    const row = rows[0];
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
+    const active = rows.filter(row => row.isActive === 1 && !!row.oauthAccessToken);
     res.json({
-      connected: !!(row?.oauthAccessToken),
-      ordersCount: row?.ordersCount ?? 0,
-      connectionName: row?.connectionName ?? null,
-      createdAt: row?.createdAt ?? null,
+      connected: active.length > 0,
+      stores: active.map(row => ({
+        id: row.id, connected:true, connectionName:row.connectionName,
+        ordersCount:row.ordersCount ?? 0, createdAt:row.createdAt,
+      })),
+      ordersCount: active.reduce((n,row) => n + (row.ordersCount || 0),0),
+      connectionName: active[0]?.connectionName ?? null,
     });
   });
 
   app.post("/api/integrations/youcan/disconnect", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
-    await db.update(storeIntegrations)
-      .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
-      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
-    res.json({ success: true });
+    const id = Number(req.body?.integrationId);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({message:"Sélectionnez la boutique YouCan à déconnecter"});
+    }
+    const rows = await db.update(storeIntegrations)
+      .set({ oauthAccessToken:null, oauthRefreshToken:null, oauthExpiresAt:null, isActive:0 })
+      .where(and(eq(storeIntegrations.id,id),eq(storeIntegrations.storeId,storeId),eq(storeIntegrations.provider,"youcan")))
+      .returning({id:storeIntegrations.id});
+    if (!rows.length) return res.status(404).json({message:"Boutique YouCan introuvable"});
+    res.json({success:true, integrationId:id});
   });
 
   // Diagnostic: list active YouCan resthook subscriptions for this store.
