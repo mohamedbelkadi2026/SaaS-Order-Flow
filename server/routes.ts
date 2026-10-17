@@ -8449,13 +8449,18 @@ function ensureHeaders(sheet) {
       } catch (storeErr: any) {
         console.warn("[YOUCAN-OAUTH] Shop identification failed:", storeErr.message);
       }
-      const shop = shopInfo?.store || shopInfo;
+      // YouCan may nest store metadata under data/store or return an empty
+      // /store response despite a successful OAuth authorization.
+      const shop = shopInfo?.data?.store || shopInfo?.data || shopInfo?.store || shopInfo;
       const shopId = String(shop?.id ?? shop?.uuid ?? "").trim();
       const shopDomain = String(shop?.domain ?? shop?.subdomain ?? shop?.url ?? "").trim().toLowerCase();
       const shopName = String(shop?.name ?? "").trim();
+      // Never block a valid OAuth connection just because /store metadata is
+      // unavailable. Create a separate, unnamed integration instead of
+      // overwriting an existing merchant's YouCan shop. Reauthorizing such a
+      // shop may create a duplicate until the provider returns a stable ID.
       if (!shopId && !shopDomain) {
-        console.error("[YOUCAN-OAUTH] Cannot distinguish YouCan shop; refusing to overwrite existing connection");
-        return res.redirect("/integrations?youcan_error=shop_identity_unavailable");
+        console.warn("[YOUCAN-OAUTH] Shop metadata unavailable; preserving existing stores and creating an independent connection");
       }
       const connections = await db.select().from(storeIntegrations)
         .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
@@ -8478,7 +8483,7 @@ function ensureHeaders(sheet) {
       const webhookKey = existing?.webhookKey || randomBytes(24).toString("hex");
       const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${webhookKey}`;
       const identity = JSON.stringify({youcanShopId:shopId || null,youcanShopDomain:shopDomain || null});
-      const shopRecord = {...oauthData,credentials:identity,connectionName:shopName || shopDomain || `YouCan ${shopId}`,webhookKey};
+      const shopRecord = {...oauthData,credentials:identity,connectionName:shopName || shopDomain || (shopId ? `YouCan ${shopId}` : `Boutique YouCan ${connections.length + 1}`),webhookKey};
       if (existing) {
         await db.update(storeIntegrations).set(shopRecord).where(eq(storeIntegrations.id,existing.id));
       } else {
