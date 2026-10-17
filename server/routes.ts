@@ -8422,11 +8422,21 @@ function ensureHeaders(sheet) {
       }
       const connections = await db.select().from(storeIntegrations)
         .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
+      // Shop ID is authoritative. A shared domain/subdomain value from the
+      // YouCan API must NEVER cause a different shop's OAuth token to replace
+      // an existing connection. Domain fallback applies only when either row
+      // lacks a shop ID (legacy connection).
       const existing = connections.find((row: any) => {
         let saved: any = {};
         try { saved = JSON.parse(row.credentials || "{}"); } catch {}
-        return (shopId && saved.youcanShopId === shopId)
-          || (shopDomain && saved.youcanShopDomain === shopDomain);
+        const savedId = String(saved.youcanShopId || "").trim();
+        const savedDomain = String(saved.youcanShopDomain || "").trim().toLowerCase();
+        if (shopId && savedId) return shopId === savedId;
+        return !!shopDomain && !!savedDomain && shopDomain === savedDomain;
+      });
+      console.info("[YOUCAN-OAUTH] shop connection decision", {
+        storeId, shopId: shopId || null, shopDomain: shopDomain || null,
+        existingIntegrationId: existing?.id || null, connectedCount: connections.length,
       });
       const webhookKey = existing?.webhookKey || randomBytes(24).toString("hex");
       const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${webhookKey}`;
