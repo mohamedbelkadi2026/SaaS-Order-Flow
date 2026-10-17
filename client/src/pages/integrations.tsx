@@ -939,6 +939,25 @@ function YouCanTab() {
     toast({ title: "Boutique YouCan déconnectée" });
   };
 
+  const [repairingYouCanId, setRepairingYouCanId] = useState<number | null>(null);
+  const repairYouCanWebhook = async (integrationId: number) => {
+    setRepairingYouCanId(integrationId);
+    try {
+      const response = await fetch("/api/integrations/youcan/repair-webhook", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ integrationId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Abonnement webhook refusé");
+      toast({ title: "Webhook YouCan configuré", description: "Créez une nouvelle commande test dans cette boutique." });
+    } catch (error: any) {
+      toast({ title: "Webhook YouCan non configuré", description: error.message, variant: "destructive" });
+    } finally {
+      setRepairingYouCanId(null);
+    }
+  };
+
   // Support both YouCan API response shapes. The current backend returns
   // one connection as { connected, connectionName, ordersCount }, while the
   // UI historically expected { stores: [...] }. Never hide a live OAuth
@@ -973,6 +992,15 @@ function YouCanTab() {
                   <p className="text-xs text-muted-foreground">{store.ordersCount ?? 0} commande(s) synchronisée(s)</p>
                 </div>
               </div>
+              <div className="flex items-center gap-2 shrink-0">
+              <Button
+                variant="outline" size="sm"
+                disabled={!store.id || repairingYouCanId === store.id}
+                onClick={() => repairYouCanWebhook(store.id)}
+                title="Réinstaller le webhook de commandes pour cette boutique uniquement"
+              >
+                {repairingYouCanId === store.id ? "Vérification..." : "Réparer webhook"}
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -981,6 +1009,7 @@ function YouCanTab() {
               >
                 Déconnecter
               </Button>
+              </div>
             </div>
           ))}
         </div>
