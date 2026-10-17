@@ -8647,6 +8647,56 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // Diagnose a specific YouCan connection. Never expose bearer tokens,
+  // signed webhook URLs, or customer/order data to the frontend.
+  app.get("/api/integrations/youcan/:integrationId/diagnostic", requireAuth, async (req: any, res: any) => {
+    try {
+      const id = Number(req.params.integrationId);
+      if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({message:"Connexion invalide"});
+      const [integration] = await db.select().from(storeIntegrations).where(and(
+        eq(storeIntegrations.id,id), eq(storeIntegrations.storeId,req.user!.storeId!),
+        eq(storeIntegrations.provider,"youcan")
+      )).limit(1);
+      if (!integration || integration.isActive !== 1 || !integration.oauthAccessToken) {
+        return res.status(404).json({message:"Connexion YouCan inactive"});
+      }
+      const token = await refreshYouCanToken(integration);
+      if (!token) return res.json({tokenValid:false,shopIdentified:false,webhookStatus:"unknown",message:"Token YouCan indisponible"});
+      const headers = {Authorization:`Bearer ${token}`};
+      const [shopResult,hooksResult] = await Promise.allSettled([
+        fetch("https://api.youcan.shop/store",{headers,signal:AbortSignal.timeout(10000)}),
+        fetch("https://api.youcan.shop/resthooks",{headers,signal:AbortSignal.timeout(10000)}),
+      ]);
+      const shopResponse = shopResult.status==="fulfilled" ? shopResult.value : null;
+      const hooksResponse = hooksResult.status==="fulfilled" ? hooksResult.value : null;
+      let shopData:any=null,hooksData:any=null;
+      try {if(shopResponse?.ok) shopData=await shopResponse.json();} catch {}
+      try {if(hooksResponse?.ok) hooksData=await hooksResponse.json();} catch {}
+      const shop=shopData?.data?.store || shopData?.data || shopData?.store || shopData;
+      const shopId=String(shop?.id ?? shop?.uuid ?? "").trim();
+      const shopName=String(shop?.name ?? shop?.domain ?? "").trim();
+      const list=Array.isArray(hooksData) ? hooksData
+        : Array.isArray(hooksData?.data) ? hooksData.data
+        : Array.isArray(hooksData?.resthooks) ? hooksData.resthooks : null;
+      const targetPath=`/api/webhooks/youcan/order/${integration.webhookKey}`;
+      const matches=list?.filter((h:any)=>{
+        const event=String(h.event ?? h.name ?? h.topic ?? "");
+        const target=String(h.target_url ?? h.url ?? h.targetUrl ?? "");
+        return event==="order.create" && target.includes(targetPath);
+      }) ?? [];
+      const webhookStatus=!hooksResponse?.ok || !list ? "unknown" : matches.length ? "subscribed" : "missing";
+      console.info("[YOUCAN-DIAGNOSTIC]",{integrationId:id,shopHttp:shopResponse?.status,hooksHttp:hooksResponse?.status,identified:!!(shopId||shopName),webhookStatus});
+      res.json({
+        tokenValid:!!shopResponse?.ok,shopIdentified:!!(shopId||shopName),
+        shopName:shopName || null,webhookStatus,
+        shopHttp:shopResponse?.status ?? null,hooksHttp:hooksResponse?.status ?? null,
+      });
+    } catch (err:any) {
+      console.error("[YOUCAN-DIAGNOSTIC]",err?.message);
+      res.status(502).json({message:"Vérification YouCan indisponible"});
+    }
+  });
+
   // Diagnostic: list active YouCan resthook subscriptions for this store.
   app.get("/api/integrations/youcan/resthooks", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
