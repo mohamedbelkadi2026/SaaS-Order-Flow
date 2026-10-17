@@ -939,7 +939,20 @@ function YouCanTab() {
     toast({ title: "Boutique YouCan déconnectée" });
   };
 
-  const [repairingYouCanId, setRepairingYouCanId] = useState<number | null>(null);
+  const [checkingYouCanId, setCheckingYouCanId] = useState<number | null>(null);
+  const checkYouCanConnection = async (integrationId: number) => {
+    setCheckingYouCanId(integrationId);
+    try {
+      const response = await fetch(`/api/integrations/youcan/${integrationId}/diagnostic`, {credentials:"include"});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Diagnostic indisponible");
+      const summary = `Boutique: ${result.shopName || "identité indisponible"} | API: ${result.tokenValid ? "accessible" : "inaccessible"} | Webhook: ${result.webhookStatus === "subscribed" ? "enregistré" : result.webhookStatus === "missing" ? "absent" : "non vérifiable"}`;
+      toast({ title: result.tokenValid && result.webhookStatus === "subscribed" ? "YouCan vérifié" : "Vérification YouCan", description: summary, variant: !result.tokenValid || result.webhookStatus === "missing" ? "destructive" : "default" });
+    } catch(error:any) {
+      toast({title:"Diagnostic YouCan", description:error.message, variant:"destructive"});
+    } finally { setCheckingYouCanId(null); }
+  };
+    const [repairingYouCanId, setRepairingYouCanId] = useState<number | null>(null);
   const repairYouCanWebhook = async (integrationId: number) => {
     setRepairingYouCanId(integrationId);
     try {
@@ -993,6 +1006,11 @@ function YouCanTab() {
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+              <Button variant="outline" size="sm"
+                disabled={!store.id || checkingYouCanId === store.id}
+                onClick={() => checkYouCanConnection(store.id)}>
+                {checkingYouCanId === store.id ? "Analyse..." : "Vérifier"}
+              </Button>
               <Button
                 variant="outline" size="sm"
                 disabled={!store.id || repairingYouCanId === store.id}
