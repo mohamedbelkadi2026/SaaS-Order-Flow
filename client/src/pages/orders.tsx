@@ -959,6 +959,7 @@ export default function Orders() {
   const [assignAgentId, setAssignAgentId] = useState("");
   const [bulkShipProvider, setBulkShipProvider] = useState("");
   const [bulkShipAccountId, setBulkShipAccountId] = useState<number | null>(null);
+  const [bulkShipJobId, setBulkShipJobId] = useState<string | null>(null);
   const [shipProgress, setShipProgress] = useState<{
     active: boolean; done: number; total: number; shipped: number; failed: number; provider: string;
     retries?: number;
@@ -1302,6 +1303,38 @@ export default function Orders() {
     };
   }, [queryClient]);
 
+  // SSE is fast but can be missed (mobile reconnect, worker on another
+  // instance). Poll the exact job as a fallback, without resending the parcel.
+  useEffect(() => {
+    if (!shipProgress?.active || !bulkShipJobId) return;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const r = await fetch(`/api/orders/bulk-ship/progress/${bulkShipJobId}`, {credentials:"include",cache:"no-store"});
+        if (!r.ok || cancelled) return;
+        const d = await r.json();
+        if (cancelled) return;
+        setShipProgress(prev => {
+          if (!prev || !prev.active) return prev;
+          return {...prev, done:d.done ?? prev.done, total:d.total ?? prev.total,
+            shipped:d.shipped ?? prev.shipped, failed:d.failed ?? prev.failed,
+            results:d.results?.length ? d.results : prev.results, active:!d.complete};
+        });
+        if (d.complete) {
+          const shippedIds = (d.results || []).filter((x:any)=>x.status === 'shipped').map((x:any)=>Number(x.orderId)).filter(Number.isFinite);
+          if (shippedIds.length) setJustShippedIds(prev=>new Set([...prev,...shippedIds]));
+          queryClient.invalidateQueries({queryKey:["/api/orders"]});
+          queryClient.invalidateQueries({queryKey:["/api/orders/filtered"]});
+          queryClient.invalidateQueries({queryKey:["/api/integration-logs"]});
+          toast({title:`${d.shipped ?? 0} expédiée(s)`,description:(d.failed ?? 0) ? `${d.failed} échec(s), voir les détails.` : "Traitement terminé."});
+        }
+      } catch (e) { console.warn("[BULK-SHIP] progress polling unavailable", e); }
+    };
+    check();
+    const timer = setInterval(check, 3000);
+    return () => {cancelled=true;clearInterval(timer);};
+  }, [shipProgress?.active,bulkShipJobId]);
+
   // ── SSE listener for real-time shipping progress ──────────────────
   useEffect(() => {
     if (!shipProgress?.active) return;
@@ -1309,6 +1342,8 @@ export default function Orders() {
     es.addEventListener("shipping_progress", (e: MessageEvent) => {
       try {
         const d = JSON.parse(e.data);
+        // Ignore progress from other concurrent dispatches in this account.
+        if (bulkShipJobId && d.jobId && d.jobId !== bulkShipJobId) return;
         // Some carriers emit total=0 on progress events even though the
         // original request contained N orders. Preserve the original total.
         // The final event can also omit complete; completed per-order results
@@ -1368,7 +1403,7 @@ export default function Orders() {
     });
     es.onerror = () => { /* keep alive — server may not be streaming yet */ };
     return () => es.close();
-  }, [shipProgress?.active]);
+  }, [shipProgress?.active, bulkShipJobId]);
 
   // Auto-select the only account when exactly one is connected
   useEffect(() => {
@@ -1576,11 +1611,13 @@ export default function Orders() {
 
     // Close selection modal and open progress modal immediately
     setShowBulkShipModal(false);
+    setBulkShipJobId(null);
     setShipProgress({ active: true, done: 0, total: orderIds.length, shipped: 0, failed: 0, provider });
 
     bulkShip.mutate({ orderIds, provider, accountId }, {
       onSuccess: (data) => {
         if (data.queued) {
+          setBulkShipJobId(data.jobId || null);
           // Background processing — keep progress bar active; SSE events will
           // update the counts and set active:false when complete.
           setSelectedIds(new Set());
