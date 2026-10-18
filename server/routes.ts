@@ -4,9 +4,9 @@ import { storage } from "./storage";
 import { singleFlight } from "./utils/single-flight";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { createHmac, randomBytes } from "crypto";
+import { createHmac, createHash, randomBytes } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
-import { db } from "./db";
+import { db, pool } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
@@ -6978,6 +6978,11 @@ export async function registerRoutes(
 
   // ─── YouCan OAuth webhook — order.create (signed with YOUCAN_CLIENT_SECRET) ──
   app.post("/api/webhooks/youcan/order/:webhookKey", async (req: any, res: any) => {
+    // Lock this external order across Railway instances (not just in-process).
+    // Held until processing finishes so concurrent deliveries cannot both
+    // pass the SELECT-based duplicate guard and create separate orders.
+    let decboxLockClient: Awaited<ReturnType<typeof pool.connect>> | null = null;
+    let decboxLockId: string | null = null;
     try {
       const { webhookKey } = req.params;
       const integrationRows = await db.select().from(storeIntegrations)
@@ -7105,6 +7110,28 @@ export async function registerRoutes(
       const youcanOrderNumber = isVerifiedDecbox
         ? `YC-${orderRef}-${externalOrderId}`
         : `YC-${orderRef}`;
+      // A per-process mutex is insufficient: Railway may serve concurrent
+      // webhooks from independent instances. Use a PostgreSQL session advisory
+      // lock keyed by SaaS account + immutable YouCan order UUID.
+      // Non-blocking acquisition asks YouCan to retry concurrent deliveries
+      // rather than accepting a second insert or occupying DB pool slots.
+      if (isVerifiedDecbox) {
+        const digest = createHash("sha256").update(`youcan:${storeId}:${externalOrderId}`).digest("hex");
+        const lockKey = BigInt.asIntN(64, BigInt(`0x${digest.slice(0, 16)}`)).toString();
+        const client = await pool.connect();
+        try {
+          const lockResult = await client.query("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lockKey]);
+          if (lockResult.rows[0]?.acquired !== true) {
+            client.release();
+            return res.status(503).json({ message: "YouCan order is being processed; retry delivery" });
+          }
+        } catch (lockError) {
+          client.release();
+          throw lockError;
+        }
+        decboxLockClient = client;
+        decboxLockId = lockKey;
+      }
       // Duplicate check: use an immutable provider ID for the affected shop.
       const existingOrder = await storage.getOrderByNumber(storeId, youcanOrderNumber);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
@@ -7269,6 +7296,18 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[YOUCAN-WEBHOOK] Error:", err);
       res.status(500).json({ success: false, message: "Processing failed" });
+    } finally {
+      if (decboxLockClient && decboxLockId !== null) {
+        try {
+          await decboxLockClient.query("SELECT pg_advisory_unlock($1::bigint)", [decboxLockId]);
+        } catch (unlockError: any) {
+          // Discard connection if its lock state cannot be confirmed.
+          console.error("[YOUCAN-WEBHOOK] Could not release Decbox idempotency lock", unlockError?.message);
+          decboxLockClient.release(true);
+          decboxLockClient = null;
+        }
+        if (decboxLockClient) decboxLockClient.release();
+      }
     }
   });
 
