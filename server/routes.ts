@@ -6992,7 +6992,10 @@ export async function registerRoutes(
       if (!integration || !integration.oauthAccessToken || integration.isActive !== 1) {
         // Scope recovery to the exact rejected decbox webhook observed in delivery logs.
         // Unrelated expired keys keep their pre-existing 404 behavior.
-        if (webhookKey !== "09fc7ec0b44db2b1ea5e5c9f011eb148a996e2e2ad656c4f") {
+        if (![ 
+          "09fc7ec0b44db2b1ea5e5c9f011eb148a996e2e2ad656c4f",
+          "605c4648f62e27920d3e5271311381fff12ad5240e4f3e948d7e8b8d003e02f5",
+        ].includes(webhookKey)) {
           return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
         }
         const raw = (req as any).webhookRawBody as Buffer | undefined;
@@ -7008,8 +7011,10 @@ export async function registerRoutes(
           return res.status(401).json({ message: "Invalid signature" });
         }
         const claimedShopId = String((req.body as any)?.data?.store_id ?? (req.body as any)?.store_id ?? "").trim();
-        if (!claimedShopId) {
-          console.warn("[YOUCAN-WEBHOOK] Unknown key without shop ID");
+        // Do not attempt recovery for any store other than the one observed
+        // in the failed decbox deliveries. All other shops retain 404.
+        if (claimedShopId !== "618e30e3-3a67-41aa-83c2-e47eadb614d0") {
+          console.warn("[YOUCAN-WEBHOOK] Legacy key shop ID not eligible for decbox recovery");
           return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
         }
         const activeConnections = await db.select().from(storeIntegrations)
