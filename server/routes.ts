@@ -525,13 +525,13 @@ export async function registerRoutes(
   const chargePayload = z.object({
     name: z.string().trim().min(1).max(200),
     amount: z.number().finite().positive().max(100000000),
-    expenseDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+    expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     note: z.string().max(2000).optional().nullable(),
   });
   app.get("/api/charges", requireAuth, async (req, res) => {
     try {
       const month = String(req.query.month || "");
-      if (!/^\\d{4}-(0[1-9]|1[0-2])$/.test(month)) return res.status(400).json({message:"Mois invalide"});
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return res.status(400).json({message:"Mois invalide"});
       const storeId = req.user!.storeId!;
       const rows = await db.select().from(generalCharges).where(and(
         eq(generalCharges.storeId, storeId),
