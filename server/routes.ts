@@ -2486,6 +2486,16 @@ export async function registerRoutes(
     }
   });
 
+  // Short-lived dispatch results for clients that miss the final SSE event.
+  // Only the requesting account can read its job; no shipping is retried by polling.
+  const bulkShipJobs = new Map<string, {storeId:number; done:number; total:number; shipped:number; failed:number; complete:boolean; results:any[]; updatedAt:number}>();
+  app.get("/api/orders/bulk-ship/progress/:jobId", requireAuth, (req, res) => {
+    const job = bulkShipJobs.get(req.params.jobId);
+    if (!job || job.storeId !== req.user!.storeId) return res.status(404).json({message:"Suivi d'expédition indisponible"});
+    res.setHeader("Cache-Control", "no-store");
+    res.json(job);
+  });
+
   app.post("/api/orders/bulk-ship", requireAuth, requireActiveSubscription, async (req, res) => {
     req.setTimeout(60000); // 60s for carrier API calls
     res.setTimeout(60000);
@@ -2577,7 +2587,11 @@ export async function registerRoutes(
       const activeAccounts = allCarrierAccounts.filter((a: any) => a.isActive === 1);
 
       // ── Reply IMMEDIATELY — processing continues in background ───
-      res.status(202).json({ queued: true, total });
+      const jobId = randomBytes(18).toString("hex");
+      bulkShipJobs.set(jobId, {storeId, done:0, total, shipped:0, failed:0, complete:false, results:[], updatedAt:Date.now()});
+      // Expire completed/abandoned jobs to keep memory bounded.
+      setTimeout(() => bulkShipJobs.delete(jobId), 15 * 60 * 1000).unref?.();
+      res.status(202).json({ queued: true, total, jobId });
 
       // ── Background processing ─────────────────────────────────────
       setImmediate(async () => {
@@ -2660,9 +2674,13 @@ export async function registerRoutes(
           return matched || raw;
         };
 
-        const broadcastProgress = () => broadcastToStore(storeId, 'shipping_progress', {
-          done, total, shipped: shippedCount, failed: failedCount,
-        });
+        const broadcastProgress = () => {
+          const job = bulkShipJobs.get(jobId);
+          if (job) Object.assign(job, {done,total,shipped:shippedCount,failed:failedCount,updatedAt:Date.now()});
+          broadcastToStore(storeId, 'shipping_progress', {
+            jobId, done, total, shipped: shippedCount, failed: failedCount,
+          });
+        };
 
         try {
           // ── Batch processing (10 simultaneous, DB writes collected end-of-run) ─
@@ -3069,9 +3087,14 @@ export async function registerRoutes(
         } catch (bgErr) {
           console.error("[BULK-SHIP:BG] Unexpected error in background job:", bgErr);
         } finally {
-          // Final broadcast — always sent, even on partial failure
+          // Persist the final result for polling clients BEFORE the SSE event.
+          const job = bulkShipJobs.get(jobId);
+          if (job) Object.assign(job, {
+            done:total,total,shipped:shippedCount,failed:failedCount,
+            complete:true,results,retries:retryCount,updatedAt:Date.now(),
+          });
           broadcastToStore(storeId, 'shipping_progress', {
-            done: total, total, shipped: shippedCount, failed: failedCount,
+            jobId, done: total, total, shipped: shippedCount, failed: failedCount,
             complete: true, results, retries: retryCount,
           });
           console.log(`[BULK-SHIP:BG] Done — ${shippedCount} shipped, ${failedCount} failed out of ${total}`);
