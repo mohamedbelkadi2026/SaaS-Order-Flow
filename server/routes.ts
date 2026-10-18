@@ -7091,8 +7091,22 @@ export async function registerRoutes(
         }
       }
 
-      // Duplicate check
-      const existingOrder = await storage.getOrderByNumber(storeId, `YC-${orderRef}`);
+      // Decbox has order refs that collide with older YouCan shops in the
+      // same SaaS account (for example YC-110). Use the provider's immutable
+      // order UUID for this verified shop. The name is stable across retries,
+      // and legacy orders from other shops are never mistaken for duplicates.
+      // Keep all other YouCan shops' numbering unchanged.
+      const isVerifiedDecbox = storeId === 91 && integration.id === 86
+        && String(payload.store_id || "").trim() === "618e30e3-3a67-41aa-83c2-e47eadb614d0";
+      const externalOrderId = String(payload.id || "").trim();
+      if (isVerifiedDecbox && !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(externalOrderId)) {
+        return res.status(400).json({ message: "Missing valid YouCan order ID" });
+      }
+      const youcanOrderNumber = isVerifiedDecbox
+        ? `YC-${orderRef}-${externalOrderId}`
+        : `YC-${orderRef}`;
+      // Duplicate check: use an immutable provider ID for the affected shop.
+      const existingOrder = await storage.getOrderByNumber(storeId, youcanOrderNumber);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
 
       // Paywall check
@@ -7216,7 +7230,7 @@ export async function registerRoutes(
       const order = await storage.createOrder({
         storeId,
         magasinId: resolvedMagasinId,
-        orderNumber: `YC-${orderRef}`,
+        orderNumber: youcanOrderNumber,
         customerName,
         customerPhone,
         customerAddress,
@@ -7242,9 +7256,9 @@ export async function registerRoutes(
       await storage.incrementMonthlyOrders(storeId);
       await storage.createIntegrationLog({ storeId, integrationId: integration.id, provider: "youcan", action: "order_synced", status: "success", message: `Commande YouCan YC-${orderRef} importée` });
 
-      emitNewOrder(storeId, { id: order.id, orderNumber: `YC-${orderRef}`, customerName, status: "nouveau", source: "youcan" });
+      emitNewOrder(storeId, { id: order.id, orderNumber: youcanOrderNumber, customerName, status: "nouveau", source: "youcan" });
       notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: order.totalPrice || 0 });
-      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: `YC-${orderRef}` });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: youcanOrderNumber });
 
       res.json({ success: true, orderId: order.id });
 
