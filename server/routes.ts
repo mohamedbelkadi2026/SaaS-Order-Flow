@@ -6985,61 +6985,53 @@ export async function registerRoutes(
         .limit(1);
       let integration = integrationRows[0];
 
-      // YouCan can keep delivering to an obsolete subscription after a shop is
-      // reconnected and its webhook URL changes. Resolve such deliveries ONLY
-      // after verifying the provider signature and matching an unambiguous,
-      // active OAuth connection by YouCan's authoritative shop ID.
+      // Backward compatibility for the decbox YouCan store whose legacy
+      // subscriptions still use the old shared webhook URLs. This must NOT
+      // change routing for any existing, correctly configured integration.
+      // Store #14 was identified by the account owner as the decbox connection.
       if (!integration || !integration.oauthAccessToken || integration.isActive !== 1) {
-        // Scope recovery to the exact rejected decbox webhook observed in delivery logs.
-        // Unrelated expired keys keep their pre-existing 404 behavior.
-        if (![ 
-          "09fc7ec0b44db2b1ea5e5c9f011eb148a996e2e2ad656c4f",
-          "605c4648f62e27920d3e5271311381fff12ad5240e4f3e948d7e8b8d003e02f5",
-        ].includes(webhookKey)) {
-          return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
-        }
         const raw = (req as any).webhookRawBody as Buffer | undefined;
-        const receivedSignature = req.headers["x-youcan-signature"] as string | undefined;
+        const signature = req.headers["x-youcan-signature"] as string | undefined;
         const secret = process.env.YOUCAN_CLIENT_SECRET;
-        if (!raw || !receivedSignature || !secret) {
-          console.warn("[YOUCAN-WEBHOOK] Unknown key without verifiable signature");
+        // Unlike the normal key-specific handler, legacy recovery requires
+        // a valid YouCan HMAC; never accept unsigned payloads here.
+        if (!raw || !signature || !secret) {
+          console.warn("[YOUCAN-WEBHOOK] Unknown key without verified signature");
           return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
         }
-        const expectedSignature = createHmac("sha256", secret).update(raw).digest("hex");
-        if (receivedSignature !== expectedSignature) {
+        const expected = createHmac("sha256", secret).update(raw).digest("hex");
+        if (signature !== expected) {
           console.warn("[YOUCAN-WEBHOOK] Unknown key with invalid signature");
           return res.status(401).json({ message: "Invalid signature" });
         }
         const claimedShopId = String((req.body as any)?.data?.store_id ?? (req.body as any)?.store_id ?? "").trim();
-        // Do not attempt recovery for any store other than the one observed
-        // in the failed decbox deliveries. All other shops retain 404.
         if (claimedShopId !== "618e30e3-3a67-41aa-83c2-e47eadb614d0") {
-          console.warn("[YOUCAN-WEBHOOK] Legacy key shop ID not eligible for decbox recovery");
           return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
         }
-        const activeConnections = await db.select().from(storeIntegrations)
-          .where(and(eq(storeIntegrations.provider, "youcan"), eq(storeIntegrations.isActive, 1)));
-        const matches = activeConnections.filter((row: any) => {
-          if (!row.oauthAccessToken) return false;
-          try {
-            const credentials = JSON.parse(row.credentials || "{}");
-            const savedId = String(credentials.youcanShopId || "").trim();
-            const savedDomain = String(credentials.youcanShopDomain || "")
-              .trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
-            // A known shop ID must match. Legacy rows without a stored ID
-            // can match only the exact domain of the affected shop.
-            return savedId
-              ? savedId === claimedShopId
-                && (!savedDomain || savedDomain === "decbox.youcan.store")
-              : savedDomain === "decbox.youcan.store";
-          } catch { return false; }
-        });
-        if (matches.length !== 1) {
-          console.warn("[YOUCAN-WEBHOOK] Legacy key could not be matched unambiguously", { matchCount: matches.length });
-          return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
+        // Resolve only the explicitly identified integration: never guess
+        // from the first YouCan connection or match another merchant's shop.
+        const [legacyIntegration] = await db.select().from(storeIntegrations)
+          .where(and(eq(storeIntegrations.id, 14), eq(storeIntegrations.provider, "youcan"), eq(storeIntegrations.isActive, 1)))
+          .limit(1);
+        if (!legacyIntegration) {
+          console.warn("[YOUCAN-WEBHOOK] Decbox connection #14 not active");
+          return res.status(404).json({ message: "Decbox YouCan connection not available" });
         }
-        integration = matches[0];
-        console.info("[YOUCAN-WEBHOOK] Recovered signed delivery for existing shop connection", { integrationId: integration.id });
+        // Reject an explicitly different stored identity. Null/missing
+        // credentials are expected for old integrations created before
+        // reliable shop identification became available.
+        let identity: any = {};
+        try { identity = JSON.parse(legacyIntegration.credentials || "{}"); } catch {}
+        const storedShopId = String(identity.youcanShopId || "").trim();
+        const storedDomain = String(identity.youcanShopDomain || "").trim().toLowerCase()
+          .replace(/^https?:\/\//, "").replace(/\/$/, "");
+        if ((storedShopId && storedShopId !== claimedShopId)
+          || (storedDomain && storedDomain !== "decbox.youcan.store")) {
+          console.warn("[YOUCAN-WEBHOOK] Decbox identity conflicts with integration #14");
+          return res.status(404).json({ message: "YouCan connection identity mismatch" });
+        }
+        integration = legacyIntegration;
+        console.info("[YOUCAN-WEBHOOK] Recovered decbox delivery through integration #14", { integrationId: integration.id });
       }
 
       // Use webhookRawBody captured by global middleware (server/index.ts) before express.json().
