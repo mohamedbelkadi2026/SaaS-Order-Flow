@@ -6989,7 +6989,9 @@ export async function registerRoutes(
       }
 
       const storeId = integration.storeId;
-      // Current YouCan order.created events wrap the order inside data. Keep legacy flat payloads.\n      const envelope = req.body as any;\n      const payload = envelope?.data && typeof envelope.data === "object" ? envelope.data : envelope;
+      // Accept both flat and data-wrapped YouCan order payloads.
+      const envelope = req.body as any;
+      const payload = envelope?.data && typeof envelope.data === "object" ? envelope.data : envelope;
       console.log("[YOUCAN-WEBHOOK] Payload parsed — ref:", payload.ref, "id:", payload.id);
       const orderRef = payload.ref || payload.id;
       if (!orderRef) return res.status(400).json({ message: "Missing order ref" });
@@ -8505,7 +8507,7 @@ function ensureHeaders(sheet) {
       // merchant's entire list. Identify that shop before touching DB rows.
       let shopInfo: any = null;
       try {
-        const storeResp = await fetch("https://api.youcan.shop/me", {
+        const storeResp = await fetch("https://api.youcan.shop/store", {
           headers: { Authorization: `Bearer ${tokens.access_token}` },
           signal: AbortSignal.timeout(10000),
         });
@@ -8516,7 +8518,7 @@ function ensureHeaders(sheet) {
       // YouCan may nest store metadata under data/store or return an empty
       // /store response despite a successful OAuth authorization.
       const shop = shopInfo?.data?.store || shopInfo?.data || shopInfo?.store || shopInfo;
-      const shopId = String(shop?.store_id ?? shop?.store_id ?? shop?.id ?? shop?.uuid ?? "").trim();
+      const shopId = String(shop?.store_id ?? shop?.id ?? shop?.uuid ?? "").trim();
       const shopDomain = String(shop?.domain ?? shop?.subdomain ?? shop?.url ?? "").trim().toLowerCase();
       const shopName = String(shop?.name ?? "").trim();
       // Never block a valid OAuth connection just because /store metadata is
@@ -8560,7 +8562,7 @@ function ensureHeaders(sheet) {
         const subResp = await fetch("https://api.youcan.shop/resthooks/subscribe", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.access_token}` },
-          body: JSON.stringify({ event: "order.created", target_url: targetUrl }),
+          body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
         });
         const subJson = await subResp.json();
         console.log("[YOUCAN-OAUTH] resthooks/subscribe response:", subJson);
@@ -8628,7 +8630,7 @@ function ensureHeaders(sheet) {
       const response = await fetch("https://api.youcan.shop/resthooks/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ event: "order.created", target_url: targetUrl }),
+        body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
         signal: AbortSignal.timeout(15000),
       });
       const raw = await response.text();
@@ -8644,7 +8646,7 @@ function ensureHeaders(sheet) {
       let verified = false;
       let verificationReason = "Liste des resthooks indisponible";
       try {
-        const hooksResponse = await fetch("https://api.youcan.shop/resthooks/list", {
+        const hooksResponse = await fetch("https://api.youcan.shop/resthooks", {
           headers: { Authorization: `Bearer ${token}` },
           signal: AbortSignal.timeout(10000),
         });
@@ -8655,7 +8657,7 @@ function ensureHeaders(sheet) {
             : Array.isArray(hooksBody?.resthooks) ? hooksBody.resthooks : null;
           if (hooks) {
             verified = hooks.some((hook: any) =>
-              String(hook.event ?? hook.name ?? hook.topic ?? "") === "order.created"
+              String(hook.event ?? hook.name ?? hook.topic ?? "") === "order.create"
               && String(hook.target_url ?? hook.url ?? hook.targetUrl ?? "") === targetUrl
             );
             verificationReason = verified ? "Subscription retrouvée" : "Subscription non trouvée dans la liste YouCan";
@@ -8694,8 +8696,8 @@ function ensureHeaders(sheet) {
       if (!token) return res.json({tokenValid:false,shopIdentified:false,webhookStatus:"unknown",message:"Token YouCan indisponible"});
       const headers = {Authorization:`Bearer ${token}`};
       const [shopResult,hooksResult] = await Promise.allSettled([
-        fetch("https://api.youcan.shop/me",{headers,signal:AbortSignal.timeout(10000)}),
-        fetch("https://api.youcan.shop/resthooks/list",{headers,signal:AbortSignal.timeout(10000)}),
+        fetch("https://api.youcan.shop/store",{headers,signal:AbortSignal.timeout(10000)}),
+        fetch("https://api.youcan.shop/resthooks",{headers,signal:AbortSignal.timeout(10000)}),
       ]);
       const shopResponse = shopResult.status==="fulfilled" ? shopResult.value : null;
       const hooksResponse = hooksResult.status==="fulfilled" ? hooksResult.value : null;
@@ -8712,7 +8714,7 @@ function ensureHeaders(sheet) {
       const matches=list?.filter((h:any)=>{
         const event=String(h.event ?? h.name ?? h.topic ?? "");
         const target=String(h.target_url ?? h.url ?? h.targetUrl ?? "");
-        return event==="order.created" && target.includes(targetPath);
+        return event==="order.create" && target.includes(targetPath);
       }) ?? [];
       const webhookStatus=!hooksResponse?.ok || !list ? "unknown" : matches.length ? "subscribed" : "missing";
       console.info("[YOUCAN-DIAGNOSTIC]",{integrationId:id,shopHttp:shopResponse?.status,hooksHttp:hooksResponse?.status,identified:!!(shopId||shopName),webhookStatus});
@@ -8738,7 +8740,7 @@ function ensureHeaders(sheet) {
     const accessToken = await refreshYouCanToken(integration);
     if (!accessToken) return res.status(400).json({ message: "token_unavailable" });
     try {
-      const resp = await fetch("https://api.youcan.shop/resthooks/list", {
+      const resp = await fetch("https://api.youcan.shop/resthooks", {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const json = await resp.json();
