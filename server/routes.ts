@@ -6988,7 +6988,7 @@ export async function registerRoutes(
       // Backward compatibility for the decbox YouCan store whose legacy
       // subscriptions still use the old shared webhook URLs. This must NOT
       // change routing for any existing, correctly configured integration.
-      // Store #14 was identified by the account owner as the decbox connection.
+      // Production diagnostics confirmed integration 86 for account 91 belongs to decbox via signed-in GET /me.
       if (!integration || !integration.oauthAccessToken || integration.isActive !== 1) {
         const raw = (req as any).webhookRawBody as Buffer | undefined;
         const signature = req.headers["x-youcan-signature"] as string | undefined;
@@ -7011,10 +7011,10 @@ export async function registerRoutes(
         // Resolve only the explicitly identified integration: never guess
         // from the first YouCan connection or match another merchant's shop.
         const [legacyIntegration] = await db.select().from(storeIntegrations)
-          .where(and(eq(storeIntegrations.id, 14), eq(storeIntegrations.provider, "youcan"), eq(storeIntegrations.isActive, 1)))
+          .where(and(eq(storeIntegrations.id, 86), eq(storeIntegrations.storeId, 91), eq(storeIntegrations.provider, "youcan"), eq(storeIntegrations.isActive, 1)))
           .limit(1);
         if (!legacyIntegration) {
-          console.warn("[YOUCAN-WEBHOOK] Decbox connection #14 not active");
+          console.warn("[YOUCAN-WEBHOOK] Decbox connection not active");
           return res.status(404).json({ message: "Decbox YouCan connection not available" });
         }
         // Reject an explicitly different stored identity. Null/missing
@@ -7027,11 +7027,11 @@ export async function registerRoutes(
           .replace(/^https?:\/\//, "").replace(/\/$/, "");
         if ((storedShopId && storedShopId !== claimedShopId)
           || (storedDomain && storedDomain !== "decbox.youcan.store")) {
-          console.warn("[YOUCAN-WEBHOOK] Decbox identity conflicts with integration #14");
+          console.warn("[YOUCAN-WEBHOOK] Decbox identity conflicts with decbox integration");
           return res.status(404).json({ message: "YouCan connection identity mismatch" });
         }
         integration = legacyIntegration;
-        console.info("[YOUCAN-WEBHOOK] Recovered decbox delivery through integration #14", { integrationId: integration.id });
+        console.info("[YOUCAN-WEBHOOK] Recovered decbox delivery through decbox integration", { integrationId: integration.id });
       }
 
       // Use webhookRawBody captured by global middleware (server/index.ts) before express.json().
@@ -8575,7 +8575,7 @@ function ensureHeaders(sheet) {
       // merchant's entire list. Identify that shop before touching DB rows.
       let shopInfo: any = null;
       try {
-        const storeResp = await fetch("https://api.youcan.shop/store", {
+        const storeResp = await fetch("https://api.youcan.shop/me", {
           headers: { Authorization: `Bearer ${tokens.access_token}` },
           signal: AbortSignal.timeout(10000),
         });
@@ -8583,18 +8583,15 @@ function ensureHeaders(sheet) {
       } catch (storeErr: any) {
         console.warn("[YOUCAN-OAUTH] Shop identification failed:", storeErr.message);
       }
-      // YouCan may nest store metadata under data/store or return an empty
-      // /store response despite a successful OAuth authorization.
+      // YouCan /me identifies the authorized shop. Retain nested payload support.
       const shop = shopInfo?.data?.store || shopInfo?.data || shopInfo?.store || shopInfo;
       const shopId = String(shop?.store_id ?? shop?.id ?? shop?.uuid ?? "").trim();
       const shopDomain = String(shop?.domain ?? shop?.subdomain ?? shop?.url ?? "").trim().toLowerCase();
       const shopName = String(shop?.name ?? "").trim();
-      // Never block a valid OAuth connection just because /store metadata is
-      // unavailable. Create a separate, unnamed integration instead of
-      // overwriting an existing merchant's YouCan shop. Reauthorizing such a
-      // shop may create a duplicate until the provider returns a stable ID.
+      // Never create an unidentified duplicate when the identity endpoint fails.
       if (!shopId && !shopDomain) {
-        console.warn("[YOUCAN-OAUTH] Shop metadata unavailable; preserving existing stores and creating an independent connection");
+        console.error("[YOUCAN-OAUTH] /me returned no shop identity; refusing to create unidentified connection");
+        return res.redirect("/integrations?youcan_error=shop_identity_unavailable");
       }
       const connections = await db.select().from(storeIntegrations)
         .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
@@ -8764,7 +8761,7 @@ function ensureHeaders(sheet) {
       if (!token) return res.json({tokenValid:false,shopIdentified:false,webhookStatus:"unknown",message:"Token YouCan indisponible"});
       const headers = {Authorization:`Bearer ${token}`};
       const [shopResult,hooksResult] = await Promise.allSettled([
-        fetch("https://api.youcan.shop/store",{headers,signal:AbortSignal.timeout(10000)}),
+        fetch("https://api.youcan.shop/me",{headers,signal:AbortSignal.timeout(10000)}),
         fetch("https://api.youcan.shop/resthooks",{headers,signal:AbortSignal.timeout(10000)}),
       ]);
       const shopResponse = shopResult.status==="fulfilled" ? shopResult.value : null;
