@@ -5690,6 +5690,25 @@ export async function registerRoutes(
     body: Record<string, any>,
   ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string }> {
     body = body || {};   // guard against undefined when caller has no body (e.g. GET ping)
+    // Sendit sends "delivery.status.update" as an event NAME, not an order
+    // status. Extract only an actual status value from the event payload.
+    // Do not fabricate a carrier status or auto-create missing orders.
+    if ((carrierNameRaw || "").toLowerCase() === "sendit") {
+      const data = body.data && typeof body.data === "object" ? body.data : {};
+      const detail = body.payload && typeof body.payload === "object" ? body.payload : {};
+      const realStatus = (
+        body.newStatus || body.new_status || body.status || body.statut ||
+        data.newStatus || data.new_status || data.status || data.statut ||
+        detail.newStatus || detail.new_status || detail.status || detail.statut || ""
+      );
+      if (realStatus && typeof realStatus === "string" && realStatus !== "delivery.status.update") {
+        body = { ...body, status: realStatus };
+      } else {
+        // Unknown statuses must not be mapped to in_progress or written as
+        // literal "delivery.status.update". Matching is still logged.
+        body = { ...body, event: "", status: "" };
+      }
+    }
     const rawPayload = JSON.stringify(body) || '{}';   // JSON.stringify(undefined) → undefined, not a string
     const carrierName = CARRIER_NAME_ALIASES[(carrierNameRaw || '').toLowerCase().trim()] || carrierNameRaw;
     if (carrierName !== carrierNameRaw) {
@@ -5787,6 +5806,13 @@ export async function registerRoutes(
       ) ||
       ""
     ).trim();
+
+    // A Sendit event without a real status cannot change the order. Carrier
+    // event names are not statuses. Log it, without marking any order delivered.
+    if (carrierName.toLowerCase() === "sendit" && !body.status) {
+      console.warn("[SENDIT-WEBHOOK] Missing real parcel status; event ignored safely");
+      return { tracked: false };
+    }
 
     // rawStatus is normalised (lowercased + trimmed) for fuzzy matching only
     const rawStatus = rawText.toLowerCase().trim();
