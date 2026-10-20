@@ -13131,6 +13131,9 @@ function ensureHeaders(sheet) {
         distributionMethod: z.enum(["auto", "pourcentage", "produit", "region"]).optional(),
         isActive: z.number().int().min(0).max(1).optional(),
         roleInStore: z.enum(["confirmation", "suivi", "both"]).optional(),
+        // Team.tsx sends 1/0. Without this schema field Zod strips it
+        // before upsertStoreAgentSetting, silently losing Chef d'équipe.
+        isTeamLead: z.union([z.literal(0), z.literal(1)]).optional(),
         leadPercentage: z.number().min(0).max(100).optional(),
         allowedProductIds: z.array(z.number()).optional(),
         allowedRegions: z.array(z.string()).optional(),
