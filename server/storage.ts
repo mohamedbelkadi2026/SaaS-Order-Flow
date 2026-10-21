@@ -4443,7 +4443,8 @@ export class DatabaseStorage implements IStorage {
       agentId: orders.lastActionBy,
       total: count(),
       confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
-      delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
+      // Livrées uses creation date separately (not the last action date).
+      delivered: sql<number>`0`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé par client', 'Annulé (faux numéro)', 'Annulé (double)'))`,
       nouveaux: sql<number>`count(*) filter (where lower(${orders.status}) = 'nouveau')`,
       rappels: sql<number>`count(*) filter (where lower(${orders.status}) like 'rappel%')`,
@@ -4455,11 +4456,47 @@ export class DatabaseStorage implements IStorage {
       .where(and(...conditions))
       .groupBy(orders.lastActionBy);
 
-    return result.map(r => ({
+    // Date de création, same cohort as Dashboard's Date de création filter.
+    // Attribute each delivered order to its assigned agent, not whoever
+    // happened to make the latest unrelated update.
+    const deliveredConditions = [
+      eq(orders.storeId, storeId),
+      sql`${orders.assignedToId} IS NOT NULL`,
+      gte(orders.createdAt, dayStart),
+      lt(orders.createdAt, dayEnd),
+      eq(orders.status, "delivered"),
+    ];
+    if (options?.magasinId != null) {
+      deliveredConditions.push(eq(orders.magasinId, options.magasinId));
+    }
+    const deliveredRows = await db.select({
+      agentId: orders.assignedToId,
+      delivered: count(),
+    }).from(orders).where(and(...deliveredConditions)).groupBy(orders.assignedToId);
+    const deliveredByAgent = new Map(deliveredRows.map(r => [r.agentId!, Number(r.delivered)]));
+    const resultAgents = new Set(result.map(r => r.agentId));
+    const combined = [
+      ...result,
+      ...deliveredRows.filter(r => !resultAgents.has(r.agentId)).map(r => ({
+        agentId: r.agentId,
+        total: 0,
+        confirmed: 0,
+        delivered: 0,
+        cancelled: 0,
+        nouveaux: 0,
+        rappels: 0,
+        injoignables: 0,
+        boiteVocale: 0,
+        pasDeReponse: 0,
+        avgResponseMinutes: null,
+      })),
+    ];
+
+    return combined.map(r => ({
       agentId: r.agentId!,
       total: Number(r.total),
       confirmed: Number(r.confirmed),
-      delivered: Number(r.delivered),
+      delivered: deliveredByAgent.get(r.agentId!) ?? 0,
       cancelled: Number(r.cancelled),
       nouveaux: Number(r.nouveaux),
       rappels: Number(r.rappels),
