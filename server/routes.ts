@@ -753,13 +753,8 @@ export async function registerRoutes(
     const isAgent = currentUser.role === 'agent';
     const { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign, magasinId, dateType } = req.query as Record<string, string>;
     let { agentId } = req.query as Record<string, string>;
-    // dateType: 'creation' (default) filters everything by createdAt, exactly
-    // as before. 'shipping' additionally filters the shipping/delivery cohort
-    // (totalShipped, delivered, pending, refused, carrier performance,
-    // deliveryRate) by pickupDate instead, so "EXPÉDIÉS" can reconcile with a
-    // carrier's own ship-date-based count. The lead cohort (nouveau, confirme,
-    // revenue, city stats, daily chart, product performance) always stays on
-    // createdAt — only the shipping/delivery KPIs switch.
+    // dateType='creation' filters by createdAt; dateType='shipping' filters
+    // all cards, breakdowns and profit by pickupDate. Keep one cohort.
     const isShippingDateMode = dateType === 'shipping';
     console.log(`[STATS] storeId=${storeId} magasinId=${magasinId ?? 'all'} city=${city ?? 'all'} agent=${agentId ?? 'all'}`);
 
@@ -830,44 +825,26 @@ export async function registerRoutes(
       allOrders = allOrders.filter(o => (o as any).magasinId === mid);
     }
 
-    // Snapshot after every non-date filter, before the createdAt date filter
-    // below — used to build the pickupDate-based shipping cohort when
-    // dateType === 'shipping', since that cohort must NOT be pre-filtered by
-    // createdAt (an order created last month but shipped this month must
-    // still be included).
-    const nonDateFilteredOrders = allOrders;
-
+    // The selected date type scopes ALL dashboard KPIs to one consistent
+    // cohort. Shipping mode uses pickup_date, not order creation date.
+    // Orders without a recorded pickup date cannot be attributed to a
+    // specific shipment day and are excluded from this cohort.
+    if (isShippingDateMode) {
+      allOrders = allOrders.filter(o => (o as any).pickupDate && !Number.isNaN(new Date((o as any).pickupDate).getTime()));
+    }
+    const selectedDate = (o: (typeof allOrders)[number]) =>
+      isShippingDateMode ? (o as any).pickupDate : o.createdAt;
     if (dateFrom) {
-      // Parse as local calendar date (not UTC midnight) to avoid TZ shift
       const [fy, fm, fd] = dateFrom.split('-').map(Number);
       const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
-      allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from);
+      allOrders = allOrders.filter(o => selectedDate(o) && new Date(selectedDate(o)) >= from);
     }
     if (dateTo) {
       const [ty, tm, td] = dateTo.split('-').map(Number);
-      const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
-      allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
+      const to = new Date(ty, tm - 1, td + 1, 0, 0, 0, 0);
+      allOrders = allOrders.filter(o => selectedDate(o) && new Date(selectedDate(o)) < to);
     }
-
-    // ── Shipping/delivery cohort source ───────────────────────────────────
-    // 'creation' (default): reuse the createdAt-filtered `allOrders` — exact
-    // pre-existing behavior.
-    // 'shipping': filter the non-date-filtered set by pickupDate instead,
-    // requiring pickupDate to be set and within [dateFrom, dateTo].
-    let shippedCohortOrders = allOrders;
-    if (isShippingDateMode) {
-      shippedCohortOrders = nonDateFilteredOrders.filter(o => (o as any).pickupDate);
-      if (dateFrom) {
-        const [fy, fm, fd] = dateFrom.split('-').map(Number);
-        const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
-        shippedCohortOrders = shippedCohortOrders.filter(o => new Date((o as any).pickupDate) >= from);
-      }
-      if (dateTo) {
-        const [ty, tm, td] = dateTo.split('-').map(Number);
-        const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
-        shippedCohortOrders = shippedCohortOrders.filter(o => new Date((o as any).pickupDate) <= to);
-      }
-    }
+    const shippedCohortOrders = allOrders;
 
     let totalOrders = allOrders.length;
     // ── Single source of truth for status groupings ──────────────────────────
@@ -1195,6 +1172,7 @@ export async function registerRoutes(
       dateFrom:  profDateFrom,
       dateTo:    profDateTo,
       dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
+      dateType: isShippingDateMode ? 'shipping' : 'creation',
     });
     // computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
     // profResult.totals.netProfit is ALREADY the fully-final profit — each per-product row is
