@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import WhatsappInbox from "@/components/whatsapp-inbox";
+import { uploadWhatsappMedia } from "@/lib/whatsapp-media";
 
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
@@ -2181,12 +2182,7 @@ function WhatsappProductsTab() {
   async function uploadFile(file: File, kind: "image" | "audio" | "video", addUrl: (u: string) => void, setBusy: (b: boolean) => void) {
     setBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`/api/upload/whatsapp-${kind}`, { method: "POST", credentials: "include", body: fd });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || "Échec de l'envoi");
-      const data = await res.json();
-      addUrl(data.url);
+      addUrl(await uploadWhatsappMedia(file, kind));
     } catch (e: any) {
       toast({ title: "Erreur d'envoi", description: e.message, variant: "destructive" });
     } finally {
@@ -2200,12 +2196,7 @@ function WhatsappProductsTab() {
     setBusy(true);
     for (const file of files) {
       try {
-        const fd = new FormData();
-        fd.append("file", file);
-        const res = await fetch(`/api/upload/whatsapp-${kind}`, { method: "POST", credentials: "include", body: fd });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || "Échec de l'envoi");
-        const data = await res.json();
-        addUrl(data.url);
+        addUrl(await uploadWhatsappMedia(file, kind));
       } catch (e: any) {
         toast({ title: `Erreur d'envoi (${file.name})`, description: e.message, variant: "destructive" });
       }
@@ -2230,6 +2221,7 @@ function WhatsappProductsTab() {
           onChange={e => setSelectedId(e.target.value ? Number(e.target.value) : null)}
           className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800"
           data-testid="select-whatsapp-product"
+          disabled={uploadingImage || uploadingAudio || uploadingVideo || saveMutation.isPending}
         >
           <option value="">— Sélectionner —</option>
           {waProducts.map(p => (
