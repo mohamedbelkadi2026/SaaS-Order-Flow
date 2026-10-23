@@ -13,6 +13,7 @@ import {
   TableIcon, ArrowRight, Crown, Image, Music, Video,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import WhatsappInbox from "@/components/whatsapp-inbox";
 
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
@@ -2126,9 +2127,14 @@ function WhatsappProductsTab() {
   const [uploadingAudio, setUploadingAudio] = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState(false);
 
-  const { data: waProducts = [], isLoading } = useQuery<WaProduct[]>({
+  const { data: waProducts = [], isLoading, isError, error, refetch } = useQuery<WaProduct[]>({
     queryKey: ["/api/whatsapp-content/products"],
-    queryFn: () => fetch("/api/whatsapp-content/products", { credentials: "include" }).then(r => r.json()),
+    queryFn: async () => {
+      const res = await fetch("/api/whatsapp-content/products", { credentials: "include" });
+      const data = await res.json().catch(() => { throw new Error("Le service des produits WhatsApp est indisponible."); });
+      if (!res.ok || !Array.isArray(data)) throw new Error(data.message || "Impossible de charger les produits.");
+      return data;
+    },
   });
 
   const selected = waProducts.find(p => p.id === selectedId) || null;
@@ -2233,6 +2239,8 @@ function WhatsappProductsTab() {
           ))}
         </select>
         {isLoading && <p className="text-zinc-400 text-xs">Chargement des produits…</p>}
+        {isError && <p role="alert" className="text-red-600 text-xs">{error.message} <button type="button" onClick={() => refetch()} className="underline">Réessayer</button></p>}
+        {!isLoading && !isError && waProducts.length === 0 && <p className="text-zinc-400 text-xs">Aucun produit actif dans votre inventaire.</p>}
       </div>
 
       {selected && (
@@ -2399,6 +2407,17 @@ function MediaUploadRow({ label, icon, url, busy, accept, preview, onPick, onRem
    TAB 4 — LIVE MONITORING
 ════════════════════════════════════════════════════════════════ */
 function LiveMonitoringTab() {
+  const [mode, setMode] = useState<"whatsapp" | "ai">("whatsapp");
+  return <div className="space-y-4">
+    <div className="flex gap-2">
+      <button type="button" onClick={() => setMode("whatsapp")} className={cn("flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold", mode === "whatsapp" ? "bg-emerald-600 text-white" : "bg-white text-zinc-600")}><MessageCircle className="h-4 w-4" />Mon WhatsApp</button>
+      <button type="button" onClick={() => setMode("ai")} className={cn("rounded-xl border px-4 py-2 text-sm font-semibold", mode === "ai" ? "bg-indigo-900 text-white" : "bg-white text-zinc-600")}>Conversations IA</button>
+    </div>
+    {mode === "whatsapp" ? <WhatsappInbox /> : <AiLiveMonitoringTab />}
+  </div>;
+}
+
+function AiLiveMonitoringTab() {
   const { toast } = useToast();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selectedIdRef = useRef<number | null>(null);

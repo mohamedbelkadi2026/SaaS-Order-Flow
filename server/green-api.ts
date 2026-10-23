@@ -14,10 +14,19 @@ export class GreenApiError extends Error {
 
 /** Never expose upstream bodies/URLs: Green API puts the secret in the URL. */
 export async function greenApiGet(instanceId: string, apiToken: string, method: "getStateInstance" | "qr") {
+  const data = await greenApiRequest(instanceId, apiToken, method);
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new GreenApiError("Réponse Green API invalide.");
+  return data;
+}
+
+export async function greenApiRequest(instanceId: string, apiToken: string,
+  method: "getStateInstance" | "qr" | "getChats" | "getChatHistory" | "sendMessage" | "setSettings", body?: Record<string, unknown>) {
   let response: Response;
   try {
     response = await fetch(greenApiUrl(instanceId, method, apiToken), {
-      headers: { Accept: "application/json" },
+      method: body ? "POST" : "GET",
+      headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(15_000),
       redirect: "error",
     });
@@ -33,7 +42,7 @@ export async function greenApiGet(instanceId: string, apiToken: string, method: 
   }
   try {
     const data = await response.json();
-    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error();
+    if (!data || typeof data !== "object") throw new Error();
     return data;
   } catch {
     throw new GreenApiError("Réponse Green API invalide. Réessayez dans quelques instants.");

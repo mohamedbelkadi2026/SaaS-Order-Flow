@@ -2,6 +2,7 @@ import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { registerGreenApiRoutes } from "./green-api-routes";
+import { registerWhatsappContentRoutes } from "./whatsapp-content-routes";
 import { singleFlight } from "./utils/single-flight";
 import { api } from "@shared/routes";
 import { z } from "zod";
@@ -19717,6 +19718,7 @@ function ensureHeaders(sheet) {
 
   /* ── AI Settings ──────────────────────────────────────────────── */
   registerGreenApiRoutes(app, requireAuth, storage);
+  registerWhatsappContentRoutes(app, requireAuth, storage);
 
   app.get("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     const settings = await storage.getAiSettings(req.user!.storeId!);
