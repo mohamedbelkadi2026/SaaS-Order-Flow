@@ -209,6 +209,7 @@ export const orders = pgTable("orders", {
   lastActionBy: integer("last_action_by").references(() => users.id),
   scheduledFor: date("scheduled_for"),
   pickupDate: timestamp("pickup_date"),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }), // first recorded transition into the current delivered state
   carrierId: integer("carrier_id"),
   carrierName: text("carrier_name"),
   waselexCityId: integer("waselex_city_id"),

@@ -1375,8 +1375,11 @@ export default function Dashboard() {
               <SelectContent>
                 <SelectItem value="creation">Date de création</SelectItem>
                 <SelectItem value="shipping">Date d'expédition</SelectItem>
+                <SelectItem value="delivery">Date de livraison</SelectItem>
               </SelectContent>
             </Select>
+            {filters.dateType === 'delivery' && <p className="w-full text-xs text-muted-foreground">Livrées durant la période, selon la date de passage enregistrée au statut Livrée.</p>}
+            {filters.dateType === 'delivery' && (stats?.deliveryDateMissing ?? 0) > 0 && <p role="status" className="w-full text-xs text-amber-700">{stats.deliveryDateMissing} livrée(s) sans date de livraison enregistrée : exclues de ce filtre.</p>}
           </div>
         </CardContent>
       </Card>

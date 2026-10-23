@@ -1,6 +1,8 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
+import { filterOrdersByDeliveryDate } from "@shared/dashboard-delivery-date";
+import { moroccoToday } from "@shared/morocco-time";
 import { registerGreenApiRoutes } from "./green-api-routes";
 import { registerWhatsappContentRoutes } from "./whatsapp-content-routes";
 import { registerWhatsappMediaRoutes } from "./whatsapp-media-routes";
@@ -759,6 +761,7 @@ export async function registerRoutes(
     // dateType='creation' filters by createdAt; dateType='shipping' filters
     // all cards, breakdowns and profit by pickupDate. Keep one cohort.
     const isShippingDateMode = dateType === 'shipping';
+    const isDeliveryDateMode = dateType === 'delivery';
     console.log(`[STATS] storeId=${storeId} magasinId=${magasinId ?? 'all'} city=${city ?? 'all'} agent=${agentId ?? 'all'}`);
 
     let agentPermissions: Record<string, boolean> = {};
@@ -832,17 +835,21 @@ export async function registerRoutes(
     // cohort. Shipping mode uses pickup_date, not order creation date.
     // Orders without a recorded pickup date cannot be attributed to a
     // specific shipment day and are excluded from this cohort.
-    if (isShippingDateMode) {
+    const deliveryDateMissing = isDeliveryDateMode
+      ? allOrders.filter(o => isDeliveredStatus(o.status) && !o.deliveredAt).length : 0;
+    if (isDeliveryDateMode) {
+      allOrders = filterOrdersByDeliveryDate(allOrders, dateFrom, dateTo);
+    } else if (isShippingDateMode) {
       allOrders = allOrders.filter(o => (o as any).pickupDate && !Number.isNaN(new Date((o as any).pickupDate).getTime()));
     }
     const selectedDate = (o: (typeof allOrders)[number]) =>
-      isShippingDateMode ? (o as any).pickupDate : o.createdAt;
-    if (dateFrom) {
+      isDeliveryDateMode ? o.deliveredAt : isShippingDateMode ? (o as any).pickupDate : o.createdAt;
+    if (dateFrom && !isDeliveryDateMode) {
       const [fy, fm, fd] = dateFrom.split('-').map(Number);
       const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
       allOrders = allOrders.filter(o => selectedDate(o) && new Date(selectedDate(o)) >= from);
     }
-    if (dateTo) {
+    if (dateTo && !isDeliveryDateMode) {
       const [ty, tm, td] = dateTo.split('-').map(Number);
       const to = new Date(ty, tm - 1, td + 1, 0, 0, 0, 0);
       allOrders = allOrders.filter(o => selectedDate(o) && new Date(selectedDate(o)) < to);
@@ -969,7 +976,7 @@ export async function registerRoutes(
     // when dateType==='shipping'. This is what lets EXPÉDIÉS reconcile with
     // a carrier's own ship-date-based count.
     const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
-    const shippedOrders = shippedCohortOrders.filter(o => SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
+    const shippedOrders = shippedCohortOrders.filter(o => (isDeliveryDateMode && isDeliveredStatus(o.status)) || SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
     totalShipped = shippedOrders.length;
     deliveredShipped = shippedOrders.filter(o => isDeliveredStatus(o.status)).length;
     refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
@@ -1036,8 +1043,9 @@ export async function registerRoutes(
       cursor.setDate(cursor.getDate() + 1);
     }
     allOrders.forEach(o => {
-      if (o.createdAt) {
-        const day = new Date(o.createdAt).toISOString().slice(0, 10);
+      const chartDate = isDeliveryDateMode ? selectedDate(o) : o.createdAt;
+      if (chartDate) {
+        const day = isDeliveryDateMode ? moroccoToday(new Date(chartDate)) : new Date(chartDate).toISOString().slice(0, 10);
         if (dailyMap[day] !== undefined) {
           dailyMap[day].total++;
           if (isConfirmedCumulative(o.status)) dailyMap[day].confirmed++;
@@ -1175,7 +1183,7 @@ export async function registerRoutes(
       dateFrom:  profDateFrom,
       dateTo:    profDateTo,
       dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
-      dateType: isShippingDateMode ? 'shipping' : 'creation',
+      dateType: isDeliveryDateMode ? 'delivery' : isShippingDateMode ? 'shipping' : 'creation',
     });
     // computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
     // profResult.totals.netProfit is ALREADY the fully-final profit — each per-product row is
@@ -1200,6 +1208,7 @@ export async function registerRoutes(
 
     res.json({
       totalOrders, nouveau, rappel, confirme, inProgress, cancelled, delivered, refused,
+      deliveryDateMissing,
       injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
       pasReponse, confirmeReporte,
       confirmeReporteDueSoon: reporteCounts.dueSoon,

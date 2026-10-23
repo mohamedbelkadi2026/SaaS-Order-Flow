@@ -6,6 +6,7 @@
 
 import { db } from "../db";
 import { storage } from "../storage";
+import { filterOrdersByDeliveryDate } from "@shared/dashboard-delivery-date";
 import {
   orderItems, products, productVariants, adSpendTracking, generalCharges,
 } from "@shared/schema";
@@ -132,7 +133,7 @@ const norm = (s: string) =>
 
 export async function computeProfitability(
   storeId: number,
-  opts: { dateFrom?: string; dateTo?: string; dateRange?: string; source?: string; dateType?: 'creation' | 'shipping' },
+  opts: { dateFrom?: string; dateTo?: string; dateRange?: string; source?: string; dateType?: 'creation' | 'shipping' | 'delivery' },
 ): Promise<ProfitabilityResult> {
 
   const { cutoff, endDate } = resolveDateRange(opts);
@@ -144,17 +145,22 @@ export async function computeProfitability(
   // apply the same local-calendar JS date filter so both routes always agree
   // on total order count for the same period (fixes 240-vs-201 gap).
   let storeOrders: any[] = await storage.getOrdersByStore(storeId);
+  if (opts.dateType === 'delivery') {
+    storeOrders = filterOrdersByDeliveryDate(storeOrders,
+      opts.dateFrom || (opts.dateRange !== 'all' ? cutoffDateStr : undefined),
+      opts.dateTo || endDateStr);
+  }
   const orderDate = (o: any) => opts.dateType === 'shipping' ? o.pickupDate : o.createdAt;
   if (opts.dateType === 'shipping') {
     storeOrders = storeOrders.filter((o: any) =>
       orderDate(o) && !Number.isNaN(new Date(orderDate(o)).getTime()));
   }
-  if (opts.dateFrom || opts.dateRange !== 'all') {
+  if (opts.dateType !== 'delivery' && (opts.dateFrom || opts.dateRange !== 'all')) {
     storeOrders = storeOrders.filter(
       (o: any) => orderDate(o) && new Date(orderDate(o)) >= cutoff
     );
   }
-  storeOrders = storeOrders.filter(
+  if (opts.dateType !== 'delivery') storeOrders = storeOrders.filter(
     (o: any) => orderDate(o) && new Date(orderDate(o)) <= endDate
   );
 
