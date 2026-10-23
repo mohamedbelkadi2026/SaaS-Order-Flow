@@ -60,7 +60,7 @@ export function useFilteredStats(filters: Record<string, string>, enabled: boole
     // Dashboard stats are expensive and already invalidated after mutations.
     // Keep a short freshness window so remounts/focus changes do not launch
     // duplicate 20–30s calculations and exhaust the PostgreSQL pool.
-    staleTime: 30_000,
+    staleTime: 45_000,
     gcTime: 5 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
@@ -78,9 +78,10 @@ export function useOrders(status?: string) {
     },
     // Order mutations/socket updates already patch or invalidate this cache.
     // Avoid refetch storms when several screens/components mount together.
-    staleTime: 15_000,
+    staleTime: 30_000,
     gcTime: 5 * 60_000,
     refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 }
 
@@ -445,8 +446,12 @@ export function useInventoryStats() {
       if (!res.ok) throw new Error("Failed to fetch inventory stats");
       return res.json();
     },
-    refetchInterval: 15000, // re-fetch every 15s so new shipments appear without a page reload
-    staleTime: 10000,
+    // Inventory is not the live shipment status feed. Avoid four queries
+    // per minute per open tab; mutations can still invalidate this cache.
+    refetchInterval: 60_000,
+    staleTime: 45_000,
+    refetchOnWindowFocus: false,
+    refetchIntervalInBackground: false,
   });
 }
 
