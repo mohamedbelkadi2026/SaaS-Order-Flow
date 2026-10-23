@@ -1199,7 +1199,7 @@ function AiConfirmationTab() {
       if (!res.ok) throw new Error((await res.json()).message);
       return res.json();
     },
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/automation/ai-settings"] }); toast({ title: "Paramètres IA sauvegardés !" }); },
+    onSuccess: (saved) => { setLocalSettings(saved); queryClient.invalidateQueries({ queryKey: ["/api/automation/ai-settings"] }); toast({ title: "Paramètres IA sauvegardés !" }); },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
@@ -1459,9 +1459,9 @@ function AiConfirmationTab() {
                   setGaTestResult(null);
                   try {
                     const instanceId = gaInstanceInput.trim() || s?.greenApiInstanceId;
-                    // Token: use typed value, or (if untouched) can't test without it since it's masked
+                    // The server can reuse this store's saved token for the same instance.
                     const apiToken = gaTokenInput.trim();
-                    if (!instanceId || !apiToken) {
+                    if (!instanceId || (!apiToken && !s?.hasGreenApiCreds)) {
                       setGaTestResult({ ok: false, message: "Entrez Instance ID et API Token pour tester." });
                       return;
                     }
@@ -1470,6 +1470,9 @@ function AiConfirmationTab() {
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ instanceId, apiToken }),
                     });
+                    if (!res.headers.get("content-type")?.includes("application/json")) {
+                      throw new Error("Le service de connexion Green API est indisponible. Actualisez la page puis réessayez.");
+                    }
                     const data = await res.json();
                     setGaTestResult({ ok: !!data.ok, message: data.message || "Erreur" });
                   } catch (e: any) {
@@ -1489,7 +1492,7 @@ function AiConfirmationTab() {
                 onClick={async () => {
                   const instanceId = gaInstanceInput.trim() || s?.greenApiInstanceId;
                   const apiToken = gaTokenInput.trim();
-                  if (!instanceId || !apiToken) {
+                  if (!instanceId || (!apiToken && !s?.hasGreenApiCreds)) {
                     setGaQrError("Entrez Instance ID et API Token pour afficher le QR code.");
                     setGaQrImage(null);
                     setGaQrOpen(true);
@@ -1505,6 +1508,9 @@ function AiConfirmationTab() {
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ instanceId, apiToken }),
                     });
+                    if (!res.headers.get("content-type")?.includes("application/json")) {
+                      throw new Error("Le service de connexion Green API est indisponible. Actualisez la page puis réessayez.");
+                    }
                     const data = await res.json();
                     if (data.ok && data.qrBase64) {
                       setGaQrImage(data.qrBase64);

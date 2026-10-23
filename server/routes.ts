@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
+import { registerGreenApiRoutes } from "./green-api-routes";
 import { singleFlight } from "./utils/single-flight";
 import { api } from "@shared/routes";
 import { z } from "zod";
@@ -19715,6 +19716,8 @@ function ensureHeaders(sheet) {
   });
 
   /* ── AI Settings ──────────────────────────────────────────────── */
+  registerGreenApiRoutes(app, requireAuth, storage);
+
   app.get("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     const settings = await storage.getAiSettings(req.user!.storeId!);
     const DEFAULT_PROMPT = "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب (المقاس، اللون، المدينة) مع الزبون على واتساب، والإجابة على أسئلتهم بشكل طبيعي. إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.";
@@ -19723,6 +19726,8 @@ function ensureHeaders(sheet) {
       ...base,
       hasOpenRouterKey: !!(settings?.openrouterApiKey),
       hasOpenAiKey: !!(settings?.openaiApiKey),
+      hasGreenApiCreds: !!(settings?.greenApiInstanceId && settings?.greenApiApiToken),
+      greenApiApiToken: undefined,
       openaiApiKey: undefined,
       openrouterApiKey: undefined,
     });
@@ -19730,7 +19735,23 @@ function ensureHeaders(sheet) {
 
   app.put("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     try {
-      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel } = req.body;
+      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel, greenApiInstanceId, greenApiApiToken } = req.body;
+      if ((greenApiInstanceId !== undefined && typeof greenApiInstanceId !== "string") ||
+          (greenApiApiToken !== undefined && typeof greenApiApiToken !== "string")) {
+        return res.status(400).json({ message: "Identifiants Green API invalides." });
+      }
+      const gaId = greenApiInstanceId?.trim();
+      const gaToken = greenApiApiToken?.trim();
+      if ((gaId && !/^\d{4,20}$/.test(gaId)) || (gaToken && (/\s/.test(gaToken) || gaToken.length > 512))) {
+        return res.status(400).json({ message: "Identifiants Green API invalides." });
+      }
+      if (gaId) {
+        const previous = await storage.getAiSettings(req.user!.storeId!);
+        if ((!gaToken && gaId !== previous?.greenApiInstanceId?.trim()) ||
+            (!gaToken && !previous?.greenApiApiToken)) {
+          return res.status(400).json({ message: "Entrez le API Token de cette instance Green API." });
+        }
+      }
       // Allow explicitly clearing the key by passing empty string
       const oaiKeyToSave = openaiApiKey === "" ? null : (openaiApiKey?.trim() || undefined);
       const orKeyToSave  = openrouterApiKey === "" ? null : (openrouterApiKey?.trim() || undefined);
@@ -19739,11 +19760,15 @@ function ensureHeaders(sheet) {
         ...(oaiKeyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: oaiKeyToSave } : {}),
         ...(orKeyToSave  !== undefined || openrouterApiKey === "" ? { openrouterApiKey: orKeyToSave } : {}),
         ...(aiModel ? { aiModel } : {}),
+        ...(gaId !== undefined ? { greenApiInstanceId: gaId || null } : {}),
+        ...(gaToken !== undefined ? { greenApiApiToken: gaToken || null } : {}),
       });
       res.json({
         ...s,
         hasOpenRouterKey: !!(s.openrouterApiKey),
         hasOpenAiKey: !!(s.openaiApiKey),
+        hasGreenApiCreds: !!(s.greenApiInstanceId && s.greenApiApiToken),
+        greenApiApiToken: undefined,
         openaiApiKey: undefined,
         openrouterApiKey: undefined,
       });

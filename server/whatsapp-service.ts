@@ -11,6 +11,7 @@
  */
 
 import { storage } from "./storage";
+import { greenApiUrl } from "./green-api";
 
 /** Per-store Green API credentials, with the global env vars as fallback. */
 async function getGreenApiCredentials(storeId: number): Promise<{ instanceId: string; apiToken: string } | null> {
@@ -151,7 +152,7 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
 
   try {
     const chatId = `${formatted}@c.us`;
-    const res = await fetch(`https://api.green-api.com/waInstance${instanceId}/sendMessage/${apiToken}`, {
+    const res = await fetch(greenApiUrl(instanceId, "sendMessage", apiToken), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId, message }),
@@ -216,7 +217,7 @@ export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName:
   try {
     const chatId = `${formatted}@c.us`;
     console.log(`[WA Transport:${storeId}] Sending file via Green API: url=${fileUrl} fileName=${resolvedFileName}`);
-    const res = await fetch(`https://api.green-api.com/waInstance${instanceId}/sendFileByUrl/${apiToken}`, {
+    const res = await fetch(greenApiUrl(instanceId, "sendFileByUrl", apiToken), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId, urlFile: fileUrl, fileName: resolvedFileName, caption }),
@@ -260,7 +261,7 @@ export async function sendWhatsAppButtons(
   const { instanceId, apiToken } = creds;
   try {
     const chatId = `${formatted}@c.us`;
-    const res = await fetch(`https://api.green-api.com/waInstance${instanceId}/sendInteractiveButtonsReply/${apiToken}`, {
+    const res = await fetch(greenApiUrl(instanceId, "sendInteractiveButtonsReply", apiToken), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
