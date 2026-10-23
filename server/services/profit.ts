@@ -132,7 +132,7 @@ const norm = (s: string) =>
 
 export async function computeProfitability(
   storeId: number,
-  opts: { dateFrom?: string; dateTo?: string; dateRange?: string; source?: string },
+  opts: { dateFrom?: string; dateTo?: string; dateRange?: string; source?: string; dateType?: 'creation' | 'shipping' },
 ): Promise<ProfitabilityResult> {
 
   const { cutoff, endDate } = resolveDateRange(opts);
@@ -144,13 +144,18 @@ export async function computeProfitability(
   // apply the same local-calendar JS date filter so both routes always agree
   // on total order count for the same period (fixes 240-vs-201 gap).
   let storeOrders: any[] = await storage.getOrdersByStore(storeId);
+  const orderDate = (o: any) => opts.dateType === 'shipping' ? o.pickupDate : o.createdAt;
+  if (opts.dateType === 'shipping') {
+    storeOrders = storeOrders.filter((o: any) =>
+      orderDate(o) && !Number.isNaN(new Date(orderDate(o)).getTime()));
+  }
   if (opts.dateFrom || opts.dateRange !== 'all') {
     storeOrders = storeOrders.filter(
-      (o: any) => o.createdAt && new Date(o.createdAt) >= cutoff
+      (o: any) => orderDate(o) && new Date(orderDate(o)) >= cutoff
     );
   }
   storeOrders = storeOrders.filter(
-    (o: any) => o.createdAt && new Date(o.createdAt) <= endDate
+    (o: any) => orderDate(o) && new Date(orderDate(o)) <= endDate
   );
 
   // Optional traffic-source filter. This is applied BEFORE every product/cost
