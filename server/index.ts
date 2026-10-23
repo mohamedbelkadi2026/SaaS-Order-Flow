@@ -13,6 +13,7 @@ import { registerRoutes } from "./routes";
 import { registerCallLogRoutes } from "./call-log-routes";
 import { registerAiLandingPageRoutes } from "./ai-landing-page-routes";
 import { registerExpressRelaisRoutes } from "./express-relais-routes";
+import { readExpressRelaisStatus } from "./integrations/express-relais-status";
 import { registerLightfunnelsRoutes } from "./lightfunnels-routes";
 import { registerMetaAdsRoutes } from "./meta-ads-routes";
 import { setupAuth, ensureSessionTable } from "./auth";
@@ -985,7 +986,7 @@ app.use((req, res, next) => {
     try {
       const { db: dbInst } = await import("./db");
       const { carrierAccounts, orders: orderTable } = await import("@shared/schema");
-      const { eq, and, sql, desc } = await import("drizzle-orm");
+      const { eq, and, sql, asc, gt } = await import("drizzle-orm");
       const { ExpressRelaisClient } = await import("./integrations/express-relais");
       const { storage: st } = await import("./storage");
       const { broadcastToStore } = await import("./sse");
@@ -1001,7 +1002,7 @@ app.use((req, res, next) => {
           id: orderTable.id, customerCity: orderTable.customerCity,
         }).from(orderTable).where(and(
           eq(orderTable.storeId, storeId),
-          sql`LOWER(REGEXP_REPLACE(COALESCE(${orderTable.shippingProvider}, ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
+          sql`LOWER(REGEXP_REPLACE(COALESCE(NULLIF(TRIM(${orderTable.shippingProvider}), ''), ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
           sql`LOWER(TRIM(COALESCE(${orderTable.status}, ''))) IN ('delivered','livré','livrée','livré *','livrée *','livraison effectuée')`,
           sql`COALESCE(${orderTable.shippingCost}, 0) <= 0`
         )).limit(250);
@@ -1020,50 +1021,47 @@ app.use((req, res, next) => {
         // Only this transporter's parcels, scoped to the owning merchant.
         // Terminal deliveries are left untouched; returns/refusals are still
         // polled while they await final confirmation.
-        const parcels = await dbInst.select({
+        const state: any = await dbInst.execute(sql`SELECT last_order_id FROM express_relais_sync_cursors WHERE account_id = ${account.id}`);
+        const cursor = Number(state.rows?.[0]?.last_order_id ?? 0);
+        const loadPage = (afterId: number) => dbInst.select({
           id: orderTable.id, orderNumber: orderTable.orderNumber,
           trackNumber: orderTable.trackNumber, status: orderTable.status,
           commentStatus: orderTable.commentStatus,
+          carrierId: orderTable.carrierId,
         }).from(orderTable).where(and(
           eq(orderTable.storeId, storeId),
-          sql`LOWER(REGEXP_REPLACE(COALESCE(${orderTable.shippingProvider}, ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
-          sql`COALESCE(${orderTable.trackNumber}, '') <> ''`,
+          sql`LOWER(REGEXP_REPLACE(COALESCE(NULLIF(TRIM(${orderTable.shippingProvider}), ''), ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
+          gt(orderTable.id, afterId),
+          sql`(${orderTable.carrierId} = ${account.id} OR (${orderTable.carrierId} IS NULL AND (${account.magasinId ?? null}::integer IS NULL OR ${orderTable.magasinId} = ${account.magasinId ?? null})))`,
           sql`LOWER(COALESCE(${orderTable.status}, '')) NOT IN ('delivered','livré','livrée','retour recu','retour reçu','returned','retourné','retournée')`
-        )).orderBy(desc(orderTable.createdAt)).limit(150);
+        )).orderBy(asc(orderTable.id)).limit(150);
+        let parcels = await loadPage(cursor);
+        if (!parcels.length && cursor > 0) parcels = await loadPage(0);
         if (!parcels.length) continue;
         const client = new ExpressRelaisClient({ login: account.apiKey, password: account.apiSecret, environment: "prod" });
         let updated = 0;
+        let lastCheckedId = cursor;
         for (const parcel of parcels) {
+          const previousCursor = lastCheckedId;
+          lastCheckedId = parcel.id;
           try {
             // createAioOrder used idParcelClient=orderNumber, not trackNumber.
-            const response: any = await client.getStatus(String(parcel.orderNumber));
-            const code = response?.codeApi ?? response?.data?.codeApi;
-            if (code != null && !['0','200','5000'].includes(String(code))) {
-              console.warn("[EXPRESS-RELAIS-SYNC] API code", { storeId, orderId: parcel.id, code: String(code) });
+            const response: any = await client.getStatus(String(parcel.orderNumber || parcel.id));
+            const verified = readExpressRelaisStatus(response, String(parcel.orderNumber || parcel.id));
+            if (!verified) {
+              console.warn("[EXPRESS-RELAIS-SYNC] Unverified response", {storeId,orderId:parcel.id});
               continue;
             }
-            const payload = response?.data?.parcel ?? response?.data?.colis ?? response?.data ?? response?.parcel ?? response;
-            const record = Array.isArray(payload) ? payload.find((item:any) =>
-              String(item?.idParcelClient ?? item?.reference ?? "") === String(parcel.orderNumber)
-            ) : payload;
-            if (!record || typeof record !== "object") continue;
-            const raw = [record.statusParcel, record.statutColis, record.deliveryStatus, record.status, record.statut, record.etat]
-              .find((value:unknown) => typeof value === "string" && value.trim()) as string | undefined;
-            if (!raw) continue;
-            const normalized = raw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
-            const nextStatus =
-              /retour (recu|receptionne)|returned|retourne/.test(normalized) ? "retourné" :
-              /retour (ready|pret|en cours)|return (ready|pending)/.test(normalized) ? "RETOUR READY" :
-              /livre|delivered|distribue au client/.test(normalized) ? "delivered" :
-              /refuse|refused/.test(normalized) ? "refused" :
-              /annule par client|cancelled by customer/.test(normalized) ? "Annulé par client" :
-              /annule|cancelled/.test(normalized) ? "Annulé" :
-              /en cours de livraison|mise? en distribution|out for delivery/.test(normalized) ? "Mis en distribution" :
-              /ramasse|picked up|pris en charge/.test(normalized) ? "Ramassé" :
-              /attente ramassage|pending pickup/.test(normalized) ? "Attente De Ramassage" : null;
+            const { raw, status: nextStatus } = verified;
+            if (parcel.carrierId == null) await st.updateOrder(parcel.id, {carrierId:account.id});
             // An unknown code/label must never modify the business status.
             if (!nextStatus) {
               console.info("[EXPRESS-RELAIS-SYNC] unmapped status", {storeId, orderId:parcel.id, raw:raw.slice(0,100)});
+              if (raw !== parcel.commentStatus) {
+                await st.updateOrder(parcel.id, {commentStatus: raw});
+                broadcastToStore(storeId, "order_updated", {orderId:parcel.id, status:parcel.status, commentStatus:raw});
+                updated++;
+              }
               continue;
             }
             if (nextStatus === parcel.status && raw === parcel.commentStatus) continue;
@@ -1077,10 +1075,16 @@ app.use((req, res, next) => {
             updated++;
           } catch (error:any) {
             console.warn("[EXPRESS-RELAIS-SYNC] tracking error", {storeId, orderId:parcel.id, error:String(error?.message || error).slice(0,140)});
-            if (/401|403|WAF_BLOCKED/.test(String(error?.message || ""))) break;
+            if (/401|403|WAF_BLOCKED/.test(String(error?.message || ""))) { lastCheckedId = previousCursor; break; }
+          } finally {
+            await new Promise(resolve => setTimeout(resolve, 300));
           }
-          await new Promise(resolve => setTimeout(resolve, 300));
         }
+        if (lastCheckedId !== cursor) await dbInst.execute(sql`
+          INSERT INTO express_relais_sync_cursors (account_id, last_order_id, updated_at)
+          VALUES (${account.id}, ${lastCheckedId}, now())
+          ON CONFLICT (account_id) DO UPDATE SET last_order_id = EXCLUDED.last_order_id, updated_at = now()
+        `);
         console.info("[EXPRESS-RELAIS-SYNC]", {label, storeId, checked:parcels.length, updated});
       }
     } catch (error:any) {
@@ -1088,7 +1092,7 @@ app.use((req, res, next) => {
     }
   }
   if (runScheduledCarrierSync) {
-    setTimeout(() => void runCarrierPollOnce("expressrelais", () => runExpressRelaisSync("initial")), 6 * 60 * 1000);
+    setTimeout(() => void runCarrierPollOnce("expressrelais", () => runExpressRelaisSync("initial")), 60 * 1000);
     const expressRelaisTimer = setInterval(() => void runCarrierPollOnce("expressrelais", () => runExpressRelaisSync("interval")), 15 * 60 * 1000);
     intervals.push(expressRelaisTimer);
   }

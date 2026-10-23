@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { ExpressRelaisClient } from "./integrations/express-relais";
+import { readExpressRelaisStatus, expressRelaisAccountMatches } from "./integrations/express-relais-status";
 
 export function registerExpressRelaisRoutes(app: Express) {
   // Express Relais notifies this permanent URL when a parcel changes state.
@@ -15,19 +16,23 @@ export function registerExpressRelaisRoutes(app: Express) {
       candidate?.idParcelClient ?? candidate?.id_parcel_client ??
       candidate?.reference ?? candidate?.orderNumber ?? candidate?.order_id ?? ""
     ).trim();
-    if (!orderReference || orderReference.length > 100) {
+    const trackingReference = String(candidate?.idParcelExpress ?? candidate?.trackingNumber ?? candidate?.tracking ?? "").trim();
+    if ((!orderReference && !trackingReference) || orderReference.length > 100 || trackingReference.length > 100) {
       console.warn("[EXPRESS-RELAIS-WEBHOOK] Missing idParcelClient", {storeId, keys:Object.keys(candidate || {}).slice(0,15)});
       return res.status(202).json({received:true,matched:false});
     }
     try {
       const { db } = await import("./db");
       const { orders, carrierAccounts } = await import("@shared/schema");
-      const { and, eq, sql } = await import("drizzle-orm");
+      const { and, eq, or, sql } = await import("drizzle-orm");
       const { storage } = await import("./storage");
       const { broadcastToStore } = await import("./sse");
       const matches = await db.select().from(orders).where(and(
-        eq(orders.storeId, storeId), eq(orders.orderNumber, orderReference),
-        sql`LOWER(REGEXP_REPLACE(COALESCE(${orders.shippingProvider}, ${orders.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`
+        eq(orders.storeId, storeId), or(
+          orderReference ? eq(orders.orderNumber, orderReference) : undefined,
+          trackingReference ? eq(orders.trackNumber, trackingReference) : undefined,
+        ),
+        sql`LOWER(REGEXP_REPLACE(COALESCE(NULLIF(TRIM(${orders.shippingProvider}), ''), ${orders.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`
       )).limit(2);
       if (matches.length !== 1) return res.status(202).json({received:true,matched:false});
       const order = matches[0];
@@ -35,42 +40,24 @@ export function registerExpressRelaisRoutes(app: Express) {
         eq(carrierAccounts.storeId, storeId),
         sql`LOWER(REGEXP_REPLACE(${carrierAccounts.carrierName}, '[^a-zA-Z]', '', 'g')) = 'expressrelais'`
       ));
-      const account = accounts.find(a => a.isActive !== 0 && a.apiKey && a.apiSecret &&
-        (order.carrierId ? a.id === order.carrierId : true));
-      if (!account) return res.status(202).json({received:true,verified:false});
+      const eligibleAccounts = accounts.filter(a => a.isActive !== 0 && a.apiKey && a.apiSecret && expressRelaisAccountMatches(order,a));
+      if (!eligibleAccounts.length) return res.status(202).json({received:true,verified:false});
       // Use the carrier's authenticated status lookup. Ignore unverified
       // incoming status values to prevent forged LIVRÉ/RETOUR events.
-      const client = new ExpressRelaisClient({login:account.apiKey,password:account.apiSecret,environment:"prod"});
-      const response: any = await client.getStatus(orderReference);
-      const apiCode = response?.codeApi ?? response?.data?.codeApi;
-      if (apiCode != null && !["0","200","5000"].includes(String(apiCode))) {
-        console.warn("[EXPRESS-RELAIS-WEBHOOK] Verification API code", {storeId,orderId:order.id,apiCode:String(apiCode)});
-        return res.status(202).json({received:true,verified:false});
+      const reference = String(order.orderNumber || order.id);
+      let verified: ReturnType<typeof readExpressRelaisStatus> = null;
+      let verifiedAccountId: number | null = null;
+      let verificationFailed = false;
+      for (const account of eligibleAccounts) {
+        try {
+          const client = new ExpressRelaisClient({login:account.apiKey,password:account.apiSecret!,environment:"prod"});
+          verified = readExpressRelaisStatus(await client.getStatus(reference), reference);
+          if (verified) { verifiedAccountId = account.id; break; }
+        } catch { verificationFailed = true; }
       }
-      const payload = response?.data?.parcel ?? response?.data?.colis ?? response?.data ?? response?.parcel ?? response;
-      const verified = Array.isArray(payload)
-        ? payload.find((item:any) => String(item?.idParcelClient ?? item?.reference ?? "") === orderReference)
-        : payload;
-      if (!verified || typeof verified !== "object") return res.status(202).json({received:true,verified:false});
-      const raw = [verified.statusParcel,verified.statutColis,verified.deliveryStatus,verified.status,verified.statut,verified.etat]
-        .find((value:unknown) => typeof value === "string" && !!value.trim()) as string | undefined;
-      if (!raw) {
-        console.info("[EXPRESS-RELAIS-WEBHOOK] Unknown response shape", {storeId,orderId:order.id,keys:Object.keys(verified).slice(0,15)});
-        return res.status(202).json({received:true,verified:false});
-      }
-      const norm = raw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
-      const status =
-        /^(parcel_in_transport|parcel_in_final_agency|parcel_in_delivery)$/.test(norm)
-          ? (norm === "parcel_in_delivery" ? "Mis en distribution" : norm === "parcel_in_final_agency" ? "En agence finale" : "En transport") :
-        /retour (recu|receptionne)|returned|retourne/.test(norm) ? "retourné" :
-        /retour (ready|pret|en cours)|return (ready|pending)/.test(norm) ? "RETOUR READY" :
-        /livre|delivered|distribue au client/.test(norm) ? "delivered" :
-        /refuse|refused/.test(norm) ? "refused" :
-        /annule par client|cancelled by customer/.test(norm) ? "Annulé par client" :
-        /annule|cancelled/.test(norm) ? "Annulé" :
-        /en cours de livraison|mise? en distribution|out for delivery/.test(norm) ? "Mis en distribution" :
-        /ramasse|picked up|pris en charge/.test(norm) ? "Ramassé" :
-        /attente ramassage|pending pickup/.test(norm) ? "Attente De Ramassage" : null;
+      if (!verified) return res.status(verificationFailed ? 502 : 202).json({received:true,verified:false});
+      const { raw, status } = verified;
+      if (order.carrierId == null && verifiedAccountId != null) await storage.updateOrder(order.id,{carrierId:verifiedAccountId});
       // Always keep the exact verified carrier label visible, including future
       // Express Relais status codes not yet mapped to a business bucket.
       // Do not manufacture a delivery/refusal/return for unknown codes.
