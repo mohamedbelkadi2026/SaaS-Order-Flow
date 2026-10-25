@@ -10233,6 +10233,7 @@ function ensureHeaders(sheet) {
         description: z.string().nullable().optional(),
         imageUrl: z.string().nullable().optional(),
         reference: z.string().nullable().optional(),
+        ameexProductId: z.string().trim().transform(value => value || null).nullable().optional(),
         hasVariants: z.number().optional().default(0),
         variants: z.array(variantSchema).optional(),
         coutAchat: z.number().min(0).optional(),
@@ -11014,6 +11015,7 @@ function ensureHeaders(sheet) {
         description: z.string().nullable().optional(),
         imageUrl: z.string().nullable().optional(),
         reference: z.string().nullable().optional(),
+        ameexProductId: z.string().trim().transform(value => value || null).nullable().optional(),
         descriptionDarija: z.string().nullable().optional(),
         aiFeatures: z.string().nullable().optional(), // stored as JSON string
         coutAchat: z.number().min(0).optional(),
