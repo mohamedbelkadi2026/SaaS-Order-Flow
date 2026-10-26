@@ -1,7 +1,7 @@
 import { moroccoToday } from "@shared/morocco-time";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useAgents, useCreateAgent, useAgentPerformance, useAgentPerformanceByAssignment, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages, useAgentComparisonByProduct } from "@/hooks/use-store-data";
+import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages, useAgentComparisonByProduct } from "@/hooks/use-store-data";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { queryClient } from "@/lib/queryClient";
@@ -379,9 +379,22 @@ export default function Team() {
     perfMagasinId === "all" ? null : Number(perfMagasinId),
     perfDate,
   );
-  const { data: assignmentPerformance, isPending: performancePending, isError: performanceError } = useAgentPerformanceByAssignment(
-    perfMagasinId === "all" ? null : Number(perfMagasinId), perfDate, perfDate, true, 30_000,
-  );
+  const { data: splitPerformance, isPending: performancePending, isError: performanceError } = useQuery<any>({
+    queryKey: ['/api/agents/performance', 'split', perfMagasinId, perfDate],
+    queryFn: async ({signal}) => {
+      const params = new URLSearchParams({date:perfDate, magasinId:perfMagasinId});
+      const res = await fetch(`/api/agents/performance-split?${params}`, {credentials:'include', signal});
+      if (!res.ok) throw new Error('Performances indisponibles');
+      return res.json();
+    },
+    refetchInterval:30_000, refetchIntervalInBackground:false,
+  });
+  const assignmentPerformance = splitPerformance?.current;
+  const dailyConfirmed = (id: number) => Number(splitPerformance?.activity?.find((r:any) => r.agentId === id)?.confirmedToday ?? 0);
+  const dailyDelivered = (id: number) => Number(splitPerformance?.delivery?.find((r:any) => r.agentId === id)?.delivered ?? 0);
+  const pool = splitPerformance?.pool || [];
+  const unassigned = pool.find((r:any) => r.agentId === null);
+  const nonAgentPool = pool.filter((r:any) => r.agentId !== null && !agents?.some((a:any) => a.id === r.agentId && a.role === 'agent'));
   const { data: comparisonByProduct } = useAgentComparisonByProduct();
 
   // Auto-refresh agent online status every 30 seconds
@@ -400,9 +413,10 @@ export default function Team() {
     const magasinId = Number(perfMagasinId);
     return agents.filter((a: any) =>
       (agentSettings || []).some((s: any) => s.agentId === a.id && s.magasinId === magasinId) ||
-      (assignmentPerformance || []).some((p: any) => p.agentId === a.id && p.total > 0)
+      (assignmentPerformance || []).some((p: any) => p.agentId === a.id && p.total > 0) ||
+      (splitPerformance?.activity || []).some((p:any) => p.agentId === a.id)
     );
-  }, [agents, agentSettings, perfMagasinId, assignmentPerformance]);
+  }, [agents, agentSettings, perfMagasinId, assignmentPerformance, splitPerformance?.activity]);
   const createAgent = useCreateAgent();
   const upsertAgentPercentages = useUpsertAgentMagasinPercentages();
   const deleteAgent = useDeleteAgent();
@@ -688,9 +702,9 @@ export default function Team() {
   const totalAgents = visibleAgents.filter((a: any) => a.role === 'agent').length;
   const visibleAgentIds = new Set(visibleAgents.filter((a: any) => a.role === 'agent').map((a: any) => a.id));
   const allStats = (assignmentPerformance || []).filter((p: any) => visibleAgentIds.has(p.agentId));
-  const totalConfirmed = allStats.reduce((s: number, p: any) => s + (p.confirmed || 0), 0);
-  const totalDelivered = allStats.reduce((s: number, p: any) => s + (p.delivered || 0), 0);
-  const totalAssigned = allStats.reduce((s: number, p: any) => s + (p.total || 0), 0);
+  const totalConfirmed = (splitPerformance?.activity || []).reduce((s:number,p:any) => s + Number(p.confirmedToday || 0), 0);
+  const totalDelivered = (splitPerformance?.delivery || []).reduce((s:number,p:any) => s + Number(p.delivered || 0), 0);
+  const totalAssigned = pool.filter((p:any) => p.agentId !== null).reduce((s:number,p:any) => s + Number(p.total || 0),0);
 
   const toggleFormProduct = (id: number) => {
     setFormData(f => ({
@@ -743,7 +757,7 @@ export default function Team() {
           <p className="text-muted-foreground mt-1">Gestion de l'équipe / Membres</p>
           {lastResetLabel && (
             <p className="text-xs text-muted-foreground mt-1" data-testid="text-distribution-epoch">
-              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — cette date concerne les compteurs de distribution. Les performances ci-dessous suivent le jour de création sélectionné.
+              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — cette date concerne les compteurs de distribution. Les états actuels ne sont pas limités par cette date.
             </p>
           )}
         </div>
@@ -1142,14 +1156,14 @@ export default function Team() {
         </Card>
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-muted-foreground uppercase">Confirmées</p>
+            <p className="text-xs font-bold text-muted-foreground uppercase">Confirmées le {perfDate}</p>
             <p className="text-2xl font-bold mt-1" data-testid="text-total-confirmed">{performancePending || performanceError ? "—" : totalConfirmed}</p>
           </div>
           <div className="w-10 h-10 bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 rounded-lg flex items-center justify-center"><CheckCircle className="w-5 h-5" /></div>
         </Card>
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-muted-foreground uppercase">Livrées</p>
+            <p className="text-xs font-bold text-muted-foreground uppercase">Livrées · création le {perfDate}</p>
             <p className="text-2xl font-bold mt-1" data-testid="text-total-delivered">{performancePending || performanceError ? "—" : totalDelivered}</p>
           </div>
           <div className="w-10 h-10 bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-lg flex items-center justify-center"><Truck className="w-5 h-5" /></div>
@@ -1308,15 +1322,15 @@ export default function Team() {
                     ) : <span className="text-xs text-muted-foreground">-</span>}
                   </TableCell>
                   <TableCell>
-                    {agent.role === 'agent' && stats.total > 0 ? (
+                    {agent.role === 'agent' ? (
                       <div className="space-y-1 text-xs">
                         <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
-                          <span className="text-muted-foreground">Traitées:</span>
+                          <span className="text-muted-foreground">Dernière action ce jour:</span>
                           <span className="font-semibold" data-testid={`text-actions-total-${agent.id}`}>{stats.total}</span>
                           <span className="text-muted-foreground">Confirmées:</span>
-                          <Badge variant="outline" className="text-[10px] bg-green-50 text-green-700 border-green-200 h-4 w-fit" data-testid={`text-confirm-rate-${agent.id}`}>{confirmRate}%</Badge>
-                          <span className="text-muted-foreground">Livrées:</span>
-                          <Badge variant="outline" className="text-[10px] bg-blue-50 text-blue-700 border-blue-200 h-4 w-fit" data-testid={`text-delivery-rate-${agent.id}`}>{deliveryRate}%</Badge>
+                          <Badge variant="outline" className="text-[10px] bg-green-50 text-green-700 border-green-200 h-4 w-fit" data-testid={`text-confirm-rate-${agent.id}`}>{performancePending || performanceError ? "—" : dailyConfirmed(agent.id)}</Badge>
+                          <span className="text-muted-foreground">Livrées (créées ce jour):</span>
+                          <Badge variant="outline" className="text-[10px] bg-blue-50 text-blue-700 border-blue-200 h-4 w-fit" data-testid={`text-delivery-rate-${agent.id}`}>{performancePending || performanceError ? "—" : dailyDelivered(agent.id)}</Badge>
                         </div>
                       </div>
                     ) : (
@@ -1393,8 +1407,13 @@ export default function Team() {
         <div className="space-y-4">
           <div>
             <h2 className="text-base font-bold uppercase tracking-wide">Performance des Agents</h2>
-            <p className="text-xs text-muted-foreground mt-1">Commandes créées le {perfDate} (heure du Maroc), actuellement assignées à chaque agent. Confirmées inclut les commandes expédiées, livrées et retournées.</p>
+            <p className="text-xs text-muted-foreground mt-1">États actuels : toutes les dates. Activité du {perfDate} : confirmations enregistrées ce jour, heure du Maroc. Chaque commande est comptée une seule fois, pour la première personne qui la confirme ce jour.</p>
           </div>
+          {!performancePending && !performanceError && <div className="rounded-xl border p-4 text-sm space-y-1">
+            <p><strong>Nouveaux au total : {pool.reduce((n:number,r:any)=>n+Number(r.nouveaux),0)}</strong> · Non assignées : {Number(unassigned?.nouveaux || 0)} nouvelles / {Number(unassigned?.total || 0)} commandes</p>
+            <p>Assignées à un admin ou autre membre : {nonAgentPool.reduce((n:number,r:any)=>n+Number(r.nouveaux),0)} nouvelles.</p>
+            <p className="text-muted-foreground">Les confirmations sans événement enregistré ne sont pas estimées. Les filtres magasin et les droits d’accès s’appliquent.</p>
+          </div>}
           {performanceError ? <p role="alert" className="text-sm text-destructive">Impossible de charger les performances. Réessayez dans quelques instants.</p> : performancePending ? <p className="text-sm text-muted-foreground">Chargement des performances…</p> : <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-5">
             {visibleAgents.filter((a: any) => a.role === 'agent').map((agent: any) => {
               const stats = assignmentPerformance?.find((p: any) => p.agentId === agent.id) || { total: 0, confirmed: 0, delivered: 0 };
@@ -1426,6 +1445,10 @@ export default function Team() {
                     <Badge variant="outline" className={agent.isActive ? "bg-emerald-50 text-emerald-700 border-emerald-200" : ""}>{agent.isActive ? "Actif" : "Inactif"}</Badge>
                   </div>
 
+                  <div className="px-5 pt-4 text-sm space-y-1 bg-blue-50/40">
+                    <p>Confirmées le {perfDate} : <strong>{dailyConfirmed(agent.id)}</strong></p>
+                    <p>Livrées · commandes créées le {perfDate} : <strong>{dailyDelivered(agent.id)}</strong></p>
+                  </div>
                   <div className="grid grid-cols-2 gap-3 p-5">
                     <div className="rounded-xl border p-3">
                       <p className="text-[10px] font-bold uppercase text-muted-foreground">Taux conv.</p>
@@ -1443,8 +1466,8 @@ export default function Team() {
                     {[
                       { label: "Assignées", value: stats.total, icon: Package, cls: "bg-slate-50 text-slate-700 dark:bg-slate-900/40" },
                       { label: "Nouveaux", value: stats.nouveaux, icon: Sparkles, cls: "bg-blue-50 text-blue-700 dark:bg-blue-950/20" },
-                      { label: "Confirmées", value: stats.confirmed, icon: CheckCircle, cls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20" },
-                      { label: "Livrées", value: stats.delivered, icon: Truck, cls: "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/20" },
+                      { label: "Confirmées · état global", value: stats.confirmed, icon: CheckCircle, cls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20" },
+                      { label: "Livrées · état global", value: stats.delivered, icon: Truck, cls: "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/20" },
                       { label: "Rappels", value: stats.rappels, icon: BellRing, cls: "bg-violet-50 text-violet-700 dark:bg-violet-950/20" },
                       { label: "Injoignables", value: stats.injoignables, icon: PhoneOff, cls: "bg-orange-50 text-orange-700 dark:bg-orange-950/20" },
                       { label: "Boîte vocale", value: stats.boiteVocale, icon: Voicemail, cls: "bg-purple-50 text-purple-700 dark:bg-purple-950/20" },

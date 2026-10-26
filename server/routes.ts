@@ -1,3 +1,4 @@
+import { registerTeamPerformanceRoutes } from "./team-performance-routes";
 import { registerOrderNavigationRoutes } from "./order-navigation-routes";
 import type { Express } from "express";
 import type { Server } from "http";
@@ -2149,6 +2150,7 @@ export async function registerRoutes(
   });
 
   registerOrderNavigationRoutes(app, requireAuth);
+  registerTeamPerformanceRoutes(app, requireAuth);
 
   app.get(api.orders.list.path, requireAuth, async (req, res) => {
     const user = req.user!;
