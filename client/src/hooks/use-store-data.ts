@@ -543,6 +543,7 @@ export function useAgentPerformanceByAssignment(
   dateFrom?: string,
   dateTo?: string,
   enabled: boolean = true,
+  refetchInterval: number | false = false,
 ) {
   const params = new URLSearchParams();
   if (magasinId != null) params.set("magasinId", String(magasinId));
@@ -557,6 +558,8 @@ export function useAgentPerformanceByAssignment(
       return res.json();
     },
     enabled,
+    refetchInterval,
+    refetchIntervalInBackground: false,
     retry: false,
     throwOnError: false,
     staleTime: 30_000,

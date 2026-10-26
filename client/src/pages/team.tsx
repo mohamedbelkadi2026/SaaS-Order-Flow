@@ -1,6 +1,7 @@
+import { moroccoToday } from "@shared/morocco-time";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages, useAgentComparisonByProduct } from "@/hooks/use-store-data";
+import { useAgents, useCreateAgent, useAgentPerformance, useAgentPerformanceByAssignment, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages, useAgentComparisonByProduct } from "@/hooks/use-store-data";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { queryClient } from "@/lib/queryClient";
@@ -371,12 +372,15 @@ export default function Team() {
   // Default: today, all magasins. The owner can narrow to one magasin or
   // pick another date to audit a specific day's work. The hook re-fetches
   // automatically on change because both values are part of the query key.
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = moroccoToday();
   const [perfDate, setPerfDate] = useState<string>(todayStr);
   const [perfMagasinId, setPerfMagasinId] = useState<string>("all");
   const { data: performance } = useAgentPerformance(
     perfMagasinId === "all" ? null : Number(perfMagasinId),
     perfDate,
+  );
+  const { data: assignmentPerformance, isPending: performancePending, isError: performanceError } = useAgentPerformanceByAssignment(
+    perfMagasinId === "all" ? null : Number(perfMagasinId), perfDate, perfDate, true, 30_000,
   );
   const { data: comparisonByProduct } = useAgentComparisonByProduct();
 
@@ -388,18 +392,17 @@ export default function Team() {
     return () => clearInterval(interval);
   }, []);
 
-  // When the owner narrows by magasin, also narrow the agents table to those
-  // who actually have a settings row for that magasin. Otherwise the filter
-  // would update the "Traitées" column to zero for every agent who isn't in
-  // that magasin, which is misleading — better to hide them entirely.
+  // Include agents configured for this magasin and agents with assigned
+  // orders there, even if their settings row is missing.
   const visibleAgents = useMemo(() => {
     if (!agents) return [];
     if (perfMagasinId === "all") return agents;
     const magasinId = Number(perfMagasinId);
     return agents.filter((a: any) =>
-      (agentSettings || []).some((s: any) => s.agentId === a.id && s.magasinId === magasinId)
+      (agentSettings || []).some((s: any) => s.agentId === a.id && s.magasinId === magasinId) ||
+      (assignmentPerformance || []).some((p: any) => p.agentId === a.id && p.total > 0)
     );
-  }, [agents, agentSettings, perfMagasinId]);
+  }, [agents, agentSettings, perfMagasinId, assignmentPerformance]);
   const createAgent = useCreateAgent();
   const upsertAgentPercentages = useUpsertAgentMagasinPercentages();
   const deleteAgent = useDeleteAgent();
@@ -682,8 +685,9 @@ export default function Team() {
     return setting?.roleInStore || 'confirmation';
   };
 
-  const totalAgents = agents?.filter((a: any) => a.role === 'agent')?.length || 0;
-  const allStats = performance || [];
+  const totalAgents = visibleAgents.filter((a: any) => a.role === 'agent').length;
+  const visibleAgentIds = new Set(visibleAgents.filter((a: any) => a.role === 'agent').map((a: any) => a.id));
+  const allStats = (assignmentPerformance || []).filter((p: any) => visibleAgentIds.has(p.agentId));
   const totalConfirmed = allStats.reduce((s: number, p: any) => s + (p.confirmed || 0), 0);
   const totalDelivered = allStats.reduce((s: number, p: any) => s + (p.delivered || 0), 0);
   const totalAssigned = allStats.reduce((s: number, p: any) => s + (p.total || 0), 0);
@@ -739,7 +743,7 @@ export default function Team() {
           <p className="text-muted-foreground mt-1">Gestion de l'équipe / Membres</p>
           {lastResetLabel && (
             <p className="text-xs text-muted-foreground mt-1" data-testid="text-distribution-epoch">
-              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — les commandes antérieures à la date de réinitialisation de chaque magasin ne sont pas comptées.
+              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — cette date concerne les compteurs de distribution. Les performances ci-dessous suivent le jour de création sélectionné.
             </p>
           )}
         </div>
@@ -1139,21 +1143,21 @@ export default function Team() {
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-xs font-bold text-muted-foreground uppercase">Confirmées</p>
-            <p className="text-2xl font-bold mt-1" data-testid="text-total-confirmed">{totalConfirmed}</p>
+            <p className="text-2xl font-bold mt-1" data-testid="text-total-confirmed">{performancePending || performanceError ? "—" : totalConfirmed}</p>
           </div>
           <div className="w-10 h-10 bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 rounded-lg flex items-center justify-center"><CheckCircle className="w-5 h-5" /></div>
         </Card>
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-xs font-bold text-muted-foreground uppercase">Livrées</p>
-            <p className="text-2xl font-bold mt-1" data-testid="text-total-delivered">{totalDelivered}</p>
+            <p className="text-2xl font-bold mt-1" data-testid="text-total-delivered">{performancePending || performanceError ? "—" : totalDelivered}</p>
           </div>
           <div className="w-10 h-10 bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-lg flex items-center justify-center"><Truck className="w-5 h-5" /></div>
         </Card>
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-xs font-bold text-muted-foreground uppercase">Total Assignées</p>
-            <p className="text-2xl font-bold mt-1" data-testid="text-total-assigned">{totalAssigned}</p>
+            <p className="text-2xl font-bold mt-1" data-testid="text-total-assigned">{performancePending || performanceError ? "—" : totalAssigned}</p>
           </div>
           <div className="w-10 h-10 bg-blue-100 text-blue-500 dark:bg-blue-900/30 dark:text-blue-400 rounded-lg flex items-center justify-center"><Activity className="w-5 h-5" /></div>
         </Card>
@@ -1389,11 +1393,11 @@ export default function Team() {
         <div className="space-y-4">
           <div>
             <h2 className="text-base font-bold uppercase tracking-wide">Performance des Agents</h2>
-            <p className="text-xs text-muted-foreground mt-1">Vue complète des agents Confirmation et Suivi</p>
+            <p className="text-xs text-muted-foreground mt-1">Commandes créées le {perfDate} (heure du Maroc), actuellement assignées à chaque agent. Confirmées inclut les commandes expédiées, livrées et retournées.</p>
           </div>
-          <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-5">
+          {performanceError ? <p role="alert" className="text-sm text-destructive">Impossible de charger les performances. Réessayez dans quelques instants.</p> : performancePending ? <p className="text-sm text-muted-foreground">Chargement des performances…</p> : <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-5">
             {visibleAgents.filter((a: any) => a.role === 'agent').map((agent: any) => {
-              const stats = getAgentStats(agent.id);
+              const stats = assignmentPerformance?.find((p: any) => p.agentId === agent.id) || { total: 0, confirmed: 0, delivered: 0 };
               const roleInStore = getAgentRole(agent.id);
               const confirmRate = stats.total > 0 ? Math.round((stats.confirmed / stats.total) * 100) : 0;
               const deliveryRate = stats.confirmed > 0 ? Math.round((stats.delivered / stats.confirmed) * 100) : 0;
@@ -1462,13 +1466,13 @@ export default function Team() {
                   </div>
 
                   <div className="px-5 py-3 border-t bg-muted/5 flex items-center justify-between text-xs">
-                    <span className="text-muted-foreground">Temps moyen</span>
+                    <span className="text-muted-foreground">Délai moyen avant dernière action</span>
                     <span className="font-semibold">{fmtMinutes(stats.avgResponseMinutes)}</span>
                   </div>
                 </Card>
               );
             })}
-          </div>
+          </div>}
         </div>
       )}
 

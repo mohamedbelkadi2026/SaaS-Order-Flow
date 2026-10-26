@@ -24,6 +24,7 @@ import { eq, desc, and, sql, count, ne, like, ilike, notLike, gte, lte, lt, inAr
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
 import { matchCityId, normalizeCityKey, resolveCityAlias } from "./services/city-aliases";
 import { calculateAgentCompensation, variableCommissionCostCents } from "./services/agent-compensation";
+import { moroccoDayStart, moroccoDayEnd } from "@shared/morocco-time";
 import { casablancaToday } from "./utils/casablanca-time";
 
 export type OrderDeletionUndoState =
@@ -4535,7 +4536,7 @@ export class DatabaseStorage implements IStorage {
   async getAgentPerformanceByAssignment(
     storeId: number,
     options?: { magasinId?: number | null; dateFrom?: string | null; dateTo?: string | null },
-  ): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
+  ): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number; nouveaux: number; rappels: number; injoignables: number; boiteVocale: number; pasDeReponse: number; avgResponseMinutes: number | null }[]> {
     // Counts orders ASSIGNED to each agent in a created_at window.
     // Different question than getAgentPerformance (which counts today's actions):
     // here the denominator is the agent's full assignment pool in the date range,
@@ -4546,18 +4547,38 @@ export class DatabaseStorage implements IStorage {
       sql`${orders.assignedToId} IS NOT NULL`,
     ];
     if (options?.magasinId != null) conditions.push(eq(orders.magasinId, options.magasinId));
-    if (options?.dateFrom)          conditions.push(gte(orders.createdAt, new Date(`${options.dateFrom}T00:00:00.000Z`)));
-    if (options?.dateTo)            conditions.push(lte(orders.createdAt, new Date(`${options.dateTo}T23:59:59.999Z`)));
+    if (options?.dateFrom)          conditions.push(gte(orders.createdAt, moroccoDayStart(options.dateFrom)));
+    if (options?.dateTo)            conditions.push(lte(orders.createdAt, moroccoDayEnd(options.dateTo)));
 
     // 'confirmed' counts every order that progressed past confirmation, using
     // the subtractive definition: everything except new/uncontacted/cancelled/
     // no-answer statuses (see @shared/order-status-sets).
+    // Normalise French labels without requiring the unaccent extension.
+    const status = sql`translate(lower(trim(coalesce(${orders.status}, ''))), 'éèêëàâäîïôöùûüç', 'eeeeaaaiioouuuc')`;
+    const cancelled = sql`${status} like 'annul%' or ${status} in ('cancelled', 'canceled', 'client n''a pas commande', 'produit non disponible')`;
+    const rappels = sql`${status} like 'rappel%'`;
+    const injoignables = sql`${status} like 'injoignable%'`;
+    const boiteVocale = sql`${status} like 'boite vocale%'`;
+    const pasDeReponse = sql`${status} like 'pas de reponse%' or ${status} like 'pas reponse%'`;
+    const delivered = sql`${status} in ('delivered', 'livre', 'livree', 'livre au client', 'livree au client')`;
+    const confirmed = sql`${status} <> '' and ${status} not in ('nouveau', 'en cours') and not (${cancelled} or ${rappels} or ${injoignables} or ${boiteVocale} or ${pasDeReponse})`;
+    const nouveaux = sql`${status} = 'nouveau' and nullif(trim(${orders.trackNumber}), '') is null
+      and coalesce(${orders.commentStatus}, '') not in (${sql.join(Array.from(SHIPPED_STATUS_SET).map(s => sql`${s}`), sql`, `)})`;
     const rows = await db.select({
       agentId:   orders.assignedToId,
       total:     count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
-      delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
-      cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)','Annulé par client','Annulé (faux numéro)','Annulé (double)'))`,
+      confirmed: sql<number>`count(*) filter (where ${confirmed})`,
+      delivered: sql<number>`count(*) filter (where ${delivered})`,
+      cancelled: sql<number>`count(*) filter (where ${cancelled})`,
+      nouveaux: sql<number>`count(*) filter (where ${nouveaux})`,
+      rappels: sql<number>`count(*) filter (where ${rappels})`,
+      injoignables: sql<number>`count(*) filter (where ${injoignables})`,
+      boiteVocale: sql<number>`count(*) filter (where ${boiteVocale})`,
+      pasDeReponse: sql<number>`count(*) filter (where ${pasDeReponse})`,
+      // Time to the last recorded human action by the assigned agent; carrier
+      // updatedAt changes must not masquerade as an agent response.
+      avgResponseMinutes: sql<number>`round(avg(extract(epoch from (${orders.lastActionAt} - ${orders.createdAt}))/60)
+        filter (where ${orders.lastActionBy} = ${orders.assignedToId} and ${orders.lastActionAt} >= ${orders.createdAt} and ${status} <> 'nouveau'))::int`,
     })
       .from(orders)
       .where(and(...conditions))
@@ -4569,6 +4590,12 @@ export class DatabaseStorage implements IStorage {
       confirmed: Number(r.confirmed),
       delivered: Number(r.delivered),
       cancelled: Number(r.cancelled),
+      nouveaux: Number(r.nouveaux),
+      rappels: Number(r.rappels),
+      injoignables: Number(r.injoignables),
+      boiteVocale: Number(r.boiteVocale),
+      pasDeReponse: Number(r.pasDeReponse),
+      avgResponseMinutes: r.avgResponseMinutes == null ? null : Number(r.avgResponseMinutes),
     }));
   }
 
