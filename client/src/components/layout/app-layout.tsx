@@ -1,3 +1,4 @@
+import { scheduleOrderRefresh } from "@/lib/order-refresh";
 import React, { useState, useEffect, useMemo, useRef, Component, ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
@@ -498,9 +499,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
     es.addEventListener("new_order", () => {
       try {
-        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+        scheduleOrderRefresh(queryClient);
         playNotificationSound();
       } catch {}
     });
@@ -508,9 +507,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     es.addEventListener("order_updated", () => {
       try {
         // Refresh order lists and sidebar badge wherever the user currently is
-        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+        scheduleOrderRefresh(queryClient);
       } catch {}
     });
 
@@ -539,31 +536,25 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         ? 'suivi'
         : 'confirmation';
 
-  /* New-orders count for badge */
-  const { data: ordersStats } = useQuery<any>({
-    queryKey: ['/api/stats/filtered'],
-    enabled: !isMediaBuyer,
-  });
-  const newOrdersCount: number       = ordersStats?.nouveau ?? 0;
-  const confirmeReporteDueSoon: number = ordersStats?.confirmeReporteDueSoon ?? 0;
-  const rappelCount: number          = ordersStats?.rappel ?? 0;
-
-  // Map of badgeKey → count, used by the sidebar badge render below.
-  const badgeCounts: Record<string, number> = {
-    nouveau: newOrdersCount,
-    confirmeReporteDueSoon,
-    rappel: rappelCount,
-  };
-
-  /* Recent orders for notifications panel */
-  const { data: recentOrders } = useQuery<any[]>({
-    queryKey: ['/api/orders'],
-    enabled: !isMediaBuyer,
-    select: (data: any) => {
-      const list = Array.isArray(data) ? data : (data?.orders ?? []);
-      return list.slice(0, 8);
+  // A bounded navigation query replaces two full-history reads on every page.
+  const { data: navigation } = useQuery<any>({
+    queryKey: ['/api/orders', 'navigation-summary', user?.id],
+    queryFn: async ({ signal }) => {
+      const res = await fetch('/api/orders/navigation-summary', { credentials: 'include', signal });
+      if (!res.ok) throw new Error('Impossible de charger les notifications');
+      return res.json();
     },
+    enabled: !!user?.id && !isMediaBuyer,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
+  const newOrdersCount: number = navigation?.nouveau ?? 0;
+  const confirmeReporteDueSoon: number = navigation?.confirmeReporteDueSoon ?? 0;
+  const rappelCount: number = navigation?.rappel ?? 0;
+  const badgeCounts: Record<string, number> = {
+    nouveau: newOrdersCount, confirmeReporteDueSoon, rappel: rappelCount,
+  };
+  const recentOrders: any[] = navigation?.recentOrders ?? [];
 
   const handleLogout = () => {
     setUserDropdownOpen(false);

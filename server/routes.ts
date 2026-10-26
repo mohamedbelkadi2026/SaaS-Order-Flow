@@ -1,3 +1,4 @@
+import { registerOrderNavigationRoutes } from "./order-navigation-routes";
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
@@ -718,22 +719,20 @@ export async function registerRoutes(
   app.get("/api/stats/filter-options", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     const { magasinId } = req.query as Record<string, string>;
-    let allOrders = await storage.getOrdersByStore(storeId);
-    // When a magasin is selected on the dashboard, narrow the dropdown
-    // options (cities, sources, etc.) to that magasin's data so users don't
-    // see options that won't match anything once the magasin filter applies.
-    if (magasinId && magasinId !== 'all') {
-      const mid = Number(magasinId);
-      allOrders = allOrders.filter(o => (o as any).magasinId === mid);
-    }
-    // Archived products (deleted-with-orders, kept only for historical
-    // integrity — see bulkDeleteProducts/archiveProduct) should never clutter
-    // an active-use filter dropdown. Exclude them here explicitly since
-    // getProductsByStore intentionally returns everything (other call sites,
-    // like matching an incoming order to a catalog product, may still need
-    // archived rows).
-    const storeProducts = (await storage.getProductsByStore(storeId)).filter((p: any) => !p.archivedAt);
-    const storeAgents = (await storage.getUsersByStore(storeId)).filter(u => u.role === 'agent');
+    const conditions = [eq(orders.storeId, storeId)];
+    if (magasinId && magasinId !== 'all') conditions.push(eq(orders.magasinId, Number(magasinId)));
+    // Only distinct dropdown values: never hydrate orders or load product
+    // media/settings merely to render five filter lists.
+    const [allOrders, storeProducts, storeAgents] = await Promise.all([
+      db.selectDistinct({ customerCity: orders.customerCity, source: orders.source,
+        shippingProvider: orders.shippingProvider, utmSource: orders.utmSource,
+        utmCampaign: orders.utmCampaign,
+      }).from(orders).where(and(...conditions)),
+      db.select({ id: products.id, name: products.name }).from(products)
+        .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`)),
+      db.select({ id: users.id, username: users.username }).from(users)
+        .where(and(eq(users.storeId, storeId), eq(users.role, 'agent'))),
+    ]);
 
     const cities = [...new Set(allOrders.map(o => o.customerCity).filter(Boolean))].sort();
     const sources = [...new Set(allOrders.map(o => o.source).filter(Boolean))].sort();
@@ -2148,6 +2147,8 @@ export async function registerRoutes(
       res.status(500).json({ message: err.message || "Erreur" });
     }
   });
+
+  registerOrderNavigationRoutes(app, requireAuth);
 
   app.get(api.orders.list.path, requireAuth, async (req, res) => {
     const user = req.user!;

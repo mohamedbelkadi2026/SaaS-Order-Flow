@@ -1,3 +1,4 @@
+import { scheduleOrderRefresh } from "@/lib/order-refresh";
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { io, Socket } from "socket.io-client";
@@ -29,7 +30,6 @@ export function useRealtime() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const joinedRef = useRef(false);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!user?.storeId) return;
@@ -41,22 +41,7 @@ export function useRealtime() {
       joinedRef.current = true;
     }
 
-    function scheduleRefresh() {
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = setTimeout(() => {
-        refreshTimerRef.current = null;
-        // Prefix /api/orders already covers /api/orders/filtered and other
-        // mounted order queries; don't invalidate the same cache twice.
-        queryClient.invalidateQueries({
-          queryKey: ["/api/orders"],
-          refetchType: "active",
-        });
-        queryClient.invalidateQueries({
-          queryKey: ["/api/stats/filtered"],
-          refetchType: "active",
-        });
-      }, 350);
-    }
+    function scheduleRefresh() { scheduleOrderRefresh(queryClient); }
 
     function onNewOrder() { scheduleRefresh(); }
     function onOrderUpdated() { scheduleRefresh(); }
@@ -70,8 +55,6 @@ export function useRealtime() {
       socket.off("connect", joinStore);
       socket.off("new_order", onNewOrder);
       socket.off("order_updated", onOrderUpdated);
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = null;
       joinedRef.current = false;
     };
   }, [user?.storeId, queryClient]);

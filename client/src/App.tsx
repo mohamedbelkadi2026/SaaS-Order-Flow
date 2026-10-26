@@ -1,3 +1,4 @@
+import { scheduleOrderRefresh } from "@/lib/order-refresh";
 import { Switch, Route, useLocation, Link } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -196,12 +197,7 @@ function useOrderStatusSSE() {
   useEffect(() => {
     if (!user || !user.isEmailVerified) return;
     const es = new EventSource("/api/automation/events", { withCredentials: true });
-    const invalidateOrders = () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-    };
+    const invalidateOrders = () => scheduleOrderRefresh(queryClient);
     const handleStatusUpdated = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
@@ -217,7 +213,7 @@ function useOrderStatusSSE() {
           if (old.orders && Array.isArray(old.orders)) return { ...old, orders: patchOrders(old.orders) };
           return old;
         });
-        setTimeout(invalidateOrders, 2000);
+        invalidateOrders();
       } catch { invalidateOrders(); }
     };
     es.addEventListener("ORDER_STATUS_UPDATED", handleStatusUpdated);
