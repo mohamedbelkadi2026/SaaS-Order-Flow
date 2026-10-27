@@ -4884,7 +4884,7 @@ export async function createSenditParcel(
 
   const amountDH  = input.totalPrice > 0 ? +(input.totalPrice / 100).toFixed(2) : 0;
   const phone     = sanitizePhone(input.phone);
-  const comment   = [input.note, input.productName].filter(Boolean).join(' | ').slice(0, 250) || undefined;
+  const comment   = (input.note || '').trim().slice(0, 250) || undefined;
 
   const payload: Record<string, unknown> = {
     district_id:         Number(districtId),
@@ -4895,6 +4895,7 @@ export async function createSenditParcel(
     reference:           input.orderNumber,
     allow_open:          0,
     allow_try:           1,
+    products:            (input.productName || '').trim() || undefined,
     products_from_stock: 0,
     option_exchange:     0,
   };
