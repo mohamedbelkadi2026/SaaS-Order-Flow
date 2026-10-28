@@ -17,7 +17,9 @@ export function registerWhatsappIncomingRoutes(app: Express) {
       const sender = body.senderData?.sender;
       if (typeof sender !== "string" || !/^\d+@c\.us$/.test(sender)) return;
       const digits = sender.replace("@c.us", "");
-      const text = body.messageData?.textMessageData?.textMessage || body.messageData?.extendedTextMessageData?.text;
+      const selection = body.messageData?.buttonsResponseMessage || body.messageData?.templateButtonReplyMessage;
+      const labels: Record<string, string> = { confirm: "تأكيد الطلب", cancel: "إلغاء الطلب", edit: "بغيت نعدل معلومات الطلب" };
+      const text = labels[selection?.selectedButtonId || selection?.selectedId] || selection?.selectedButtonText || selection?.selectedDisplayText || body.messageData?.textMessageData?.textMessage || body.messageData?.extendedTextMessageData?.text;
       if (typeof text !== "string" || !text.trim()) return;
       const [conv] = await db.select({ customerPhone: aiConversations.customerPhone }).from(aiConversations).where(and(
         eq(aiConversations.storeId, storeId), eq(aiConversations.status, "active"),

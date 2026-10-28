@@ -21,7 +21,7 @@ async function setup(){
  const tenant=vm.runInNewContext(clean(await read('server/green-api-tenant.ts'))+'\n({findGreenApiStore,getStoreGreenCredentials})',{db,aiSettings,eq,and,sql});
  const api=await import('data:text/javascript;base64,'+Buffer.from(strip(await read('server/green-api.ts'))).toString('base64'));
  const transport=vm.runInNewContext(clean(await read('server/whatsapp-service.ts'))+'\n({sendWhatsAppMessage,sendWhatsAppImage,sendWhatsAppFile,sendWhatsAppButtons,isGreenApiConfigured})',{
-  getStoreGreenCredentials:tenant.getStoreGreenCredentials,greenApiUrl:api.greenApiUrl,process:{env},console:silent,setInterval(){},AbortSignal,Date,
+  getStoreGreenCredentials:tenant.getStoreGreenCredentials,greenApiUrl:api.greenApiUrl,process:{env},console:silent,setInterval(){},AbortSignal,Date,URL,
   fetch:async(url,options)=>{sent.push({url,body:JSON.parse(options.body)});return Response.json({idMessage:'ok'});},
  });
  const source=await read('server/ai-agent.ts');
@@ -108,6 +108,11 @@ test('incoming same-phone messages route only by the unique linked Green API ins
   const call=async(instanceId)=>routes.get('/api/webhooks/whatsapp-incoming')({body:{typeWebhook:'incomingMessageReceived',instanceData:instanceId===undefined?{}:{idInstance:instanceId},senderData:{sender:'212661112233@c.us'},messageData:{textMessageData:{textMessage:'واخا'}}}},{status(){return this},json(){return this}});
   await call('7107000091');await call('7107000092');await call(undefined);await call('71079999999');
   assert.deepEqual(JSON.parse(JSON.stringify(received)),[[91,'0661112233','واخا'],[92,'+212661112233','واخا']]);
+  for (const [selectedId, expected] of [['confirm','تأكيد الطلب'],['edit','بغيت نعدل معلومات الطلب'],['cancel','إلغاء الطلب']]) {
+   await routes.get('/api/webhooks/whatsapp-incoming')({body:{typeWebhook:'incomingMessageReceived',instanceData:{idInstance:'7107000091'},senderData:{sender:'212661112233@c.us'},messageData:{typeMessage:'templateButtonsReplyMessage',templateButtonReplyMessage:{selectedId,selectedDisplayText:'button'}}}},{status(){return this},json(){return this}});
+   assert.deepEqual(JSON.parse(JSON.stringify(received.at(-1))),[91,'0661112233',expected]);
+  }
+
  }finally{await t.pg.close();}
 });
 

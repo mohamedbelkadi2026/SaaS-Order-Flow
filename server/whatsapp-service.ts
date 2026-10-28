@@ -1,5 +1,7 @@
 /** WhatsApp transport: every send requires an explicit store and its own
  * saved Green API pair. Missing settings and database errors fail closed. */
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import { greenApiUrl } from "./green-api";
 import { getStoreGreenCredentials } from "./green-api-tenant";
 
@@ -150,6 +152,27 @@ export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName:
   try {
     const chatId = `${formatted}@c.us`;
     console.log(`[WA Transport:${storeId}] Sending file via Green API: url=${fileUrl} fileName=${resolvedFileName}`);
+    // Upload our stored media directly: relative/private application URLs cannot
+    // be downloaded by Green API. Restrict WhatsApp files to their owning store.
+    const parsed = new URL(fileUrl, process.env.PUBLIC_APP_URL || "https://www.tajergrow.com");
+    const local = parsed.pathname.match(/^\/uploads\/(whatsapp\/(\d+)\/|products\/)([a-zA-Z0-9_.-]+)$/);
+    if (local) {
+      if (local[2] && Number(local[2]) !== storeId) return false;
+      const filename = path.join(process.env.DATA_DIR ?? path.resolve("."), "uploads", local[1], local[3]);
+      const info = await stat(filename);
+      if (!info.isFile() || info.size <= 0 || info.size > 100 * 1024 * 1024) return false;
+      const form = new FormData();
+      form.set("chatId", chatId);
+      form.set("fileName", resolvedFileName);
+      form.set("caption", caption);
+      form.set("file", new Blob([await readFile(filename)]), resolvedFileName);
+      const endpoint = greenApiUrl(instanceId, "sendFileByUpload", apiToken)
+        .replace(".api.greenapi.com", ".media.greenapi.com").replace("https://api.green-api.com", "https://media.green-api.com");
+      const uploaded = await fetch(endpoint, { method: "POST", body: form, signal: AbortSignal.timeout(120000) });
+      const result = await uploaded.json().catch(() => ({}));
+      return uploaded.ok && typeof result.idMessage === "string" && result.idMessage.length > 0;
+    }
+    if (!/^https?:$/.test(parsed.protocol) || fileUrl.startsWith("/")) return false;
     const res = await fetch(greenApiUrl(instanceId, "sendFileByUrl", apiToken), {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -479,6 +479,9 @@ function detectIntent(msg: string): "confirm" | "cancel" | "image" | "video" | "
   // Image request check — check before confirm to catch "وريني" which can overlap
   if (IMAGE_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "image";
 
+  if (lower === "تأكيد الطلب") return "confirm";
+  if (lower === "إلغاء الطلب") return "cancel";
+
   // Confirm check
   if (CONFIRM_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "confirm";
 
@@ -772,9 +775,7 @@ function detectGender(name: string): "male" | "female" | "unknown" {
 }
 
 function getGenderAddress(gender: "male" | "female" | "unknown"): { formal: string; friendly: string } {
-  if (gender === "male")   return { formal: "سيدي", friendly: "خويا" };
-  if (gender === "female") return { formal: "لالة", friendly: "اختي" };
-  return { formal: "سيدي/لالة", friendly: "صديقي" };
+  return { formal: "مرحبا", friendly: "مرحبا" };
 }
 
 /* ── JSON output mandate appended to every prompt ───────────── */
@@ -871,11 +872,7 @@ function buildStepPrompt(
     ? `\nPRODUCT KNOWLEDGE BASE:\n${productKnowledge.join("\n")}`
     : "";
 
-  const genderNote = gender === "male"
-    ? `Customer is MALE — always call him "سيدي" or "خويا"`
-    : gender === "female"
-      ? `Customer is FEMALE — always call her "لالة" or "ختي"`
-      : `Gender unknown — use "سيدي/لالة"`;
+  const genderNote = `Use neutral professional Darija. Never use سيدي, لالة, or تبارك الله عليك.`;
 
   const base = `You are "أمين", a patient and helpful human customer service agent at "${storeName}" (Moroccan e-commerce store). You are a trusted Moroccan salesperson — never pushy, always supportive.
 
@@ -1014,8 +1011,8 @@ ${city ? `City confirmed: ${city}.` : ""}
 CURRENT TASK — Step 3/3: Get final confirmation.
 Order summary to present: ${summaryParts.length ? summaryParts.join("، ") : productLabel}
 
-- Summarize warmly: "صافي ${address.formal}، الطلبية ديالك: [summary]. واش نؤكد ليك؟"
-- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate! "صافي ${address.formal}، الكوموند ديالك تأكدات ✅. غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا! 🎉"
+- Summarize warmly: "صافي مرحبا، الطلبية ديالك: [summary]. واش نؤكد ليك؟"
+- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate! "صافي مرحبا، الكوموند ديالك تأكدات ✅. غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا! 🎉"
 - If they hesitate: emphasize free shipping + "قلب عاد خلص"
 - If they have questions: answer using product knowledge then re-confirm
 - Once confirmed say the success message then the conversation is DONE`;
@@ -1125,7 +1122,12 @@ export async function triggerAIForNewOrder(
     const conv = await reserveAiOutreach(storeId, orderId, customerPhone, customerName, retry);
     if (!conv) return;
 
-    const accepted = await sendWhatsAppMessage(customerPhone, firstMessage, storeId);
+    const buttonsAccepted = await sendWhatsAppButtons(customerPhone, firstMessage, [
+      { id: "confirm", text: "تأكيد الطلب" },
+      { id: "edit", text: "تعديل المعلومات" },
+      { id: "cancel", text: "إلغاء الطلب" },
+    ], storeId);
+    const accepted = buttonsAccepted || await sendWhatsAppMessage(customerPhone, firstMessage, storeId);
     if (!accepted) {
       await storage.updateAiConversationStatus(conv.id, "send_failed");
       await storage.createAiLog({ storeId, orderId, customerPhone, role: "system", message: "Échec d'envoi WhatsApp : Green API n'a pas confirmé la prise en charge. Vérifiez la connexion de ce magasin avant de relancer." });
@@ -1172,7 +1174,7 @@ export async function triggerRecoveryMessage(
   }
 
   try {
-    const cleanName = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي/لالة";
+    const cleanName = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "مرحبا";
     const stockPart = stockQty !== null && stockQty > 0 ? ` راه بقى لينا غير ${stockQty} حبات فـ السطوك.` : "";
 
     const recoveryMessage =
@@ -1588,19 +1590,25 @@ export async function handleIncomingMessage(
       return;
     }
 
+    if (["بغيت نعدل معلومات الطلب", "تعديل المعلومات"].includes(customerMessage.trim())) {
+      const message = "مرحبا، شنو هي المعلومات اللي بغيتي تبدل فالطلب؟ صيفط لينا المعلومة الصحيحة.";
+      const ok = await sendWhatsAppMessage(customerPhone, message, storeId);
+      await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: ok ? "assistant" : "system", message: ok ? message : "Échec d'envoi de la demande de modification." });
+      return;
+    }
+
     if (intent === "image" && conv.orderId) {
       const ctx = await getOrderContext(conv.orderId);
       if (ctx.productImageUrls.length > 0) {
         const caption = ctx.productName
           ? `هذي هي صورة ${ctx.productName} 📸`
           : "هذي هي صورة المنتج 📸";
-        const imageLogMsg = `[IMAGE] ${ctx.productImageUrls.join(", ")}`;
-        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: imageLogMsg });
-        await storage.updateAiConversationLastMessage(conv.id, imageLogMsg);
-        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: imageLogMsg, ts: Date.now() });
-        console.log(`[AI] 📸 Sending ${ctx.productImageUrls.length} product image(s) to ${customerPhone}`);
         for (const url of ctx.productImageUrls) {
-          await sendWhatsAppImage(customerPhone, url, caption, storeId).catch(() => {});
+          const ok = await sendWhatsAppImage(customerPhone, url, caption, storeId).catch(() => false);
+          const message = ok ? `[IMAGE] ${url}` : "Échec d'envoi du contenu WhatsApp. Réessayez après vérification du fichier et de la connexion.";
+          const role = ok ? "assistant" : "system";
+          await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role, message });
+          broadcastToStore(storeId, "message", { conversationId: conv.id, role, content: message, ts: Date.now() });
         }
       } else {
         const noImgReply = `عفواً ${addr.friendly}، ما عنديش تصويرة للمنتج دابا 🙏`;
@@ -1616,13 +1624,12 @@ export async function handleIncomingMessage(
     if (intent === "video" && conv.orderId) {
       const ctx = await getOrderContext(conv.orderId);
       if (ctx.productVideoUrls.length > 0) {
-        const videoLogMsg = `[VIDEO] ${ctx.productVideoUrls.join(", ")}`;
-        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: videoLogMsg });
-        await storage.updateAiConversationLastMessage(conv.id, videoLogMsg);
-        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: videoLogMsg, ts: Date.now() });
-        console.log(`[AI] 🎥 Sending ${ctx.productVideoUrls.length} product video(s) to ${customerPhone}`);
         for (const url of ctx.productVideoUrls) {
-          await sendWhatsAppFile(customerPhone, url, "video.mp4", ctx.productName ? `فيديو ${ctx.productName}` : "", storeId).catch(() => {});
+          const ok = await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId).catch(() => false);
+          const message = ok ? `[VIDEO] ${url}` : "Échec d'envoi du contenu WhatsApp. Réessayez après vérification du fichier et de la connexion.";
+          const role = ok ? "assistant" : "system";
+          await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role, message });
+          broadcastToStore(storeId, "message", { conversationId: conv.id, role, content: message, ts: Date.now() });
         }
       } else {
         const noVidReply = `عفواً ${addr.friendly}، ما عنديش فيديو للمنتج دابا 🙏. بغيتي نبعث ليك تصويرة ولا وصف كامل؟`;
@@ -1638,13 +1645,12 @@ export async function handleIncomingMessage(
     if (intent === "audio" && conv.orderId) {
       const ctx = await getOrderContext(conv.orderId);
       if (ctx.productAudioUrls.length > 0) {
-        const audioLogMsg = `[AUDIO] ${ctx.productAudioUrls.join(", ")}`;
-        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: audioLogMsg });
-        await storage.updateAiConversationLastMessage(conv.id, audioLogMsg);
-        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: audioLogMsg, ts: Date.now() });
-        console.log(`[AI] 🎙️ Sending ${ctx.productAudioUrls.length} product audio(s) to ${customerPhone}`);
         for (const url of ctx.productAudioUrls) {
-          await sendWhatsAppFile(customerPhone, url, "audio.opus", "", storeId).catch(() => {});
+          const ok = await sendWhatsAppFile(customerPhone, url, "audio.opus", "", storeId).catch(() => false);
+          const message = ok ? `[AUDIO] ${url}` : "Échec d'envoi du contenu WhatsApp. Réessayez après vérification du fichier et de la connexion.";
+          const role = ok ? "assistant" : "system";
+          await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role, message });
+          broadcastToStore(storeId, "message", { conversationId: conv.id, role, content: message, ts: Date.now() });
         }
       } else {
         const noAudioReply = `عفواً ${addr.friendly}، ما عنديش تسجيل صوتي للمنتج دابا 🙏`;
@@ -1682,7 +1688,7 @@ export async function handleIncomingMessage(
         } as any).where(eq(orders.id, conv.orderId)).catch(() => {});
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
-        const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا 🎉🚀`;
+        const msg = `صافي مرحبا الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا 🎉🚀`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
         await storage.updateAiConversationLastMessage(conv.id, msg);
         const convAgeMs = confirmedAt.getTime() - new Date(conv.createdAt!).getTime();
@@ -1836,7 +1842,7 @@ export async function handleIncomingMessage(
 
       // ── Parse structured JSON response from AI ────────────────────
       const decision = parseAIDecision(rawAIResponse);
-      const aiReply = decision.reply;
+      let aiReply = decision.reply;
       console.log(`[REPLY] AI sending back to ${customerPhone}: "${aiReply.substring(0, 100)}"`);
       console.log(`[REPLY] confirmed=${decision.isConfirmed} | cancelled=${decision.isCancelled} | conv=${conv.id}`);
 
@@ -1978,7 +1984,7 @@ export async function handleIncomingMessage(
         const buttonsSent = await sendWhatsAppButtons(
           customerPhone,
           "واش نأكدو الطلب ديالك؟ 🙏",
-          [{ id: "confirm", text: "✅ تأكيد الطلبية" }, { id: "cancel", text: "❌ إلغاء الطلبية" }],
+          [{ id: "confirm", text: "تأكيد الطلب" }, { id: "edit", text: "تعديل المعلومات" }, { id: "cancel", text: "إلغاء الطلب" }],
           storeId,
         ).catch(() => false);
         if (buttonsSent) {
@@ -1986,6 +1992,8 @@ export async function handleIncomingMessage(
           console.log(`[AI] Conv ${conv.id} — sent Confirme/Annule buttons (name+city+address+phone now complete)`);
         }
       }
+
+      if (decision.isConfirmed) aiReply = "صافي مرحبا الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا 🎉🚀";
 
       // ── Log + broadcast reply to admin dashboard immediately ─────
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: aiReply });

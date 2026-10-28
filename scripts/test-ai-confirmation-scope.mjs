@@ -45,7 +45,7 @@ async function setup() {
   const ctx = { db: triggerDb, storage, orders, orderItems, aiConversations, eq, and, sql,
     aiSourceMatches, aiProductsMatch, console: { log(){}, warn(){}, error(e){ throw new Error(e); } },
     storeCanAutoConfirm: async () => true, getOrderContext: async () => ({ productName:'Test' }),
-    getStoreName: async () => 'Test store', broadcastToStore(){}, queueWhatsApp: async (...args) => sent.push(args), sendWhatsAppMessage: async (...args) => { sent.push(args); return true; }, Date };
+    getStoreName: async () => 'Test store', broadcastToStore(){}, queueWhatsApp: async (...args) => sent.push(args), sendWhatsAppButtons: async () => false, sendWhatsAppMessage: async (...args) => { sent.push(args); return true; }, Date };
   const trigger = vm.runInNewContext(strip(triggerSource.replace('export ', '') + '\ntriggerAIForNewOrder'), ctx);
   const batch = vm.runInNewContext(strip(jobSource.replaceAll('export ', '') + '\nrunAiConfirmationBatch'), { db, orders, orderItems, aiSettings, aiConversations, eq, and, asc, sql, triggerAIForNewOrder: trigger });
   let next = 0;
@@ -180,5 +180,17 @@ test('failed outreach is not logged as sent; explicit retry sends the order summ
   assert.doesNotMatch(media[0],/سيدي|لالة|تبارك/);
   assert.deepEqual(media.slice(1),['Configured description','image','video','audio']);
   assert.equal((await t.db.select().from(aiConversations)).length,1);
+ }finally{await t.pg.close();}
+});
+
+
+test('new orders include all three reply buttons without sending a duplicate text',async()=>{
+ const t=await setup();try{
+  await t.setting({});const row=await t.add();const buttons=[];
+  t.ctx.sendWhatsAppButtons=async(phone,body,options,store)=>{buttons.push({phone,body,options,store});return true};
+  await t.trigger(91,row.id,row.customerPhone,row.customerName);
+  assert.equal(buttons.length,1);assert.equal(buttons[0].store,91);
+  assert.deepEqual(JSON.parse(JSON.stringify(buttons[0].options.map(b=>b.text))),['تأكيد الطلب','تعديل المعلومات','إلغاء الطلب']);
+  assert.equal(t.sent.length,0);
  }finally{await t.pg.close();}
 });
