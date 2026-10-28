@@ -1201,7 +1201,15 @@ function AiConfirmationTab() {
       if (!res.ok) throw new Error((await res.json()).message);
       return res.json();
     },
-    onSuccess: (saved) => { setLocalSettings(saved); queryClient.invalidateQueries({ queryKey: ["/api/automation/ai-settings"] }); toast({ title: "Paramètres IA sauvegardés !" }); },
+    onSuccess: (saved, submitted) => {
+      setLocalSettings((previous: any) => ({
+        ...saved,
+        ...(submitted.enabledProductIds === undefined && previous ? { enabledProductIds: previous.enabledProductIds } : {}),
+        ...(submitted.systemPrompt === undefined && previous ? { systemPrompt: previous.systemPrompt } : {}),
+      }));
+      queryClient.invalidateQueries({ queryKey: ["/api/automation/ai-settings"] });
+      toast({ title: "Paramètres IA sauvegardés !" });
+    },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
@@ -1623,11 +1631,11 @@ function AiConfirmationTab() {
               <button
                 onClick={() => {
                   const updated = { ...s, enabled: s?.enabled ? 0 : 1 };
-                  setLocalSettings(updated);
-                  saveSettingsMutation.mutate(updated);
+                  saveSettingsMutation.mutate({ enabled: updated.enabled });
                 }}
                 className={cn("relative w-12 h-6 rounded-full transition-all", s?.enabled ? "" : "bg-zinc-200")}
                 style={s?.enabled ? { background: GOLD } : {}}
+                disabled={saveSettingsMutation.isPending || settingsLoading}
                 data-testid="toggle-ai-enabled"
               >
                 <span className={cn("absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all", s?.enabled ? "left-6" : "left-0.5")} />
@@ -1645,24 +1653,25 @@ function AiConfirmationTab() {
           {/* Scope: which orders the AI handles */}
           <div className="bg-white rounded-2xl border border-zinc-100 p-5">
             <p className="text-sm font-bold text-zinc-800 mb-1">Commandes gérées par l'IA</p>
-            <p className="text-xs text-zinc-400 mb-3">Choisissez si l'IA confirme toutes les commandes, ou seulement celles reçues directement sur WhatsApp.</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <p className="text-xs text-zinc-400 mb-3">Choisissez les sources autorisées. Ce choix est enregistré automatiquement.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {[
                 { value: "all_sources", label: "Toutes les sources", desc: "Sheet, Shopify, ajout manuel, import, WhatsApp…" },
-                { value: "whatsapp_only", label: "WhatsApp uniquement", desc: "Seuls les nouveaux leads reçus directement sur WhatsApp" },
+                { value: "whatsapp_only", label: "WhatsApp uniquement", desc: "Commandes reçues directement sur WhatsApp" },
+                { value: "non_whatsapp", label: "Site et autres sources", desc: "Site, Sheet, Shopify, manuel, import… hors WhatsApp" },
               ].map(opt => (
                 <button
                   key={opt.value}
                   onClick={() => {
-                    const updated = { ...s, scopeMode: opt.value };
-                    setLocalSettings(updated);
-                    saveSettingsMutation.mutate(updated);
+                    saveSettingsMutation.mutate({ scopeMode: opt.value });
                   }}
                   className="text-left rounded-xl p-3 border-2 transition-all"
                   style={{
                     borderColor: (s?.scopeMode || "all_sources") === opt.value ? GOLD : "rgb(244,244,245)",
                     background: (s?.scopeMode || "all_sources") === opt.value ? "rgba(197,160,89,0.06)" : "white",
                   }}
+                  disabled={saveSettingsMutation.isPending || settingsLoading}
+                  aria-pressed={(s?.scopeMode || "all_sources") === opt.value}
                   data-testid={`button-scope-${opt.value}`}
                 >
                   <p className="text-xs font-bold text-zinc-800">{opt.label}</p>
@@ -1674,7 +1683,8 @@ function AiConfirmationTab() {
 
           {/* Products selector */}
           <div className="bg-white rounded-2xl border border-zinc-100 p-5">
-            <p className="text-sm font-bold text-zinc-700 mb-3">Produits activés pour l'IA</p>
+            <p className="text-sm font-bold text-zinc-700 mb-1">Produits activés pour l'IA</p>
+            <p className="text-xs text-zinc-400 mb-3">Sans sélection : tous les produits. Sinon, seuls les produits cochés sont traités, selon la source choisie. Après sauvegarde, l'IA démarre automatiquement sur les commandes en Nouveaux, puis sur les nouvelles commandes (vérification chaque minute). La confirmation finale attend la réponse du client.</p>
             {products.length === 0 ? (
               <p className="text-xs text-zinc-400">Aucun produit trouvé.</p>
             ) : (
@@ -1683,7 +1693,7 @@ function AiConfirmationTab() {
                   const enabled = (s?.enabledProductIds ?? []).includes(p.id);
                   return (
                     <label key={p.id} className="flex items-center gap-3 cursor-pointer" data-testid={`product-toggle-${p.id}`}>
-                      <input type="checkbox" checked={enabled} onChange={() => {
+                      <input type="checkbox" checked={enabled} disabled={saveSettingsMutation.isPending || settingsLoading} onChange={() => {
                         const ids: number[] = s?.enabledProductIds ?? [];
                         const next = enabled ? ids.filter((x: number) => x !== p.id) : [...ids, p.id];
                         const updated = { ...s, enabledProductIds: next };
@@ -1695,7 +1705,7 @@ function AiConfirmationTab() {
                 })}
               </div>
             )}
-            <button onClick={() => saveSettingsMutation.mutate(localSettings)} disabled={saveSettingsMutation.isPending} className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg text-white transition-opacity hover:opacity-90" style={{ background: NAVY }} data-testid="button-save-products">
+            <button onClick={() => saveSettingsMutation.mutate({ enabledProductIds: s?.enabledProductIds ?? [] })} disabled={saveSettingsMutation.isPending || settingsLoading} className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg text-white transition-opacity hover:opacity-90" style={{ background: NAVY }} data-testid="button-save-products">
               {saveSettingsMutation.isPending ? "Sauvegarde..." : "Sauvegarder"}
             </button>
           </div>
@@ -1711,7 +1721,7 @@ function AiConfirmationTab() {
               dir="rtl"
               data-testid="textarea-system-prompt"
             />
-            <button onClick={() => saveSettingsMutation.mutate(localSettings)} disabled={saveSettingsMutation.isPending} className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg text-white transition-opacity hover:opacity-90" style={{ background: NAVY }}>
+            <button onClick={() => saveSettingsMutation.mutate({ systemPrompt: s?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT })} disabled={saveSettingsMutation.isPending || settingsLoading} className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg text-white transition-opacity hover:opacity-90" style={{ background: NAVY }}>
               {saveSettingsMutation.isPending ? "..." : "Sauvegarder le prompt"}
             </button>
           </div>

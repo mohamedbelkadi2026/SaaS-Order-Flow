@@ -1,10 +1,11 @@
+import { aiSourceMatches, aiProductsMatch } from "@shared/ai-order-scope";
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { broadcastToStore } from "./sse";
 import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile, sendWhatsAppButtons } from "./whatsapp-service";
 import { db } from "./db";
 import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import type { AiConversation } from "@shared/schema";
 
 /* ── OpenRouter config ───────────────────────────────────────── */
@@ -228,6 +229,9 @@ async function applyProductSwitch(
       return false;
     }
 
+    const switchSettings = await storage.getAiSettings(storeId);
+    if (!switchSettings?.enabled || !aiProductsMatch(switchSettings.enabledProductIds, [found.id])) return true;
+
     const inStock = (found.stock ?? 0) > 0;
     let followUp: string;
     if (inStock) {
@@ -256,6 +260,7 @@ async function applyProductSwitch(
       const isLockedIn = currentOrder && currentOrder.status !== "nouveau";
 
       if (isLockedIn) {
+        if (!aiSourceMatches(switchSettings.scopeMode, "whatsapp")) return true;
         // The current order is already confirmed/shipped/etc — don't
         // silently repurpose it for a different product (confirmed live:
         // exactly this happened, and the new recipient's delivery info had
@@ -1026,6 +1031,29 @@ ${JSON_OUTPUT_RULE}`;
 /* ════════════════════════════════════════════════════════════════
    TRIGGER — Fire-and-forget on new order creation
 ════════════════════════════════════════════════════════════════ */
+async function reserveAiOutreach(storeId: number, orderId: number, customerPhone: string, customerName: string) {
+  return db.transaction(async tx => {
+    const phoneKey = customerPhone.replace(/\D/g, "").replace(/^0/, "212");
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-confirm:${storeId}:${phoneKey}`}))`);
+    const [live] = await tx.select({ status: orders.status }).from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
+    if (live?.status !== "nouveau") return null;
+    const [handled] = await tx.select({ id: aiConversations.id }).from(aiConversations)
+      .where(and(eq(aiConversations.storeId, storeId), eq(aiConversations.orderId, orderId))).limit(1);
+    if (handled) return null;
+    const [busy] = await tx.select({ id: aiConversations.id }).from(aiConversations).where(and(
+      eq(aiConversations.storeId, storeId), eq(aiConversations.status, "active"),
+      sql`regexp_replace(regexp_replace(${aiConversations.customerPhone}, '[^0-9]', '', 'g'), '^0', '212') = ${phoneKey}`,
+    )).limit(1);
+    if (busy) return null; // Keep the ongoing conversation; retry this order later.
+    const [created] = await tx.insert(aiConversations).values({
+      storeId, orderId, customerPhone, customerName: customerName || null,
+      status: "active", isManual: 0, conversationStep: 1,
+    }).returning();
+    return created;
+  });
+}
+
 export async function triggerAIForNewOrder(
   storeId: number,
   orderId: number,
@@ -1047,34 +1075,17 @@ export async function triggerAIForNewOrder(
       return;
     }
 
-    // Scope gate: 'whatsapp_only' means AI should leave every non-WhatsApp
-    // order (Sheet, Shopify, manual add, import, etc.) to the normal human
-    // confirmation workflow, and only engage orders created by the cold-lead
-    // pathway (source='whatsapp', see handleIncomingMessage below).
-    if ((settings as any).scopeMode === "whatsapp_only") {
-      const [orderRow] = await db.select({ source: orders.source }).from(orders).where(eq(orders.id, orderId)).limit(1);
-      if (orderRow?.source !== "whatsapp") {
-        console.log(`[AI] ⚠️ SKIPPED: store ${storeId} scope is 'whatsapp_only', order #${orderId} source is '${orderRow?.source}' — leaving to human confirmation`);
-        return;
-      }
-    }
-
-    const enabledIds: number[] = settings.enabledProductIds ?? [];
-    if (enabledIds.length > 0 && productId && !enabledIds.includes(productId)) {
-      console.warn(`[AI] ⚠️ BLOCKED: Product ${productId} not in store ${storeId}'s enabled product list [${enabledIds.join(", ")}]`);
-      return;
-    }
-
-    const existing = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
-    if (existing) {
-      if (existing.orderId === orderId) {
-        console.log(`[AI] ⚠️ BLOCKED: Same order (orderId=${orderId}) already has an active conversation (conv.id=${existing.id}) — true duplicate, skipping`);
-        return;
-      }
-      // Different order from the same phone — close stale conv and open a fresh one
-      console.log(`[AI] 🔄 Closing stale conversation (conv.id=${existing.id}, old orderId=${existing.orderId}) — new order ${orderId} takes priority`);
-      await storage.updateAiConversationStatus(existing.id, "closed");
-    }
+    // Resolve the persisted order and ALL its items. Caller hints are not
+    // authoritative (several imports and manual triggers omit productId).
+    const [orderRow] = await db.select().from(orders)
+      .where(and(eq(orders.id, orderId), eq(orders.storeId, storeId))).limit(1);
+    if (!orderRow || orderRow.status !== "nouveau" || !orderRow.customerPhone ||
+        !aiSourceMatches(settings.scopeMode, orderRow.source)) return;
+    const items = await db.select({ productId: orderItems.productId }).from(orderItems)
+      .where(eq(orderItems.orderId, orderId));
+    if (!aiProductsMatch(settings.enabledProductIds, items.map(item => item.productId))) return;
+    customerPhone = orderRow.customerPhone;
+    customerName = orderRow.customerName;
 
     console.log(`[AI]: Initializing conversation context for order #${orderId}`);
     const [ctx, storeName] = await Promise.all([
@@ -1106,12 +1117,10 @@ export async function triggerAIForNewOrder(
       `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.${stockUrgency}${dupNote}\n` +
       `واش نأكد ليك المدينة والمقاس باش نخرجوها ليك اليوم؟ 🚀`;
 
-    const conv = await storage.createAiConversation({
-      storeId, orderId, customerPhone,
-      customerName: customerName || null,
-      status: "active", isManual: 0,
-      conversationStep: 1,
-    });
+    // One short, durable reservation shared by webhooks, manual triggers and
+    // the pending-order worker. Never restart an order already handled by IA.
+    const conv = await reserveAiOutreach(storeId, orderId, customerPhone, customerName);
+    if (!conv) return;
 
     await storage.createAiLog({ storeId, orderId, customerPhone, role: "assistant", message: firstMessage });
     await storage.updateAiConversationLastMessage(conv.id, firstMessage);
@@ -1264,7 +1273,7 @@ export async function handleIncomingMessage(
         // which product they're asking about and start a lead from scratch,
         // instead of doing nothing.
         const coldLeadSettings = await storage.getAiSettings(storeId);
-        if (!coldLeadSettings?.enabled) {
+        if (!coldLeadSettings?.enabled || !aiSourceMatches(coldLeadSettings.scopeMode, "whatsapp")) {
           console.log(`[AI] Cold lead from ${customerPhone} — AI disabled for store ${storeId}, nothing to do`);
           return;
         }
@@ -1290,6 +1299,8 @@ export async function handleIncomingMessage(
             matchedProduct = candidateProducts.find(p => p.name === fuzzyName);
           }
         }
+
+        if (!aiProductsMatch(coldLeadSettings.enabledProductIds, [matchedProduct?.id ?? null])) return;
 
         if (!matchedProduct) {
           // Still couldn't identify a specific product — per explicit
@@ -1321,10 +1332,8 @@ export async function handleIncomingMessage(
             variantInfo: "",
           }] as any);
 
-          const askConv = await storage.createAiConversation({
-            storeId, orderId: minimalOrder.id, customerPhone, customerName: null,
-            status: "active", isManual: 0, conversationStep: 1,
-          });
+          const askConv = await reserveAiOutreach(storeId, minimalOrder.id, customerPhone, "");
+          if (!askConv) return;
           conv = askConv;
 
           await storage.createAiLog({ storeId, orderId: minimalOrder.id, customerPhone, role: "user", message: customerMessage });
@@ -1357,15 +1366,8 @@ export async function handleIncomingMessage(
           variantInfo: "",
         }] as any);
 
-        const newConv = await storage.createAiConversation({
-          storeId,
-          orderId: newOrder.id,
-          customerPhone,
-          customerName: null,
-          status: "active",
-          isManual: 0,
-          conversationStep: 1,
-        });
+        const newConv = await reserveAiOutreach(storeId, newOrder.id, customerPhone, "");
+        if (!newConv) return;
         conv = newConv;
 
         await storage.createAiLog({ storeId, orderId: newOrder.id, customerPhone, role: "user", message: customerMessage });
@@ -1419,6 +1421,17 @@ export async function handleIncomingMessage(
     console.log(`[INCOMING] Message from ${customerPhone}: "${customerMessage}"`);
     console.log(`[INCOMING] Conv: ${conv.id} | Order: ${conv.orderId ?? "none"} | Customer: ${conv.customerName ?? "unknown"}`);
 
+    const replySettings = await storage.getAiSettings(storeId);
+    if (!replySettings?.enabled) return;
+    if (conv.orderId) {
+      const [replyOrder] = await db.select({ source: orders.source }).from(orders)
+        .where(and(eq(orders.id, conv.orderId), eq(orders.storeId, storeId)));
+      const replyItems = await db.select({ productId: orderItems.productId }).from(orderItems)
+        .where(eq(orderItems.orderId, conv.orderId));
+      if (!replyOrder || !aiSourceMatches(replySettings.scopeMode, replyOrder.source) ||
+          !aiProductsMatch(replySettings.enabledProductIds, replyItems.map(item => item.productId))) return;
+    }
+
     // ── AI key gate — block AI reply but message is already visible in Live Chat ──
     if (!(await storeHasAIKey(storeId))) {
       console.warn(`[AI] ⚠️ No API key — message logged to conv ${conv.id} but AI cannot reply. Configure OPENROUTER_API_KEY.`);
@@ -1471,6 +1484,8 @@ export async function handleIncomingMessage(
       const directMatch = catalogForFriend.find(p => p.name && msgNormFriend.includes(normalizeForMatch(p.name)));
       if (directMatch) { friendProductId = directMatch.id; friendProductName = directMatch.name; }
 
+      if (!aiProductsMatch(replySettings.enabledProductIds, [friendProductId])) return;
+      if (!aiSourceMatches(replySettings.scopeMode, "whatsapp")) return;
       if (friendProductId && friendProductName) {
         const matchedForPrice = catalogForFriend.find(p => p.id === friendProductId);
         const priceCents = matchedForPrice?.whatsappPrice ?? matchedForPrice?.sellingPrice ?? currentCtx?.totalPrice ?? 0;
@@ -1536,7 +1551,7 @@ export async function handleIncomingMessage(
       const catalogRows = await db.select({ id: products.id, name: products.name, stock: products.stock })
         .from(products).where(eq(products.storeId, storeId));
       const availableProducts = catalogRows
-        .filter(p => p.name && (p.stock ?? 0) > 0 && normalizeForMatch(p.name) !== currentNorm)
+        .filter(p => aiProductsMatch(replySettings.enabledProductIds, [p.id]) && p.name && (p.stock ?? 0) > 0 && normalizeForMatch(p.name) !== currentNorm)
         .slice(0, 15);
 
       let catalogMsg: string;
@@ -2002,6 +2017,7 @@ export async function handleIncomingMessage(
               ));
             })();
 
+        if (found && !aiProductsMatch(replySettings.enabledProductIds, [found.id])) return;
         let followUp: string;
         let sendImageUrls: string[] = [];
         let sendAudioUrls: string[] = [];
@@ -2023,7 +2039,7 @@ export async function handleIncomingMessage(
         } else {
           // Not found by name — send the numbered catalog list so the
           // customer can browse and pick by number instead.
-          const allProducts = catalogProducts.filter(p => (p.stock ?? 0) > 0).slice(0, 15);
+          const allProducts = catalogProducts.filter(p => aiProductsMatch(replySettings.enabledProductIds, [p.id]) && (p.stock ?? 0) > 0).slice(0, 15);
           if (allProducts.length > 0) {
             const listText = allProducts.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
             followUp = `سمح ليا خويا، ما لقيتش "${effectiveMentionedProduct}" بالضبط. هاد المنتجات لي عندنا — بعث ليا الرقم لي يعجبك:\n\n${listText}`;
@@ -2056,6 +2072,7 @@ export async function handleIncomingMessage(
             const isLockedIn = currentOrderForSwitch && currentOrderForSwitch.status !== "nouveau";
 
             if (isLockedIn) {
+              if (!aiSourceMatches(replySettings.scopeMode, "whatsapp")) return;
               const effectivePrice = found.whatsappPrice ?? found.sellingPrice ?? 0;
               const newOrderForSwitch = await storage.createOrder({
                 storeId, orderNumber: `WA-${Date.now()}`, customerName: "Client WhatsApp",

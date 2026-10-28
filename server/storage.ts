@@ -315,7 +315,7 @@ export interface IStorage {
   getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
   upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
-  upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null; greenApiInstanceId?: string | null; greenApiApiToken?: string | null }): Promise<import("@shared/schema").AiSetting>;
+  upsertAiSettings(storeId: number, data: { scopeMode?: string; enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null; greenApiInstanceId?: string | null; greenApiApiToken?: string | null }): Promise<import("@shared/schema").AiSetting>;
   updateConversationNeedsAttention(id: number, val: number): Promise<void>;
   updateConversationStep(id: number, step: number, data?: { city?: string; variant?: string }): Promise<void>;
 
@@ -6420,7 +6420,7 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
-  async upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null; greenApiInstanceId?: string | null; greenApiApiToken?: string | null }) {
+  async upsertAiSettings(storeId: number, data: { scopeMode?: string; enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null; greenApiInstanceId?: string | null; greenApiApiToken?: string | null }) {
     const { aiSettings } = await import("@shared/schema");
     const existing = await this.getAiSettings(storeId);
     if (existing) {

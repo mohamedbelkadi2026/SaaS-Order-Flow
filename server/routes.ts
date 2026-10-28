@@ -19772,7 +19772,23 @@ function ensureHeaders(sheet) {
 
   app.put("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     try {
-      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel, greenApiInstanceId, greenApiApiToken } = req.body;
+      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel, greenApiInstanceId, greenApiApiToken, scopeMode } = req.body;
+      if (scopeMode !== undefined && !["all_sources", "whatsapp_only", "non_whatsapp"].includes(scopeMode)) {
+        return res.status(400).json({ message: "Source de commandes IA invalide." });
+      }
+      if (enabledProductIds !== undefined) {
+        if (!Array.isArray(enabledProductIds) || enabledProductIds.length > 2000 ||
+            enabledProductIds.some((id: unknown) => !Number.isSafeInteger(id) || Number(id) <= 0)) {
+          return res.status(400).json({ message: "Sélection de produits IA invalide." });
+        }
+        if (enabledProductIds.length) {
+          const owned = await db.select({ id: products.id }).from(products)
+            .where(and(eq(products.storeId, req.user!.storeId!), inArray(products.id, enabledProductIds)));
+          if (new Set(enabledProductIds).size !== owned.length) {
+            return res.status(400).json({ message: "Un produit sélectionné n'appartient pas à ce magasin." });
+          }
+        }
+      }
       if ((greenApiInstanceId !== undefined && typeof greenApiInstanceId !== "string") ||
           (greenApiApiToken !== undefined && typeof greenApiApiToken !== "string")) {
         return res.status(400).json({ message: "Identifiants Green API invalides." });
@@ -19794,6 +19810,7 @@ function ensureHeaders(sheet) {
       const orKeyToSave  = openrouterApiKey === "" ? null : (openrouterApiKey?.trim() || undefined);
       const s = await storage.upsertAiSettings(req.user!.storeId!, {
         enabled, systemPrompt, enabledProductIds,
+        ...(scopeMode !== undefined ? { scopeMode } : {}),
         ...(oaiKeyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: oaiKeyToSave } : {}),
         ...(orKeyToSave  !== undefined || openrouterApiKey === "" ? { openrouterApiKey: orKeyToSave } : {}),
         ...(aiModel ? { aiModel } : {}),

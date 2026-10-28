@@ -21,6 +21,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { startRecoveryJob } from "./recovery-job";
+import { startAiConfirmationJob } from "./ai-confirmation-job";
 import { syncAllGoogleSheets } from "./cron/sync-gsheets";
 import { syncAllPublicSheets } from "./cron/sync-gsheets-public";
 import { expireInactiveTajerDropOfferRequests } from "./cron/tajerdrop-offer-requests";
@@ -829,6 +830,7 @@ app.use((req, res, next) => {
   await ensureSuperAdmin();
   startWooCommerceSync(intervals);
   startRecoveryJob(intervals);
+  startAiConfirmationJob(intervals);
 
   // Prevent long-running carrier polls from overlapping their next scheduled run.
   // A slow carrier API must not multiply concurrent jobs and saturate the DB pool.
