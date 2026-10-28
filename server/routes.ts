@@ -1,3 +1,4 @@
+import { senditWebhookFields } from "@shared/sendit-status";
 import { registerOrderNavigationRoutes } from "./order-navigation-routes";
 import type { Express } from "express";
 import type { Server } from "http";
@@ -6214,6 +6215,13 @@ export async function registerRoutes(
       newStatus = ecMapped;
     }
 
+    if (carrierName.toLowerCase() === 'sendit') {
+      const mapped = mapSenditStatus(rawText);
+      // Preserve an unknown raw status for display, without inventing a stage.
+      if (!mapped) return {tracked:true, orderId:order.id, matchedBy};
+      newStatus = mapped;
+    }
+
     await storage.updateOrderStatus(order.id, newStatus);
     notifyStatusUpdate({ id: order.id, storeId: (order as any).storeId, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, newStatus);
 
@@ -6915,7 +6923,8 @@ export async function registerRoutes(
       }
 
       // 4. Parser le payload
-      const payload = req.body as {
+      const payload = { ...(req.body || {}), ...senditWebhookFields(req.body) } as {
+        reference?: string;
         event?: string;
         code?: string;
         newStatus?: string;
@@ -6929,17 +6938,17 @@ export async function registerRoutes(
 
       console.log(`[SENDIT-WEBHOOK] Store #${storeId} — event=${payload.event} code=${payload.code} newStatus=${payload.newStatus}`);
 
-      if (!payload.code) {
-        return res.status(400).json({ message: "Missing tracking code" });
+      if (!payload.code && !payload.reference) {
+        return res.status(400).json({ message: "Missing tracking code or reference" });
       }
 
       // 5. Mapper le statut
       const newInternalStatus = payload.newStatus ? mapSenditStatus(payload.newStatus) : null;
 
       // 6. Trouver la commande par trackNumber
-      const trackingCode = String(payload.code);
-      const allOrders = await storage.getOrdersByStore(storeId);
-      const order = allOrders.find((o: any) => String(o.trackNumber || '') === trackingCode);
+      const trackingCode = String(payload.code || '');
+      const order = (trackingCode ? await storage.getOrderByTrackingNumber(storeId, trackingCode) : undefined)
+        || (payload.reference ? await storage.getOrderByNumber(storeId, payload.reference) : undefined);
 
       if (!order) {
         console.warn(`[SENDIT-WEBHOOK] No order found for tracking code "${trackingCode}" in store #${storeId}`);
@@ -6953,7 +6962,10 @@ export async function registerRoutes(
       }
 
       // 7. Mettre à jour le statut si mappé et différent
+      const provider = String(order.shippingProvider || order.carrierName || '').trim().toLowerCase();
+      if (provider && provider !== 'sendit') return res.json({received:true, matched:false});
       const updates: Record<string, any> = {};
+      if (payload.newStatus && payload.newStatus !== order.commentStatus) updates.commentStatus = payload.newStatus;
       if (newInternalStatus && newInternalStatus !== order.status) {
         updates.status = newInternalStatus;
       }
@@ -6970,6 +6982,9 @@ export async function registerRoutes(
 
       if (Object.keys(updates).length > 0) {
         await storage.updateOrder(order.id, updates as any);
+        const status = newInternalStatus || order.status;
+        emitOrderUpdated(storeId, order.id, status, payload.newStatus || order.commentStatus || '');
+        broadcastToStore(storeId, 'order_updated', {orderId:order.id, status, commentStatus:payload.newStatus || order.commentStatus});
         console.log(`[SENDIT-WEBHOOK] ✅ Order #${(order as any).orderNumber} — ${payload.oldStatus} → ${payload.newStatus} (internal: ${newInternalStatus})`);
         // Notif push si livré ou refusé
         if (['delivered', 'refused'].includes(newInternalStatus || '')) {

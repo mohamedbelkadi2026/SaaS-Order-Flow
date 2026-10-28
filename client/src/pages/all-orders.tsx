@@ -1,3 +1,4 @@
+import { senditOrderStatusText } from "@shared/sendit-status";
 import { useState, useMemo, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -1077,7 +1078,7 @@ export default function AllOrders() {
                           ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
-                      {isColVisible('status') && <TableCell><StatusBadge status={order.commentStatus || order.status} /></TableCell>}
+                      {isColVisible('status') && <TableCell><StatusBadge status={senditOrderStatusText(order)} /></TableCell>}
                       {isColVisible('prix') && <TableCell className="font-semibold whitespace-nowrap">{formatCurrency(order.totalPrice)}</TableCell>}
                       {isColVisible('adresse') && <TableCell className="max-w-[140px] truncate text-muted-foreground text-[11px]">{order.customerAddress || "-"}</TableCell>}
                       {isColVisible('reference') && <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>}
@@ -1178,7 +1179,7 @@ export default function AllOrders() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <span className="font-medium text-sm truncate">{order.customerName}</span>
-                    <StatusBadge status={order.commentStatus || order.status} className="text-[10px] shrink-0" />
+                    <StatusBadge status={senditOrderStatusText(order)} className="text-[10px] shrink-0" />
                   </div>
                   <div className="flex items-center gap-1.5 mb-1.5">
                     <span className="font-mono text-xs text-muted-foreground">{order.customerPhone}</span>

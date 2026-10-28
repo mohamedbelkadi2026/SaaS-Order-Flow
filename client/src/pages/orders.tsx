@@ -1,3 +1,4 @@
+import { senditOrderStatusText } from "@shared/sendit-status";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions, useMagasins } from "@/hooks/use-store-data";
@@ -2475,7 +2476,7 @@ export default function Orders() {
                         <TableCell onClick={e => e.stopPropagation()}>
                           {isMediaBuyer ? (
                             (() => {
-                              const rawCs = order.commentStatus || order.status || '';
+                              const rawCs = senditOrderStatusText(order);
                               const parts = rawCs.split(' | ');
                               const mainStatus = parts[0]?.trim() || '';
                               const motifPart  = parts.find((p: string) => p.startsWith('Motif:'))?.replace('Motif:', '').trim() || '';
@@ -2516,7 +2517,7 @@ export default function Orders() {
                             >
                               <SelectTrigger className="h-7 text-[11px] border-0 bg-transparent p-0 shadow-none focus:ring-0 w-auto gap-1" data-testid={`status-select-${order.id}`}>
                                 {(() => {
-                                  const rawCs = order.commentStatus || order.status || '';
+                                  const rawCs = senditOrderStatusText(order);
                                   const parts = rawCs.split(' | ');
                                   const mainStatus = parts[0]?.trim() || '';
                                   const motifPart  = parts.find((p: string) => p.startsWith('Motif:'))?.replace('Motif:', '').trim() || '';
@@ -2846,7 +2847,7 @@ export default function Orders() {
                       </>
                     )}
                     {(() => {
-                      const rawCs = order.commentStatus || order.status || '';
+                      const rawCs = senditOrderStatusText(order);
                       const parts = rawCs.split(' | ');
                       const mainStatus = parts[0]?.trim() || '';
                       const motifPart  = parts.find((p: string) => p.startsWith('Motif:'))?.replace('Motif:', '').trim() || '';

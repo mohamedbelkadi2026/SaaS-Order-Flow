@@ -1,3 +1,4 @@
+import { readSenditStatus } from "@shared/sendit-status";
 /**
  * carrier-service.ts
  * Real HTTP integration with Moroccan shipping carriers.
@@ -4189,15 +4190,7 @@ export const SENDIT_STATUS_MAP: Record<string, string> = {
 };
 
 export function mapSenditStatus(raw: string): string | null {
-  if (!raw) return null;
-  // Exact match
-  const direct = SENDIT_STATUS_MAP[raw];
-  if (direct) return direct;
-  // Uppercase + sans accents
-  const norm = raw.toUpperCase().trim()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[\s\-]+/g, '_');
-  return SENDIT_STATUS_MAP[norm] ?? null;
+  return readSenditStatus(raw)?.status ?? null;
 }
 
 /**
