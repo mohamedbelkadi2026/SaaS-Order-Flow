@@ -19898,7 +19898,7 @@ function ensureHeaders(sheet) {
 
       const aiMessage = completion.choices[0]?.message?.content ?? "";
 
-      await storage.createAiLog({ storeId, orderId, customerPhone: order.customerPhone, role: "assistant", message: aiMessage });
+      await storage.createAiLog({ storeId, orderId, customerPhone: order.customerPhone, role: "system", message: `Brouillon IA (non envoyé) : ${aiMessage}` });
 
       res.json({ message: aiMessage, orderId });
     } catch (err: any) {
@@ -20020,7 +20020,7 @@ function ensureHeaders(sheet) {
       const storeId = req.user!.storeId!;
       const [order] = await db.select().from(orders).where(and(eq(orders.id, Number(req.params.orderId)), eq(orders.storeId, storeId)));
       if (!order) return res.status(404).json({ message: "Commande introuvable" });
-      triggerAIForNewOrder(storeId, order.id, order.customerPhone, order.customerName, undefined).catch(console.error);
+      triggerAIForNewOrder(storeId, order.id, order.customerPhone, order.customerName, undefined, true).catch(console.error);
       res.json({ success: true, message: "Déclenchement IA en cours..." });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });

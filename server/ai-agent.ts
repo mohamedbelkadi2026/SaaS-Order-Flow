@@ -1037,16 +1037,20 @@ ${JSON_OUTPUT_RULE}`;
 /* ════════════════════════════════════════════════════════════════
    TRIGGER — Fire-and-forget on new order creation
 ════════════════════════════════════════════════════════════════ */
-async function reserveAiOutreach(storeId: number, orderId: number, customerPhone: string, customerName: string) {
+async function reserveAiOutreach(storeId: number, orderId: number, customerPhone: string, customerName: string, retry = false) {
   return db.transaction(async tx => {
     const phoneKey = customerPhone.replace(/\D/g, "").replace(/^0/, "212");
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-confirm:${storeId}:${phoneKey}`}))`);
     const [live] = await tx.select({ status: orders.status }).from(orders)
       .where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
     if (live?.status !== "nouveau") return null;
-    const [handled] = await tx.select({ id: aiConversations.id }).from(aiConversations)
+    const [handled] = await tx.select({ id: aiConversations.id, status: aiConversations.status }).from(aiConversations)
       .where(and(eq(aiConversations.storeId, storeId), eq(aiConversations.orderId, orderId))).limit(1);
-    if (handled) return null;
+    if (handled) {
+      if (handled.status !== "send_failed" && !retry) return null;
+      const [restarted] = await tx.update(aiConversations).set({ status: "active" }).where(eq(aiConversations.id, handled.id)).returning();
+      return restarted;
+    }
     const [busy] = await tx.select({ id: aiConversations.id }).from(aiConversations).where(and(
       eq(aiConversations.storeId, storeId), eq(aiConversations.status, "active"),
       sql`regexp_replace(regexp_replace(${aiConversations.customerPhone}, '[^0-9]', '', 'g'), '^0', '212') = ${phoneKey}`,
@@ -1066,6 +1070,7 @@ export async function triggerAIForNewOrder(
   customerPhone: string,
   customerName: string,
   productId?: number | null,
+  retry = false,
 ): Promise<void> {
   console.log(`[WEBHOOK]: New order received for ${customerName} | Order #${orderId} | Store: ${storeId}`);
 
@@ -1099,35 +1104,34 @@ export async function triggerAIForNewOrder(
       getStoreName(storeId),
     ]);
 
-    const cleanName    = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي/لالة";
-    const _baseLabel   = ctx.productName || "منتجك";
-    const _initVariant = (ctx.productVariant && ctx.productVariant !== 'Default Title' && ctx.productVariant !== 'null') ? ctx.productVariant : null;
-    const productLabel = _initVariant ? `${_baseLabel} - ${_initVariant}` : _baseLabel;
-    const variantPart  = "";
-    const stockUrgency = (ctx.stockQty !== null && ctx.stockQty > 0 && ctx.stockQty <= 3)
-      ? `\n⚠️ ماتأخروش — بقاو غير ${ctx.stockQty} قطع فـ السطوك!`
-      : "";
-
-    // Check if customer has multiple orders (duplicate detection)
-    let dupNote = "";
-    try {
-      const dupCount = await storage.getPhoneOrderCount(storeId, customerPhone);
-      if (dupCount > 1) {
-        dupNote = `\nشفنا سيدي باللي عندك ${dupCount} طلبات عندنا — واش بغيتي نأكد ليك الطلب الجديد هذا، ولا بغيتي نلغيو الطلبات اللي فاتت؟ 🙏`;
-      }
-    } catch { /* non-fatal */ }
-
-    // Greeting — exact format as specified
-    const firstMessage =
-      `السلام عليكم سيدي/لالة ${cleanName}، تبارك الله عليك ✨\n` +
-      `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.${stockUrgency}${dupNote}\n` +
-      `واش نأكد ليك المدينة والمقاس باش نخرجوها ليك اليوم؟ 🚀`;
+    const productLabel = [ctx.productName, ctx.productVariant].filter(v => v && v !== 'Default Title' && v !== 'null').join(' — ');
+    const firstMessage = [
+      'السلام عليكم،',
+      `معاك فريق الدعم ديال ${storeName} باش نأكدو معاك الطلب ديالك.`,
+      '',
+      `السمية: ${customerName || 'غير محددة'}`,
+      `الهاتف: ${customerPhone}`,
+      `المدينة: ${orderRow.customerCity || 'غير محددة'}`,
+      `العنوان: ${orderRow.customerAddress || 'غير محدد'}`,
+      `المنتج: ${productLabel || orderRow.rawProductName || 'غير محدد'}`,
+      `الكمية: ${orderRow.rawQuantity || 1}`,
+      `المجموع: ${((orderRow.totalPrice || 0) / 100).toFixed(2)} درهم — الدفع عند الاستلام`,
+      '',
+      'واش نأكدو ليك الطلب؟ إلا بغيتي تبدل شي معلومة أو تلغي الطلب، جاوبنا هنا.',
+    ].join('\n');
 
     // One short, durable reservation shared by webhooks, manual triggers and
     // the pending-order worker. Never restart an order already handled by IA.
-    const conv = await reserveAiOutreach(storeId, orderId, customerPhone, customerName);
+    const conv = await reserveAiOutreach(storeId, orderId, customerPhone, customerName, retry);
     if (!conv) return;
 
+    const accepted = await sendWhatsAppMessage(customerPhone, firstMessage, storeId);
+    if (!accepted) {
+      await storage.updateAiConversationStatus(conv.id, "send_failed");
+      await storage.createAiLog({ storeId, orderId, customerPhone, role: "system", message: "Échec d'envoi WhatsApp : Green API n'a pas confirmé la prise en charge. Vérifiez la connexion de ce magasin avant de relancer." });
+      broadcastToStore(storeId, "ai_error", { conversationId: conv.id, error: "Message non envoyé. Vérifiez Green API." });
+      return;
+    }
     await storage.createAiLog({ storeId, orderId, customerPhone, role: "assistant", message: firstMessage });
     await storage.updateAiConversationLastMessage(conv.id, firstMessage);
 
@@ -1137,7 +1141,14 @@ export async function triggerAIForNewOrder(
     });
 
     console.log(`[WHATSAPP]: Attempting to send message to ${customerPhone}`);
-    await queueWhatsApp(storeId, customerPhone, firstMessage);
+    const mediaFailures: string[] = [];
+    if (ctx.descriptionDarija && !await sendWhatsAppMessage(customerPhone, ctx.descriptionDarija, storeId)) mediaFailures.push("description");
+    for (const url of ctx.productImageUrls || []) if (!await sendWhatsAppImage(customerPhone, url, "", storeId)) mediaFailures.push("image");
+    for (const url of ctx.productVideoUrls || []) if (!await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId)) mediaFailures.push("vidéo");
+    for (const url of ctx.productAudioUrls || []) if (!await sendWhatsAppFile(customerPhone, url, "audio.mp3", "", storeId)) mediaFailures.push("audio");
+    if (mediaFailures.length) {
+      await storage.createAiLog({ storeId, orderId, customerPhone, role: "system", message: `Contenus non envoyés : ${mediaFailures.join(", ")}. Vérifiez les fichiers et Green API.` });
+    }
     console.log(`[SUCCESS]: Outreach sent successfully → order #${orderId} | phone: ${customerPhone} | product: "${productLabel}"`);
   } catch (err: any) {
     console.error(`[AI] ❌ triggerAIForNewOrder error (order ${orderId}):`, err.message);

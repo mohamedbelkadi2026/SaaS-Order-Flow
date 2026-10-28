@@ -45,7 +45,7 @@ async function setup() {
   const ctx = { db: triggerDb, storage, orders, orderItems, aiConversations, eq, and, sql,
     aiSourceMatches, aiProductsMatch, console: { log(){}, warn(){}, error(e){ throw new Error(e); } },
     storeCanAutoConfirm: async () => true, getOrderContext: async () => ({ productName:'Test' }),
-    getStoreName: async () => 'Test store', broadcastToStore(){}, queueWhatsApp: async (...args) => sent.push(args), Date };
+    getStoreName: async () => 'Test store', broadcastToStore(){}, queueWhatsApp: async (...args) => sent.push(args), sendWhatsAppMessage: async (...args) => { sent.push(args); return true; }, Date };
   const trigger = vm.runInNewContext(strip(triggerSource.replace('export ', '') + '\ntriggerAIForNewOrder'), ctx);
   const batch = vm.runInNewContext(strip(jobSource.replaceAll('export ', '') + '\nrunAiConfirmationBatch'), { db, orders, orderItems, aiSettings, aiConversations, eq, and, asc, sql, triggerAIForNewOrder: trigger });
   let next = 0;
@@ -104,7 +104,7 @@ test('outreach uses persisted source, status and all items; caller product hints
     for (const row of excluded) await t.trigger(91,row.id,row.customerPhone,row.customerName,10);
     assert.equal(t.sent.length,0);
     await t.trigger(91,allowed.id,'wrong-phone','Wrong name',11);
-    assert.equal(t.sent.length,1);assert.equal(t.sent[0][1],allowed.customerPhone);
+    assert.equal(t.sent.length,1);assert.equal(t.sent[0][0],allowed.customerPhone);
   } finally { await t.pg.close(); }
 });
 
@@ -160,4 +160,25 @@ test('excluded incoming replies stay visible in Live Chat and cannot confirm thr
     assert.equal(keyChecks,0);assert.equal(t.sent.length,0);
     assert.equal((await t.db.select().from(orders))[0].status,'nouveau');
   }finally{await t.pg.close();}
+});
+
+test('failed outreach is not logged as sent; explicit retry sends the order summary and configured media',async()=>{
+ const t=await setup();try{
+  await t.setting({});const row=await t.add();
+  t.storage.updateAiConversationStatus=async(id,status)=>t.db.update(aiConversations).set({status}).where(eq(aiConversations.id,id));
+  t.ctx.sendWhatsAppMessage=async()=>false;
+  await t.trigger(91,row.id,row.customerPhone,row.customerName);
+  assert.equal(t.logs.filter(x=>x.role==='assistant').length,0);
+  assert.equal((await t.db.select().from(aiConversations))[0].status,'send_failed');
+  const media=[];
+  t.ctx.getOrderContext=async()=>({productName:'Test product',descriptionDarija:'Configured description',productImageUrls:['image'],productVideoUrls:['video'],productAudioUrls:['audio']});
+  t.ctx.sendWhatsAppMessage=async(phone,message)=>{media.push(message);return true};
+  t.ctx.sendWhatsAppImage=async(phone,url)=>{media.push(url);return true};
+  t.ctx.sendWhatsAppFile=async(phone,url)=>{media.push(url);return true};
+  await t.trigger(91,row.id,row.customerPhone,row.customerName,undefined,true);
+  assert.match(media[0],/السلام عليكم،/);assert.match(media[0],/الهاتف:/);
+  assert.doesNotMatch(media[0],/سيدي|لالة|تبارك/);
+  assert.deepEqual(media.slice(1),['Configured description','image','video','audio']);
+  assert.equal((await t.db.select().from(aiConversations)).length,1);
+ }finally{await t.pg.close();}
 });

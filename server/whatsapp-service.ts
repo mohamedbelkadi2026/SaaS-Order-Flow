@@ -108,7 +108,7 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
       body: JSON.stringify({ chatId, message }),
       signal: AbortSignal.timeout(15000),
     });
-    if (res.ok) {
+    if (res.ok && typeof (await res.json().catch(() => ({}))).idMessage === "string") {
       console.log(`[WA Transport:${storeId}] ✅ Message sent via Green API → ${chatId}`);
       return true;
     }
@@ -156,7 +156,7 @@ export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName:
       body: JSON.stringify({ chatId, urlFile: fileUrl, fileName: resolvedFileName, caption }),
       signal: AbortSignal.timeout(25000),
     });
-    if (res.ok) {
+    if (res.ok && typeof (await res.json().catch(() => ({}))).idMessage === "string") {
       console.log(`[WA Transport:${storeId}] ✅ File sent via Green API → ${chatId}`);
       return true;
     }
@@ -206,7 +206,7 @@ export async function sendWhatsAppButtons(
       }),
       signal: AbortSignal.timeout(15000),
     });
-    if (res.ok) {
+    if (res.ok && typeof (await res.json().catch(() => ({}))).idMessage === "string") {
       console.log(`[WA Transport:${storeId}] ✅ Buttons sent via Green API → ${chatId}`);
       return true;
     }
@@ -217,3 +217,4 @@ export async function sendWhatsAppButtons(
     return false;
   }
 }
+
