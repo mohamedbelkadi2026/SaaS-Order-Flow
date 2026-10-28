@@ -1,3 +1,4 @@
+import { teamPeriodRange, validTeamRange, type TeamPeriod } from "@shared/team-period";
 import { moroccoToday } from "@shared/morocco-time";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -374,13 +375,20 @@ export default function Team() {
   // automatically on change because both values are part of the query key.
   const todayStr = moroccoToday();
   const [perfDate, setPerfDate] = useState<string>(todayStr);
+  const [perfPeriod,setPerfPeriod] = useState<TeamPeriod>('today');
+  const [customFrom,setCustomFrom] = useState(todayStr);
+  const [customTo,setCustomTo] = useState(todayStr);
+  const [appliedCustom,setAppliedCustom] = useState({from:todayStr,to:todayStr});
+  const perfRange = teamPeriodRange(perfPeriod,todayStr,perfDate,appliedCustom);
+  const rangeLabel = perfRange.from===perfRange.to ? perfRange.from : `${perfRange.from} → ${perfRange.to}`;
+  const customValid = validTeamRange(customFrom,customTo) && customTo<=todayStr;
   const [perfMagasinId, setPerfMagasinId] = useState<string>("all");
   const { data: performance } = useAgentPerformance(
     perfMagasinId === "all" ? null : Number(perfMagasinId),
-    perfDate,
+    perfRange.from, perfRange.to,
   );
   const { data: assignmentPerformance, isPending: performancePending, isError: performanceError } = useAgentPerformanceByAssignment(
-    perfMagasinId === "all" ? null : Number(perfMagasinId), perfDate, perfDate, true, 30_000,
+    perfMagasinId === "all" ? null : Number(perfMagasinId), perfRange.from, perfRange.to, true, 30_000,
   );
   const { data: comparisonByProduct } = useAgentComparisonByProduct();
 
@@ -743,7 +751,7 @@ export default function Team() {
           <p className="text-muted-foreground mt-1">Gestion de l'équipe / Membres</p>
           {lastResetLabel && (
             <p className="text-xs text-muted-foreground mt-1" data-testid="text-distribution-epoch">
-              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — cette date concerne les compteurs de distribution. Les performances ci-dessous suivent le jour de création sélectionné.
+              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — cette date concerne les compteurs de distribution. Les performances ci-dessous suivent la période de création sélectionnée.
             </p>
           )}
         </div>
@@ -1004,7 +1012,21 @@ export default function Team() {
           Owner picks a date and (optionally) narrows to one magasin. The
           stats cards + the agent table's "ACTIONS DU JOUR" column both
           react to this filter. */}
-      <div className="flex flex-col sm:flex-row sm:items-end gap-3 sm:gap-4">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-end gap-3 sm:gap-4">
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="perf-period" className="text-[11px] font-bold text-muted-foreground uppercase">Période</Label>
+          <Select value={perfPeriod} onValueChange={v=>setPerfPeriod(v as TeamPeriod)}>
+            <SelectTrigger id="perf-period" className="h-9 w-[200px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="today">Aujourd’hui</SelectItem>
+              <SelectItem value="day">Jour précis</SelectItem>
+              <SelectItem value="month">Ce mois</SelectItem>
+              <SelectItem value="last_month">Mois dernier</SelectItem>
+              <SelectItem value="custom">Personnalisé</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {perfPeriod==='day' && <>
         <div className="flex flex-col gap-1">
           <Label htmlFor="perf-date" className="text-[11px] font-bold text-muted-foreground uppercase">Jour</Label>
           <Input
@@ -1017,6 +1039,13 @@ export default function Team() {
             data-testid="input-perf-date"
           />
         </div>
+        </>}
+        {perfPeriod==='custom' && <>
+          <div className="flex flex-col gap-1"><Label htmlFor="perf-from">Du</Label><Input id="perf-from" type="date" value={customFrom} max={customTo || todayStr} onChange={e=>setCustomFrom(e.target.value)} className="h-9 w-[160px]" /></div>
+          <div className="flex flex-col gap-1"><Label htmlFor="perf-to">Au</Label><Input id="perf-to" type="date" value={customTo} min={customFrom} max={todayStr} onChange={e=>setCustomTo(e.target.value)} className="h-9 w-[160px]" /></div>
+          <Button className="h-9" disabled={!customValid} onClick={()=>setAppliedCustom({from:customFrom,to:customTo})}>Appliquer</Button>
+          {!customValid && <p role="alert" className="text-xs text-destructive">Choisissez une période valide, jusqu’à aujourd’hui.</p>}
+        </>}
         <div className="flex flex-col gap-1">
           <Label htmlFor="perf-magasin" className="text-[11px] font-bold text-muted-foreground uppercase">Magasin</Label>
           <Select value={perfMagasinId} onValueChange={setPerfMagasinId}>
@@ -1033,12 +1062,12 @@ export default function Team() {
             </SelectContent>
           </Select>
         </div>
-        {(perfDate !== todayStr || perfMagasinId !== "all") && (
+        {(perfPeriod !== "today" || perfMagasinId !== "all") && (
           <Button
             variant="ghost"
             size="sm"
             className="h-9 text-xs gap-1"
-            onClick={() => { setPerfDate(todayStr); setPerfMagasinId("all"); }}
+            onClick={() => { setPerfPeriod("today"); setPerfDate(todayStr); setCustomFrom(todayStr); setCustomTo(todayStr); setAppliedCustom({from:todayStr,to:todayStr}); setPerfMagasinId("all"); }}
             data-testid="button-perf-reset"
           >
             <RotateCcw className="w-3.5 h-3.5" /> Réinitialiser
@@ -1132,6 +1161,7 @@ export default function Team() {
         );
       })()}
 
+      <p className="text-xs text-muted-foreground">Période appliquée : <strong>{rangeLabel}</strong> · Heure du Maroc · Dates de fin incluses.</p>
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
           <div>
@@ -1175,7 +1205,7 @@ export default function Team() {
               <TableHead>RÔLE</TableHead>
               <TableHead>PAIEMENT</TableHead>
               <TableHead>RÉPARTITION</TableHead>
-              <TableHead>ACTIONS DU JOUR</TableHead>
+              <TableHead>{perfRange.from===perfRange.to ? "ACTIONS DU JOUR" : "ACTIONS DE LA PÉRIODE"}</TableHead>
               <TableHead>TEMPS MOY.</TableHead>
               <TableHead>STATUT</TableHead>
               <TableHead className="text-right">ACTIONS</TableHead>
@@ -1393,7 +1423,7 @@ export default function Team() {
         <div className="space-y-4">
           <div>
             <h2 className="text-base font-bold uppercase tracking-wide">Performance des Agents</h2>
-            <p className="text-xs text-muted-foreground mt-1">Commandes créées le {perfDate} (heure du Maroc), actuellement assignées à chaque agent. Confirmées inclut les commandes expédiées, livrées et retournées.</p>
+            <p className="text-xs text-muted-foreground mt-1">Commandes créées {perfRange.from===perfRange.to ? `le ${perfRange.from}` : `du ${perfRange.from} au ${perfRange.to}`} (heure du Maroc), actuellement assignées à chaque agent. Confirmées inclut les commandes expédiées, livrées et retournées.</p>
           </div>
           {performanceError ? <p role="alert" className="text-sm text-destructive">Impossible de charger les performances. Réessayez dans quelques instants.</p> : performancePending ? <p className="text-sm text-muted-foreground">Chargement des performances…</p> : <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-5">
             {visibleAgents.filter((a: any) => a.role === 'agent').map((agent: any) => {

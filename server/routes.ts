@@ -1,3 +1,4 @@
+import { isCalendarDate, validTeamRange } from "@shared/team-period";
 import { isCarrierRefusal } from "@shared/carrier-refusal";
 import { senditWebhookFields } from "@shared/sendit-status";
 import { registerOrderNavigationRoutes } from "./order-navigation-routes";
@@ -13058,7 +13059,10 @@ function ensureHeaders(sheet) {
     const magasinIdRaw = req.query.magasinId as string | undefined;
     const magasinId = magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : null;
     const date = (req.query.date as string | undefined) || undefined;
-    res.json(await storage.getAgentPerformance(storeId, { magasinId, date }));
+    const dateFrom = (req.query.dateFrom as string | undefined) || date;
+    const dateTo = (req.query.dateTo as string | undefined) || dateFrom;
+    if ((dateFrom && !isCalendarDate(dateFrom)) || (dateTo && !isCalendarDate(dateTo)) || (dateFrom && dateTo && !validTeamRange(dateFrom,dateTo))) return res.status(400).json({message:'Période invalide'});
+    res.json(await storage.getAgentPerformance(storeId, { magasinId, date, dateFrom, dateTo }));
   });
 
   // Dashboard "Performance de l'Équipe" — assignment-based metrics in a date
@@ -13070,6 +13074,7 @@ function ensureHeaders(sheet) {
     const magasinId = magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : null;
     const dateFrom = (req.query.dateFrom as string | undefined) || null;
     const dateTo   = (req.query.dateTo   as string | undefined) || null;
+    if ((dateFrom && !isCalendarDate(dateFrom)) || (dateTo && !isCalendarDate(dateTo)) || (dateFrom && dateTo && !validTeamRange(dateFrom,dateTo))) return res.status(400).json({message:'Période invalide'});
     res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo }));
   });
 

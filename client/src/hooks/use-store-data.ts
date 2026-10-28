@@ -568,16 +568,17 @@ export function useAgentPerformanceByAssignment(
   });
 }
 
-export function useAgentPerformance(magasinId?: number | null, date?: string) {
+export function useAgentPerformance(magasinId?: number | null, date?: string, dateTo?: string) {
   // Build a stable query string so React Query keys deduplicate correctly.
   // `magasinId === null` means "all magasins" (matches the server default).
   const params = new URLSearchParams();
   if (magasinId != null) params.set("magasinId", String(magasinId));
-  if (date) params.set("date", date);
+  if (dateTo && date) { params.set("dateFrom",date); params.set("dateTo",dateTo); }
+  else if (date) params.set("date", date);
   const qs = params.toString();
   const url = qs ? `/api/agents/performance?${qs}` : "/api/agents/performance";
   return useQuery({
-    queryKey: ["/api/agents/performance", magasinId ?? "all", date ?? "today"],
+    queryKey: ["/api/agents/performance", magasinId ?? "all", date ?? "today", dateTo ?? ""],
     queryFn: async () => {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch agent performance");

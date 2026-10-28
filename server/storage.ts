@@ -202,7 +202,7 @@ export interface IStorage {
   checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }>;
   checkPaywall(storeId: number): Promise<{ isExpired: boolean; isLimitReached: boolean; isBlocked: boolean; reason: 'expired' | 'limit' | null; current: number; limit: number; plan: string }>;
 
-  getAgentPerformance(storeId: number, options?: { magasinId?: number | null; date?: string }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number; avgResponseMinutes: number | null }[]>;
+  getAgentPerformance(storeId: number, options?: { magasinId?: number | null; date?: string; dateFrom?: string; dateTo?: string }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number; avgResponseMinutes: number | null }[]>;
   getAgentComparisonByProduct(storeId: number): Promise<{ productId: number; productName: string; agentId: number; total: number; confirmed: number }[]>;
   // Like getAgentPerformance but groups by `assigned_to_id` over a date range
   // of `created_at`. Powers the Dashboard's "Performance de l'Équipe" panel
@@ -4429,7 +4429,7 @@ export class DatabaseStorage implements IStorage {
 
   async getAgentPerformance(
     storeId: number,
-    options?: { magasinId?: number | null; date?: string },
+    options?: { magasinId?: number | null; date?: string; dateFrom?: string; dateTo?: string },
   ): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
     // Count agent ACTIONS taken on a given day (default: today, store local time
     // assumed UTC for now). We group by `last_action_by` (the human who last
@@ -4439,9 +4439,9 @@ export class DatabaseStorage implements IStorage {
     // `magasinId` (optional) lets the Team page narrow stats to a single
     // magasin so an owner can see "today, agent X handled N orders in
     // magasin Y".
-    const dateStr = options?.date || new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const dayStart = new Date(`${dateStr}T00:00:00.000Z`);
-    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const dateStr = options?.date || casablancaToday();
+    const dayStart = moroccoDayStart(options?.dateFrom || dateStr);
+    const dayEnd = new Date(moroccoDayEnd(options?.dateTo || options?.dateFrom || dateStr).getTime() + 1);
 
     const conditions = [
       eq(orders.storeId, storeId),
