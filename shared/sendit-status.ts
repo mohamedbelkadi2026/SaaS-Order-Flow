@@ -13,7 +13,7 @@ const states: Record<string, {label:string; status:string}> = {
  UNREACHABLE:{label:'Injoignable',status:'unreachable'},
  POSTPONED:{label:'Reporté',status:'confirme_reporte'},
  DELIVERED:{label:'Livré',status:'delivered'},
- CANCELED:{label:'Annulé',status:'cancelled'},
+ CANCELED:{label:'Annulé',status:'refused'},
  REJECTED:{label:'Refusé',status:'refused'},
  RETURNED:{label:'Retourné',status:'retourné'},
 };

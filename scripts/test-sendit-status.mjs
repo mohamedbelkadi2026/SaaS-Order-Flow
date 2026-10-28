@@ -7,7 +7,7 @@ const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
 const {readSenditStatus,senditOrderStatusText,senditWebhookFields}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(await read('shared/sendit-status.ts'),{mode:'transform'})).toString('base64'));
 const source=await read('server/routes.ts');
 test('Sendit codes, actual TOPICKUP spelling and French labels share lifecycle mappings',()=>{
- for(const [raw,label,status] of [['PENDING','En attente','confirme'],['TO_PREPARE','À préparer','confirme'],['TOPICKUP','Ramassage en cours','in_progress'],['TO_PICKUP','Ramassage en cours','in_progress'],['PICKED_UP','Ramassé','in_progress'],['WAREHOUSE','Entrepôt','in_progress'],['DISTRIBUTED','Distribué','transit'],['DELIVERING','En cours de livraison','transit'],['DELIVERED','Livré','delivered'],['RETURNED','Retourné','retourné'],['CANCELLED','Annulé','cancelled'],['POSTPONED','Reporté','confirme_reporte']]){
+ for(const [raw,label,status] of [['PENDING','En attente','confirme'],['TO_PREPARE','À préparer','confirme'],['TOPICKUP','Ramassage en cours','in_progress'],['TO_PICKUP','Ramassage en cours','in_progress'],['PICKED_UP','Ramassé','in_progress'],['WAREHOUSE','Entrepôt','in_progress'],['DISTRIBUTED','Distribué','transit'],['DELIVERING','En cours de livraison','transit'],['DELIVERED','Livré','delivered'],['RETURNED','Retourné','retourné'],['CANCELLED','Annulé','refused'],['POSTPONED','Reporté','confirme_reporte']]){
  assert.deepEqual(readSenditStatus(raw),{label,status});assert.equal(readSenditStatus(label).status,status);
  assert.equal(senditOrderStatusText({shippingProvider:'sendit',commentStatus:raw}),label);
  }

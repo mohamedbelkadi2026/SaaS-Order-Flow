@@ -1,3 +1,4 @@
+import { isCarrierRefusal } from "@shared/carrier-refusal";
 import { senditWebhookFields } from "@shared/sendit-status";
 import { registerOrderNavigationRoutes } from "./order-navigation-routes";
 import type { Express } from "express";
@@ -2203,17 +2204,17 @@ export async function registerRoutes(
     if (user.role === 'agent') {
       const ordersList = await storage.getOrdersByAgent(user.id);
       if (status === 'annule_group') {
-        res.json(includeShippingCost(ordersList.filter(o => o.status?.startsWith('Annulé'))));
+        res.json(includeShippingCost(ordersList.filter(o => o.status?.startsWith('Annulé') && !isCarrierRefusal(o))));
       } else if (status === 'pas_reponse_group') {
         res.json(includeShippingCost(ordersList.filter(o => (o.status || '').startsWith('Pas de réponse'))));
       } else if (status === 'suivi_group') {
         res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
           SUIVI_GROUP.includes((o as any).commentStatus || '') ||
-          (!!(o as any).trackNumber && !['nouveau','confirme','confirme_reporte','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
+          (!!(o as any).trackNumber && !['nouveau','confirme','confirme_reporte','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé') && !isCarrierRefusal(o))
         )));
       } else if (status === 'refused') {
-        res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
+        res.json(includeShippingCost(ordersList.filter(o => (REFUSED_GROUP.includes(o.status) || isCarrierRefusal(o)))));
       } else if (status === 'nouveau') {
         // Nouveaux = only real new orders (no carrier statuses)
         res.json(includeShippingCost(ordersList.filter(o =>
@@ -2227,7 +2228,7 @@ export async function registerRoutes(
     } else {
       if (status === 'annule_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
-        res.json(includeShippingCost(ordersList.filter(o => o.status?.startsWith('Annulé'))));
+        res.json(includeShippingCost(ordersList.filter(o => o.status?.startsWith('Annulé') && !isCarrierRefusal(o))));
       } else if (status === 'pas_reponse_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(includeShippingCost(ordersList.filter(o => (o.status || '').startsWith('Pas de réponse'))));
@@ -2236,11 +2237,11 @@ export async function registerRoutes(
         res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
           SUIVI_GROUP.includes((o as any).commentStatus || '') ||
-          (!!(o as any).trackNumber && !['nouveau','confirme','confirme_reporte','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
+          (!!(o as any).trackNumber && !['nouveau','confirme','confirme_reporte','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé') && !isCarrierRefusal(o))
         )));
       } else if (status === 'refused') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
-        res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
+        res.json(includeShippingCost(ordersList.filter(o => (REFUSED_GROUP.includes(o.status) || isCarrierRefusal(o)))));
       } else if (status === 'nouveau') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(includeShippingCost(ordersList.filter(o =>
@@ -6127,7 +6128,7 @@ export async function registerRoutes(
       // Physical return in transit → needs scan confirmation (confirmReturnReceipt).
       // Stored as "retourné" so it appears on the Retours page, NOT Refusées.
       newStatus = "retourné";
-    } else if (rawStatus.includes("annul")) {
+    } else if (rawStatus.includes("annul") || rawStatus === "canceled" || rawStatus === "cancelled") {
       newStatus = "refused"; // administrative cancellation — auto stock restore applies
     } else if (
       rawStatus.includes("injoignable") || rawStatus.includes("unreachable") ||

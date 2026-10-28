@@ -4185,7 +4185,7 @@ export const SENDIT_STATUS_MAP: Record<string, string> = {
   // Reporté
   POSTPONED:        'confirme_reporte',
   // Terminal négatif
-  CANCELED:         'cancelled',
+  CANCELED:         'refused',
   REJECTED:         'refused',
 };
 

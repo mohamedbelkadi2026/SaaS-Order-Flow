@@ -1,3 +1,4 @@
+import { SENDIT_STATUS_REPAIR_SQL } from "./sendit-status-repair";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "@shared/schema";
@@ -1132,6 +1133,9 @@ export async function initializeDatabase(): Promise<void> {
     } else {
       console.log('[Migration] product_link_repair_v1 already applied (skipped)');
     }
+
+    const senditRepair = await client.query(SENDIT_STATUS_REPAIR_SQL);
+    console.log(`[DATABASE] Sendit classification repair: ${senditRepair.rowCount ?? 0} contradiction(s) corrected`);
 
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);

@@ -1,3 +1,4 @@
+import { CARRIER_REFUSAL_CODES } from "@shared/carrier-refusal";
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
@@ -1021,14 +1022,26 @@ export class DatabaseStorage implements IStorage {
       );
     }
 
+    const carrierRefusal = sql`(
+      translate(lower(trim(coalesce(${orders.status}, ''))), 'éèêë', 'eeee') NOT LIKE 'annule (%'
+      AND translate(lower(trim(coalesce(${orders.status}, ''))), 'éèêë', 'eeee') <> 'annule par client'
+      AND nullif(trim(${orders.trackNumber}), '') IS NOT NULL
+      AND nullif(trim(coalesce(nullif(${orders.shippingProvider}, ''), ${orders.carrierName}, '')), '') IS NOT NULL
+      AND (
+        translate(lower(trim(coalesce(${orders.status}, ''))), 'éèêë', 'eeee') IN (${sql.join(CARRIER_REFUSAL_CODES.map(s=>sql`${s}`),sql`, `)})
+        OR translate(lower(trim(split_part(coalesce(${orders.commentStatus}, ''), ' | ', 1))), 'éèêë', 'eeee') IN (${sql.join(CARRIER_REFUSAL_CODES.map(s=>sql`${s}`),sql`, `)})
+      )
+    )`;
+
     if (filters.status) {
       if (filters.status === 'annule_group') {
-        conditions.push(sql`(LOWER(${orders.status}) LIKE 'annul%' OR LOWER(${orders.status}) = 'supprimé' OR ${orders.commentStatus} ILIKE '%supprim%')`);
+        conditions.push(sql`(LOWER(${orders.status}) LIKE 'annul%' OR LOWER(${orders.status}) = 'supprimé' OR ${orders.commentStatus} ILIKE '%supprim%') AND NOT ${carrierRefusal}`);
       } else if (filters.status === 'pas_reponse_group') {
         // Matches "Pas de réponse 1" through "Pas de réponse 4"
         // and any future numbered variants without code changes.
         conditions.push(sql`${orders.status} LIKE 'Pas de réponse%'`);
       } else if (filters.status === 'suivi_group') {
+        conditions.push(sql`NOT ${carrierRefusal}`);
         // Primary: any order that has been shipped (has a tracking number) and isn't in a terminal state.
         // This catches orders whose carrier sent a custom status not in our internal status list.
         // Secondary fallback: explicit list that also covers Moroccan carrier in-transit statuses.
@@ -1115,16 +1128,16 @@ export class DatabaseStorage implements IStorage {
       } else if (filters.status === 'delivered') {
         // Carrier raw delivered labels (including Nearya) belong in Livrées,
         // even though we preserve the exact carrier status text on the order.
-        conditions.push(sql`LOWER(${orders.status}) IN ('delivered', 'livré', 'livrée', 'livré *', 'livrée *', 'livraison effectuée', 'remis au client', 'livré au client')`);
+        conditions.push(sql`LOWER(${orders.status}) IN ('delivered', 'livré', 'livrée', 'livré *', 'livrée *', 'livraison effectuée', 'remis au client', 'livré au client') AND NOT ${carrierRefusal}`);
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
-        conditions.push(inArray(orders.status, [
+        conditions.push(or(carrierRefusal, inArray(orders.status, [
           'refused',
           'Client intéressé', 'Remboursé', 'Adresse inconnue', 'Retour en route',
           'Incompatibilité avec les attentes', 'Article retourné', "Erreur d'expédition",
           'Pas de réponse + SMS', 'Boîte vocale', 'Pas réponse 1 (Suivi)',
           'Pas réponse 2 (Suivi)', 'Pas réponse 3 (Suivi)', 'Demande retour',
-        ]));
+        ])));
       } else if (filters.status === 'retour ready') {
         // Carrier variants can differ in case and use spaces or underscores.
         conditions.push(sql`LOWER(REPLACE(TRIM(${orders.status}), '_', ' ')) IN ('retour ready', 'return ready', 'ready')`);
