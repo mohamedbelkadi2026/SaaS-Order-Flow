@@ -7,7 +7,11 @@ import { triggerAIForNewOrder } from "./ai-agent";
 // Bounded per store to respect the existing WhatsApp send queue.
 export async function runAiConfirmationBatch() {
   const settings = await db.select({ storeId: aiSettings.storeId, scopeMode: aiSettings.scopeMode,
-    enabledProductIds: aiSettings.enabledProductIds }).from(aiSettings).where(eq(aiSettings.enabled, 1));
+    enabledProductIds: aiSettings.enabledProductIds }).from(aiSettings).where(and(eq(aiSettings.enabled, 1),
+      sql`trim(coalesce(${aiSettings.greenApiInstanceId}, '')) <> ''`,
+      sql`trim(coalesce(${aiSettings.greenApiApiToken}, '')) <> ''`,
+      sql`(trim(coalesce(${aiSettings.openrouterApiKey}, '')) <> '' OR trim(coalesce(${aiSettings.openaiApiKey}, '')) <> '')`,
+    ));
   for (const setting of settings) {
     const candidates = await db.select({ id: orders.id, customerPhone: orders.customerPhone,
       customerName: orders.customerName }).from(orders).where(and(

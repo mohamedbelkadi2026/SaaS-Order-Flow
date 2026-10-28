@@ -1,31 +1,11 @@
-/**
- * TajerGrow WhatsApp transport layer — Multi-Tenant Edition.
- * Each store uses its own Baileys session via getBaileysInstance(storeId).
- * Green API credentials are ALSO per-store (ai_settings.greenApiInstanceId/
- * greenApiApiToken) — each merchant connects their own WhatsApp number, so
- * Store A's messages never go out through Store B's number. Falls back to
- * the global GREENAPI_INSTANCE_ID/GREENAPI_API_TOKEN env vars only if a
- * store hasn't configured its own (useful as a shared default/dev fallback).
- *
- * Retry queue is per-store so Store A's failed messages never block Store B.
- */
-
-import { storage } from "./storage";
+/** WhatsApp transport: every send requires an explicit store and its own
+ * saved Green API pair. Missing settings and database errors fail closed. */
 import { greenApiUrl } from "./green-api";
+import { getStoreGreenCredentials } from "./green-api-tenant";
 
-/** Per-store Green API credentials, with the global env vars as fallback. */
-async function getGreenApiCredentials(storeId: number): Promise<{ instanceId: string; apiToken: string } | null> {
-  try {
-    const settings = await storage.getAiSettings(storeId);
-    const instanceId = (settings as any)?.greenApiInstanceId?.trim() || process.env.GREENAPI_INSTANCE_ID?.trim() || "";
-    const apiToken   = (settings as any)?.greenApiApiToken?.trim()   || process.env.GREENAPI_API_TOKEN?.trim()   || "";
-    if (!instanceId || !apiToken) return null;
-    return { instanceId, apiToken };
-  } catch {
-    const instanceId = process.env.GREENAPI_INSTANCE_ID?.trim() || "";
-    const apiToken   = process.env.GREENAPI_API_TOKEN?.trim()   || "";
-    return (instanceId && apiToken) ? { instanceId, apiToken } : null;
-  }
+async function getGreenApiCredentials(storeId: number) {
+  try { return await getStoreGreenCredentials(storeId); }
+  catch { return null; }
 }
 
 /* ── Phone number normalisation ─────────────────────────────── */
@@ -108,44 +88,14 @@ export function clearQueue(): void {
   }
 }
 
-/* ── Primary send via per-store Baileys instance ─────────────── */
-export async function sendWhatsAppMessage(phone: string, message: string, storeId = 1): Promise<boolean> {
+/* ── Text send via this store’s Green API instance ──────────── */
+export async function sendWhatsAppMessage(phone: string, message: string, storeId: number): Promise<boolean> {
   const formatted = formatPhoneForWhatsApp(phone);
   console.log(`[WA Transport:${storeId}] Sending to ${phone} → ${formatted}@s.whatsapp.net`);
 
-  // ── Try Baileys first, but NEVER exit early on "not connected" — that used
-  // to `return false` immediately, skipping the Green API fallback below
-  // entirely (only an exception fell through; the stub never throws, it just
-  // returns {state:'idle'} gracefully, so Green API was never reached at all
-  // while Baileys stays a stub). Any non-success here now falls through.
-  try {
-    const { getBaileysInstance } = await import("./baileys-service");
-    const instance = getBaileysInstance(storeId);
-    const status = instance.getStatus();
-    console.log(`[WA Transport:${storeId}] Baileys state: ${status.state} | phone: ${status.phone || "none"}`);
-
-    if (status.state === "connected" && instance.isConnected()) {
-      const ok = await instance.sendMessage(phone, message);
-      if (ok) {
-        console.log(`[WA Transport:${storeId}] ✅ Message sent via Baileys → ${formatted}`);
-        return true;
-      }
-      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys send returned false`);
-    } else {
-      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected (state=${status.state}) — trying Green API`);
-      if (status.state !== "idle" && status.state !== "qr") {
-        instance.start().catch(() => {});
-        console.log(`[WA Transport:${storeId}] Reconnect triggered`);
-      }
-    }
-  } catch (err: any) {
-    console.error(`[WA Transport:${storeId}] Baileys error: ${err.message}`);
-  }
-
-  /* ── Green API fallback — PER-STORE credentials (falls back to global env vars) ── */
   const creds = await getGreenApiCredentials(storeId);
   if (!creds) {
-    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config for this store — message DROPPED (no queue)`);
+    console.warn(`[WA Transport:${storeId}] No Green API credentials belonging to this store — message DROPPED (no queue)`);
     return false;
   }
   const { instanceId, apiToken } = creds;
@@ -170,13 +120,13 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
   }
 }
 
-/* ── Image send via per-store Baileys instance, Green API fallback ──── */
-export async function sendWhatsAppImage(phone: string, imageUrl: string, caption: string, storeId = 1): Promise<boolean> {
+/* ── Image send via this store’s Green API instance ──────────── */
+export async function sendWhatsAppImage(phone: string, imageUrl: string, caption: string, storeId: number): Promise<boolean> {
   return sendWhatsAppFile(phone, imageUrl, "produit.jpg", caption, storeId);
 }
 
-/* ── Generic file send (audio/video/image) via Baileys, Green API fallback ── */
-export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName: string, caption: string, storeId = 1): Promise<boolean> {
+/* ── File send via this store’s Green API instance ───────────── */
+export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName: string, caption: string, storeId: number): Promise<boolean> {
   const formatted = formatPhoneForWhatsApp(phone);
 
   // Green API determines the outgoing file type from the fileName field's
@@ -190,26 +140,9 @@ export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName:
   const fallbackBase = fileName.replace(/\.[^.]+$/, "") || "file";
   const resolvedFileName = realExt ? `${fallbackBase}.${realExt}` : fileName;
 
-  try {
-    const { getBaileysInstance } = await import("./baileys-service");
-    const instance = getBaileysInstance(storeId);
-    if (instance.isConnected() && typeof (instance as any).sendImage === "function" && resolvedFileName.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
-      const ok = await (instance as any).sendImage(phone, fileUrl, caption);
-      if (ok) {
-        console.log(`[WA Transport:${storeId}] ✅ File sent via Baileys → ${phone}`);
-        return true;
-      }
-    } else {
-      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected/unsupported — trying Green API for file`);
-    }
-  } catch (err: any) {
-    console.error(`[WA Transport:${storeId}] Baileys file exception: ${err.message}`);
-  }
-
-  /* ── Green API fallback — PER-STORE credentials ──────────────── */
   const creds = await getGreenApiCredentials(storeId);
   if (!creds) {
-    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config for this store — file DROPPED`);
+    console.warn(`[WA Transport:${storeId}] No Green API credentials belonging to this store — file DROPPED`);
     return false;
   }
   const { instanceId, apiToken } = creds;
@@ -236,7 +169,7 @@ export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName:
   }
 }
 
-/* ── Green API config check (per-store, falls back to global) ──── */
+/* ── Green API config check for this store only ──── */
 export async function isGreenApiConfigured(storeId: number): Promise<boolean> {
   return !!(await getGreenApiCredentials(storeId));
 }
@@ -248,7 +181,7 @@ export async function sendWhatsAppButtons(
   phone: string,
   body: string,
   buttons: { id: string; text: string }[],
-  storeId = 1,
+  storeId: number,
   header?: string,
   footer?: string,
 ): Promise<boolean> {

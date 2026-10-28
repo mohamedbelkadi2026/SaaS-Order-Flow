@@ -6422,13 +6422,26 @@ export class DatabaseStorage implements IStorage {
 
   async upsertAiSettings(storeId: number, data: { scopeMode?: string; enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null; greenApiInstanceId?: string | null; greenApiApiToken?: string | null }) {
     const { aiSettings } = await import("@shared/schema");
-    const existing = await this.getAiSettings(storeId);
-    if (existing) {
-      const [row] = await db.update(aiSettings).set({ ...data, updatedAt: new Date() }).where(eq(aiSettings.storeId, storeId)).returning();
+    if (!Number.isSafeInteger(storeId) || storeId <= 0) throw new Error("Magasin introuvable.");
+    return db.transaction(async tx => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-settings:${storeId}`}))`);
+      const [existing] = await tx.select().from(aiSettings).where(eq(aiSettings.storeId, storeId));
+      const instanceId = (data.greenApiInstanceId !== undefined ? data.greenApiInstanceId : existing?.greenApiInstanceId)?.trim();
+      if (instanceId) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`green-instance:${instanceId}`}))`);
+        const linked = await tx.select({ storeId: aiSettings.storeId }).from(aiSettings)
+          .where(sql`trim(${aiSettings.greenApiInstanceId}) = ${instanceId}`).limit(2);
+        if (linked.some(row => row.storeId !== storeId)) {
+          throw Object.assign(new Error("Cette instance Green API est déjà liée à un autre compte. Utilisez votre propre instance."), { statusCode: 409 });
+        }
+      }
+      if (existing) {
+        const [row] = await tx.update(aiSettings).set({ ...data, updatedAt: new Date() }).where(eq(aiSettings.storeId, storeId)).returning();
+        return row;
+      }
+      const [row] = await tx.insert(aiSettings).values({ storeId, ...data }).returning();
       return row;
-    }
-    const [row] = await db.insert(aiSettings).values({ storeId, ...data }).returning();
-    return row;
+    });
   }
 
   // ── Recovery Settings ──────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+import { findGreenApiStore } from "./green-api-tenant";
 import type { Express, RequestHandler } from "express";
 import { greenApiGet, greenApiRequest, GreenApiError } from "./green-api";
 
@@ -23,6 +24,15 @@ export function registerGreenApiRoutes(app: Express, requireAuth: RequestHandler
     if (!instanceId || !apiToken) throw new GreenApiError("Entrez Instance ID et API Token pour ce magasin.", 400);
     if (!/^\d{4,20}$/.test(instanceId) || /\s/.test(apiToken) || apiToken.length > 512) {
       throw new GreenApiError("Identifiants Green API invalides.", 400);
+    }
+    const owner = await findGreenApiStore(instanceId);
+    if (owner !== null && owner !== storeId) {
+      throw new GreenApiError("Cette instance Green API appartient à un autre compte.", 403);
+    }
+    // A saved connection must have a unique owner. Unsaved credentials may
+    // still be tested before linking a new, unclaimed instance.
+    if (!suppliedToken?.trim() && owner !== storeId) {
+      throw new GreenApiError("Connexion Green API ambiguë. Enregistrez votre propre instance.", 409);
     }
     return { instanceId, apiToken };
   }

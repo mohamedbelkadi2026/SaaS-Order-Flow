@@ -1,3 +1,4 @@
+import { registerWhatsappIncomingRoutes } from "./whatsapp-incoming-routes";
 import { isCalendarDate, validTeamRange } from "@shared/team-period";
 import { isCarrierRefusal } from "@shared/carrier-refusal";
 import { senditWebhookFields } from "@shared/sendit-status";
@@ -29,7 +30,7 @@ import multer from "multer";
 import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
-import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
+import { triggerAIForNewOrder } from "./ai-agent";
 import { shipOrderToCarrier, resolveAmeexStockLines, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText, mapSenditStatus, syncSenditDistricts, testSenditConnection, testOlivraisonConnection } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
@@ -19808,8 +19809,23 @@ function ensureHeaders(sheet) {
       // Allow explicitly clearing the key by passing empty string
       const oaiKeyToSave = openaiApiKey === "" ? null : (openaiApiKey?.trim() || undefined);
       const orKeyToSave  = openrouterApiKey === "" ? null : (openrouterApiKey?.trim() || undefined);
+      let enabledToSave = enabled;
+      if (enabled === 1) {
+        const previous = await storage.getAiSettings(req.user!.storeId!);
+        const hasOwnAiKey = !!(orKeyToSave !== undefined ? orKeyToSave : previous?.openrouterApiKey) ||
+          !!(oaiKeyToSave !== undefined ? oaiKeyToSave : previous?.openaiApiKey);
+        const ownInstance = gaId !== undefined ? gaId : previous?.greenApiInstanceId?.trim();
+        const ownToken = gaToken !== undefined ? gaToken : previous?.greenApiApiToken?.trim();
+        if (!hasOwnAiKey || !ownInstance || !ownToken) {
+          const editingCredentials = [openaiApiKey, openrouterApiKey, greenApiInstanceId, greenApiApiToken].some(value => value !== undefined);
+          if (!editingCredentials) {
+            return res.status(400).json({ message: "Connectez votre propre Green API et ajoutez votre clé OpenRouter avant d'activer l'IA." });
+          }
+          enabledToSave = 0;
+        }
+      }
       const s = await storage.upsertAiSettings(req.user!.storeId!, {
-        enabled, systemPrompt, enabledProductIds,
+        enabled: enabledToSave, systemPrompt, enabledProductIds,
         ...(scopeMode !== undefined ? { scopeMode } : {}),
         ...(oaiKeyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: oaiKeyToSave } : {}),
         ...(orKeyToSave  !== undefined || openrouterApiKey === "" ? { openrouterApiKey: orKeyToSave } : {}),
@@ -19826,7 +19842,7 @@ function ensureHeaders(sheet) {
         openaiApiKey: undefined,
         openrouterApiKey: undefined,
       });
-    } catch (err: any) { res.status(500).json({ message: err.message }); }
+    } catch (err: any) { res.status(err.statusCode === 409 ? 409 : 500).json({ message: err.message }); }
   });
 
   /* ── Nouveau orders for AI ──────────────────────────────────────── */
@@ -19849,8 +19865,8 @@ function ensureHeaders(sheet) {
       if (!order) return res.status(404).json({ message: "Commande introuvable" });
 
       const settings = await storage.getAiSettings(storeId);
-      const orKey  = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
-      const oaiKey = settings?.openaiApiKey?.trim()     || process.env.OPENAI_API_KEY?.trim();
+      const orKey  = settings?.openrouterApiKey?.trim();
+      const oaiKey = settings?.openaiApiKey?.trim();
       if (!orKey && !oaiKey) {
         return res.status(503).json({ message: "Veuillez configurer votre clé API OpenRouter pour activer la confirmation automatique." });
       }
@@ -19980,44 +19996,21 @@ function ensureHeaders(sheet) {
       await storage.updateAiConversationLastMessage(conv.id, message);
       broadcastToStore(conv.storeId, "message", { conversationId: conv.id, role: "admin", content: message, ts: Date.now() });
       const { sendWhatsAppMessage } = await import("./whatsapp-service");
-      await sendWhatsAppMessage(conv.customerPhone, message);
+      const sent = await sendWhatsAppMessage(conv.customerPhone, message, conv.storeId);
+      if (!sent) return res.status(502).json({ message: "Message non envoyé. Vérifiez la connexion Green API de ce magasin." });
       res.json({ success: true, autopaused });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
   /* ── WhatsApp incoming webhook (Green API) ────────────────────── */
-  app.post("/api/webhooks/whatsapp-incoming", async (req: any, res: any) => {
-    try {
-      res.status(200).json({ ok: true }); // Acknowledge immediately
-      const body = req.body;
-      // Green API webhook format: body.typeWebhook = "incomingMessageReceived"
-      if (body?.typeWebhook !== "incomingMessageReceived") return;
-      const senderData = body.senderData;
-      const messageData = body.messageData;
-      if (!senderData || !messageData) return;
-
-      const phone = senderData.sender?.replace("@c.us", "").replace(/^212/, "0");
-      const text = messageData.textMessageData?.textMessage || messageData.extendedTextMessageData?.text || "";
-      if (!phone || !text) return;
-
-      // Find which store has an active conversation with this phone
-      // We search across all stores — in production each store has its own Green API instance
-      // so we can identify via the instance ID in the request or use a simpler lookup
-      const activeConvs = await db.select().from(aiConversations).where(
-        and(eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active"))
-      );
-      for (const conv of activeConvs) {
-        await handleIncomingMessage(conv.storeId, phone, text).catch(console.error);
-      }
-    } catch (err: any) { console.error("[WA Webhook]", err.message); }
-  });
+  registerWhatsappIncomingRoutes(app);
 
   /* ── Send test WhatsApp message ───────────────────────────────── */
   app.post("/api/automation/whatsapp/send-test", requireAuth, async (req: any, res: any) => {
     const { phone, message } = req.body;
     if (!phone || !message) return res.status(400).json({ message: "phone et message requis" });
     const { sendWhatsAppMessage } = await import("./whatsapp-service");
-    const ok = await sendWhatsAppMessage(phone, message);
+    const ok = await sendWhatsAppMessage(phone, message, req.user!.storeId!);
     res.json({ success: ok });
   });
 
@@ -20261,7 +20254,7 @@ function ensureHeaders(sheet) {
     try {
       const storeId = req.user!.storeId!;
       const settings = await storage.getAiSettings(storeId);
-      const hasKey = !!(settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim() || settings?.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim());
+      const hasKey = !!(settings?.openrouterApiKey?.trim() || settings?.openaiApiKey?.trim());
       res.json({ hasKey, hasStoreKey: !!(settings?.openrouterApiKey?.trim()) });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -20295,8 +20288,8 @@ function ensureHeaders(sheet) {
 
       const storeId = req.user!.storeId!;
       const settings = await storage.getAiSettings(storeId);
-      const orKey  = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
-      const oaiKey = settings?.openaiApiKey?.trim()     || process.env.OPENAI_API_KEY?.trim();
+      const orKey  = settings?.openrouterApiKey?.trim();
+      const oaiKey = settings?.openaiApiKey?.trim();
       if (!orKey && !oaiKey) {
         return res.status(400).json({ message: "Clé API non configurée. Veuillez ajouter votre clé OpenRouter dans les paramètres." });
       }
@@ -20398,7 +20391,7 @@ Generate ONLY a valid JSON object (no markdown, no code blocks, no extra text) w
 
       const storeId = req.user!.storeId!;
       const settings = await storage.getAiSettings(storeId);
-      const orKey = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
+      const orKey = settings?.openrouterApiKey?.trim();
       if (!orKey) return res.status(400).json({ message: "Clé API OpenRouter requise pour la génération d'images." });
 
       const isAvatar = type === "avatar";
@@ -20932,17 +20925,19 @@ function submitOrder(e){
 
       console.log(`[ProductResearch] keyword="${keyword}" imageBase64 length=${imageBase64?.length || 0}`);
 
+      const researchSettings = await storage.getAiSettings(req.user!.storeId!);
+      const researchKey = researchSettings?.openrouterApiKey?.trim();
       let extractedKeywords = keyword || '';
 
       // Step 1: AI analyzes image → keywords
-      if (imageBase64 && imageBase64.length > 100) {
+      if (imageBase64 && imageBase64.length > 100 && researchKey) {
         try {
           console.log('[ProductResearch] Sending image to OpenRouter AI...');
           const aiResp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY || ''}`,
+              'Authorization': `Bearer ${researchKey}`,
               'HTTP-Referer': 'https://www.tajergrow.com',
               'X-Title': 'TajerGrow',
             },

@@ -2,7 +2,7 @@ import { aiSourceMatches, aiProductsMatch } from "@shared/ai-order-scope";
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { broadcastToStore } from "./sse";
-import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile, sendWhatsAppButtons } from "./whatsapp-service";
+import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile, sendWhatsAppButtons, isGreenApiConfigured } from "./whatsapp-service";
 import { db } from "./db";
 import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
 import { eq, and, sql } from "drizzle-orm";
@@ -28,8 +28,8 @@ interface ResolvedClient { client: OpenAI; model: string; provider: string; }
 
 async function resolveAIClient(storeId: number): Promise<ResolvedClient> {
   const settings = await storage.getAiSettings(storeId);
-  const orKey  = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
-  const oaiKey = settings?.openaiApiKey?.trim()     || process.env.OPENAI_API_KEY?.trim();
+  const orKey  = settings?.openrouterApiKey?.trim();
+  const oaiKey = settings?.openaiApiKey?.trim();
   const model  = settings?.aiModel?.trim() || DEFAULT_MODEL;
 
   if (orKey) {
@@ -323,7 +323,7 @@ async function applyProductSwitch(
 function enrichAiError(err: any): Error {
   const msg: string = err?.message || String(err);
   if (msg.includes("401") || msg.toLowerCase().includes("user not found") || msg.toLowerCase().includes("unauthorized")) {
-    return new Error("❌ Clé OpenRouter invalide (401 User not found). Allez sur openrouter.ai/keys → créez une nouvelle clé → mettez-la dans Replit Secrets sous OPENROUTER_API_KEY.");
+    return new Error("❌ Clé OpenRouter invalide (401 User not found). Allez sur openrouter.ai/keys → créez une nouvelle clé → enregistrez-la dans Automation → IA Confirmation de votre magasin.");
   }
   if (msg.includes("402") || msg.toLowerCase().includes("credit") || msg.toLowerCase().includes("balance")) {
     return new Error("❌ Solde OpenRouter insuffisant. Rechargez sur openrouter.ai/credits (minimum $5).");
@@ -336,8 +336,12 @@ function enrichAiError(err: any): Error {
 
 async function storeHasAIKey(storeId: number): Promise<boolean> {
   const s = await storage.getAiSettings(storeId);
-  return !!(s?.openrouterApiKey?.trim()) || !!(process.env.OPENROUTER_API_KEY)
-    || !!(s?.openaiApiKey?.trim()) || !!(process.env.OPENAI_API_KEY);
+  return !!(s?.openrouterApiKey?.trim() || s?.openaiApiKey?.trim());
+}
+
+async function storeCanAutoConfirm(storeId: number): Promise<boolean> {
+  if (!Number.isSafeInteger(storeId) || storeId <= 0) return false;
+  return await storeHasAIKey(storeId) && await isGreenApiConfigured(storeId);
 }
 
 /* ── Keyword banks ───────────────────────────────────────────── */
@@ -588,7 +592,9 @@ async function processWaQueue(storeId: number): Promise<void> {
   const queue = waQueue.get(storeId) ?? [];
   while (queue.length > 0) {
     const item = queue.shift()!;
-    await sendWhatsAppMessage(item.phone, item.message, storeId);
+    if (await storeCanAutoConfirm(storeId)) {
+      await sendWhatsAppMessage(item.phone, item.message, storeId);
+    }
     if (queue.length > 0) {
       await new Promise(r => setTimeout(r, 10000));
     }
@@ -1063,8 +1069,8 @@ export async function triggerAIForNewOrder(
 ): Promise<void> {
   console.log(`[WEBHOOK]: New order received for ${customerName} | Order #${orderId} | Store: ${storeId}`);
 
-  if (!(await storeHasAIKey(storeId))) {
-    console.error(`[AI] ❌ BLOCKED: No OpenRouter/OpenAI API key configured for store ${storeId}. Add OPENROUTER_API_KEY secret or configure it in Automation → IA Confirmation.`);
+  if (!(await storeCanAutoConfirm(storeId))) {
+    console.error(`[AI] ❌ BLOCKED: Missing store-owned AI key or Green API connection for store ${storeId}. Configure this store’s own AI key and Green API connection in Automation → IA Confirmation.`);
     return;
   }
 
@@ -1149,7 +1155,7 @@ export async function triggerRecoveryMessage(
   productName: string,
   stockQty: number | null,
 ): Promise<void> {
-  if (!(await storeHasAIKey(storeId))) {
+  if (!(await storeCanAutoConfirm(storeId))) {
     console.warn("[Recovery] No AI key for store", storeId, "— skipping");
     return;
   }
@@ -1273,7 +1279,7 @@ export async function handleIncomingMessage(
         // which product they're asking about and start a lead from scratch,
         // instead of doing nothing.
         const coldLeadSettings = await storage.getAiSettings(storeId);
-        if (!coldLeadSettings?.enabled || !aiSourceMatches(coldLeadSettings.scopeMode, "whatsapp")) {
+        if (!coldLeadSettings?.enabled || !await storeCanAutoConfirm(storeId) || !aiSourceMatches(coldLeadSettings.scopeMode, "whatsapp")) {
           console.log(`[AI] Cold lead from ${customerPhone} — AI disabled for store ${storeId}, nothing to do`);
           return;
         }
@@ -1433,11 +1439,11 @@ export async function handleIncomingMessage(
     }
 
     // ── AI key gate — block AI reply but message is already visible in Live Chat ──
-    if (!(await storeHasAIKey(storeId))) {
-      console.warn(`[AI] ⚠️ No API key — message logged to conv ${conv.id} but AI cannot reply. Configure OPENROUTER_API_KEY.`);
+    if (!(await storeCanAutoConfirm(storeId))) {
+      console.warn(`[AI] ⚠️ No API key — message logged to conv ${conv.id} but AI cannot reply. Configure this store’s own AI key and Green API connection.`);
       broadcastToStore(storeId, "ai_error", {
         conversationId: conv.id, customerPhone, customerName: conv.customerName,
-        error: "Clé API manquante — configurez OPENROUTER_API_KEY pour activer les réponses IA.",
+        error: "Connectez votre propre Green API et votre clé OpenRouter dans Automation → IA Confirmation.",
         isKeyError: true,
       });
       return;

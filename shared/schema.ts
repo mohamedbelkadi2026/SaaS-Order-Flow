@@ -1156,9 +1156,9 @@ export const aiSettings = pgTable("ai_settings", {
   aiModel: text("ai_model").default("openai/gpt-4o-mini"),
   // Per-store Green API credentials — each merchant connects their OWN
   // WhatsApp number (own Instance ID + Token from green-api.com), so
-  // messages for Store A don't go out through Store B's number. Falls
-  // back to the global GREENAPI_INSTANCE_ID/GREENAPI_API_TOKEN env vars
-  // (whatsapp-service.ts) only if a store hasn't set its own.
+  // messages for Store A don't go out through Store B's number. Fails
+  // closed when the store has no complete credential pair. Shared server
+  // credentials are never used by tenant messaging.
   greenApiInstanceId: text("green_api_instance_id"),
   greenApiApiToken: text("green_api_api_token"),
   // 'all_sources' (default) — AI confirms orders regardless of where they

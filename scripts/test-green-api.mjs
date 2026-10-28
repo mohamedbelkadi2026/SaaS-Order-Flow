@@ -8,8 +8,9 @@ const read = p => readFile(new URL('../' + p, import.meta.url), 'utf8');
 const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
 const apiUrl = moduleUrl(stripTypeScriptTypes(await read('server/green-api.ts'), { mode: 'transform' }));
 const { greenApiUrl } = await import(apiUrl);
+const tenantUrl = moduleUrl('export async function findGreenApiStore(id) { return id === "71070000001" ? 91 : id === "71070000002" ? 92 : null; }');
 const routeSource = stripTypeScriptTypes(await read('server/green-api-routes.ts'), { mode: 'transform' })
-  .replace('"./green-api"', JSON.stringify(apiUrl));
+  .replace('"./green-api"', JSON.stringify(apiUrl)).replace('"./green-api-tenant"', JSON.stringify(tenantUrl));
 const { registerGreenApiRoutes } = await import(moduleUrl(routeSource));
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
