@@ -8,8 +8,9 @@ import { triggerAIForNewOrder } from "./ai-agent";
 export async function runAiConfirmationBatch() {
   const settings = await db.select({ storeId: aiSettings.storeId, scopeMode: aiSettings.scopeMode,
     enabledProductIds: aiSettings.enabledProductIds }).from(aiSettings).where(and(eq(aiSettings.enabled, 1),
-      sql`trim(coalesce(${aiSettings.greenApiInstanceId}, '')) <> ''`,
-      sql`trim(coalesce(${aiSettings.greenApiApiToken}, '')) <> ''`,
+      sql`(EXISTS (SELECT 1 FROM meta_whatsapp_connections m WHERE m.store_id=${aiSettings.storeId} AND m.active=true) OR
+        (NOT EXISTS (SELECT 1 FROM meta_whatsapp_connections m WHERE m.store_id=${aiSettings.storeId}) AND
+         trim(coalesce(${aiSettings.greenApiInstanceId}, '')) <> '' AND trim(coalesce(${aiSettings.greenApiApiToken}, '')) <> ''))`,
       sql`(trim(coalesce(${aiSettings.openrouterApiKey}, '')) <> '' OR trim(coalesce(${aiSettings.openaiApiKey}, '')) <> '')`,
     ));
   for (const setting of settings) {

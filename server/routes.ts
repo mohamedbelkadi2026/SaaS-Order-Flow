@@ -1,3 +1,5 @@
+import { registerMetaWhatsappRoutes } from "./meta-whatsapp-routes";
+import { getMetaConnection } from "./meta-whatsapp-service";
 import { registerWhatsappIncomingRoutes } from "./whatsapp-incoming-routes";
 import { isCalendarDate, validTeamRange } from "@shared/team-period";
 import { isCarrierRefusal } from "@shared/carrier-refusal";
@@ -19755,6 +19757,7 @@ function ensureHeaders(sheet) {
   });
 
   /* ── AI Settings ──────────────────────────────────────────────── */
+  registerMetaWhatsappRoutes(app);
   registerGreenApiRoutes(app, requireAuth, storage);
   registerWhatsappContentRoutes(app, requireAuth, storage);
   registerWhatsappMediaRoutes(app, requireAuth);
@@ -19768,6 +19771,7 @@ function ensureHeaders(sheet) {
       hasOpenRouterKey: !!(settings?.openrouterApiKey),
       hasOpenAiKey: !!(settings?.openaiApiKey),
       hasGreenApiCreds: !!(settings?.greenApiInstanceId && settings?.greenApiApiToken),
+      hasWhatsAppConnection: await (async () => { const c = await getMetaConnection(req.user!.storeId!); return c ? c.active : !!(settings?.greenApiInstanceId && settings?.greenApiApiToken); })(),
       greenApiApiToken: undefined,
       openaiApiKey: undefined,
       openrouterApiKey: undefined,
@@ -19819,10 +19823,12 @@ function ensureHeaders(sheet) {
           !!(oaiKeyToSave !== undefined ? oaiKeyToSave : previous?.openaiApiKey);
         const ownInstance = gaId !== undefined ? gaId : previous?.greenApiInstanceId?.trim();
         const ownToken = gaToken !== undefined ? gaToken : previous?.greenApiApiToken?.trim();
-        if (!hasOwnAiKey || !ownInstance || !ownToken) {
+        const metaConnection = await getMetaConnection(req.user!.storeId!);
+        const hasWhatsApp = metaConnection ? metaConnection.active : !!(ownInstance && ownToken);
+        if (!hasOwnAiKey || !hasWhatsApp) {
           const editingCredentials = [openaiApiKey, openrouterApiKey, greenApiInstanceId, greenApiApiToken].some(value => value !== undefined);
           if (!editingCredentials) {
-            return res.status(400).json({ message: "Connectez votre propre Green API et ajoutez votre clé OpenRouter avant d'activer l'IA." });
+            return res.status(400).json({ message: "Connectez votre propre WhatsApp et ajoutez votre clé OpenRouter avant d'activer l'IA." });
           }
           enabledToSave = 0;
         }

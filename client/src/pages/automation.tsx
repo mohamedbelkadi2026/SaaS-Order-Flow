@@ -1,3 +1,4 @@
+import MetaWhatsappConnection from "@/components/meta-whatsapp-connection";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
@@ -1645,14 +1646,14 @@ function AiConfirmationTab() {
             <div className="rounded-xl p-3 text-xs flex items-start gap-2" style={{ background: s?.enabled ? "rgba(197,160,89,0.08)" : "rgba(239,68,68,0.05)", border: `1px solid ${s?.enabled ? "rgba(197,160,89,0.2)" : "rgba(239,68,68,0.15)"}` }}>
               {s?.enabled ? <Zap className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: GOLD }} /> : <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />}
               <p className={s?.enabled ? "text-amber-700" : "text-red-500"}>
-                {s?.enabled ? (s?.hasGreenApiCreds && (s?.hasOpenRouterKey || s?.hasOpenAiKey) ? "L'agent IA est actif avec les connexions de votre compte. Il génère des messages de confirmation en Darija pour les nouvelles commandes." : "L'agent IA est en attente de vos connexions Green API et OpenRouter.") : "L'agent IA est désactivé. Activez-le pour la confirmation automatique."}
+                {s?.enabled ? (s?.hasWhatsAppConnection && (s?.hasOpenRouterKey || s?.hasOpenAiKey) ? "L'agent IA est actif avec les connexions de votre compte. Il génère des messages de confirmation en Darija pour les nouvelles commandes." : "L'agent IA est en attente de vos connexions WhatsApp et OpenRouter.") : "L'agent IA est désactivé. Activez-le pour la confirmation automatique."}
               </p>
             </div>
           </div>
 
-          {(!s?.hasGreenApiCreds || !(s?.hasOpenRouterKey || s?.hasOpenAiKey)) && (
+          {(!s?.hasWhatsAppConnection || !(s?.hasOpenRouterKey || s?.hasOpenAiKey)) && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-              Pour démarrer la confirmation automatique, enregistrez votre propre clé OpenRouter et vos identifiants Green API. Chaque compte utilise exclusivement ses propres connexions.
+              Pour démarrer la confirmation automatique, enregistrez votre propre clé OpenRouter et votre connexion WhatsApp. Chaque compte utilise exclusivement ses propres connexions.
             </div>
           )}
 
@@ -2092,7 +2093,8 @@ function WhatsappTab() {
   // never resolve, tell the user directly where the REAL, working WhatsApp
   // connection lives (Green API, per-store, set up in IA Confirmation).
   return (
-    <div className="max-w-md mx-auto space-y-4">
+    <div className="max-w-3xl mx-auto space-y-4">
+      <MetaWhatsappConnection />
       {ControlPanel}
       <div className="bg-white rounded-2xl border border-amber-200 p-6 space-y-4" style={{ borderLeftWidth: 4, borderLeftColor: GOLD }}>
         <div className="flex items-start gap-3">

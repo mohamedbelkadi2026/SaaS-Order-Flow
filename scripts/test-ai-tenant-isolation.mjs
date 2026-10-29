@@ -21,7 +21,7 @@ async function setup(){
  const tenant=vm.runInNewContext(clean(await read('server/green-api-tenant.ts'))+'\n({findGreenApiStore,getStoreGreenCredentials})',{db,aiSettings,eq,and,sql});
  const api=await import('data:text/javascript;base64,'+Buffer.from(strip(await read('server/green-api.ts'))).toString('base64'));
  const transport=vm.runInNewContext(clean(await read('server/whatsapp-service.ts'))+'\n({sendWhatsAppMessage,sendWhatsAppImage,sendWhatsAppFile,sendWhatsAppButtons,isGreenApiConfigured})',{
-  getStoreGreenCredentials:tenant.getStoreGreenCredentials,greenApiUrl:api.greenApiUrl,process:{env},console:silent,setInterval(){},AbortSignal,Date,URL,
+  getMetaConnection:async()=>null, getStoreGreenCredentials:tenant.getStoreGreenCredentials,greenApiUrl:api.greenApiUrl,process:{env},console:silent,setInterval(){},AbortSignal,Date,URL,
   fetch:async(url,options)=>{sent.push({url,body:JSON.parse(options.body)});return Response.json({idMessage:'ok'});},
  });
  const source=await read('server/ai-agent.ts');
@@ -82,7 +82,7 @@ test('automation requires both store-owned connections; clearing one never borro
 
 test('credential lookup failure stops sends without an environment fallback',async()=>{
  const source=clean(await read('server/whatsapp-service.ts'));let requests=0;
- const send=vm.runInNewContext(source+'\nsendWhatsAppMessage',{getStoreGreenCredentials:async()=>{throw new Error('database unavailable')},process:{env},console:silent,setInterval(){},fetch(){requests++;}});
+ const send=vm.runInNewContext(source+'\nsendWhatsAppMessage',{getMetaConnection:async()=>null, getStoreGreenCredentials:async()=>{throw new Error('database unavailable')},process:{env},console:silent,setInterval(){},fetch(){requests++;}});
  assert.equal(await send('0661112233','test',91),false);assert.equal(requests,0);
 });
 
@@ -104,7 +104,7 @@ test('incoming same-phone messages route only by the unique linked Green API ins
   await t.seed(91);await t.seed(92);
   await t.db.insert(aiConversations).values([{storeId:91,customerPhone:'0661112233',status:'active'},{storeId:92,customerPhone:'+212661112233',status:'active'}]);
   const received=[],routes=new Map(),app={post:(path,h)=>routes.set(path,h)};
-  const register=vm.runInNewContext(clean(await read('server/whatsapp-incoming-routes.ts'))+'\nregisterWhatsappIncomingRoutes',{db:t.db,aiConversations,eq,and,sql,...t.tenant,handleIncomingMessage:async(...args)=>received.push(args),console:silent});register(app);
+  const register=vm.runInNewContext(clean(await read('server/whatsapp-incoming-routes.ts'))+'\nregisterWhatsappIncomingRoutes',{db:t.db,aiConversations,eq,and,sql,...t.tenant,getMetaConnection:async()=>null,handleIncomingMessage:async(...args)=>received.push(args),console:silent});register(app);
   const call=async(instanceId)=>routes.get('/api/webhooks/whatsapp-incoming')({body:{typeWebhook:'incomingMessageReceived',instanceData:instanceId===undefined?{}:{idInstance:instanceId},senderData:{sender:'212661112233@c.us'},messageData:{textMessageData:{textMessage:'واخا'}}}},{status(){return this},json(){return this}});
   await call('7107000091');await call('7107000092');await call(undefined);await call('71079999999');
   assert.deepEqual(JSON.parse(JSON.stringify(received)),[[91,'0661112233','واخا'],[92,'+212661112233','واخا']]);
@@ -120,7 +120,7 @@ test('settings activation fails before save until this store supplies both crede
  const t=await setup();try{
   const all=await read('server/routes.ts'),a=all.indexOf('  app.get("/api/automation/ai-settings"'),b=all.indexOf('  /* ── Nouveau orders for AI',a);
   const routes=new Map(),app={get:(p,auth,h)=>routes.set('get '+p,h),put:(p,auth,h)=>routes.set('put '+p,h)};
-  vm.runInNewContext(strip(all.slice(a,b)),{app,storage:t.storage,requireAuth(){},process:{env}});
+  vm.runInNewContext(strip(all.slice(a,b)),{app,storage:t.storage,getMetaConnection:async()=>null,requireAuth(){},process:{env}});
   const call=async(body)=>{let status=200,value;await routes.get('put /api/automation/ai-settings')({user:{storeId:91},body},{status(n){status=n;return this},json(v){value=v;return this}});return {status,value}};
   assert.equal((await call({enabled:1})).status,400);
   assert.equal(await t.storage.getAiSettings(91),undefined);

@@ -14,7 +14,7 @@ test('uploaded images, audio and video use multipart media host with own credent
   const requests=[];
   const api=vm.runInNewContext(clean+'\n({sendWhatsAppFile})',{
    readFile,stat,path,URL,FormData,Blob,AbortSignal,Date,process:{env:{DATA_DIR:root}},setInterval(){},console:{log(){},warn(){},error(){}},
-   getStoreGreenCredentials:async id=>id===91?{instanceId:'7107000091',apiToken:'own-token'}:null,
+   getMetaConnection:async()=>null, getStoreGreenCredentials:async id=>id===91?{instanceId:'7107000091',apiToken:'own-token'}:null,
    greenApiUrl:(id,method,token)=>`https://7107.api.greenapi.com/waInstance${id}/${method}/${token}`,
    fetch:async(url,options)=>{requests.push({url,body:options.body});return Response.json({idMessage:'accepted'});},
   });
@@ -53,7 +53,7 @@ test('rate limits retry safely; quota/auth failures are actionable; ambiguous se
  const make = responses => {
   const calls=[];
   const api=vm.runInNewContext(clean+'\n({sendWhatsAppMessage,sendWhatsAppButtons})',{
-   getStoreGreenCredentials:async()=>({instanceId:'7107000091',apiToken:'secret'}),
+   getMetaConnection:async()=>null, getStoreGreenCredentials:async()=>({instanceId:'7107000091',apiToken:'secret'}),
    greenApiUrl:()=> 'https://provider.invalid',AbortSignal,Date,setInterval(){},setTimeout:fn=>fn(),
    console:{log(){},warn(){},error(){}},fetch:async()=>{calls.push(1);const r=responses.shift();if(r instanceof Error)throw r;return r;},
   });return {api,calls};

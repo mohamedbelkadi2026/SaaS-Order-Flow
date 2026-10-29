@@ -1,5 +1,7 @@
 /** WhatsApp transport: every send requires an explicit store and its own
  * saved Green API pair. Missing settings and database errors fail closed. */
+import { getMetaConnection, sendMetaMessage, sendMetaFile } from "./meta-whatsapp-service";
+import { metaInteractive } from "./meta-whatsapp-core";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { greenApiUrl } from "./green-api";
@@ -137,6 +139,7 @@ async function postGreenMessage(instanceId: string, apiToken: string, method: st
 
 /* ── Text send via this store’s Green API instance ──────────── */
 export async function sendWhatsAppMessage(phone: string, message: string, storeId: number, outcome: WhatsAppSendOutcome = {}): Promise<boolean> {
+  if (await getMetaConnection(storeId)) return sendMetaMessage(storeId, phone, {type:"text",text:{body:message}}, outcome);
   const creds = await getGreenApiCredentials(storeId);
   if (!creds) {
     outcome.error = "Connexion Green API absente ou non valide pour ce magasin. Vérifiez ses identifiants.";
@@ -153,6 +156,7 @@ export async function sendWhatsAppImage(phone: string, imageUrl: string, caption
 
 /* ── File send via this store’s Green API instance ───────────── */
 export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName: string, caption: string, storeId: number): Promise<boolean> {
+  if (await getMetaConnection(storeId)) return sendMetaFile(storeId,phone,fileUrl,fileName,caption);
   const formatted = formatPhoneForWhatsApp(phone);
 
   // Green API determines the outgoing file type from the fileName field's
@@ -218,7 +222,8 @@ export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName:
 
 /* ── Green API config check for this store only ──── */
 export async function isGreenApiConfigured(storeId: number): Promise<boolean> {
-  return !!(await getGreenApiCredentials(storeId));
+  const meta = await getMetaConnection(storeId);
+  return meta ? meta.active : !!(await getGreenApiCredentials(storeId));
 }
 
 /* ── Interactive reply buttons (Green API only — Baileys has no equivalent) ──
@@ -233,6 +238,7 @@ export async function sendWhatsAppButtons(
   footer?: string,
   outcome: WhatsAppSendOutcome = {},
 ): Promise<boolean> {
+  if (await getMetaConnection(storeId)) return sendMetaMessage(storeId,phone,metaInteractive(body,buttons,header,footer),outcome);
   const formatted = formatPhoneForWhatsApp(phone);
   const creds = await getGreenApiCredentials(storeId);
   if (!creds) {

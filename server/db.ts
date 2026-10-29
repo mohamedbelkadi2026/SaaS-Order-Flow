@@ -1,3 +1,4 @@
+import { META_WHATSAPP_SCHEMA_SQL } from "./meta-whatsapp-schema";
 import { SENDIT_STATUS_REPAIR_SQL } from "./sendit-status-repair";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
@@ -1134,6 +1135,7 @@ export async function initializeDatabase(): Promise<void> {
       console.log('[Migration] product_link_repair_v1 already applied (skipped)');
     }
 
+    await client.query(META_WHATSAPP_SCHEMA_SQL);
     const senditRepair = await client.query(SENDIT_STATUS_REPAIR_SQL);
     console.log(`[DATABASE] Sendit classification repair: ${senditRepair.rowCount ?? 0} contradiction(s) corrected`);
 

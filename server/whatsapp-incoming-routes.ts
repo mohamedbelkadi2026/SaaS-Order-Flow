@@ -1,3 +1,4 @@
+import { getMetaConnection } from "./meta-whatsapp-service";
 import type { Express } from "express";
 import { db } from "./db";
 import { aiConversations } from "@shared/schema";
@@ -13,7 +14,7 @@ export function registerWhatsappIncomingRoutes(app: Express) {
       if (body?.typeWebhook !== "incomingMessageReceived") return;
       const instanceId = String(body?.instanceData?.idInstance ?? "").trim();
       const storeId = await findGreenApiStore(instanceId);
-      if (!storeId || !await getStoreGreenCredentials(storeId)) return;
+      if (!storeId || !await getStoreGreenCredentials(storeId) || await getMetaConnection(storeId)) return;
       const sender = body.senderData?.sender;
       if (typeof sender !== "string" || !/^\d+@c\.us$/.test(sender)) return;
       const digits = sender.replace("@c.us", "");

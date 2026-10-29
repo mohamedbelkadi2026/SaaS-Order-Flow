@@ -24,7 +24,8 @@ async function setup() {
   await pg.exec(`CREATE TABLE orders(id serial PRIMARY KEY,store_id int,status text,source text,customer_phone text,customer_name text);
     CREATE TABLE products(id serial PRIMARY KEY,store_id int);
     CREATE TABLE order_items(id serial PRIMARY KEY,order_id int,product_id int);
-    CREATE TABLE ai_settings(store_id int PRIMARY KEY,scope_mode text,enabled int,enabled_product_ids jsonb,system_prompt text,green_api_instance_id text,green_api_api_token text,openrouter_api_key text,openai_api_key text);
+    CREATE TABLE meta_whatsapp_connections(store_id int,active boolean);
+ CREATE TABLE ai_settings(store_id int PRIMARY KEY,scope_mode text,enabled int,enabled_product_ids jsonb,system_prompt text,green_api_instance_id text,green_api_api_token text,openrouter_api_key text,openai_api_key text);
     CREATE TABLE ai_conversations(id serial PRIMARY KEY,store_id int,order_id int,customer_phone text,customer_name text,status text,is_manual int,conversation_step int);`);
   await pg.exec(await read('migrations/2026_10_28_ai_confirmation_candidates.sql'));
   const db = drizzle(pg), sent = [], logs = [], lockSql = [];
@@ -44,7 +45,7 @@ async function setup() {
   } });
   const ctx = { db: triggerDb, storage, orders, orderItems, aiConversations, eq, and, sql,
     aiSourceMatches, aiProductsMatch, console: { log(){}, warn(){}, error(e){ throw new Error(e); } },
-    storeCanAutoConfirm: async () => true, getOrderContext: async () => ({ productName:'Test' }),
+    getMetaConnection:async()=>null, storeCanAutoConfirm: async () => true, getOrderContext: async () => ({ productName:'Test' }),
     getStoreName: async () => 'Test store', broadcastToStore(){}, queueWhatsApp: async (...args) => sent.push(args), sendWhatsAppButtons: async () => false, sendWhatsAppMessage: async (...args) => { sent.push(args); return true; }, Date };
   const trigger = vm.runInNewContext(strip(triggerSource.replace('export ', '') + '\ntriggerAIForNewOrder'), ctx);
   const batch = vm.runInNewContext(strip(jobSource.replaceAll('export ', '') + '\nrunAiConfirmationBatch'), { db, orders, orderItems, aiSettings, aiConversations, eq, and, asc, sql, triggerAIForNewOrder: trigger });
@@ -83,7 +84,7 @@ test('settings PUT and GET persist each source; partial saves retain product sel
     const routes = new Map(), app = { get:(p,auth,h)=>routes.set('GET '+p,h), put:(p,auth,h)=>routes.set('PUT '+p,h) };
     const r = await read('server/routes.ts');
     const handlers = r.slice(r.indexOf('  app.get("/api/automation/ai-settings"'),r.indexOf('  /* ── Nouveau orders for AI'));
-    vm.runInNewContext(strip(handlers), { app, requireAuth(){}, storage:t.storage, db:t.db, products, and, eq, inArray });
+    vm.runInNewContext(strip(handlers), { app, requireAuth(){},getMetaConnection:async()=>null, storage:t.storage, db:t.db, products, and, eq, inArray });
     const call = async (method, body={}) => { let status=200, value; const res={status(n){status=n;return this},json(v){value=JSON.parse(JSON.stringify(v));return this}}; await routes.get(method+' /api/automation/ai-settings')({user:{storeId:91},body},res); return {status,value}; };
     for (const scopeMode of ['whatsapp_only','all_sources','non_whatsapp']) {
       assert.equal((await call('PUT',{scopeMode,enabledProductIds:[10]})).status,200);

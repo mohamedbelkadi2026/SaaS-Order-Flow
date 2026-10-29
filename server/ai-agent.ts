@@ -2,6 +2,7 @@ import { aiSourceMatches, aiProductsMatch } from "@shared/ai-order-scope";
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { broadcastToStore } from "./sse";
+import { getMetaConnection, metaWindowOpen, sendMetaOrderTemplate, queueMetaContent } from "./meta-whatsapp-service";
 import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile, sendWhatsAppButtons, isGreenApiConfigured } from "./whatsapp-service";
 import { db } from "./db";
 import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
@@ -1124,12 +1125,17 @@ export async function triggerAIForNewOrder(
 
     const buttonOutcome: { error?: string; uncertain?: boolean } = {};
     const textOutcome: { error?: string; uncertain?: boolean } = {};
-    const buttonsAccepted = await sendWhatsAppButtons(customerPhone, firstMessage, [
+    const meta = await getMetaConnection(storeId);
+    const needsTemplate = !!meta && !await metaWindowOpen(storeId,customerPhone);
+    const buttonsAccepted = needsTemplate ? await sendMetaOrderTemplate(storeId,customerPhone,[
+      storeName,customerName || "—",customerPhone,orderRow.customerCity || "—",orderRow.customerAddress || "—",
+      productLabel || orderRow.rawProductName || "—",String(orderRow.rawQuantity || 1),((orderRow.totalPrice || 0)/100).toFixed(2),
+    ],buttonOutcome) : await sendWhatsAppButtons(customerPhone, firstMessage, [
       { id: "confirm", text: "تأكيد الطلب" },
       { id: "edit", text: "تعديل المعلومات" },
       { id: "cancel", text: "إلغاء الطلب" },
     ], storeId, undefined, undefined, buttonOutcome);
-    const accepted = buttonsAccepted || (!buttonOutcome.uncertain && await sendWhatsAppMessage(customerPhone, firstMessage, storeId, textOutcome));
+    const accepted = buttonsAccepted || (!needsTemplate && !buttonOutcome.uncertain && await sendWhatsAppMessage(customerPhone, firstMessage, storeId, textOutcome));
     if (!accepted) {
       await storage.updateAiConversationStatus(conv.id, "send_failed");
       const error = textOutcome.error || buttonOutcome.error || "Envoi WhatsApp non accepté. Consultez le journal Green API de ce magasin.";
@@ -1146,6 +1152,13 @@ export async function triggerAIForNewOrder(
     });
 
     console.log(`[WHATSAPP]: Attempting to send message to ${customerPhone}`);
+    if (needsTemplate) {
+      if(ctx.descriptionDarija) await queueMetaContent(storeId,orderId,customerPhone,"text",ctx.descriptionDarija);
+      for(const [kind,urls] of [["image",ctx.productImageUrls],["video",ctx.productVideoUrls],["audio",ctx.productAudioUrls]] as const) {
+        for(const url of urls || []) await queueMetaContent(storeId,orderId,customerPhone,kind,url);
+      }
+      return;
+    }
     const mediaFailures: string[] = [];
     if (ctx.descriptionDarija && !await sendWhatsAppMessage(customerPhone, ctx.descriptionDarija, storeId)) mediaFailures.push("description");
     for (const url of ctx.productImageUrls || []) if (!await sendWhatsAppImage(customerPhone, url, "", storeId)) mediaFailures.push("image");
