@@ -52,3 +52,20 @@ test('actual paginated filters put carrier cancellations in Refusées and preser
  assert.equal(isCarrierRefusal(rows[4]),true);assert.equal(isCarrierRefusal(rows[7]),true);assert.equal(isCarrierRefusal(rows[8]),false);
  }finally{await pg.close();}
 });
+
+test('tracked Sendit pending parcels leave Confirmées; unshipped and other carrier orders stay untouched',async()=>{
+ const pg=await setup();try{
+ await pg.exec(`INSERT INTO orders(id,store_id,status,comment_status,shipping_provider,track_number) VALUES
+ (10,91,'confirme','PENDING','sendit','S10'),
+ (11,91,'confirme','PENDING','sendit',NULL),
+ (12,91,'confirme','PENDING','ozonexpress','O12'),
+ (13,91,'confirme','TO_PREPARE','sendit','S13'),
+ (14,91,'confirme','NEW_DESTINATION','sendit','S14');`);
+ await pg.exec(SENDIT_STATUS_REPAIR_SQL);
+ const rows=(await pg.query('SELECT id,status,comment_status FROM orders WHERE id>=10 ORDER BY id')).rows;
+ assert.deepEqual(rows.map(r=>r.status),['Attente De Ramassage','confirme','confirme','Attente De Ramassage','Attente De Ramassage']);
+ assert.equal(rows[0].comment_status,'PENDING');
+ await pg.exec(SENDIT_STATUS_REPAIR_SQL);
+ assert.equal((await pg.query('SELECT count(*)::int AS n FROM order_follow_up_logs WHERE order_id>=10')).rows[0].n,3);
+ }finally{await pg.close();}
+});

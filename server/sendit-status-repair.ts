@@ -6,6 +6,9 @@ WITH candidates AS (
  SELECT id, status AS previous_status, comment_status AS previous_comment_status,
    CASE
      WHEN upper(trim(split_part(comment_status, ' | ', 1))) IN
+       ('PENDING','EN ATTENTE','TO_PREPARE','À PRÉPARER','NEW_DESTINATION','À CHANGER')
+       AND lower(trim(status)) IN ('confirme','pending','to_prepare','new_destination') THEN 'Attente De Ramassage'
+     WHEN upper(trim(split_part(comment_status, ' | ', 1))) IN
        ('DISTRIBUTED','DISTRIBUÉ','DELIVERING','EN COURS DE LIVRAISON','TRANSIT','EN TRANSIT')
        AND lower(trim(status)) IN ('delivered','livré','livrée','livre') THEN 'transit'
      WHEN upper(trim(split_part(comment_status, ' | ', 1))) IN

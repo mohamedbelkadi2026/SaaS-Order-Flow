@@ -7,7 +7,7 @@ const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
 const {readSenditStatus,senditOrderStatusText,senditWebhookFields}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(await read('shared/sendit-status.ts'),{mode:'transform'})).toString('base64'));
 const source=await read('server/routes.ts');
 test('Sendit codes, actual TOPICKUP spelling and French labels share lifecycle mappings',()=>{
- for(const [raw,label,status] of [['PENDING','En attente','confirme'],['TO_PREPARE','À préparer','confirme'],['TOPICKUP','Ramassage en cours','in_progress'],['TO_PICKUP','Ramassage en cours','in_progress'],['PICKED_UP','Ramassé','in_progress'],['WAREHOUSE','Entrepôt','in_progress'],['DISTRIBUTED','Distribué','transit'],['DELIVERING','En cours de livraison','transit'],['DELIVERED','Livré','delivered'],['RETURNED','Retourné','retourné'],['CANCELLED','Annulé','refused'],['POSTPONED','Reporté','confirme_reporte']]){
+ for(const [raw,label,status] of [['PENDING','En attente','Attente De Ramassage'],['TO_PREPARE','À préparer','Attente De Ramassage'],['TOPICKUP','Ramassage en cours','in_progress'],['TO_PICKUP','Ramassage en cours','in_progress'],['PICKED_UP','Ramassé','in_progress'],['WAREHOUSE','Entrepôt','in_progress'],['DISTRIBUTED','Distribué','transit'],['DELIVERING','En cours de livraison','transit'],['DELIVERED','Livré','delivered'],['RETURNED','Retourné','retourné'],['CANCELLED','Annulé','refused'],['POSTPONED','Reporté','confirme_reporte']]){
  assert.deepEqual(readSenditStatus(raw),{label,status});assert.equal(readSenditStatus(label).status,status);
  assert.equal(senditOrderStatusText({shippingProvider:'sendit',commentStatus:raw}),label);
  }
@@ -24,10 +24,11 @@ test('real webhook saves the raw stage, maps correctly, emits updates and ignore
  const storage={getCarrierAccounts:async()=>[],getOrderByNumber:async()=>undefined,getOrderByTrackingNumber:async(store,tracking)=>store===91&&tracking==='S1'?row:undefined,updateOrder:async(id,data)=>{updates.push(data);Object.assign(row,data);},createIntegrationLog:async()=>{}};
  vm.runInNewContext(stripTypeScriptTypes(source.slice(start,end),{mode:'transform'}),{app:{post:(path,fn)=>{handler=fn;}},storage,senditWebhookFields,mapSenditStatus:raw=>readSenditStatus(raw)?.status??null,emitOrderUpdated:(...v)=>events.push(v),broadcastToStore:()=>{},notifyStatusUpdate:async()=>{},console:{log(){},warn(){},error(){}}});
  async function notify(raw){let code=200,result;await handler({params:{storeId:'91'},headers:{},body:{code:'S1',newStatus:raw}},{status(n){code=n;return this;},json(v){result=v;return this;}});assert.equal(code,200);return result;}
+ await notify('PENDING');assert.equal(row.status,'Attente De Ramassage');assert.equal(row.commentStatus,'PENDING');
  await notify('DISTRIBUTED');assert.equal(row.status,'transit');assert.equal(row.commentStatus,'DISTRIBUTED');
  await notify('DELIVERING');assert.equal(row.status,'transit');assert.equal(row.commentStatus,'DELIVERING');
  await notify('DELIVERED');assert.equal(row.status,'delivered');
- await notify('FUTURE_STATE');assert.equal(row.status,'delivered');assert.equal(row.commentStatus,'FUTURE_STATE');assert.equal(events.length,4);
+ await notify('FUTURE_STATE');assert.equal(row.status,'delivered');assert.equal(row.commentStatus,'FUTURE_STATE');assert.equal(events.length,5);
  row.shippingProvider='digylog';const before=updates.length;await notify('RETURNED');assert.equal(updates.length,before);
 });
 test('generic Sendit webhook overrides fuzzy distribution matching using the same exact mapper',()=>{

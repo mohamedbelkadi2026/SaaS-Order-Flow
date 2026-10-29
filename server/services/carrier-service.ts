@@ -4167,9 +4167,9 @@ export async function trackOlivraisonShipment(
 // ── Mapping statuts Sendit → statuts internes ─────────────────────────────────
 export const SENDIT_STATUS_MAP: Record<string, string> = {
   // Avant ramassage
-  PENDING:          'confirme',
-  TO_PREPARE:       'confirme',
-  NEW_DESTINATION:  'confirme',   // adresse en cours de correction
+  PENDING:          'Attente De Ramassage',
+  TO_PREPARE:       'Attente De Ramassage',
+  NEW_DESTINATION:  'Attente De Ramassage',   // adresse en cours de correction
   // Ramassé / en entrepôt
   TO_PICKUP:        'in_progress',
   PICKEDUP:         'in_progress',

@@ -1,9 +1,9 @@
 // Sendit's public WooCommerce integration documents these parcel codes.
 // Display labels stay distinct even when operational stages share a lifecycle.
 const states: Record<string, {label:string; status:string}> = {
- PENDING:{label:'En attente',status:'confirme'},
- TO_PREPARE:{label:'À préparer',status:'confirme'},
- NEW_DESTINATION:{label:'À changer',status:'confirme'},
+ PENDING:{label:'En attente',status:'Attente De Ramassage'},
+ TO_PREPARE:{label:'À préparer',status:'Attente De Ramassage'},
+ NEW_DESTINATION:{label:'À changer',status:'Attente De Ramassage'},
  TOPICKUP:{label:'Ramassage en cours',status:'in_progress'},
  PICKEDUP:{label:'Ramassé',status:'in_progress'},
  WAREHOUSE:{label:'Entrepôt',status:'in_progress'},
