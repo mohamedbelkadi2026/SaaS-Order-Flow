@@ -814,7 +814,7 @@ export function useFilteredOrders(filters: Record<string, any>) {
   return useQuery({
     queryKey: ["/api/orders/filtered", filters],
     queryFn: async () => {
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch(url, { credentials: "include", cache: "no-store" });
       if (!res.ok) throw new Error("Failed to fetch filtered orders");
       return res.json();
     },
@@ -832,7 +832,7 @@ export function useAllOrders(filters: Record<string, any>) {
   return useQuery({
     queryKey: ["/api/orders/all", filters],
     queryFn: async () => {
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch(url, { credentials: "include", cache: "no-store" });
       if (!res.ok) throw new Error("Failed to fetch all orders");
       return res.json();
     },

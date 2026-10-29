@@ -195,7 +195,7 @@ function AgentGuard({ children }: { children: React.ReactNode }) {
 function useOrderStatusSSE() {
   const { user } = useAuth();
   useEffect(() => {
-    if (!user || !user.isEmailVerified) return;
+    if (!user || (user.role === "owner" && !user.isSuperAdmin && !emailIsVerified(user))) return;
     const es = new EventSource("/api/automation/events", { withCredentials: true });
     const invalidateOrders = () => scheduleOrderRefresh(queryClient);
     const handleStatusUpdated = (e: MessageEvent) => {
@@ -216,6 +216,14 @@ function useOrderStatusSSE() {
         invalidateOrders();
       } catch { invalidateOrders(); }
     };
+    // Sendit dispatch finishes asynchronously, after the POST returned 202.
+    // Refresh every open order view, including agents and Toutes les commandes.
+    es.addEventListener("shipping_progress", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.complete === true && String(data.provider).toLowerCase() === "sendit") invalidateOrders();
+      } catch { /* Ignore incomplete progress payloads. */ }
+    });
     es.addEventListener("ORDER_STATUS_UPDATED", handleStatusUpdated);
     es.addEventListener("confirmed", invalidateOrders);
     es.addEventListener("cancelled", invalidateOrders);

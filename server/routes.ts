@@ -3090,7 +3090,7 @@ export async function registerRoutes(
           });
           broadcastToStore(storeId, 'shipping_progress', {
             jobId, done: total, total, shipped: shippedCount, failed: failedCount,
-            complete: true, results, retries: retryCount,
+            complete: true, results, retries: retryCount, provider,
           });
           console.log(`[BULK-SHIP:BG] Done — ${shippedCount} shipped, ${failedCount} failed out of ${total}`);
         }
@@ -18481,6 +18481,9 @@ function ensureHeaders(sheet) {
         message: `✅ Commande #${order.orderNumber} envoyée via ${provider}. Tracking: ${trackingNumber}`,
       });
 
+      if (provider.toLowerCase() === "sendit") {
+        broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId, status: "Attente De Ramassage" });
+      }
       res.json({ trackingNumber, labelLink: labelUrl, provider, success: true });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
