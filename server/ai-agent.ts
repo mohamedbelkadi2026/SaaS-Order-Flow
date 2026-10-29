@@ -1122,16 +1122,19 @@ export async function triggerAIForNewOrder(
     const conv = await reserveAiOutreach(storeId, orderId, customerPhone, customerName, retry);
     if (!conv) return;
 
+    const buttonOutcome: { error?: string; uncertain?: boolean } = {};
+    const textOutcome: { error?: string; uncertain?: boolean } = {};
     const buttonsAccepted = await sendWhatsAppButtons(customerPhone, firstMessage, [
       { id: "confirm", text: "تأكيد الطلب" },
       { id: "edit", text: "تعديل المعلومات" },
       { id: "cancel", text: "إلغاء الطلب" },
-    ], storeId);
-    const accepted = buttonsAccepted || await sendWhatsAppMessage(customerPhone, firstMessage, storeId);
+    ], storeId, undefined, undefined, buttonOutcome);
+    const accepted = buttonsAccepted || (!buttonOutcome.uncertain && await sendWhatsAppMessage(customerPhone, firstMessage, storeId, textOutcome));
     if (!accepted) {
       await storage.updateAiConversationStatus(conv.id, "send_failed");
-      await storage.createAiLog({ storeId, orderId, customerPhone, role: "system", message: "Échec d'envoi WhatsApp : Green API n'a pas confirmé la prise en charge. Vérifiez la connexion de ce magasin avant de relancer." });
-      broadcastToStore(storeId, "ai_error", { conversationId: conv.id, error: "Message non envoyé. Vérifiez Green API." });
+      const error = textOutcome.error || buttonOutcome.error || "Envoi WhatsApp non accepté. Consultez le journal Green API de ce magasin.";
+      await storage.createAiLog({ storeId, orderId, customerPhone, role: "system", message: error });
+      broadcastToStore(storeId, "ai_error", { conversationId: conv.id, error });
       return;
     }
     await storage.createAiLog({ storeId, orderId, customerPhone, role: "assistant", message: firstMessage });

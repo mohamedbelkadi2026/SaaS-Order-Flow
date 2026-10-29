@@ -47,3 +47,28 @@ test('requested media failures cannot create an assistant image log',async()=>{
   assert.equal(logs.length,1);assert.equal(logs[0].role,success?'assistant':'system');
  }
 });
+
+
+test('rate limits retry safely; quota/auth failures are actionable; ambiguous sends never retry',async()=>{
+ const make = responses => {
+  const calls=[];
+  const api=vm.runInNewContext(clean+'\n({sendWhatsAppMessage,sendWhatsAppButtons})',{
+   getStoreGreenCredentials:async()=>({instanceId:'7107000091',apiToken:'secret'}),
+   greenApiUrl:()=> 'https://provider.invalid',AbortSignal,Date,setInterval(){},setTimeout:fn=>fn(),
+   console:{log(){},warn(){},error(){}},fetch:async()=>{calls.push(1);const r=responses.shift();if(r instanceof Error)throw r;return r;},
+  });return {api,calls};
+ };
+ let t=make([Response.json({error:'rate limit'},{status:429}),Response.json({idMessage:'ok'})]);
+ assert.equal(await t.api.sendWhatsAppMessage('0661112233','test',91,{}),true);assert.equal(t.calls.length,2);
+ for(const [response,pattern,uncertain] of [
+  [Response.json({error:'contacts limit exceeded'},{status:400}),/forfait/,false],
+  [Response.json({error:'denied'},{status:401}),/Identifiants/,false],
+  [Response.json({}),/incertain/,true],
+  [new Error('network secret token'),/incertain/,true],
+ ]) {
+  t=make([response]);const result={};
+  assert.equal(await t.api.sendWhatsAppMessage('0661112233','test',91,result),false);
+  assert.match(result.error,pattern);assert.equal(result.uncertain,uncertain);
+  assert.equal(t.calls.length,1);assert.doesNotMatch(result.error,/secret/);
+ }
+});

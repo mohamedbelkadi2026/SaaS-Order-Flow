@@ -194,3 +194,17 @@ test('new orders include all three reply buttons without sending a duplicate tex
   assert.equal(t.sent.length,0);
  }finally{await t.pg.close();}
 });
+
+test('uncertain button delivery never falls back to a duplicate text',async()=>{
+ const t=await setup();try{
+  await t.setting({});const row=await t.add();
+  t.storage.updateAiConversationStatus=async(id,status)=>t.db.update(aiConversations).set({status}).where(eq(aiConversations.id,id));
+  t.ctx.sendWhatsAppButtons=async(_phone,_body,_options,_store,_header,_footer,outcome)=>{
+   outcome.uncertain=true;outcome.error='Résultat incertain';return false;
+  };
+  await t.trigger(91,row.id,row.customerPhone,row.customerName);
+  assert.equal(t.sent.length,0);
+  assert.equal(t.logs.filter(l=>l.role==='assistant').length,0);
+  assert.equal(t.logs.at(-1).message,'Résultat incertain');
+ }finally{await t.pg.close();}
+});

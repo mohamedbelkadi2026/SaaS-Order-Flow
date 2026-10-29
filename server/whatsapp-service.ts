@@ -90,36 +90,60 @@ export function clearQueue(): void {
   }
 }
 
-/* ── Text send via this store’s Green API instance ──────────── */
-export async function sendWhatsAppMessage(phone: string, message: string, storeId: number): Promise<boolean> {
-  const formatted = formatPhoneForWhatsApp(phone);
-  console.log(`[WA Transport:${storeId}] Sending to ${phone} → ${formatted}@s.whatsapp.net`);
+export interface WhatsAppSendOutcome {
+  error?: string;
+  uncertain?: boolean;
+}
 
+// Retry only an explicit rate-limit rejection. A timeout may already have
+// queued the message, so blindly retrying it could contact the customer twice.
+async function postGreenMessage(instanceId: string, apiToken: string, method: string,
+  body: Record<string, unknown>, outcome: WhatsAppSendOutcome): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(greenApiUrl(instanceId, method, apiToken), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(25000),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && typeof data?.idMessage === "string" && data.idMessage.trim()) return true;
+      if (res.status === 429 && attempt < 2) {
+        const seconds = Number(res.headers.get("retry-after"));
+        const delay = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : (attempt + 1) * 2000;
+        if (delay <= 10000) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+      // Classify upstream errors without exposing credentials or raw bodies.
+      const reason = String(data?.message || data?.error || "").toLowerCase();
+      if (res.status === 401 || res.status === 403) outcome.error = "Identifiants Green API refusés. Vérifiez Instance ID et API Token de ce magasin.";
+      else if (/limit|quota|tariff|payment|plan|contact.*count/.test(reason) && res.status !== 429) outcome.error = "Limite du forfait Green API atteinte. Vérifiez les contacts autorisés et le forfait dans Green API.";
+      else if (/not authorized|notauthorized|loggedout|not logged|instance.*state/.test(reason)) outcome.error = "WhatsApp déconnecté dans Green API. Reconnectez le numéro de ce magasin.";
+      else if (res.status === 429) outcome.error = "Green API limite temporairement les envois (HTTP 429). Réessayez après quelques minutes.";
+      else if (/chatid|phone|recipient/.test(reason)) outcome.error = "Green API refuse le destinataire. Vérifiez son numéro WhatsApp au format international.";
+      else outcome.error = `Green API n'a pas accepté l'envoi (HTTP ${res.status}). Consultez le journal Green API de ce magasin.`;
+      outcome.uncertain = (res.ok && !reason) || res.status >= 500;
+      if (outcome.uncertain) outcome.error = `Résultat d'envoi incertain (HTTP ${res.status}). Vérifiez le journal Green API avant de relancer pour éviter un doublon.`;
+      return false;
+    } catch {
+      outcome.uncertain = true;
+      outcome.error = "Green API n'a pas répondu à temps ou la connexion a échoué. L'envoi est incertain : vérifiez le journal Green API avant de relancer.";
+      return false;
+    }
+  }
+  return false;
+}
+
+/* ── Text send via this store’s Green API instance ──────────── */
+export async function sendWhatsAppMessage(phone: string, message: string, storeId: number, outcome: WhatsAppSendOutcome = {}): Promise<boolean> {
   const creds = await getGreenApiCredentials(storeId);
   if (!creds) {
-    console.warn(`[WA Transport:${storeId}] No Green API credentials belonging to this store — message DROPPED (no queue)`);
+    outcome.error = "Connexion Green API absente ou non valide pour ce magasin. Vérifiez ses identifiants.";
     return false;
   }
-  const { instanceId, apiToken } = creds;
-
-  try {
-    const chatId = `${formatted}@c.us`;
-    const res = await fetch(greenApiUrl(instanceId, "sendMessage", apiToken), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chatId, message }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (res.ok && typeof (await res.json().catch(() => ({}))).idMessage === "string") {
-      console.log(`[WA Transport:${storeId}] ✅ Message sent via Green API → ${chatId}`);
-      return true;
-    }
-    console.error(`[WA Transport:${storeId}] ❌ Green API error: ${res.status}`);
-    return false;
-  } catch (err: any) {
-    console.error(`[WA Transport:${storeId}] ❌ Green API exception: ${err.message}`);
-    return false;
-  }
+  return postGreenMessage(creds.instanceId, creds.apiToken, "sendMessage",
+    { chatId: `${formatPhoneForWhatsApp(phone)}@c.us`, message }, outcome);
 }
 
 /* ── Image send via this store’s Green API instance ──────────── */
@@ -207,6 +231,7 @@ export async function sendWhatsAppButtons(
   storeId: number,
   header?: string,
   footer?: string,
+  outcome: WhatsAppSendOutcome = {},
 ): Promise<boolean> {
   const formatted = formatPhoneForWhatsApp(phone);
   const creds = await getGreenApiCredentials(storeId);
@@ -214,30 +239,9 @@ export async function sendWhatsAppButtons(
     console.warn(`[WA Transport:${storeId}] No Green API config for this store — buttons DROPPED`);
     return false;
   }
-  const { instanceId, apiToken } = creds;
-  try {
-    const chatId = `${formatted}@c.us`;
-    const res = await fetch(greenApiUrl(instanceId, "sendInteractiveButtonsReply", apiToken), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chatId,
-        ...(header ? { header } : {}),
-        body,
-        ...(footer ? { footer } : {}),
-        buttons: buttons.slice(0, 3).map(b => ({ buttonId: b.id, buttonText: b.text.slice(0, 25) })),
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (res.ok && typeof (await res.json().catch(() => ({}))).idMessage === "string") {
-      console.log(`[WA Transport:${storeId}] ✅ Buttons sent via Green API → ${chatId}`);
-      return true;
-    }
-    console.error(`[WA Transport:${storeId}] ❌ Green API buttons error: ${res.status}`);
-    return false;
-  } catch (err: any) {
-    console.error(`[WA Transport:${storeId}] ❌ Green API buttons exception: ${err.message}`);
-    return false;
-  }
+  return postGreenMessage(creds.instanceId, creds.apiToken, "sendInteractiveButtonsReply", {
+    chatId: `${formatted}@c.us`, ...(header ? { header } : {}), body,
+    ...(footer ? { footer } : {}),
+    buttons: buttons.slice(0, 3).map(b => ({ buttonId: b.id, buttonText: b.text.slice(0, 25) })),
+  }, outcome);
 }
-
