@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export const META_ORDER_TEMPLATE = 'tajergrow_order_confirmation';
-export const META_ORDER_TEMPLATE_BODY = `السلام عليكم، معاك فريق الدعم ديال {{1}} باش نأكدو معاك الطلب ديالك.
+export const META_ORDER_TEMPLATE_BODY_LEGACY = `السلام عليكم، معاك فريق الدعم ديال {{1}} باش نأكدو معاك الطلب ديالك.
 السمية: {{2}}
 الهاتف: {{3}}
 المدينة: {{4}}
@@ -10,6 +10,16 @@ export const META_ORDER_TEMPLATE_BODY = `السلام عليكم، معاك فر
 الكمية: {{7}}
 المجموع: {{8}} درهم — الدفع عند الاستلام.
 واش نأكدو ليك الطلب؟`;
+export const META_ORDER_TEMPLATE_BODY = `السلام عليكم، توصلنا بالطلب اللي درتي عند {{1}}.
+هادي معلومات الطلب ديالك للمراجعة قبل الإرسال:
+السمية: {{2}}
+الهاتف: {{3}}
+المدينة: {{4}}
+العنوان: {{5}}
+المنتج: {{6}}
+الكمية: {{7}}
+المجموع: {{8}} درهم — الدفع عند الاستلام.
+راجع المعلومات واختار تأكيد الطلب، تعديل المعلومات أو إلغاء الطلب من الأزرار لتحت.`;
 export const META_ORDER_BUTTONS = [
   { id: 'confirm', text: 'تأكيد الطلب' },
   { id: 'edit', text: 'تعديل المعلومات' },
@@ -44,7 +54,7 @@ export function usableMetaOrderTemplate(template:any):boolean {
  const body=template?.components?.find((c:any)=>c.type==='BODY');
  const buttons=template?.components?.find((c:any)=>c.type==='BUTTONS')?.buttons;
  return template?.status==='APPROVED' && template?.category==='UTILITY' &&
-  body?.text?.trim()===META_ORDER_TEMPLATE_BODY.trim() && Array.isArray(buttons) && buttons.length===3 &&
+  [META_ORDER_TEMPLATE_BODY, META_ORDER_TEMPLATE_BODY_LEGACY].some(text=>body?.text?.trim()===text.trim()) && Array.isArray(buttons) && buttons.length===3 &&
   META_ORDER_BUTTONS.every((button,i)=>buttons[i]?.type==='QUICK_REPLY' && buttons[i]?.text===button.text);
 }
 export function metaIncomingText(message: any): string | null {

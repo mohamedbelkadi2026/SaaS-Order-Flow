@@ -32,6 +32,19 @@ test('signature, buttons, templates, phone normalization and delivery order',()=
  assert.equal(core.nextMetaDeliveryStatus('failed','sent'),'failed');assert.equal(core.nextMetaDeliveryStatus('failed','delivered'),'delivered');
 });
 
+test('order template revisions preserve eight parameter meanings and reject unapproved or incompatible templates',()=>{
+ const approved=text=>({status:'APPROVED',category:'UTILITY',components:[{type:'BODY',text},{type:'BUTTONS',buttons:core.META_ORDER_BUTTONS.map(b=>({type:'QUICK_REPLY',text:b.text}))}]});
+ for(const text of [core.META_ORDER_TEMPLATE_BODY,core.META_ORDER_TEMPLATE_BODY_LEGACY]){
+  assert.deepEqual([...text.matchAll(/\{\{(\d+)\}\}/g)].map(m=>m[1]),['1','2','3','4','5','6','7','8']);
+  const template=approved(text);assert.equal(core.usableMetaOrderTemplate(template),true);
+  assert.equal(core.usableMetaOrderTemplate({...template,status:'REJECTED'}),false);
+  assert.equal(core.usableMetaOrderTemplate({...template,category:'MARKETING'}),false);
+ }
+ assert.equal(core.usableMetaOrderTemplate(approved(core.META_ORDER_TEMPLATE_BODY.replace('{{6}}','{{7}}'))),false);
+ const missing=approved(core.META_ORDER_TEMPLATE_BODY);missing.components[1].buttons.pop();
+ assert.equal(core.usableMetaOrderTemplate(missing),false);
+});
+
 test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload ownership and signed webhook dedupe',async()=>{
  const pg=new PGlite(),disk=await mkdtemp(path.join(tmpdir(),'meta-wa-'));
  try{
