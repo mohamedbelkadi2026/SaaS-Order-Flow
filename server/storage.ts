@@ -1,5 +1,6 @@
 import { CARRIER_REFUSAL_CODES } from "@shared/carrier-refusal";
 import { assertSenditShipmentTransition } from "@shared/sendit-status";
+import { resolveStockSkuItems, linkStockSkuItems } from "./services/stock-sku-resolution";
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
@@ -639,7 +640,8 @@ export class DatabaseStorage implements IStorage {
         return;
       }
 
-      const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+      const items = await linkStockSkuItems(tx, orderId, storeId,
+        await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId)));
       if (!items.length) return;
       const actionLabel = movementType === 'delivered' ? 'Livraison' : 'Expédition';
 
@@ -652,13 +654,16 @@ export class DatabaseStorage implements IStorage {
           .where(eq(productVariants.productId, item.productId));
 
         let variantMatched = false;
-        if (variants.length > 0 && item.variantInfo) {
+        const itemSku = item.sku?.trim();
+        if (variants.length > 0 && (item.variantInfo || itemSku)) {
           const variantName = (item.variantInfo || '').trim();
-          const matched = variants.find(v =>
+          const skuMatches = itemSku ? variants.filter(v => v.sku?.trim() === itemSku) : [];
+          const matched = itemSku
+            ? (skuMatches.length === 1 ? skuMatches[0] : undefined)
+            : variants.find(v =>
             v.name === variantName ||
-            v.sku === item.sku ||
             v.name?.includes(variantName) ||
-            variantName.includes(v.name || '')
+            (!!v.name && variantName.includes(v.name))
           );
           if (matched) {
             const newStock = Math.max(0, (matched.stock || 0) - qty);
@@ -691,6 +696,9 @@ export class DatabaseStorage implements IStorage {
         if (!variantMatched) {
           const [product] = await tx.select().from(products).where(eq(products.id, item.productId));
           if (!product) continue;
+          // A supplied variant SKU must never silently consume the parent or
+          // another variant when its exact match is missing/ambiguous.
+          if (itemSku && (product.sku?.trim() !== itemSku || variants.some(v => v.sku?.trim() === itemSku))) continue;
           const newStock = Math.max(0, (product.stock || 0) - qty);
           console.log(`[STOCK-DECREMENT] Order #${orderId} → product "${product.name}" (id=${product.id}): stock ${product.stock} → ${newStock}`);
           await tx.update(products)
@@ -1787,10 +1795,11 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
+    const resolvedItems = order.storeId ? await resolveStockSkuItems(db, order.storeId, items) : items;
     const [newOrder] = await db.insert(orders).values(order).returning();
     
     if (items.length > 0) {
-      const itemsToInsert = items.map(item => ({ ...item, orderId: newOrder.id }));
+      const itemsToInsert = resolvedItems.map(item => ({ ...item, orderId: newOrder.id }));
       console.log(`[Storage.createOrder] Inserting ${itemsToInsert.length} order_item(s):`, JSON.stringify(itemsToInsert));
       for (const item of itemsToInsert) {
         await db.insert(orderItems).values(item);
@@ -1897,7 +1906,8 @@ export class DatabaseStorage implements IStorage {
         });
       }
 
-      const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, id));
+      const items = await linkStockSkuItems(tx, id, currentOrder.storeId!,
+        await tx.select().from(orderItems).where(eq(orderItems.orderId, id)));
 
       // Store propriétaire de chaque produit — les mouvements de stock doivent
       // être attribués au store qui possède le produit (≠ store de la commande
