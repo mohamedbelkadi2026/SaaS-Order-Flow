@@ -34,6 +34,10 @@ test('saved account identity takes precedence and legacy warehouse scopes are re
   assert.equal(expressRelaisAccountMatches({carrierId:2,magasinId:8},{id:2,magasinId:9}),true);
   assert.equal(expressRelaisAccountMatches({magasinId:8},{id:2,magasinId:9}),false);
   assert.equal(expressRelaisAccountMatches({magasinId:8},{id:2}),true);
+  assert.equal(expressRelaisAccountMatches({carrierId:null,magasinId:null},{id:77,magasinId:119}),false);
+  assert.equal(expressRelaisAccountMatches({carrierId:null,magasinId:null},{id:77,magasinId:119},true),true);
+  assert.equal(expressRelaisAccountMatches({carrierId:78,magasinId:null},{id:77,magasinId:119},true),false);
+  assert.equal(expressRelaisAccountMatches({magasinId:120},{id:77,magasinId:119},true),false);
 });
 
 test('actual poll worker visits more than 150 orders, resumes after restart, isolates accounts and accepts missing tracking numbers',async()=>{
@@ -41,11 +45,16 @@ test('actual poll worker visits more than 150 orders, resumes after restart, iso
   try{
     await pg.exec(`CREATE TABLE carrier_accounts(id serial PRIMARY KEY,store_id integer,carrier_name text,is_active integer,api_key text,api_secret text,magasin_id integer);
       CREATE TABLE orders(id serial PRIMARY KEY,store_id integer,order_number text,track_number text,status text,comment_status text,shipping_provider text,carrier_name text,carrier_id integer,magasin_id integer,customer_city text,shipping_cost integer,created_at timestamp);
-      INSERT INTO carrier_accounts VALUES(1,91,'expressrelais',1,'a','secret',NULL),(2,91,'expressrelais',1,'b','secret',NULL);
+      INSERT INTO carrier_accounts VALUES(1,91,'expressrelais',1,'a','secret',NULL),(2,91,'expressrelais',1,'b','secret',NULL),
+        (3,119,'expressrelais',1,'legacy','secret',119),
+        (4,120,'expressrelais',1,'multi-a','secret',120),(5,120,'expressrelais',1,'multi-b','secret',121);
       INSERT INTO orders(id,store_id,order_number,track_number,status,shipping_provider,carrier_name,carrier_id,shipping_cost,created_at)
         SELECT id,91,'O-'||id,CASE WHEN id=10 THEN NULL ELSE 'T-'||id END,'Attente De Ramassage',CASE WHEN id=11 THEN '' ELSE 'expressrelais' END,'expressrelais',1,0,now() FROM generate_series(1,400) id;
       INSERT INTO orders VALUES(401,92,'other-store','T-401','Attente De Ramassage','', 'expressrelais','expressrelais',1,NULL,'Casablanca',0,now()),
-        (402,91,'other-account','T-402','Attente De Ramassage','','expressrelais','expressrelais',2,NULL,'Casablanca',0,now());`);
+        (402,91,'other-account','T-402','Attente De Ramassage','','expressrelais','expressrelais',2,NULL,'Casablanca',0,now()),
+        (403,119,'legacy-shipped','legacy-shipped','Attente De Ramassage','','expressrelais','expressrelais',NULL,NULL,'Casablanca',0,now()),
+        (404,120,'ambiguous-account','ambiguous-account','Attente De Ramassage','','expressrelais','expressrelais',NULL,NULL,'Casablanca',0,now()),
+        (405,119,'different-magasin','different-magasin','Attente De Ramassage','','expressrelais','expressrelais',NULL,999,'Casablanca',0,now());`);
     const migration=await read('migrations/2026_10_23_express_relais_sync_cursor.sql');await pg.exec(migration);await pg.exec(migration);
     const carrierAccounts=pgTable('carrier_accounts',{id:serial('id'),storeId:integer('store_id'),carrierName:text('carrier_name'),isActive:integer('is_active'),apiKey:text('api_key'),apiSecret:text('api_secret'),magasinId:integer('magasin_id')});
     const orders=pgTable('orders',{id:serial('id'),storeId:integer('store_id'),orderNumber:text('order_number'),trackNumber:text('track_number'),status:text('status'),commentStatus:text('comment_status'),shippingProvider:text('shipping_provider'),carrierName:text('carrier_name'),carrierId:integer('carrier_id'),magasinId:integer('magasin_id'),customerCity:text('customer_city'),shippingCost:integer('shipping_cost'),createdAt:timestamp('created_at')});
@@ -71,6 +80,10 @@ test('actual poll worker visits more than 150 orders, resumes after restart, iso
     assert.ok(calls.some(c=>c.reference==='O-11')); // Empty provider falls back to carrierName.
     assert.equal(calls.some(c=>c.reference==='other-store'),false);
     assert.equal(calls.find(c=>c.reference==='other-account').login,'b');
+    assert.equal(calls.find(c=>c.reference==='legacy-shipped').login,'legacy');
+    assert.equal((await pg.query('SELECT carrier_id FROM orders WHERE id=403')).rows[0].carrier_id,3);
+    assert.equal(calls.some(c=>c.reference==='ambiguous-account'),false);
+    assert.equal(calls.some(c=>c.reference==='different-magasin'),false);
     await makeWorker()('restart');await makeWorker()('third');
     const covered=new Set(calls.filter(c=>c.login==='a').map(c=>c.reference));
     assert.equal(covered.size,400);
@@ -85,7 +98,7 @@ test('actual poll worker visits more than 150 orders, resumes after restart, iso
     const handlers=new Map();
     vm.runInNewContext(routeCode+';registerExpressRelaisRoutes(app);',{...context,testDbModule:{db},testStorageModule:{storage},ExpressRelaisClient:FakeClient,app:{post(path,handler){handlers.set(path,handler);}}});
     const webhook=handlers.get('/api/webhooks/carrier/:storeId/expressrelais');
-    async function notify(body){let code=200,result;const res={status(value){code=value;return this;},json(value){result=value;return this;},sendStatus(value){code=value;return this;}};await webhook({params:{storeId:'91'},body},res);return {code,result};}
+    async function notify(body,storeId='91'){let code=200,result;const res={status(value){code=value;return this;},json(value){result=value;return this;},sendStatus(value){code=value;return this;}};await webhook({params:{storeId},body},res);return {code,result};}
     await notify({idParcelClient:'O-400',status:'delivered'});
     assert.equal((await pg.query('SELECT status FROM orders WHERE id=400')).rows[0].status,'En transport');
     FakeClient.raw='PARCEL_IN_DELIVERY';
@@ -93,5 +106,15 @@ test('actual poll worker visits more than 150 orders, resumes after restart, iso
     assert.equal(notification.code,200);assert.equal(notification.result.verified,true);
     assert.equal((await pg.query('SELECT status FROM orders WHERE id=400')).rows[0].status,'Mis en distribution');
     assert.equal(calls.at(-1).reference,'O-400');
+    // Webhooks must also recover the original legacy state, independently of polling.
+    await pg.exec('UPDATE orders SET carrier_id=NULL WHERE id=403');
+    const legacyNotification=await notify({idParcelClient:'legacy-shipped'},'119');
+    assert.equal(legacyNotification.result.verified,true);
+    assert.equal((await pg.query('SELECT status,carrier_id FROM orders WHERE id=403')).rows[0].status,'Mis en distribution');
+    assert.equal((await pg.query('SELECT carrier_id FROM orders WHERE id=403')).rows[0].carrier_id,3);
+    const beforeAmbiguous=calls.length;
+    const ambiguousNotification=await notify({idParcelClient:'ambiguous-account'},'120');
+    assert.equal(ambiguousNotification.result.verified,false);
+    assert.equal(calls.length,beforeAmbiguous);
   }finally{await pg.close();}
 });

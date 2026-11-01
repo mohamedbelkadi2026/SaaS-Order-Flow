@@ -72,7 +72,10 @@ export function readExpressRelaisStatus(response: any, reference: string): { raw
   return raw ? { raw, status: mapExpressRelaisStatus(raw) } : null;
 }
 
-export function expressRelaisAccountMatches(order: { carrierId?: number | null; magasinId?: number | null }, account: { id: number; magasinId?: number | null }): boolean {
+export function expressRelaisAccountMatches(order: { carrierId?: number | null; magasinId?: number | null }, account: { id: number; magasinId?: number | null }, allowUnscopedLegacy = false): boolean {
   if (order.carrierId != null) return order.carrierId === account.id;
+  // Old shipments can lack both IDs. Only the store's sole active, configured
+  // account may verify them; never guess between multiple carrier accounts.
+  if (order.magasinId == null && allowUnscopedLegacy) return true;
   return account.magasinId == null || account.magasinId === order.magasinId;
 }
