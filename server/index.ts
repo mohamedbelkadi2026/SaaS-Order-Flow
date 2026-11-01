@@ -998,6 +998,9 @@ app.use((req, res, next) => {
       for (const account of accounts) {
         if (account.isActive === 0 || !account.apiKey || !account.apiSecret) continue;
         const storeId = account.storeId;
+        const allowUnscopedLegacy = accounts.filter(a =>
+          a.storeId === storeId && a.isActive !== 0 && a.apiKey && a.apiSecret
+        ).length === 1;
         // Backfill missing delivery fees for already delivered Express Relais
         // parcels. Never overwrite a positive fee entered by the merchant.
         const deliveredWithoutFee = await dbInst.select({
@@ -1034,7 +1037,7 @@ app.use((req, res, next) => {
           eq(orderTable.storeId, storeId),
           sql`LOWER(REGEXP_REPLACE(COALESCE(NULLIF(TRIM(${orderTable.shippingProvider}), ''), ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
           gt(orderTable.id, afterId),
-          sql`(${orderTable.carrierId} = ${account.id} OR (${orderTable.carrierId} IS NULL AND (${account.magasinId ?? null}::integer IS NULL OR ${orderTable.magasinId} = ${account.magasinId ?? null})))`,
+          sql`(${orderTable.carrierId} = ${account.id} OR (${orderTable.carrierId} IS NULL AND (${account.magasinId ?? null}::integer IS NULL OR ${orderTable.magasinId} = ${account.magasinId ?? null} OR (${allowUnscopedLegacy} AND ${orderTable.magasinId} IS NULL))))`,
           sql`LOWER(COALESCE(${orderTable.status}, '')) NOT IN ('delivered','livré','livrée','retour recu','retour reçu','returned','retourné','retournée')`
         )).orderBy(asc(orderTable.id)).limit(150);
         let parcels = await loadPage(cursor);

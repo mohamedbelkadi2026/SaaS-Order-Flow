@@ -40,7 +40,8 @@ export function registerExpressRelaisRoutes(app: Express) {
         eq(carrierAccounts.storeId, storeId),
         sql`LOWER(REGEXP_REPLACE(${carrierAccounts.carrierName}, '[^a-zA-Z]', '', 'g')) = 'expressrelais'`
       ));
-      const eligibleAccounts = accounts.filter(a => a.isActive !== 0 && a.apiKey && a.apiSecret && expressRelaisAccountMatches(order,a));
+      const activeAccounts = accounts.filter(a => a.isActive !== 0 && a.apiKey && a.apiSecret);
+      const eligibleAccounts = activeAccounts.filter(a => expressRelaisAccountMatches(order,a,activeAccounts.length === 1));
       if (!eligibleAccounts.length) return res.status(202).json({received:true,verified:false});
       // Use the carrier's authenticated status lookup. Ignore unverified
       // incoming status values to prevent forged LIVRÉ/RETOUR events.
