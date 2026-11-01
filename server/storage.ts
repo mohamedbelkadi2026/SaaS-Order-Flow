@@ -1,4 +1,5 @@
 import { CARRIER_REFUSAL_CODES } from "@shared/carrier-refusal";
+import { assertSenditShipmentTransition } from "@shared/sendit-status";
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
@@ -1814,6 +1815,10 @@ export class DatabaseStorage implements IStorage {
     return await db.transaction(async (tx) => {
       const [currentOrder] = await tx.select().from(orders).where(eq(orders.id, id));
       if (!currentOrder) return undefined;
+
+      // A dispatched Sendit parcel must retain its carrier lifecycle and code.
+      // Guard every caller before clearing comments, carrier fields or stock.
+      assertSenditShipmentTransition(currentOrder, status);
 
       const prevStatus = currentOrder.status;
 
