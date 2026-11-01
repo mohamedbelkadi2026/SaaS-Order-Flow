@@ -11,7 +11,8 @@ const states: Record<string, {label:string; status:string}> = {
  DISTRIBUTED:{label:'Distribué',status:'transit'},
  DELIVERING:{label:'En cours de livraison',status:'transit'},
  UNREACHABLE:{label:'Injoignable',status:'unreachable'},
- POSTPONED:{label:'Reporté',status:'confirme_reporte'},
+ // A carrier postponement is already shipped, never a confirmation reminder.
+ POSTPONED:{label:'Reporté',status:'in_progress'},
  DELIVERED:{label:'Livré',status:'delivered'},
  CANCELED:{label:'Annulé',status:'refused'},
  REJECTED:{label:'Refusé',status:'refused'},
@@ -42,4 +43,11 @@ export function senditWebhookFields(body:any) {
  return { code: typeof code==='string' || typeof code==='number' ? String(code).trim() : '',
    reference:typeof reference==='string' || typeof reference==='number' ? String(reference).trim() : '',
    newStatus:typeof status==='string' && status!=='delivery.status.update' ? status.trim() : '' };
+}
+
+export function assertSenditShipmentTransition(order: {trackNumber?:string|null;shippingProvider?:string|null;carrierName?:string|null}, status: string): void {
+ const provider=(order.shippingProvider?.trim() || order.carrierName || '').trim().toLowerCase();
+ if(provider==='sendit' && order.trackNumber?.trim() && ['nouveau','confirme','confirme_reporte'].includes(status)) {
+  throw Object.assign(new Error('Ce colis est déjà expédié chez Sendit. Gérez son report dans le suivi des colis, sans le remettre en confirmation.'),{status:409});
+ }
 }

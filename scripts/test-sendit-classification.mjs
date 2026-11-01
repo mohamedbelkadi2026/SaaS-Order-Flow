@@ -69,3 +69,25 @@ test('tracked Sendit pending parcels leave Confirmées; unshipped and other carr
  assert.equal((await pg.query('SELECT count(*)::int AS n FROM order_follow_up_logs WHERE order_id>=10')).rows[0].n,3);
  }finally{await pg.close();}
 });
+
+test('carrier postponements and audited manual regressions are repaired without changing tracking or action dates',async()=>{
+ const pg=await setup();try{
+ await pg.exec(`INSERT INTO orders(id,store_id,status,comment_status,shipping_provider,track_number,updated_at) VALUES
+ (20,124,'confirme_reporte','POSTPONED','sendit','DH20','2026-11-01'),
+ (21,124,'confirme','POSTPONED | Motif: demain','sendit','DH21','2026-11-01'),
+ (22,124,'confirme',NULL,'sendit','DH22','2026-11-01'),
+ (23,124,'confirme',NULL,'sendit','DH23','2026-11-01'),
+ (24,124,'confirme_reporte','POSTPONED','sendit',NULL,'2026-11-01'),
+ (25,124,'confirme_reporte','POSTPONED','ozonexpress','O25','2026-11-01');
+ INSERT INTO order_follow_up_logs(order_id,note,created_at) VALUES
+ (22,'Statut: "confirme_reporte" → "confirme"','2026-11-01');`);
+ await pg.exec(SENDIT_STATUS_REPAIR_SQL);
+ const rows=(await pg.query('SELECT id,status,track_number,comment_status,updated_at FROM orders WHERE id>=20 ORDER BY id')).rows;
+ assert.deepEqual(rows.map(r=>r.status),['in_progress','in_progress','in_progress','confirme','confirme_reporte','confirme_reporte']);
+ assert.equal(rows[2].track_number,'DH22');assert.equal(rows[2].comment_status,'POSTPONED');
+ assert.equal(rows[2].updated_at.toISOString(),'2026-11-01T00:00:00.000Z');
+ const audits=(await pg.query('SELECT count(*)::int AS n FROM order_follow_up_logs')).rows[0].n;
+ await pg.exec(SENDIT_STATUS_REPAIR_SQL);
+ assert.equal((await pg.query('SELECT count(*)::int AS n FROM order_follow_up_logs')).rows[0].n,audits);
+ }finally{await pg.close();}
+});

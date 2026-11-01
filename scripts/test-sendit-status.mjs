@@ -4,10 +4,10 @@ import {readFile} from 'node:fs/promises';
 import {stripTypeScriptTypes} from 'node:module';
 import vm from 'node:vm';
 const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
-const {readSenditStatus,senditOrderStatusText,senditWebhookFields}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(await read('shared/sendit-status.ts'),{mode:'transform'})).toString('base64'));
+const {readSenditStatus,senditOrderStatusText,senditWebhookFields,assertSenditShipmentTransition}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(await read('shared/sendit-status.ts'),{mode:'transform'})).toString('base64'));
 const source=await read('server/routes.ts');
 test('Sendit codes, actual TOPICKUP spelling and French labels share lifecycle mappings',()=>{
- for(const [raw,label,status] of [['PENDING','En attente','Attente De Ramassage'],['TO_PREPARE','À préparer','Attente De Ramassage'],['TOPICKUP','Ramassage en cours','in_progress'],['TO_PICKUP','Ramassage en cours','in_progress'],['PICKED_UP','Ramassé','in_progress'],['WAREHOUSE','Entrepôt','in_progress'],['DISTRIBUTED','Distribué','transit'],['DELIVERING','En cours de livraison','transit'],['DELIVERED','Livré','delivered'],['RETURNED','Retourné','retourné'],['CANCELLED','Annulé','refused'],['POSTPONED','Reporté','confirme_reporte']]){
+ for(const [raw,label,status] of [['PENDING','En attente','Attente De Ramassage'],['TO_PREPARE','À préparer','Attente De Ramassage'],['TOPICKUP','Ramassage en cours','in_progress'],['TO_PICKUP','Ramassage en cours','in_progress'],['PICKED_UP','Ramassé','in_progress'],['WAREHOUSE','Entrepôt','in_progress'],['DISTRIBUTED','Distribué','transit'],['DELIVERING','En cours de livraison','transit'],['DELIVERED','Livré','delivered'],['RETURNED','Retourné','retourné'],['CANCELLED','Annulé','refused'],['POSTPONED','Reporté','in_progress']]){
  assert.deepEqual(readSenditStatus(raw),{label,status});assert.equal(readSenditStatus(label).status,status);
  assert.equal(senditOrderStatusText({shippingProvider:'sendit',commentStatus:raw}),label);
  }
@@ -27,8 +27,9 @@ test('real webhook saves the raw stage, maps correctly, emits updates and ignore
  await notify('PENDING');assert.equal(row.status,'Attente De Ramassage');assert.equal(row.commentStatus,'PENDING');
  await notify('DISTRIBUTED');assert.equal(row.status,'transit');assert.equal(row.commentStatus,'DISTRIBUTED');
  await notify('DELIVERING');assert.equal(row.status,'transit');assert.equal(row.commentStatus,'DELIVERING');
+ await notify('POSTPONED');assert.equal(row.status,'in_progress');assert.equal(row.commentStatus,'POSTPONED');
  await notify('DELIVERED');assert.equal(row.status,'delivered');
- await notify('FUTURE_STATE');assert.equal(row.status,'delivered');assert.equal(row.commentStatus,'FUTURE_STATE');assert.equal(events.length,5);
+ await notify('FUTURE_STATE');assert.equal(row.status,'delivered');assert.equal(row.commentStatus,'FUTURE_STATE');assert.equal(events.length,6);
  row.shippingProvider='digylog';const before=updates.length;await notify('RETURNED');assert.equal(updates.length,before);
 });
 test('generic Sendit webhook overrides fuzzy distribution matching using the same exact mapper',()=>{
@@ -44,3 +45,24 @@ test('real status fields are read from flat and nested Sendit payloads without t
  assert.deepEqual(senditWebhookFields({reference:'ORDER-1',status:'DELIVERED'}),{code:'',reference:'ORDER-1',newStatus:'DELIVERED'});
  assert.equal(senditWebhookFields({status:'delivery.status.update'}).newStatus,'');
 });
+
+ test('tracked Sendit cannot return to confirmation; unshipped orders and other carriers retain their workflow',()=>{
+ const shipped={shippingProvider:'sendit',trackNumber:'DH40332563'};
+ for(const status of ['nouveau','confirme','confirme_reporte'])assert.throws(()=>assertSenditShipmentTransition(shipped,status),e=>e.status===409);
+ for(const status of ['Reporté','transit','Attente De Ramassage','delivered','refused'])assert.doesNotThrow(()=>assertSenditShipmentTransition(shipped,status));
+ assert.doesNotThrow(()=>assertSenditShipmentTransition({shippingProvider:'sendit',trackNumber:null},'confirme'));
+ assert.doesNotThrow(()=>assertSenditShipmentTransition({shippingProvider:'ozonexpress',trackNumber:'O1'},'confirme'));
+ assert.throws(()=>assertSenditShipmentTransition({shippingProvider:' ',carrierName:'Sendit',trackNumber:'DH1'},'confirme'),e=>e.status===409);
+ });
+ test('real storage status writer rejects the transition before any mutation',async()=>{
+ const storageSource=await read('server/storage.ts');
+ const start=storageSource.indexOf('  async updateOrderStatus(id: number, status: string, actorId?');
+ const end=storageSource.indexOf('      const prevStatus = currentOrder.status;',start);
+ const prefix=storageSource.slice(start,end)+'return currentOrder;});}})';
+ const current={id:1,status:'confirme_reporte',shippingProvider:'sendit',trackNumber:'DH1',commentStatus:'POSTPONED'};
+ let writes=0;
+ const tx={select:()=>({from:()=>({where:async()=>[current]})}),update:()=>{writes++;throw new Error('unexpected write');}};
+ const writer=vm.runInNewContext(stripTypeScriptTypes('({'+prefix,{mode:'transform'}),{db:{transaction:fn=>fn(tx)},orders:{id:1},eq:()=>true,assertSenditShipmentTransition}).updateOrderStatus;
+ await assert.rejects(()=>writer(1,'confirme',123),e=>e.status===409);
+ assert.equal(writes,0);assert.equal(current.trackNumber,'DH1');assert.equal(current.commentStatus,'POSTPONED');
+ });

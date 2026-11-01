@@ -4183,7 +4183,7 @@ export const SENDIT_STATUS_MAP: Record<string, string> = {
   // Injoignable
   UNREACHABLE:      'unreachable',
   // Reporté
-  POSTPONED:        'confirme_reporte',
+  POSTPONED:        'in_progress',
   // Terminal négatif
   CANCELED:         'refused',
   REJECTED:         'refused',
