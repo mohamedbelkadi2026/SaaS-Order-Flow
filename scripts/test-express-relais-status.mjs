@@ -9,12 +9,13 @@ import {pgTable,serial,integer,text,timestamp} from 'drizzle-orm/pg-core';
 import {eq,and,or,sql,asc,gt} from 'drizzle-orm';
 const {PGlite}=await import(process.env.PGLITE_MODULE || '@electric-sql/pglite');
 const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
-const {mapExpressRelaisStatus,readExpressRelaisStatus,expressRelaisAccountMatches}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(await read('server/integrations/express-relais-status.ts'),{mode:'transform'})).toString('base64'));
+const {mapExpressRelaisStatus,expressRelaisOrderStatusText}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(await read('shared/express-relais-status.ts'),{mode:'transform'})).toString('base64'));
+const {readExpressRelaisStatus,expressRelaisAccountMatches}=vm.runInNewContext(stripTypeScriptTypes(await read('server/integrations/express-relais-status.ts'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export \{.*\};\n/gm,'').replaceAll('export function','function')+';({readExpressRelaisStatus,expressRelaisAccountMatches})',{mapExpressRelaisStatus});
 
 test('scheduled sync and webhooks share complete mappings for transport, agency and distribution',()=>{
-  for(const [raw,expected] of Object.entries({PARCEL_IN_TRANSPORT:'En transport',PARCEL_IN_FINAL_AGENCY:'En agence finale',PARCEL_IN_DELIVERY:'Mis en distribution',PARCEL_IN_TRANSIT:'En transit',PARCEL_PICKEDUP:'Ramassé',PARCEL_DELIVERED:'delivered',PARCEL_RETURNED:'retourné','Attente de ramassage':'Attente De Ramassage','Livré *':'delivered','Retour prêt':'RETOUR READY'})){
+  for(const [raw,expected] of Object.entries({PARCEL_IN_TRANSPORT:'En transport',PARCEL_IN_FINAL_AGENCY:'En agence finale',PARCEL_IN_DELIVERY:'Mis en distribution',PARCEL_IN_TRANSIT:'En transit',PARCEL_PICKEDUP:'Ramassé',PARCEL_DELIVERED:'delivered',PARCEL_RETURNED:'retourné',DELIVRED_TO_ADDRESS:'delivered',DELIVERED_TO_ADDRESS:'delivered',PARCEL_REFUSED:'refused',RESCHEDULED_DELIVERY_BY_RECIPIENT:'in_progress',SCHEDULED_DELIVERY:'in_progress',UNREACHABLE_RECIPIENT:'unreachable',PICKUP_ASSIGNED:'Attente De Ramassage',WRONG_ADDRESS:'in_progress',PARCEL_IN_RETURN_AGENCY:'RETOUR READY','Attente de ramassage':'Attente De Ramassage','Livré *':'delivered','Retour prêt':'RETOUR READY'})){
     assert.equal(mapExpressRelaisStatus(raw),expected,raw);
-    assert.deepEqual(readExpressRelaisStatus({data:{idParcelClient:'ORDER-1',statusParcel:raw}},'ORDER-1'),{raw,status:expected});
+    assert.deepEqual({...readExpressRelaisStatus({data:{idParcelClient:'ORDER-1',statusParcel:raw}},'ORDER-1')},{raw,status:expected});
   }
 });
 test('negative delivery labels, lockers and unknown states never create a false customer delivery',()=>{
@@ -117,4 +118,59 @@ test('actual poll worker visits more than 150 orders, resumes after restart, iso
     assert.equal(ambiguousNotification.result.verified,false);
     assert.equal(calls.length,beforeAmbiguous);
   }finally{await pg.close();}
+});
+
+test('Express Relais labels are French and other carriers remain untouched',()=>{
+ for(const [raw,label] of Object.entries({DELIVRED_TO_ADDRESS:'Livrée',DELIVERED_TO_ADDRESS:'Livrée',PARCEL_REFUSED:'Refusée',PARCEL_IN_DELIVERY:'Mis en distribution',RESCHEDULED_DELIVERY_BY_RECIPIENT:'Reporté',SCHEDULED_DELIVERY:'Programmé',UNREACHABLE_RECIPIENT:'Injoignable'})) {
+ assert.equal(expressRelaisOrderStatusText({shippingProvider:'expressrelais',commentStatus:raw},raw),label);
+ assert.equal(expressRelaisOrderStatusText({shippingProvider:'sendit',commentStatus:raw},raw),raw);
+ }
+ assert.equal(expressRelaisOrderStatusText({shippingProvider:'expressrelais',commentStatus:'PARCEL_REFUSED | Motif: test'},''),'Refusée | Motif: test');
+ assert.equal(expressRelaisOrderStatusText({shippingProvider:'expressrelais',commentStatus:'UNKNOWN'},'UNKNOWN'),'UNKNOWN');
+});
+
+test('generic carrier webhook uses the Express Relais mapper without changing other carriers',async()=>{
+ const source=await read('server/routes.ts');
+ const a=source.indexOf("    if (carrierName.toLowerCase().replace(/[^a-z]/g, '') === 'expressrelais') {",source.indexOf('async function processCarrierWebhook'));
+ const b=source.indexOf('    await storage.updateOrderStatus(order.id, newStatus);',a);
+ assert.ok(a>0 && b>a);
+ const run=vm.runInNewContext('(carrierName,rawText)=>{let newStatus="unchanged";const order={id:1},matchedBy="tracking";'+source.slice(a,b)+'return newStatus;}',{mapExpressRelaisStatus});
+ assert.equal(run('expressrelais','DELIVRED_TO_ADDRESS'),'delivered');
+ assert.equal(run('Express Relais','PARCEL_REFUSED'),'refused');
+ assert.equal(run('expressrelais','PARCEL_IN_DELIVERY'),'Mis en distribution');
+ assert.equal(run('sendit','DELIVRED_TO_ADDRESS'),'unchanged');
+ assert.equal(run('expressrelais','UNKNOWN').tracked,true);
+});
+
+test('existing Express Relais orders move into their exact buckets without changing stock, fees or delivery dates',async()=>{
+ const pg=new PGlite();try{
+ await pg.exec(`CREATE TABLE orders(id serial PRIMARY KEY,store_id int,status text,comment_status text,shipping_provider text,carrier_name text,track_number text,shipping_cost int,updated_at timestamp,created_at timestamp,pickup_date timestamp);
+ CREATE TABLE order_follow_up_logs(id serial PRIMARY KEY,order_id int,agent_id int,agent_name text,note text,created_at timestamp);
+ INSERT INTO orders(id,store_id,status,comment_status,shipping_provider,track_number,shipping_cost,updated_at) VALUES
+ (1,119,'Attente De Ramassage','DELIVRED_TO_ADDRESS','expressrelais','E1',1800,'2026-10-25'),
+ (2,119,'PARCEL_REFUSED',NULL,'Express Relais','E2',2800,'2026-10-25'),
+ (3,119,'Mis en distribution','RESCHEDULED_DELIVERY_BY_RECIPIENT','expressrelais','E3',0,'2026-10-25'),
+ (4,119,'SCHEDULED_DELIVERY',NULL,'expressrelais','E4',0,'2026-10-25'),
+ (5,119,'Attente De Ramassage','UNREACHABLE_RECIPIENT','expressrelais','E5',0,'2026-10-25'),
+ (6,119,'Attente De Ramassage','PARCEL_IN_DELIVERY','expressrelais','E6',0,'2026-10-25'),
+ (7,119,'refused','PARCEL_IN_RETURN_AGENCY','expressrelais','E7',0,'2026-10-25'),
+ (8,119,'delivered','PICKUP_ASSIGNED','expressrelais','E8',1800,'2026-10-25'),
+ (9,119,'Attente De Ramassage','DELIVRED_TO_ADDRESS','digylog','D9',0,'2026-10-25'),
+ (10,119,'Attente De Ramassage','UNKNOWN','expressrelais','E10',0,'2026-10-25');`);
+ await pg.exec(await read('migrations/2026_10_23_orders_delivery_date.sql'));
+ await pg.exec("UPDATE orders SET status='in_progress' WHERE id=8; UPDATE orders SET status='delivered',delivered_at='2026-10-27' WHERE id=8");
+ const repair=await read('migrations/2026_11_02_express_relais_status_buckets.sql');
+ await pg.exec(repair);await pg.exec(repair);
+ const rows=(await pg.query('SELECT * FROM orders ORDER BY id')).rows;
+ assert.deepEqual(rows.map(r=>r.status),['delivered','refused','in_progress','in_progress','unreachable','Mis en distribution','RETOUR READY','delivered','Attente De Ramassage','Attente De Ramassage']);
+ assert.equal(rows[0].delivered_at,null); // No invented delivery timestamp on a classification repair.
+ assert.equal(rows[7].delivered_at.toISOString(),'2026-10-27T00:00:00.000Z');
+ assert.equal(rows[0].shipping_cost,1800);assert.equal(rows[0].track_number,'E1');
+ assert.equal(rows[0].updated_at.toISOString(),'2026-10-25T00:00:00.000Z');
+ assert.equal(rows[1].comment_status,'PARCEL_REFUSED');
+ assert.equal((await pg.query('SELECT count(*)::int n FROM order_follow_up_logs')).rows[0].n,7);
+ // The normal date trigger is re-enabled after the correction.
+ await pg.exec("UPDATE orders SET status='delivered' WHERE id=10");
+ assert.ok((await pg.query('SELECT delivered_at FROM orders WHERE id=10')).rows[0].delivered_at);
+ }finally{await pg.close();}
 });
