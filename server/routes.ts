@@ -3,6 +3,7 @@ import { getMetaConnection } from "./meta-whatsapp-service";
 import { registerWhatsappIncomingRoutes } from "./whatsapp-incoming-routes";
 import { isCalendarDate, validTeamRange } from "@shared/team-period";
 import { isCarrierRefusal } from "@shared/carrier-refusal";
+import { mapExpressRelaisStatus } from "@shared/express-relais-status";
 import { senditWebhookFields } from "@shared/sendit-status";
 import { registerOrderNavigationRoutes } from "./order-navigation-routes";
 import type { Express } from "express";
@@ -6224,6 +6225,12 @@ export async function registerRoutes(
       const mapped = mapSenditStatus(rawText);
       // Preserve an unknown raw status for display, without inventing a stage.
       if (!mapped) return {tracked:true, orderId:order.id, matchedBy};
+      newStatus = mapped;
+    }
+
+    if (carrierName.toLowerCase().replace(/[^a-z]/g, '') === 'expressrelais') {
+      const mapped = mapExpressRelaisStatus(rawText);
+      if (!mapped) return { tracked: true, orderId: order.id, matchedBy };
       newStatus = mapped;
     }
 
