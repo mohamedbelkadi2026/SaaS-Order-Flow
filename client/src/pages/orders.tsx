@@ -36,6 +36,7 @@ function cleanCustomerName(name: string): string {
 }
 
 const CARRIER_LOGOS: Record<string, string> = {
+  livcash: '/carriers/livcash.png',
   digylog: '/carriers/digylog.svg',
   expresscoursier: '/carriers/expresscoursier.png',
   'express coursier': '/carriers/expresscoursier.png',

@@ -63,6 +63,7 @@ const ALL_STATUSES = [
 ];
 
 const CARRIER_LOGOS: Record<string, string> = {
+  livcash: '/carriers/livcash.png',
   digylog: '/carriers/digylog.svg',
   expresscoursier: '/carriers/expresscoursier.png',
   'express coursier': '/carriers/expresscoursier.png',
