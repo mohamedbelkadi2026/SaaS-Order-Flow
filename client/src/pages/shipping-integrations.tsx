@@ -29,6 +29,7 @@ const GOLD = "#C5A059";
 const NAVY = "#1e1b4b";
 
 const PROVIDERS = [
+  { id: "livcash", name: "Livcash", cities: 0, logo: "/carriers/livcash.png" },
   { id: "digylog",        name: "Digylog",          cities: 581, logo: "/carriers/digylog.svg"  },
   { id: "onessta",        name: "Onessta",           cities: 378, logo: "/carriers/onessta.svg"  },
   { id: "ozonexpress",    name: "Ozon Express",      cities: 628, logo: "/carriers/ozonexpress.png" },
@@ -285,6 +286,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
 
   // ── Olivraison-specific fields (apiKey + secretKey → Bearer JWT, same shape as Sendit) ──
   const isOlivraison = providerId === "olivraison";
+  const isLivcash = providerId === "livcash";
   const [olivraisonSecretKey,  setOlivraisonSecretKey]  = useState<string>("");
   const [showOlivraisonSec,    setShowOlivraisonSec]    = useState(false);
   const [olivraisonTestResult, setOlivraisonTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -1393,6 +1395,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               </p>
             </div>
 
+            {isLivcash ? <p className="text-xs text-emerald-700">Suivi Livcash automatique toutes les 15 minutes. Aucun webhook à configurer.</p> : <>
             {/* ── WebHook URL (permanent) — shared for all carriers ── */}
             <div className="space-y-2">
               <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2">
@@ -1432,6 +1435,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               </div>
             </div>
 
+            </>}
             {/* ── Assignment rule (edit mode, all carriers) ── */}
             <div className="space-y-2 pt-1">
               <p className="text-sm font-semibold" style={{ color: NAVY }}>Règle d'affectation</p>
@@ -2247,7 +2251,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           )}
 
           {/* ── Advanced: API Base URL (hidden for Ameex — fixed endpoint) ── */}
-          {!isAmeex && (
+          {!isAmeex && !isLivcash && (
             <div className="space-y-1.5">
               <button
                 type="button"
@@ -2304,7 +2308,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           </div>
 
           {/* ── WebHook URL (permanent) — Olivraison has no webhook, only auto-polling ── */}
-          {isOlivraison ? (
+          {isLivcash ? (
+            <p className="text-xs text-emerald-700">Suivi Livcash automatique toutes les 15 minutes. Aucun webhook à configurer.</p>
+          ) : isOlivraison ? (
             <div className="space-y-1.5">
               <div className="flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-300 px-3 py-2">
                 <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -2649,7 +2655,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
   const [seedAccountId,  setSeedAccountId]  = useState<number | null>(null);
   const [seedJson,       setSeedJson]       = useState("");
   const [seedLoading,    setSeedLoading]    = useState(false);
-  const isSeedCarrier = providerId === "ozonexpress" || providerId === "expresscoursier";
+  const isSeedCarrier = providerId === "ozonexpress" || providerId === "expresscoursier" || providerId === "livcash";
 
   const handleSeedCities = async () => {
     if (!seedAccountId) return;
@@ -2662,7 +2668,8 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
         return;
       }
       const body = Array.isArray(parsed) ? parsed : (parsed?.cities ?? parsed);
-      const result = await apiRequest("POST", `/api/carriers/${providerId}/seed-cities/${seedAccountId}`, body);
+      const response = await apiRequest("POST", `/api/carriers/${providerId}/seed-cities/${seedAccountId}`, body);
+      const result = await response.json();
       toast({
         title: "✅ Villes importées",
         description: result?.message || `${result?.inserted ?? 0} villes importées.`,
@@ -3012,6 +3019,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         </Button>
                       </>
                     )}
+                    {providerId !== "livcash" && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -3026,6 +3034,10 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
                       Synchroniser les villes
                     </Button>
+                    )}
+                    {providerId === "livcash" && (
+                      <Button size="sm" variant="outline" disabled={syncingProvider === "livcash"} onClick={() => syncCarrier("livcash")}><RefreshCw className="w-3.5 h-3.5 mr-1" />Synchroniser les statuts</Button>
+                    )}
                     {acct.carrierName === "nearya" && (
                       <Button
                         size="sm"
@@ -3179,6 +3191,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                             </button>
                           </td>
                         </tr>
+                        {providerId === "livcash" ? <tr><td className="px-4 py-3">Suivi automatique</td><td className="px-4 py-3 text-xs" colSpan={2}>Toutes les 15 minutes</td></tr> : (
                         <tr>
                           <td className="px-4 py-3 font-medium">WebHook URL</td>
                           <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-[180px] truncate">
@@ -3195,6 +3208,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                             </button>
                           </td>
                         </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -3270,20 +3284,20 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
               Importer villes (JSON) — {providerName}
             </DialogTitle>
             <DialogDescription>
-              Collez un tableau JSON de villes avec leurs identifiants numériques.
-              Format accepté : <code className="bg-muted px-1 rounded text-xs">[{"{"}"cityId": "1", "cityName": "Casablanca"{"}"}]</code>
+              {providerId === "livcash" ? 'Collez les noms exacts des villes Livcash : ["Casablanca", "Agadir"].' : "Collez un tableau JSON de villes avec leurs identifiants numériques."}
+              {providerId !== "livcash" && <>Format accepté : <code className="bg-muted px-1 rounded text-xs">[{"{"}"cityId": "1", "cityName": "Casablanca"{"}"}]</code></>}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
             <Textarea
-              placeholder={`[\n  {"cityId": "1", "cityName": "Casablanca"},\n  {"cityId": "2", "cityName": "Rabat"}\n]`}
+              placeholder={providerId === "livcash" ? '["Casablanca", "Agadir"]' : `[\n  {"cityId": "1", "cityName": "Casablanca"},\n  {"cityId": "2", "cityName": "Rabat"}\n]`}
               className="font-mono text-xs min-h-[200px] resize-y"
               value={seedJson}
               onChange={e => setSeedJson(e.target.value)}
               data-testid="textarea-seed-cities-json"
             />
             <p className="text-xs text-muted-foreground">
-              Clés acceptées : <code className="bg-muted px-0.5 rounded">cityId</code> / <code className="bg-muted px-0.5 rounded">id</code> et <code className="bg-muted px-0.5 rounded">cityName</code> / <code className="bg-muted px-0.5 rounded">name</code>. L'identifiant doit être numérique.
+              {providerId === "livcash" ? "Livcash utilise les noms des villes. Aucun identifiant numérique requis." : <>Clés acceptées : <code className="bg-muted px-0.5 rounded">cityId</code> / <code className="bg-muted px-0.5 rounded">id</code> et <code className="bg-muted px-0.5 rounded">cityName</code> / <code className="bg-muted px-0.5 rounded">name</code>. L'identifiant doit être numérique.</>}
             </p>
           </div>
           <div className="flex gap-2 justify-end pt-1">
@@ -3587,7 +3601,7 @@ export default function ShippingIntegrations() {
                 .filter(k => (accountsByProvider.get(k) || []).some((a: any) => a.isActive === 1))
                 .map(k => normalizeCarrierName(k))
             );
-            const webhookIndicator = getWebhookIndicator(provider.id, carrierLogs, connectedProviderIds);
+            const webhookIndicator = provider.id === "livcash" ? {label:"Suivi automatique",className:"bg-blue-50 text-blue-700 border-blue-200"} : getWebhookIndicator(provider.id, carrierLogs, connectedProviderIds);
 
             return (
               <Card

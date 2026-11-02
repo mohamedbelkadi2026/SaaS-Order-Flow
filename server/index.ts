@@ -12,6 +12,7 @@ import compression from "compression";
 import { registerRoutes } from "./routes";
 import { registerCallLogRoutes } from "./call-log-routes";
 import { registerAiLandingPageRoutes } from "./ai-landing-page-routes";
+import { registerLivcashRoutes } from "./livcash-routes";
 import { registerExpressRelaisRoutes } from "./express-relais-routes";
 import { readExpressRelaisStatus } from "./integrations/express-relais-status";
 import { registerLightfunnelsRoutes } from "./lightfunnels-routes";
@@ -732,6 +733,7 @@ app.use((req, res, next) => {
   registerCallLogRoutes(app);
   registerAiLandingPageRoutes(app);
   registerExpressRelaisRoutes(app);
+  registerLivcashRoutes(app);
   registerLightfunnelsRoutes(app);
   registerMetaAdsRoutes(app);
 
@@ -981,6 +983,15 @@ app.use((req, res, next) => {
     setTimeout(() => runCarrierPollOnce("digylog", () => runDigylogSync('initial')), 2 * 60 * 1000);
     const autoDigylogSync = setInterval(() => runCarrierPollOnce("digylog", () => runDigylogSync('interval')), 15 * 60 * 1000);
     intervals.push(autoDigylogSync);
+  }
+
+  if (runScheduledCarrierSync) {
+    const pollLivcash = () => runCarrierPollOnce("livcash", async () => {
+      const { syncLivcash } = await import("./jobs/livcash-sync");
+      await syncLivcash();
+    });
+    setTimeout(pollLivcash, 90 * 1000);
+    intervals.push(setInterval(pollLivcash, 15 * 60 * 1000));
   }
 
   // ── Express Relais AIO: poll parcel statuses (no shipping side effects) ──

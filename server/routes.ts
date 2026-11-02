@@ -342,6 +342,7 @@ function getDefaultCitiesForProvider(provider: string): string[] {
 }
 
 const CARRIER_LOGOS_SERVER: Record<string, string> = {
+  livcash: '/carriers/livcash.png',
   digylog: '/carriers/digylog.svg',
   onessta: '/carriers/onessta.svg',
   ozonexpress: '/carriers/ozonexpress.png',
@@ -2924,6 +2925,7 @@ export async function registerRoutes(
                   console.warn(`[SHIPPING-LOG]: ⚠️ Order #${ref} accepted by ${provider} without tracking — ${shipWarning}`);
                   allDbUpdates.push(
                     storage.updateOrder(order.id, {
+                      ...(provider.toLowerCase() === 'livcash' ? {carrierId:Number(orderCreds.id) || null} : {}),
                       shippingProvider: provider,
                       carrierName:      provider,
                       status:           'Attente De Ramassage',
@@ -2950,6 +2952,7 @@ export async function registerRoutes(
                   console.warn(`[SHIPPING-LOG]: ⚠️ Order #${ref} — accepted by ${provider} but no tracking returned. Moving to Attente De Ramassage (not leaving in Confirmé).`);
                   allDbUpdates.push(
                     storage.updateOrder(order.id, {
+                      ...(provider.toLowerCase() === 'livcash' ? {carrierId:Number(orderCreds.id) || null} : {}),
                       shippingProvider: provider,
                       carrierName:      provider,
                       status:           'Attente De Ramassage',
@@ -2979,6 +2982,7 @@ export async function registerRoutes(
                   storage.updateOrder(order.id, {
                     trackNumber:      trackingNumber,
                     labelLink:        labelUrl ?? null,
+                    ...(provider.toLowerCase() === 'livcash' ? {carrierId:Number(orderCreds.id) || null} : {}),
                     shippingProvider: provider,
                     carrierName:      provider,
                     status:           'Attente De Ramassage',
@@ -4971,6 +4975,7 @@ export async function registerRoutes(
       const rawBase = (acct.apiUrl || "").replace(/\/orders\s*$/i, "").replace(/\/+$/, "");
       const carrierKey = (acct.carrierName || "").toLowerCase();
 
+      if (carrierKey === 'livcash') return res.status(422).json({message:'Livcash utilise les noms des villes. Importez votre liste de villes depuis le bouton Importer villes.'});
       let citiesUrl: string;
       if (carrierKey === "ameex") {
         citiesUrl = "https://api.ameex.app/customer/Delivery/Cities/Action/Type/Get";
@@ -5687,6 +5692,7 @@ export async function registerRoutes(
     carrierNameRaw: string,
     body: Record<string, any>,
   ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string }> {
+    if (carrierNameRaw.toLowerCase().replace(/[^a-z]/g, '') === 'livcash') return {tracked:false};
     body = body || {};   // guard against undefined when caller has no body (e.g. GET ping)
     // Sendit sends "delivery.status.update" as an event NAME, not an order
     // status. Extract only an actual status value from the event payload.
@@ -18445,6 +18451,7 @@ function ensureHeaders(sheet) {
       if (!trackingNumber && shipResult.warning) {
         console.warn(`[SHIPPING-LOG]: ⚠️ Order #${order.orderNumber} accepted by ${provider} without tracking — ${shipResult.warning}`);
         await storage.updateOrder(orderId, {
+          ...(provider.toLowerCase() === 'livcash' ? {carrierId:Number((creds as any).id) || null} : {}),
           shippingProvider: provider,
           carrierName:      provider,
           status:           'Attente De Ramassage',
@@ -18477,6 +18484,7 @@ function ensureHeaders(sheet) {
       await storage.updateOrder(orderId, {
         trackNumber:      trackingNumber,
         labelLink:        labelUrl ?? null,
+        ...(provider.toLowerCase() === 'livcash' ? {carrierId:Number((creds as any).id) || null} : {}),
         shippingProvider: provider,
         carrierName:      provider,
         status:           'Attente De Ramassage',

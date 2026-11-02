@@ -1169,6 +1169,27 @@ export async function shipOrderToCarrier(
     return { success: false, error: validationError, carrierMessage: validationError };
   }
 
+  if (provider.toLowerCase().replace(/[\s_-]+/g, '') === 'livcash') {
+    const { LivcashClient, livcashTrackingCode } = await import('../integrations/livcash');
+    if (input.isStock) return {success:false,permanent:true,error:'Livcash : le mode stock entrepôt n’est pas documenté. Choisissez un colis simple.'};
+    try {
+      const tracking = livcashTrackingCode(input.storeId,input.orderId);
+      const response = await new LivcashClient(creds.apiKey || '').create({
+        ville:input.city.trim(),phone:sanitizePhone(input.phone),qty:1,
+        adresse:input.address.trim(),note:[`${input.productName} × ${Math.max(1,Math.trunc(input.quantity || 1))}`,input.note].filter(Boolean).join(' — '),
+        price:(input.totalPrice/100).toFixed(2),name:input.customerName.trim(),tracking,
+      });
+      // Only the documented boolean acknowledgement confirms creation.
+      if(response?.status !== true) return {success:false,permanent:true,error:typeof response?.msg==='string' ? response.msg.replaceAll(creds.apiKey || '\0','[masqué]').slice(0,250) : 'Livcash a refusé la création du colis.'};
+      const returned=typeof response.sku==='string' ? response.sku.trim() : '';
+      // Livcash may assign a SKU different from the submitted reference.
+      if(returned.length>120) return {success:false,permanent:true,error:'Livcash : référence invalide. Vérifiez le colis avant de réessayer.'};
+      return {success:true,trackingNumber:returned || tracking,attempts:1};
+    } catch(error:any) {
+      return {success:false,error:error?.message || 'Livcash indisponible.',httpStatus:error?.status || 502,permanent:true};
+    }
+  }
+
   // ── Express Relais AIO v2.7: isolated Basic Auth /createAioOrder route ─────
   // Must run before the generic bearer-token/JSON transport and URL lookup.
   // The existing connection test and city synchronization use this same client.
