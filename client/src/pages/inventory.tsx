@@ -1668,7 +1668,8 @@ export default function Inventory() {
             size="sm"
             className="gap-2 border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/30"
             onClick={openAdjustmentPurge}
-            disabled={adjustmentPurgeLoading || adjustmentPurgeApplying}
+            disabled
+            title="Désactivé pour préserver les stocks saisis manuellement"
             data-testid="button-purge-stock-adjustments"
           >
             {adjustmentPurgeLoading || adjustmentPurgeApplying ? (
