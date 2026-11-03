@@ -3039,17 +3039,12 @@ export class DatabaseStorage implements IStorage {
 
   async getInventoryStats(storeId: number): Promise<any> {
     const allProducts = await db.select().from(products).where(and(eq(products.storeId, storeId), isNull(products.archivedAt)));
-    const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+    const activeProductIds = allProducts.map(p => p.id);
+    const allVariants = activeProductIds.length === 0 ? [] : await db.select().from(productVariants)
+      .where(and(eq(productVariants.storeId, storeId), inArray(productVariants.productId, activeProductIds)));
 
     const totalProducts = allProducts.length;
     const totalVariants = allVariants.length;
-    const totalQuantity = allProducts.reduce((s, p) => s + p.stock, 0) + allVariants.reduce((s, v) => s + v.stock, 0);
-    const getAggStock = (p: Product) => {
-      const pvs = allVariants.filter(v => v.productId === p.id);
-      return pvs.length > 0 ? pvs.reduce((s, v) => s + v.stock, 0) : p.stock;
-    };
-    const lowStock = allProducts.filter(p => { const s = getAggStock(p); return s > 0 && s < 10; }).length;
-    const outOfStock = allProducts.filter(p => getAggStock(p) === 0).length;
 
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -3231,9 +3226,10 @@ export class DatabaseStorage implements IStorage {
     return {
       totalProducts,
       totalVariants,
-      totalQuantity,
-      lowStock,
-      outOfStock,
+      // Cards and rows use the same active catalog and available balance.
+      totalQuantity: productStats.reduce((total, product) => total + product.available, 0),
+      lowStock: productStats.filter(product => product.available > 0 && product.available < 10).length,
+      outOfStock: productStats.filter(product => product.available <= 0).length,
       newProducts,
       productStats,
     };
