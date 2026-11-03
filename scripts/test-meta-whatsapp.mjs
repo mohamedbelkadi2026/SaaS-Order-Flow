@@ -50,7 +50,7 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  const pg=new PGlite(),disk=await mkdtemp(path.join(tmpdir(),'meta-wa-'));
  try{
  await pg.exec('CREATE TABLE stores(id integer PRIMARY KEY);CREATE TABLE orders(id integer PRIMARY KEY);INSERT INTO stores VALUES(91),(92);INSERT INTO orders VALUES(1);');
- await pg.exec(META_WHATSAPP_SCHEMA_SQL);await pg.exec(META_WHATSAPP_SCHEMA_SQL);
+ await pg.exec(META_WHATSAPP_SCHEMA_SQL);await pg.exec('CREATE TABLE ai_logs(id serial PRIMARY KEY,store_id int,order_id int,customer_phone text,role text,message text);');await pg.exec(META_WHATSAPP_SCHEMA_SQL);
  const pool={query:async(sql,args)=>{if(sql.startsWith('SELECT pg_advisory_xact_lock'))return {rows:[],rowCount:0};const r=await pg.query(sql,args);return {...r,rowCount:r.affectedRows || r.rows.length};}};
  pool.connect=async()=>({...pool,release(){}});
  const requests=[];let rejected=false,grantedScopes=[],templateApproved=false;
@@ -67,7 +67,7 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
   return {messages:[{id:'wamid.'+requests.length}]};
  };
  const env={META_APP_ID:'123456',META_APP_SECRET:'secret',META_WEBHOOK_VERIFY_TOKEN:'verify',ENCRYPTION_KEY:'test-key',DATA_DIR:disk};
- const context={...core,...media,metaGraph:graph,pool,encrypt:x=>'encrypted:'+x,decrypt:x=>x.replace('encrypted:',''),process:{env,cwd:()=>disk},path,Date,URLSearchParams,
+ const context={...core,...media,broadcastToStore(){},metaGraph:graph,pool,encrypt:x=>'encrypted:'+x,decrypt:x=>x.replace('encrypted:',''),process:{env,cwd:()=>disk},path,Date,URLSearchParams,
   readFile,stat:(await import('node:fs/promises')).stat,createHash,URL,FormData,Blob,Buffer,console};
  const service=vm.runInNewContext(clean(await read('server/meta-whatsapp-service.ts'))+'\n({getMetaConnection,saveMetaConnection,sendMetaMessage,sendMetaOrderTemplate,sendMetaFile,queueMetaContent,flushMetaContent})',context);
  await service.saveMetaConnection(91,'999991','111111','token-91');await service.saveMetaConnection(92,'999992','222222','token-92');
@@ -103,6 +103,7 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  await pool.query("INSERT INTO meta_whatsapp_windows VALUES(91,'212612345678',now())");
  await service.flushMetaContent(91,'0612345678');
  assert.equal((await pool.query('SELECT state FROM meta_whatsapp_content_queue')).rows[0].state,'accepted');
+ assert.match((await pool.query('SELECT message FROM ai_logs')).rows[0].message,/^\[IMAGE\]/);
  const afterFlush=requests.length;await service.flushMetaContent(91,'0612345678');assert.equal(requests.length,afterFlush);
 
  // Mount real route code with a disabled worker, then exercise signed ingress.
