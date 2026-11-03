@@ -54,14 +54,18 @@ test('actual inventory stats count orphaned physical departures and agree with r
  const source=await readFile(new URL('../server/storage.ts',import.meta.url),'utf8');
  const start=source.indexOf('  async getInventoryStats('),end=source.indexOf('  async updateUser(',start);
  const pg=await fixture();try{
- await pg.exec(`CREATE TABLE orders(id int,store_id int,status text);CREATE TABLE order_items(product_id int,order_id int,quantity int);`);
+ await pg.exec(`CREATE TABLE orders(id int,store_id int,status text);CREATE TABLE order_items(product_id int,order_id int,quantity int);
+ INSERT INTO products VALUES(2375,106,'Archived product','OLD',0,now());
+ INSERT INTO product_variants VALUES(9998,2375,106,'archived variant','OLD-SKU',-29);`);
  await pg.exec(migration);
  const stats=vm.runInNewContext(stripTypeScriptTypes('({'+source.slice(start,end)+'})',{mode:'transform'}),{
   db:drizzle(pg),products,productVariants,stockMovements,orders,orderItems,
   ...orm,NOT_CONFIRMED_STATUSES_ARRAY:['nouveau'],isDeliveredStatus:status=>status==='Livré',console
  });
  const result=await stats.getInventoryStats(106);
+ assert.equal(result.totalProducts,1);assert.equal(result.totalVariants,7);
  assert.equal(result.totalQuantity,143);assert.equal(result.productStats[0].stock,143);
+ assert.equal((await pg.query('SELECT stock FROM product_variants WHERE id=9998')).rows[0].stock,-29);
  assert.equal(result.productStats[0].available,143);
  assert.equal(result.productStats[0].inTransit,7);
  }finally{await pg.close();}

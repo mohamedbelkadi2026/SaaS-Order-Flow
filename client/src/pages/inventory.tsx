@@ -1,3 +1,4 @@
+import { stockWithVariants } from "@shared/inventory-stock";
 import { useState, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useProducts, useCreateProduct, useUpdateProduct, useDeleteProduct, useInventoryStats } from "@/hooks/use-store-data";
@@ -2209,8 +2210,21 @@ export default function Inventory() {
                 <Input data-testid="input-edit-product-selling" type="number" step="0.01" value={form.sellingPrice} onChange={e => setForm(f => ({ ...f, sellingPrice: e.target.value }))} />
               </div>
               <div className="space-y-2">
-                <Label>Stock</Label>
-                <Input data-testid="input-edit-product-stock" type="number" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} />
+                <Label>{hasVariants ? "Stock total disponible" : "Stock"}</Label>
+                <Input
+                  data-testid="input-edit-product-stock"
+                  type="number"
+                  value={hasVariants ? stockWithVariants(form.stock, variants) : form.stock}
+                  readOnly={hasVariants}
+                  onChange={e => setForm(f => ({ ...f, stock: e.target.value }))}
+                />
+                {hasVariants && (
+                  <p className="text-xs text-muted-foreground">
+                    Modifiez les quantités dans les variantes.
+                    {Number(form.stock) < 0 && ` ${Math.abs(Number(form.stock))} sortie(s) sans variante déjà déduite(s) du total.`}
+                    {Number(form.stock) > 0 && ` Dont ${Number(form.stock)} unité(s) sans variante.`}
+                  </p>
+                )}
               </div>
             </div>
             {!hasVariants && (
