@@ -66,3 +66,30 @@ test('actual inventory stats count orphaned physical departures and agree with r
  assert.equal(result.productStats[0].inTransit,7);
  }finally{await pg.close();}
 });
+
+
+test('follow-up preserves shipments arriving during deployment and still restores only once',async()=>{
+ const pg=await fixture();try{
+ await pg.exec("INSERT INTO stock_movements(store_id,product_id,variant_id,type,quantity,order_id,created_at) VALUES(106,2374,2672,'shipped',-1,55755,'2026-11-03 14:45:48')");
+ await pg.exec(migration);
+ assert.equal((await pg.query('SELECT count(*) AS n FROM stock_inventory_recovery_backups')).rows[0].n,0);
+ const followup=await readFile(new URL('../migrations/2026_11_03_restore_trench_opening_stock_after_shipment.sql',import.meta.url),'utf8');
+ await pg.exec(followup);
+ assert.equal((await pg.query('SELECT stock FROM product_variants WHERE id=2672')).rows[0].stock,31);
+ assert.equal((await pg.query('SELECT sum(quantity) AS n FROM stock_movements WHERE product_id=2374')).rows[0].n,142);
+ const n=(await pg.query('SELECT count(*) AS n FROM stock_movements')).rows[0].n;
+ await pg.exec(followup);await pg.exec(migration);
+ assert.equal((await pg.query('SELECT count(*) AS n FROM stock_movements')).rows[0].n,n);
+ }finally{await pg.close();}
+});
+for(const [label,extra] of [
+ ['restock',"INSERT INTO stock_movements(store_id,product_id,type,quantity) VALUES(106,2374,'restock',10)"],
+ ['manual adjustment',"INSERT INTO stock_movements(store_id,product_id,type,quantity) VALUES(106,2374,'adjustment',10)"],
+ ['unknown variant',"INSERT INTO stock_movements(store_id,product_id,variant_id,type,quantity,order_id,created_at) VALUES(106,2374,9999,'shipped',-1,123,'2026-11-03 15:00')"]
+]) test(`follow-up rejects ${label}`,async()=>{
+ const pg=await fixture();try{
+ await pg.exec(extra);
+ await pg.exec(await readFile(new URL('../migrations/2026_11_03_restore_trench_opening_stock_after_shipment.sql',import.meta.url),'utf8'));
+ assert.equal((await pg.query('SELECT count(*) AS n FROM stock_inventory_recovery_backups')).rows[0].n,0);
+ }finally{await pg.close();}
+});
