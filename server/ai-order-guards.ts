@@ -23,8 +23,11 @@ type Info={name:string|null;city:string|null;address:string|null;phone:string|nu
  * message may become delivery fields; existing site data needs an explicit edit. */
 export function validatedDeliveryInfo(message:string,proposed:Info,current:Info,knownCities:string[],lastQuestion=''):Info {
  const empty:Info={name:null,city:null,address:null,phone:null};
- if(mediaRequest(message) || message.length>600 || /[?؟]/.test(message))return empty;
+ if(mediaRequest(message) || message.length>600)return empty;
  const text=norm(message),question=norm(lastQuestion);
+ const requestedEdit=/(?:بدل|نبدل|تغيير|تصحيح|صحح|changer|modifier|corriger|bdel|bdl)/i.test(text);
+ const isQuestion=/[?؟]/.test(message) || /(?:^| )(?:واش|wach|هل|شنو|فين|quelle|quel|comment|combien)(?: |$)/i.test(text);
+ if(isQuestion && !requestedEdit)return empty;
  const citySet=new Set(knownCities.map(norm));
  const labels:Record<keyof Info,RegExp>={name:new RegExp("(?:الاسم|السمية|سميتي|nom|name)","u"),city:new RegExp("(?:المدينة|مدينتي|مدينة|ville|city)","u"),address:new RegExp("(?:العنوان|عنواني|عنوان|adresse|address|حي|شارع)","u"),phone:new RegExp("(?:الهاتف|رقمي|تليفون|telephone|phone|numero)","u")};
  const result={...empty};
@@ -34,7 +37,7 @@ export function validatedDeliveryInfo(message:string,proposed:Info,current:Info,
   if(field!=='phone' && !(` ${text} `).includes(` ${key} `))continue;
   if(field==='city' && !citySet.has(key))continue;
   if(field==='name' && !new RegExp("^[\\p{L}\\s'-]{2,80}$","u").test(value))continue;
-  if(current[field] && !labels[field].test(text))continue;
+  if(current[field] && (!labels[field].test(text) || (!requestedEdit && !/[:：=]/.test(message))))continue;
   if(!current[field] && field!=='city' && !labels[field].test(text) && !labels[field].test(question))continue;
   if(field==='phone'){
    const phone=(s:string)=>{const n=s.replace(/\D/g,'');return /^0[67]\d{8}$/.test(n)?'212'+n.slice(1):n;};

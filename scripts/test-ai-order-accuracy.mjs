@@ -18,6 +18,9 @@ test('real Darija/French media requests bypass the model and cannot become deliv
 test('current-message provenance, known city and explicit edit protect saved site details',()=>{
  assert.deepEqual(validatedDeliveryInfo('شكرا',{name:'Ahmed',city:'Rabat',address:'Hay Riad',phone:'0612345678'},current,['Rabat']),fields);
  assert.equal(validatedDeliveryInfo('Rabat',{...fields,city:'Rabat'},current,['Rabat']).city,null);
+ for(const text of ['wach katwslou l ville Rabat','واش كتوصلو لمدينة Rabat؟','quelle ville Rabat'])assert.equal(validatedDeliveryInfo(text,{...fields,city:'Rabat'},current,['Rabat']).city,null);
+ assert.equal(validatedDeliveryInfo('المدينة Rabat',{...fields,city:'Rabat'},current,['Rabat']).city,null);
+ assert.equal(validatedDeliveryInfo('المدينة: Rabat',{...fields,city:'Rabat'},current,['Rabat']).city,'Rabat');
  assert.equal(validatedDeliveryInfo('بدل المدينة ل Rabat',{...fields,city:'Rabat'},current,['Rabat']).city,'Rabat');
  assert.equal(validatedDeliveryInfo('المدينة: أي كلام',{...fields,city:'أي كلام'},current,['Rabat']).city,null);
  assert.equal(validatedDeliveryInfo('Rabat',{...fields,city:'Rabat'},fields,['Rabat']).city,'Rabat');
