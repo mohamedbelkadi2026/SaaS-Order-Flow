@@ -11,6 +11,7 @@ const {PGlite}=await import(process.env.PGLITE_MODULE || '@electric-sql/pglite')
 const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
 const load=async p=>import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(await read(p),{mode:'transform'})).toString('base64'));
 const core=await load('server/meta-whatsapp-core.ts');
+const media=await load('server/meta-media.ts');
 const {META_WHATSAPP_SCHEMA_SQL}=await load('server/meta-whatsapp-schema.ts');
 const clean=source=>stripTypeScriptTypes(source.replace(/^import\s[\s\S]*?from\s+['"][^'"]+['"];?\n/gm,''),{mode:'transform'}).replace(/^export /gm,'');
 test('signature, buttons, templates, phone normalization and delivery order',()=>{
@@ -66,7 +67,7 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
   return {messages:[{id:'wamid.'+requests.length}]};
  };
  const env={META_APP_ID:'123456',META_APP_SECRET:'secret',META_WEBHOOK_VERIFY_TOKEN:'verify',ENCRYPTION_KEY:'test-key',DATA_DIR:disk};
- const context={...core,metaGraph:graph,pool,encrypt:x=>'encrypted:'+x,decrypt:x=>x.replace('encrypted:',''),process:{env,cwd:()=>disk},path,Date,URLSearchParams,
+ const context={...core,...media,metaGraph:graph,pool,encrypt:x=>'encrypted:'+x,decrypt:x=>x.replace('encrypted:',''),process:{env,cwd:()=>disk},path,Date,URLSearchParams,
   readFile,stat:(await import('node:fs/promises')).stat,createHash,URL,FormData,Blob,Buffer,console};
  const service=vm.runInNewContext(clean(await read('server/meta-whatsapp-service.ts'))+'\n({getMetaConnection,saveMetaConnection,sendMetaMessage,sendMetaOrderTemplate,sendMetaFile,queueMetaContent,flushMetaContent})',context);
  await service.saveMetaConnection(91,'999991','111111','token-91');await service.saveMetaConnection(92,'999992','222222','token-92');
@@ -95,6 +96,15 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  assert.ok(requests.some(r=>r.endpoint==='111111/media' && r.options.form instanceof FormData));
  await service.queueMetaContent(91,1,'0612345678','image','/uploads/whatsapp/91/test.jpg');await service.queueMetaContent(91,1,'0612345678','image','/uploads/whatsapp/91/test.jpg');
  assert.equal((await pool.query('SELECT count(*)::int AS n FROM meta_whatsapp_content_queue')).rows[0].n,1);
+ await pool.query('DELETE FROM meta_whatsapp_windows WHERE store_id=91');
+ const beforeFlush=requests.length;await service.flushMetaContent(91,'0612345678');
+ assert.equal(requests.length,beforeFlush);
+ assert.equal((await pool.query('SELECT state FROM meta_whatsapp_content_queue')).rows[0].state,'pending');
+ await pool.query("INSERT INTO meta_whatsapp_windows VALUES(91,'212612345678',now())");
+ await service.flushMetaContent(91,'0612345678');
+ assert.equal((await pool.query('SELECT state FROM meta_whatsapp_content_queue')).rows[0].state,'accepted');
+ const afterFlush=requests.length;await service.flushMetaContent(91,'0612345678');assert.equal(requests.length,afterFlush);
+
  // Mount real route code with a disabled worker, then exercise signed ingress.
  const mounted=new Map();const app={get:(url,...handlers)=>mounted.set('GET '+url,handlers.at(-1)),post:(url,...handlers)=>mounted.set('POST '+url,handlers.at(-1))};
  const routeContext={...context,...service,z,randomBytes,requireAuth(){},requireAdmin(){},broadcastToStore(){},setInterval:()=>({unref(){}})};
