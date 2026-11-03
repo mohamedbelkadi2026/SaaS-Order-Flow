@@ -150,13 +150,13 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
 }
 
 /* ── Image send via this store’s Green API instance ──────────── */
-export async function sendWhatsAppImage(phone: string, imageUrl: string, caption: string, storeId: number): Promise<boolean> {
-  return sendWhatsAppFile(phone, imageUrl, "produit.jpg", caption, storeId);
+export async function sendWhatsAppImage(phone: string, imageUrl: string, caption: string, storeId: number, outcome: WhatsAppSendOutcome = {}): Promise<boolean> {
+  return sendWhatsAppFile(phone, imageUrl, "produit.jpg", caption, storeId, outcome);
 }
 
 /* ── File send via this store’s Green API instance ───────────── */
-export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName: string, caption: string, storeId: number): Promise<boolean> {
-  if (await getMetaConnection(storeId)) return sendMetaFile(storeId,phone,fileUrl,fileName,caption);
+export async function sendWhatsAppFile(phone: string, fileUrl: string, fileName: string, caption: string, storeId: number, outcome: WhatsAppSendOutcome = {}): Promise<boolean> {
+  if (await getMetaConnection(storeId)) return sendMetaFile(storeId,phone,fileUrl,fileName,caption,outcome);
   const formatted = formatPhoneForWhatsApp(phone);
 
   // Green API determines the outgoing file type from the fileName field's

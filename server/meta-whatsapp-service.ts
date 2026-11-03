@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pool } from './db';
+import {prepareMetaMedia,MetaMediaError} from './meta-media';
 import { encrypt, decrypt } from './crypto';
 import { metaGraph, metaPhone, MetaApiError, metaTemplate, usableMetaOrderTemplate } from './meta-whatsapp-core';
 
@@ -92,37 +93,41 @@ export async function sendMetaOrderTemplate(storeId:number,phone:string,paramete
   return await sendMetaMessage(storeId,phone,metaTemplate(parameters,c.template_name,c.template_language),outcome);
  }catch(error){outcome.error=error instanceof MetaApiError?error.message:'Impossible de vérifier le modèle Meta.';return false;}
 }
-const MEDIA_TYPES:Record<string,[string,string]>={jpg:['image','image/jpeg'],jpeg:['image','image/jpeg'],png:['image','image/png'],mp3:['audio','audio/mpeg'],m4a:['audio','audio/mp4'],aac:['audio','audio/aac'],ogg:['audio','audio/ogg'],opus:['audio','audio/ogg'],amr:['audio','audio/amr'],mp4:['video','video/mp4'],pdf:['document','application/pdf']};
-export async function sendMetaFile(storeId:number,phone:string,url:string,fileName:string,caption:string) {
+const MEDIA_TYPES:Record<string,[string,string]>={webp:['image','image/webp'],gif:['image','image/gif'],wav:['audio','audio/wav'],webm:['video','video/webm'],mov:['video','video/quicktime'],'3gp':['video','video/3gpp'],jpg:['image','image/jpeg'],jpeg:['image','image/jpeg'],png:['image','image/png'],mp3:['audio','audio/mpeg'],m4a:['audio','audio/mp4'],aac:['audio','audio/aac'],ogg:['audio','audio/ogg'],opus:['audio','audio/ogg'],amr:['audio','audio/amr'],mp4:['video','video/mp4'],pdf:['document','application/pdf']};
+export async function sendMetaFile(storeId:number,phone:string,url:string,fileName:string,caption:string,outcome:MetaOutcome={}) {
  try{
-  const c=await getMetaConnection(storeId);if(!c?.active || !await metaWindowOpen(storeId,phone))return false;
+  const c=await getMetaConnection(storeId);if(!c?.active || !await metaWindowOpen(storeId,phone)){outcome.error='Fenêtre WhatsApp fermée ou connexion désactivée.';return false;}
   const parsed=new URL(url,process.env.PUBLIC_APP_URL || 'https://www.tajergrow.com');
   const ext=parsed.pathname.split('.').pop()?.toLowerCase() || '';
-  const media=MEDIA_TYPES[ext];if(!media)return false;
-  const [kind,mime]=media;
+  const media=MEDIA_TYPES[ext];if(!media){outcome.error='Format de média non pris en charge.';return false;}
+  let [kind,mime]=media;
+  if(ext==='webm' && fileName.startsWith('audio')){kind='audio';mime='audio/webm';}
   const local=parsed.pathname.match(/^\/uploads\/(whatsapp\/(\d+)\/|products\/)([a-zA-Z0-9_.-]+)$/);
   let resource:Record<string,string>;
   if(local){
-   if(local[2] && Number(local[2])!==storeId)return false;
-   const disk=path.join(process.env.DATA_DIR || process.cwd(),'uploads',local[1],local[3]);
+   if(local[2] && Number(local[2])!==storeId){outcome.error='Média appartenant à un autre magasin.';return false;}
+   const original=path.join(process.env.DATA_DIR || process.cwd(),'uploads',local[1],local[3]);
+   const prepared=await prepareMetaMedia(original,kind,mime);
+   const disk=prepared.file;mime=prepared.mime;
    const size=(await stat(disk)).size;
    const max=kind==='image'?5*1024*1024:kind==='document'?100*1024*1024:16*1024*1024;
-   if(size<=0 || size>max)return false;
+   if(size<=0 || size>max){outcome.error='Média trop volumineux pour WhatsApp.';return false;}
    const form=new FormData();form.set('messaging_product','whatsapp');form.set('type',mime);
-   form.set('file',new Blob([await readFile(disk)],{type:mime}),local[3]);
+   form.set('file',new Blob([await readFile(disk)],{type:mime}),path.basename(disk));
    const upload=await metaGraph(decrypt(c.token_cipher),`${c.phone_number_id}/media`,{method:'POST',form});
-   if(!/^\d+$/.test(String(upload?.id || '')))return false;
+   if(!/^\d+$/.test(String(upload?.id || ''))){outcome.error='Téléversement du média non confirmé par Meta.';return false;}
    resource={id:String(upload.id)};
   }else{
    if(parsed.protocol!=='https:' || !/^https:\/\//i.test(url))return false;
    // Meta downloads remote HTTPS media; the application never fetches arbitrary URLs.
+   if(['webp','gif','wav','webm','mov'].includes(ext)){outcome.error='Téléversez ce fichier dans Produits WhatsApp pour le préparer au format Meta.';return false;}
    resource={link:parsed.href};
   }
   return await sendMetaMessage(storeId,phone,{type:kind,[kind]:{...resource,
    ...(kind!=='audio' && caption?{caption:caption.slice(0,1024)}:{}),
    ...(kind==='document'?{filename:fileName}:{}),
-  }});
- }catch{return false;}
+  }},outcome);
+ }catch(error){outcome.error=error instanceof MetaMediaError?error.message:error instanceof MetaApiError?`Meta refuse le média (code ${error.code}).`:'Fichier inaccessible ou envoi du média impossible.';return false;}
 }
 export async function queueMetaContent(storeId:number,orderId:number,phone:string,kind:string,content:string) {
  const key=createHash('sha256').update(JSON.stringify([storeId,orderId,kind,content])).digest('hex');
@@ -133,9 +138,11 @@ export async function flushMetaContent(storeId:number,phone:string) {
  const recipient=metaPhone(phone);if(!await metaWindowOpen(storeId,recipient))return;
  const jobs=(await pool.query(`UPDATE meta_whatsapp_content_queue SET state='sending' WHERE id IN
  (SELECT id FROM meta_whatsapp_content_queue WHERE store_id=$1 AND phone=$2 AND state='pending' ORDER BY id LIMIT 20 FOR UPDATE SKIP LOCKED) RETURNING *`,[storeId,recipient])).rows;
- for(const job of jobs){
-  const ok=job.kind==='text'?await sendMetaMessage(storeId,recipient,{type:'text',text:{body:job.content}}):await sendMetaFile(storeId,recipient,job.content,job.kind==='audio'?'audio.mp3':job.kind==='video'?'video.mp4':'produit.jpg','');
+ for(const job of jobs.sort((a:any,b:any)=>Number(a.id)-Number(b.id))){
+  const outcome:MetaOutcome={};
+  const ok=job.kind==='text'?await sendMetaMessage(storeId,recipient,{type:'text',text:{body:job.content}},outcome):await sendMetaFile(storeId,recipient,job.content,job.kind==='audio'?'audio.mp3':job.kind==='video'?'video.mp4':'produit.jpg','',outcome);
   // Failures/uncertain sends are visible for manual diagnosis, never blindly resent.
   await pool.query('UPDATE meta_whatsapp_content_queue SET state=$1 WHERE id=$2 AND store_id=$3',[ok?'accepted':'failed',job.id,storeId]);
+  if(!ok)await pool.query("INSERT INTO ai_logs(store_id,order_id,customer_phone,role,message) VALUES($1,$2,$3,'system',$4)",[storeId,job.order_id,recipient,`Média automatique ${job.kind} non envoyé : ${outcome.error || 'envoi non accepté'}`]);
  }
 }

@@ -2283,6 +2283,8 @@ function WhatsappProductsTab() {
             />
           </div>
 
+          <p className="text-xs text-zinc-500">Les fichiers enregistrés sont envoyés automatiquement avec la confirmation. Avec WhatsApp officiel, si le client n'a pas encore répondu, les médias attendent son premier message. Les fichiers téléversés sont préparés au format Meta lors de l'envoi.</p>
+
           {/* Images (multiple) */}
           <MultiMediaSection
             label="Images"

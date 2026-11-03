@@ -681,8 +681,11 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
           aiFeatures: products.aiFeatures,
           imageUrl: products.imageUrl,
           whatsappImageUrls: products.whatsappImageUrls,
+          whatsappImageUrl: products.whatsappImageUrl,
           whatsappVideoUrls: products.whatsappVideoUrls,
+          whatsappVideoUrl: products.whatsappVideoUrl,
           whatsappAudioUrls: products.whatsappAudioUrls,
+          whatsappAudioUrl: products.whatsappAudioUrl,
           whatsappDescription: products.whatsappDescription,
         }).from(products).where(eq(products.id, item.productId));
         if (p) {
@@ -692,9 +695,9 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
           // general product-page fields when set — that's what's actually
           // curated for the AI to send, e.g. a Darija-specific description.
           descriptionDarija = p.whatsappDescription || p.descriptionDarija || p.description || null;
-          productImageUrls = (p.whatsappImageUrls as string[]) || [];
-          productVideoUrls = (p.whatsappVideoUrls as string[]) || [];
-          productAudioUrls = (p.whatsappAudioUrls as string[]) || [];
+          productImageUrls = p.whatsappImageUrls?.length ? p.whatsappImageUrls : p.whatsappImageUrl ? [p.whatsappImageUrl] : [];
+          productVideoUrls = p.whatsappVideoUrls?.length ? p.whatsappVideoUrls : p.whatsappVideoUrl ? [p.whatsappVideoUrl] : [];
+          productAudioUrls = p.whatsappAudioUrls?.length ? p.whatsappAudioUrls : p.whatsappAudioUrl ? [p.whatsappAudioUrl] : [];
           productImageUrl = productImageUrls[0] || p.imageUrl || null;
           productVideoUrl = productVideoUrls[0] ?? null;
           productAudioUrl = productAudioUrls[0] ?? null;
@@ -1161,11 +1164,11 @@ export async function triggerAIForNewOrder(
     }
     const mediaFailures: string[] = [];
     if (ctx.descriptionDarija && !await sendWhatsAppMessage(customerPhone, ctx.descriptionDarija, storeId)) mediaFailures.push("description");
-    for (const url of ctx.productImageUrls || []) if (!await sendWhatsAppImage(customerPhone, url, "", storeId)) mediaFailures.push("image");
-    for (const url of ctx.productVideoUrls || []) if (!await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId)) mediaFailures.push("vidéo");
-    for (const url of ctx.productAudioUrls || []) if (!await sendWhatsAppFile(customerPhone, url, "audio.mp3", "", storeId)) mediaFailures.push("audio");
+    for (const url of ctx.productImageUrls || []) { const outcome: {error?:string}={}; if (!await sendWhatsAppImage(customerPhone, url, "", storeId, outcome)) mediaFailures.push(`image: ${outcome.error || "envoi non accepté"}`); }
+    for (const url of ctx.productVideoUrls || []) { const outcome: {error?:string}={}; if (!await sendWhatsAppFile(customerPhone, url, "video.mp4", "", storeId, outcome)) mediaFailures.push(`vidéo: ${outcome.error || "envoi non accepté"}`); }
+    for (const url of ctx.productAudioUrls || []) { const outcome: {error?:string}={}; if (!await sendWhatsAppFile(customerPhone, url, "audio.mp3", "", storeId, outcome)) mediaFailures.push(`audio: ${outcome.error || "envoi non accepté"}`); }
     if (mediaFailures.length) {
-      await storage.createAiLog({ storeId, orderId, customerPhone, role: "system", message: `Contenus non envoyés : ${mediaFailures.join(", ")}. Vérifiez les fichiers et Green API.` });
+      await storage.createAiLog({ storeId, orderId, customerPhone, role: "system", message: `Contenus non envoyés : ${mediaFailures.join(", ")}. Vérifiez les fichiers dans Produits WhatsApp et le journal de votre connexion.` });
     }
     console.log(`[SUCCESS]: Outreach sent successfully → order #${orderId} | phone: ${customerPhone} | product: "${productLabel}"`);
   } catch (err: any) {
