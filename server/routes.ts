@@ -1,3 +1,4 @@
+import { saveStockVariants } from "./services/save-stock-variants";
 import { registerMetaWhatsappRoutes } from "./meta-whatsapp-routes";
 import { getMetaConnection } from "./meta-whatsapp-service";
 import { registerWhatsappIncomingRoutes } from "./whatsapp-incoming-routes";
@@ -26,7 +27,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, SHIPPED_STATUS_SET, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, stockAdjustmentPurgeRuns, stockAdjustmentPurgeBackups, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, generalCharges, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, stockDoubleDecrementReconciliationRuns, stockDoubleDecrementReconciliationBackups, stockLogs, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, generalCharges, passwordSchema, adCampaignProductMap, senditDistricts, senditPriceRef, waselexCities, offerRequests, sellerInvoices, type SellerInvoiceLine } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -11148,27 +11149,8 @@ function ensureHeaders(sheet) {
 
       const updated = await storage.updateProduct(productId, updateData as any);
 
-      // Replace variants if provided
       if (variantsPayload !== undefined) {
-        await db.delete(productVariants).where(eq(productVariants.productId, productId));
-        if (variantsPayload.length > 0) {
-          for (const v of variantsPayload) {
-            await db.insert(productVariants).values({
-              productId,
-              storeId: product.storeId!,
-              name: v.name,
-              sku: v.sku || null,
-              costPrice: v.costPrice,
-              sellingPrice: v.sellingPrice,
-              stock: v.stock,
-              imageUrl: null,
-            } as any);
-          }
-        }
-        // Sync hasVariants flag on the product
-        await db.update(products)
-          .set({ hasVariants: variantsPayload.length > 0 ? 1 : 0 } as any)
-          .where(eq(products.id, productId));
+        await saveStockVariants(db, productId, product.storeId!, req.user!.id, variantsPayload);
       }
 
       // Return the updated product (re-fetch to include any variant flag changes)
@@ -11897,8 +11879,7 @@ function ensureHeaders(sheet) {
   //     untouched (cannot set NOT NULL movement column to null)
   //   - Migrates stock_movements only when (orderId, oldProductId) maps unambiguously to
   //     a single newProductId; ambiguous orders are reported for manual review
-  //   - Recalculates products.stock = SUM(movements) for EVERY product in the store
-  //     (full-catalog reconciliation, not only affected products)
+  //   - Preserves physical product/variant stock; linking history is not a stock count
   //   - All writes are in a single transaction (auto-rollback on error)
   app.post("/api/products/apply-product-link-corrections", requireAuth, requireAdmin, async (req: any, res: any) => {
     try {
@@ -12038,15 +12019,6 @@ function ensureHeaders(sheet) {
         }
       }
 
-      // Load all products and variants for this store — needed for full-catalog reconciliation
-      const allStoreProductIds = storeProducts.map((p: any) => p.id as number);
-      const allStoreVariants = allStoreProductIds.length > 0
-        ? await db
-            .select({ id: productVariants.id, productId: productVariants.productId })
-            .from(productVariants)
-            .where(eq(productVariants.storeId, storeId))
-        : [];
-
       // ── Apply everything in a single transaction ─────────────────────────────
       let correctedCount = 0;
       let movementsMigrated = 0;
@@ -12084,82 +12056,24 @@ function ensureHeaders(sheet) {
           movementsMigrated++;
         }
 
-        // 3. Full-catalog stock reconciliation for EVERY product in this store.
-        //
-        //    The ledger model keeps two distinct balances:
-        //      • products.stock      = movements where variantId IS NULL  (non-variant / parent qty)
-        //      • productVariants.stock = movements where variantId = v.id  (per-variant qty)
-        //
-        //    Summing ALL movements into products.stock would double-count variant quantities
-        //    because variant stock is displayed and managed separately. We reconcile each
-        //    side independently so the totals remain correct.
-        for (const productId of allStoreProductIds) {
-          // Parent stock: movements with no variantId
-          const [{ parentTotal }] = await tx
-            .select({ parentTotal: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)` })
-            .from(stockMovements)
-            .where(
-              and(
-                eq(stockMovements.productId, productId),
-                sql`${stockMovements.variantId} IS NULL`,
-              )
-            );
+        // Linking history does not change physical quantities. The ledger can
+        // lack opening balances or reference retired variant IDs; summing it
+        // here used to erase every unrelated variant in the store.
 
-          await tx
-            .update(products)
-            .set({ stock: Number(parentTotal) })
-            .where(
-              and(
-                eq(products.id, productId),
-                eq(products.storeId, storeId),
-              )
-            );
-        }
-
-        // Variant stock: movements scoped to each variantId
-        for (const v of allStoreVariants) {
-          const [{ variantTotal }] = await tx
-            .select({ variantTotal: sql<number>`COALESCE(SUM(${stockMovements.quantity}), 0)` })
-            .from(stockMovements)
-            .where(
-              and(
-                eq(stockMovements.productId, v.productId),
-                eq(stockMovements.variantId, v.id),
-              )
-            );
-
-          await tx
-            .update(productVariants)
-            .set({ stock: Number(variantTotal) })
-            .where(eq(productVariants.id, v.id));
-        }
       });
 
       // ── Build response report ─────────────────────────────────────────────────
       const productNameById: Record<number, string> = {};
       for (const p of storeProducts) productNameById[p.id] = p.name;
 
-      // Re-read final stock values for all store products
-      const finalStocks = allStoreProductIds.length > 0
-        ? await db
-            .select({ id: products.id, name: products.name, stock: products.stock })
-            .from(products)
-            .where(
-              and(
-                inArray(products.id, allStoreProductIds),
-                eq(products.storeId, storeId),
-              )
-            )
-        : [];
-
       const msgParts: string[] = [];
       if (correctedCount > 0) msgParts.push(`${correctedCount} order_item(s) corrigé(s)`);
       if (movementsMigrated > 0) msgParts.push(`${movementsMigrated} lot(s) de mouvements migré(s)`);
-      msgParts.push(`stock recalculé pour ${allStoreProductIds.length} produit(s) et ${allStoreVariants.length} variante(s)`);
+      msgParts.push("quantités de stock conservées");
 
       res.json({
         message: correctedCount === 0
-          ? `✅ Aucune correction d'order_item nécessaire. Stock reconcilié pour ${allStoreProductIds.length} produit(s).`
+          ? "✅ Aucune correction nécessaire. Quantités de stock conservées."
           : `✅ ${msgParts.join(', ')}.`,
         corrected: correctedCount,
         movementsMigrated,
@@ -12180,11 +12094,7 @@ function ensureHeaders(sheet) {
           newProductName: c.newProductId !== null ? (productNameById[c.newProductId] ?? null) : null,
           movementMigrated: c.oldProductId !== null && (`${c.orderId}:${c.oldProductId}` in safeMovMigrationRecord),
         })),
-        stockRecalculated: finalStocks.map((p) => ({
-          productId: p.id,
-          productName: p.name,
-          newStock: p.stock,
-        })),
+        stockRecalculated: [],
       });
     } catch (err: any) {
       console.error("[ApplyProductLinkCorrections]", err);
@@ -12316,220 +12226,12 @@ function ensureHeaders(sheet) {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // POST /api/admin/purge-stock-adjustments
-  //
-  // Admin-only, two-phase cleanup of historical adjustment movements:
-  // - dryRun=true is read-only and returns the exact before/after report.
-  // - dryRun=false takes an advisory transaction lock, snapshots every
-  //   adjustment row, deletes only those rows, then recalculates stock from
-  //   physical ledger events.
-  // ─────────────────────────────────────────────────────────────────────────
-  const PHYSICAL_STOCK_MOVEMENT_TYPES = ['restock', 'shipped', 'delivered', 'returned'];
-  const requireStockAdjustmentPurgeAdmin = (req: any, res: any, next: any) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
-    if (!['owner', 'admin'].includes(req.user.role) && !req.user.isSuperAdmin) {
-      return res.status(403).json({ message: "Accès administrateur requis" });
-    }
-    return next();
-  };
-
-  async function getAdjustmentPurgePreview(runner: any = db) {
-    const adjustments = await runner.select({
-      id: stockMovements.id,
-      storeId: stockMovements.storeId,
-      productId: stockMovements.productId,
-      variantId: stockMovements.variantId,
-      type: stockMovements.type,
-      quantity: stockMovements.quantity,
-      reason: stockMovements.reason,
-      orderId: stockMovements.orderId,
-      userId: stockMovements.userId,
-      createdAt: stockMovements.createdAt,
-    }).from(stockMovements)
-      .where(eq(stockMovements.type, 'adjustment'));
-
-    if (adjustments.length === 0) {
-      return { adjustments, adjustmentCount: 0, productCount: 0, negativeCount: 0, rows: [] as any[] };
-    }
-
-    const affectedProductIds = [...new Set(adjustments.map((movement: any) => movement.productId))];
-    const [affectedProducts, affectedVariants, physicalLedger] = await Promise.all([
-      runner.select({
-        id: products.id,
-        storeId: products.storeId,
-        name: products.name,
-        stock: products.stock,
-        hasVariants: products.hasVariants,
-        storeName: stores.name,
-      }).from(products)
-        .innerJoin(stores, eq(products.storeId, stores.id))
-        .where(inArray(products.id, affectedProductIds)),
-      runner.select({
-        id: productVariants.id,
-        productId: productVariants.productId,
-        storeId: productVariants.storeId,
-        name: productVariants.name,
-        stock: productVariants.stock,
-      }).from(productVariants)
-        .where(inArray(productVariants.productId, affectedProductIds)),
-      runner.select({
-        productId: stockMovements.productId,
-        variantId: stockMovements.variantId,
-        quantity: stockMovements.quantity,
-      }).from(stockMovements)
-        .where(and(
-          inArray(stockMovements.productId, affectedProductIds),
-          inArray(stockMovements.type, PHYSICAL_STOCK_MOVEMENT_TYPES),
-        )),
-    ]);
-
-    const directStockByProduct = new Map<number, number>();
-    const stockByVariant = new Map<number, number>();
-    for (const movement of physicalLedger) {
-      if (movement.variantId) {
-        stockByVariant.set(
-          movement.variantId,
-          (stockByVariant.get(movement.variantId) || 0) + movement.quantity,
-        );
-      } else {
-        directStockByProduct.set(
-          movement.productId,
-          (directStockByProduct.get(movement.productId) || 0) + movement.quantity,
-        );
-      }
-    }
-
-    const variantsByProduct = new Map<number, any[]>();
-    for (const variant of affectedVariants) {
-      if (!variantsByProduct.has(variant.productId)) variantsByProduct.set(variant.productId, []);
-      variantsByProduct.get(variant.productId)!.push(variant);
-    }
-
-    const rows = affectedProducts.map((product: any) => {
-      const variants = variantsByProduct.get(product.id) || [];
-      const newBaseStock = directStockByProduct.get(product.id) || 0;
-      const variantChanges = variants.map((variant: any) => ({
-        id: variant.id,
-        name: variant.name,
-        currentStock: variant.stock,
-        newStock: stockByVariant.get(variant.id) || 0,
-      }));
-      const currentStock = product.stock + variants.reduce((total: number, variant: any) => total + variant.stock, 0);
-      const computedStock = newBaseStock + variantChanges.reduce((total: number, variant: any) => total + variant.newStock, 0);
-
-      return {
-        productId: product.id,
-        storeId: product.storeId,
-        name: product.name,
-        storeName: product.storeName,
-        currentStock,
-        computedStock,
-        newBaseStock,
-        adjustmentCount: adjustments.filter((movement: any) => movement.productId === product.id).length,
-        variantChanges,
-      };
-    }).sort((a: any, b: any) => (
-      a.storeName.localeCompare(b.storeName, 'fr') || a.name.localeCompare(b.name, 'fr')
-    ));
-
-    return {
-      adjustments,
-      adjustmentCount: adjustments.length,
-      productCount: rows.length,
-      negativeCount: rows.filter((row: any) => row.computedStock < 0).length,
-      rows,
-    };
-  }
-
-  app.post("/api/admin/purge-stock-adjustments", requireAuth, requireStockAdjustmentPurgeAdmin, async (req: any, res: any) => {
-    try {
-      const { dryRun } = z.object({ dryRun: z.boolean().default(true) }).parse(req.body ?? {});
-
-      if (dryRun) {
-        const preview = await getAdjustmentPurgePreview();
-        return res.json({
-          dryRun: true,
-          adjustmentCount: preview.adjustmentCount,
-          productCount: preview.productCount,
-          negativeCount: preview.negativeCount,
-          rows: preview.rows,
-        });
-      }
-
-      const result = await db.transaction(async (tx) => {
-        // Serializes concurrent applies across all app instances. The UI disables
-        // its button too, but server-side protection is the source of truth.
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(5820192026)`);
-        const preview = await getAdjustmentPurgePreview(tx);
-
-        if (preview.adjustmentCount === 0) {
-          return {
-            adjustmentCount: 0,
-            productCount: 0,
-            negativeCount: 0,
-            rows: [],
-            backupRunId: null as number | null,
-          };
-        }
-
-        const [run] = await tx.insert(stockAdjustmentPurgeRuns).values({
-          executedByUserId: req.user!.id,
-        }).returning({ id: stockAdjustmentPurgeRuns.id });
-
-        const backupRows = preview.adjustments.map((movement: any) => ({
-          purgeRunId: run.id,
-          originalMovementId: movement.id,
-          storeId: movement.storeId,
-          productId: movement.productId,
-          variantId: movement.variantId,
-          type: movement.type,
-          quantity: movement.quantity,
-          reason: movement.reason,
-          orderId: movement.orderId,
-          userId: movement.userId,
-          originalCreatedAt: movement.createdAt,
-        }));
-        for (let index = 0; index < backupRows.length; index += 500) {
-          await tx.insert(stockAdjustmentPurgeBackups).values(backupRows.slice(index, index + 500));
-        }
-
-        await tx.delete(stockMovements).where(eq(stockMovements.type, 'adjustment'));
-
-        for (const row of preview.rows) {
-          await tx.update(products).set({ stock: row.newBaseStock })
-            .where(and(eq(products.id, row.productId), eq(products.storeId, row.storeId)));
-          for (const variant of row.variantChanges) {
-            await tx.update(productVariants).set({ stock: variant.newStock })
-              .where(and(eq(productVariants.id, variant.id), eq(productVariants.productId, row.productId)));
-          }
-        }
-
-        await tx.update(stockAdjustmentPurgeRuns).set({
-          movementsDeleted: preview.adjustmentCount,
-          productsAffected: preview.productCount,
-        }).where(eq(stockAdjustmentPurgeRuns.id, run.id));
-
-        return {
-          adjustmentCount: preview.adjustmentCount,
-          productCount: preview.productCount,
-          negativeCount: preview.negativeCount,
-          rows: preview.rows,
-          backupRunId: run.id,
-        };
-      });
-
-      res.json({
-        dryRun: false,
-        ...result,
-        message: result.adjustmentCount === 0
-          ? "Aucun ajustement à supprimer."
-          : `${result.adjustmentCount} ajustement(s) sauvegardé(s) puis supprimé(s).`,
-      });
-    } catch (err: any) {
-      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
-      console.error("[PURGE-STOCK-ADJUSTMENTS]", err);
-      res.status(500).json({ message: "La purge des ajustements a échoué. Aucune suppression partielle n'a été conservée." });
-    }
+  // Manual edits include real opening balances. Purging them erased inventory
+  // across tenants; keep this legacy endpoint inert, including old open tabs.
+  app.post("/api/admin/purge-stock-adjustments", requireAuth, async (_req, res) => {
+    return res.status(410).json({
+      message: "Nettoyage désactivé : les ajustements contiennent du stock réel et doivent être conservés.",
+    });
   });
 
   app.get("/api/stock/fix-historical-shipments/preview", requireAuth, async (req, res) => {

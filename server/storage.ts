@@ -3154,7 +3154,8 @@ export class DatabaseStorage implements IStorage {
       let inTransit = 0;
       for (const m of productMovements) {
         if (m.type !== 'shipped' && m.type !== 'delivered') continue;
-        if (m.orderId == null || returnedOrderIds.has(m.orderId)) continue;
+        // Deleting an order does not prove its physical stock came back.
+        if (m.orderId != null && returnedOrderIds.has(m.orderId)) continue;
         const qty = Math.abs(m.quantity || 0);
         if (isDeliveredStatus(m.orderStatus)) sortie += qty;
         else inTransit += qty;
