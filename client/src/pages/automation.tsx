@@ -2283,7 +2283,7 @@ function WhatsappProductsTab() {
             />
           </div>
 
-          <p className="text-xs text-zinc-500">Les fichiers enregistrés sont envoyés automatiquement avec la confirmation. Avec WhatsApp officiel, si le client n'a pas encore répondu, les médias attendent son premier message. Les fichiers téléversés sont préparés au format Meta lors de l'envoi.</p>
+          <p className="text-xs text-zinc-500">Vérifiez que les images, vidéos et audios correspondent au produit sélectionné. Les fichiers enregistrés sont envoyés automatiquement avec la confirmation. Avec WhatsApp officiel, si le client n'a pas encore répondu, les médias attendent son premier message. Les fichiers téléversés sont préparés au format Meta lors de l'envoi.</p>
 
           {/* Images (multiple) */}
           <MultiMediaSection
@@ -2522,6 +2522,11 @@ function AiLiveMonitoringTab() {
 
     function connect() {
       es = new EventSource("/api/automation/events", { withCredentials: true });
+
+      es.addEventListener("ai_content_sent", () => {
+        const id=selectedIdRef.current;
+        if(id) queryClient.invalidateQueries({queryKey:["/api/automation/conversations",id,"messages"]});
+      });
 
       es.addEventListener("new_conversation", (e) => {
         refetchConvs();

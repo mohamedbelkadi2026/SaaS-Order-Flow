@@ -1,3 +1,5 @@
+import {mediaRequest,explicitConfirmation,explicitProductSwitch,validatedDeliveryInfo} from './ai-order-guards';
+import {WASELEX_CITIES_SEED} from './seed-data/waselex-cities';
 import { aiSourceMatches, aiProductsMatch } from "@shared/ai-order-scope";
 import OpenAI from "openai";
 import { storage } from "./storage";
@@ -466,6 +468,7 @@ const MOROCCAN_CITIES = [
 
 function detectIntent(msg: string): "confirm" | "cancel" | "image" | "video" | "audio" | "catalog" | null {
   const lower = msg.toLowerCase().trim();
+  const media=mediaRequest(msg);if(media)return media;
 
   // Catalog browse check — "شنو عندكم" etc. Checked first since it's the
   // most general ask; more specific media requests below take priority if
@@ -484,7 +487,7 @@ function detectIntent(msg: string): "confirm" | "cancel" | "image" | "video" | "
   if (lower === "إلغاء الطلب") return "cancel";
 
   // Confirm check
-  if (CONFIRM_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "confirm";
+  if (explicitConfirmation(msg)) return "confirm";
 
   // ── Question guard: customer is asking something → still interested, never cancel ──
   // Catches: "لا، واش عندكم 41؟" / "واش كتوصل لا؟" / "شحال الثمن؟" etc.
@@ -851,8 +854,8 @@ function buildStepPrompt(
     ? `${_baseProductLabel} - ${_orderVariant}`
     : _baseProductLabel;
   const city = conv.collectedCity ?? ctx?.customerCity ?? null;
-  const streetAddress = conv.collectedAddress ?? null;
-  const deliveryPhone = conv.collectedPhone ?? null;
+  const streetAddress = conv.collectedAddress ?? ctx?.customerAddress ?? null;
+  const deliveryPhone = conv.collectedPhone ?? (ctx?.orderSource !== "whatsapp" ? ctx?.customerPhone : null) ?? null;
   const customerName = conv.collectedName ?? conv.customerName ?? null;
   const variant = conv.collectedVariant ?? ctx?.productVariant ?? null;
   const gender = detectGender(customerName ?? "");
@@ -1484,20 +1487,8 @@ export async function handleIncomingMessage(
     // ── Fast intent detection — works at any step ─────────────────
     let intent = detectIntent(customerMessage);
 
-    // If keyword detection didn't catch it, but we're specifically AT a
-    // confirm/cancel decision point (buttons were already offered), run the
-    // dedicated classifier — this is what catches casual affirmatives like
-    // "ah" that the main conversational LLM's own reply implied were
-    // understood, but didn't reliably set is_confirmed for.
-    // Run whenever there's an active order and no keyword already matched —
-    // NOT gated on confirmButtonsSent, since the button-trigger itself
-    // depends on the same overloaded name/phone/city/address extraction
-    // that can fail, meaning buttons sometimes never fire at all (confirmed
-    // live) — this safety net needs to work independently of that.
-    if (!intent && conv.orderId) {
-      const dedicated = await detectConfirmCancelAI(customerMessage, storeId);
-      if (dedicated) intent = dedicated;
-    }
+    // Confirmation/cancellation requires an explicit customer signal.
+    // A separate LLM classifier must not promote a media question into consent.
 
     // ── "Order for someone else" — create a SEPARATE order, don't overwrite
     // the customer's own order with the friend's delivery info ────────────
@@ -1700,11 +1691,12 @@ export async function handleIncomingMessage(
           return;
         }
         const confirmedAt = new Date();
-        await storage.updateOrderStatus(conv.orderId, "confirme");
+        // Persist validated delivery info before acknowledging confirmation.
         // Sync the collected info into the real order record — not just aiConversations
         await db.update(orders).set({
           customerName: fastPathName, customerCity: fastPathCity, customerAddress: fastPathAddress, customerPhone: fastPathPhone,
-        } as any).where(eq(orders.id, conv.orderId)).catch(() => {});
+        } as any).where(and(eq(orders.id, conv.orderId),eq(orders.storeId,storeId)));
+        if (!await storage.updateOrderStatus(conv.orderId, "confirme")) throw new Error("Order confirmation failed");
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
         const msg = `صافي مرحبا الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا 🎉🚀`;
@@ -1815,9 +1807,9 @@ export async function handleIncomingMessage(
       // this is what fixes "asked about product B, still got info/media for
       // product A" once and for all.
       let earlyProductSwitchHandled = false;
-      if (conv.orderId && catalogNamesForPrompt.length > 0) {
+      if (conv.orderId && catalogNamesForPrompt.length > 0 && explicitProductSwitch(customerMessage)) {
         const earlyMatch = await detectProductMentionAI(customerMessage, catalogNamesForPrompt, ctx?.productName ?? null, storeId);
-        if (earlyMatch) {
+        if (earlyMatch && explicitProductSwitch(customerMessage, earlyMatch)) {
           earlyProductSwitchHandled = await applyProductSwitch(storeId, customerPhone, conv, earlyMatch);
           if (earlyProductSwitchHandled) {
             ctx = await getOrderContext(conv.orderId); // refresh — now reflects the switch
@@ -1865,25 +1857,11 @@ export async function handleIncomingMessage(
       console.log(`[REPLY] AI sending back to ${customerPhone}: "${aiReply.substring(0, 100)}"`);
       console.log(`[REPLY] confirmed=${decision.isConfirmed} | cancelled=${decision.isCancelled} | conv=${conv.id}`);
 
-      // ── Reply/JSON consistency self-correction ──────────────────────
-      // Confirmed live: the LLM's reply text stated the order was
-      // confirmed ("الكوموند ديالك تأكدات ✅") while is_confirmed stayed
-      // false in the SAME JSON response — the customer was told it's
-      // confirmed while the order silently stayed "nouveau" forever. Only
-      // matches strong, unambiguous STATEMENTS that confirmation already
-      // happened (never matches questions like "واش نؤكد ليك؟", which ask
-      // rather than declare).
-      if (!decision.isConfirmed && !decision.isCancelled) {
-        const strongConfirmPhrases = [
-          "تأكدات ✅", "الكوموند ديالك تأكدات", "الطلبية ديالك تأكدات",
-          "الكومند ديالك تأكدات", "طلبيتك تأكدات", "commande.*confirmée",
-        ];
-        const replyLower = aiReply;
-        const looksConfirmed = strongConfirmPhrases.some(p => replyLower.includes(p));
-        if (looksConfirmed) {
-          console.warn(`[AI] Reply/JSON mismatch detected for conv ${conv.id} — reply states confirmed but is_confirmed=false, self-correcting`);
-          decision.isConfirmed = true;
-        }
+      // A generated reply can never authorize a business mutation.
+      decision.isConfirmed = explicitConfirmation(customerMessage) && decision.isConfirmed;
+      decision.isCancelled = intent === "cancel" && decision.isCancelled;
+      if (!decision.isConfirmed && /(?:تأكدات|تم تأكيد|commande.*confirm[eé])/i.test(aiReply)) {
+        aiReply = "الطلب باقي ما تأكدش. واش بغيتي نأكدو ليك ولا عندك شي سؤال عليه؟";
       }
 
       // ── Detect early whether this message is about a DIFFERENT product ──
@@ -1908,37 +1886,6 @@ export async function handleIncomingMessage(
         if (textMatch) effectiveMentionedProduct = textMatch.name;
       }
 
-      // ── Advance step based on what the customer just said ────────
-      // Skip step advancement when in delivery companion mode (order already confirmed)
-      const isDeliveryMode = ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours" || ctx?.orderStatus === "Attente De Ramassage";
-      if (!isRecovery && !isDeliveryMode) {
-        let nextStep = currentStep;
-        let stepData: { city?: string; variant?: string } = {};
-
-        if (currentStep === 1) {
-          const detectedCity = detectCity(customerMessage);
-          if (detectedCity) {
-            stepData.city = detectedCity;
-            nextStep = 2;
-            if (ctx?.productVariant) { stepData.variant = ctx.productVariant; nextStep = 3; }
-          } else if (!effectiveMentionedProduct && looksLikeDirectAnswer(customerMessage) && customerMessage.length > 3) {
-            stepData.city = customerMessage.trim();
-            nextStep = 2;
-            if (ctx?.productVariant) { stepData.variant = ctx.productVariant; nextStep = 3; }
-          }
-        } else if (currentStep === 2) {
-          if (!effectiveMentionedProduct && looksLikeDirectAnswer(customerMessage) && customerMessage.length > 1) {
-            stepData.variant = customerMessage.trim();
-            nextStep = 3;
-          }
-        }
-
-        if (nextStep !== currentStep) {
-          await storage.updateConversationStep(conv.id, nextStep, stepData);
-          console.log(`[AI] Conv ${conv.id} advanced: step ${currentStep} → ${nextStep}`, stepData);
-        }
-      }
-
       // ── Save name/city/address/phone the customer just stated (from the
       // LLM's own extraction) — separate from the step-based heuristic
       // above, this is the LLM reading what the customer actually wrote and
@@ -1950,23 +1897,24 @@ export async function handleIncomingMessage(
       // confirmed live: the main overloaded call sometimes misses fields
       // even when the customer clearly provided everything in one message,
       // which then silently blocks the Confirme/Annule buttons forever.
-      let mergedName = decision.collectedName;
-      let mergedCity = decision.collectedCity;
-      let mergedAddress = decision.collectedAddress;
-      let mergedPhone = decision.collectedPhone;
-      const stillMissing = !(mergedName || conv.collectedName || isRealCustomerName(conv.customerName))
-        || !(mergedCity || conv.collectedCity)
-        || !(mergedAddress || conv.collectedAddress)
-        || !(mergedPhone || conv.collectedPhone);
-      if (stillMissing) {
-        const dedicatedInfo = await detectCustomerInfoAI(customerMessage, storeId);
-        if (dedicatedInfo) {
-          mergedName = mergedName || dedicatedInfo.name;
-          mergedCity = mergedCity || dedicatedInfo.city;
-          mergedAddress = mergedAddress || dedicatedInfo.address;
-          mergedPhone = mergedPhone || dedicatedInfo.phone;
-        }
+      const currentInfo = {
+        name: conv.collectedName ?? (isRealCustomerName(conv.customerName) ? conv.customerName : null),
+        city: conv.collectedCity ?? ctx?.customerCity ?? null,
+        address: conv.collectedAddress ?? ctx?.customerAddress ?? null,
+        phone: conv.collectedPhone ?? (ctx?.orderSource !== "whatsapp" ? ctx?.customerPhone : null) ?? null,
+      };
+      const lastQuestion=recentLogs.filter(l=>l.role==='assistant' && !/^\[(IMAGE|VIDEO|AUDIO)\]/.test(l.message || '')).at(-1)?.message || '';
+      const knownCities=[...MOROCCAN_CITIES,...WASELEX_CITIES_SEED.map(c=>c[1])];
+      let proposedInfo={name:decision.collectedName,city:decision.collectedCity,address:decision.collectedAddress,phone:decision.collectedPhone};
+      if(Object.values(currentInfo).some(value=>!value)) {
+        const dedicated=await detectCustomerInfoAI(customerMessage,storeId);
+        if(dedicated)proposedInfo={name:proposedInfo.name || dedicated.name,city:proposedInfo.city || dedicated.city,address:proposedInfo.address || dedicated.address,phone:proposedInfo.phone || dedicated.phone};
       }
+      const verifiedInfo=validatedDeliveryInfo(customerMessage,proposedInfo,currentInfo,knownCities,lastQuestion);
+      const {name:mergedName,city:mergedCity,address:mergedAddress,phone:mergedPhone}=verifiedInfo;
+      // Discard rejected model proposals everywhere, including confirmation gates.
+      decision.collectedName=mergedName;decision.collectedCity=mergedCity;
+      decision.collectedAddress=mergedAddress;decision.collectedPhone=mergedPhone;
 
       if (mergedCity || mergedName || mergedAddress || mergedPhone) {
         try {
@@ -1986,6 +1934,8 @@ export async function handleIncomingMessage(
           console.error(`[AI] Failed to save collected name/city/address/phone for conv ${conv.id}:`, e.message);
         }
       }
+
+      if (currentStep===1 && (mergedCity || currentInfo.city)) await storage.updateConversationStep(conv.id,2);
 
       // ── Offer real Confirme/Annule buttons the moment we have everything ──
       // Only once per conversation (confirmButtonsSent), right when
@@ -2014,14 +1964,6 @@ export async function handleIncomingMessage(
 
       if (decision.isConfirmed) aiReply = "صافي مرحبا الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله وتوصلك من 24 لـ 48 ساعة. شكراً بزاف على ثقتك فينا 🎉🚀";
 
-      // ── Log + broadcast reply to admin dashboard immediately ─────
-      await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: aiReply });
-      await storage.updateAiConversationLastMessage(conv.id, aiReply);
-
-      broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
-      broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: aiReply, ts: Date.now(), model, provider, step: currentStep });
-      console.log(`[SOCKET_EMIT] message (assistant) → conv ${conv.id} | "${aiReply.substring(0, 60)}"`);
-
       // ── Customer asked about a DIFFERENT product than the current context ──
       // The AI has no real data about any product outside the conversation's
       // own order, so it was hallucinating answers (e.g. "not in stock" for a
@@ -2043,7 +1985,7 @@ export async function handleIncomingMessage(
         }
       }
 
-      if (effectiveMentionedProduct || numberSelectionProductId) {
+      if ((effectiveMentionedProduct && explicitProductSwitch(customerMessage,effectiveMentionedProduct)) || numberSelectionProductId) {
         const catalogProducts = await db.select({
           id: products.id, name: products.name, stock: products.stock, sellingPrice: products.sellingPrice, whatsappPrice: products.whatsappPrice,
           whatsappDescription: products.whatsappDescription,
@@ -2185,16 +2127,18 @@ export async function handleIncomingMessage(
         await queueWhatsApp(storeId, customerPhone, askMsg).catch(() => {});
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: askMsg }).catch(() => {});
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: askMsg, ts: Date.now() });
+        return;
       }
       const needsCancel  = decision.isCancelled && conv.orderId;
 
       if (needsConfirm) {
         const confirmedAt = new Date();
-        await storage.updateOrderStatus(conv.orderId!, "confirme");
+        // Persist validated delivery info before acknowledging confirmation.
         // Sync the collected info into the real order record — not just aiConversations
         await db.update(orders).set({
           customerName: effectiveNameForConfirm, customerCity: effectiveCityForConfirm, customerAddress: effectiveAddressForConfirm, customerPhone: effectivePhoneForConfirm,
-        } as any).where(eq(orders.id, conv.orderId!)).catch(() => {});
+        } as any).where(and(eq(orders.id, conv.orderId!),eq(orders.storeId,storeId)));
+        if (!await storage.updateOrderStatus(conv.orderId!, "confirme")) throw new Error("Order confirmation failed");
         await storage.updateAiConversationStatus(conv.id, "confirmed");
         await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
         const convAgeMs = confirmedAt.getTime() - new Date(conv.createdAt!).getTime();
@@ -2231,6 +2175,14 @@ export async function handleIncomingMessage(
           }
         }
       }
+
+      // ── Log + broadcast reply to admin dashboard immediately ─────
+      await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: aiReply });
+      await storage.updateAiConversationLastMessage(conv.id, aiReply);
+
+      broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
+      broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: aiReply, ts: Date.now(), model, provider, step: currentStep });
+      console.log(`[SOCKET_EMIT] message (assistant) → conv ${conv.id} | "${aiReply.substring(0, 60)}"`);
 
       // ── Long conversation detection: 8+ messages without decision ──
       // Fires exactly once at message 8 (even count) to notify admin

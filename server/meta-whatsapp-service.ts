@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pool } from './db';
+import {broadcastToStore} from './sse';
 import {prepareMetaMedia,MetaMediaError} from './meta-media';
 import { encrypt, decrypt } from './crypto';
 import { metaGraph, metaPhone, MetaApiError, metaTemplate, usableMetaOrderTemplate } from './meta-whatsapp-core';
@@ -144,5 +145,11 @@ export async function flushMetaContent(storeId:number,phone:string) {
   // Failures/uncertain sends are visible for manual diagnosis, never blindly resent.
   await pool.query('UPDATE meta_whatsapp_content_queue SET state=$1 WHERE id=$2 AND store_id=$3',[ok?'accepted':'failed',job.id,storeId]);
   if(!ok)await pool.query("INSERT INTO ai_logs(store_id,order_id,customer_phone,role,message) VALUES($1,$2,$3,'system',$4)",[storeId,job.order_id,recipient,`Média automatique ${job.kind} non envoyé : ${outcome.error || 'envoi non accepté'}`]);
+  if(ok) {
+   const message=job.kind==='text'?job.content:`[${String(job.kind).toUpperCase()}] ${job.content}`;
+   await pool.query("INSERT INTO ai_logs(store_id,order_id,customer_phone,role,message) VALUES($1,$2,$3,'assistant',$4)",[storeId,job.order_id,recipient,message]);
+   broadcastToStore(storeId,'ai_content_sent',{orderId:job.order_id,kind:job.kind});
+  }
+
  }
 }
