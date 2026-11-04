@@ -1,3 +1,4 @@
+import { handleOrderChange, orderOfferContext } from "./ai-order-changes";
 import {mediaRequest,explicitConfirmation,explicitProductSwitch,validatedDeliveryInfo} from './ai-order-guards';
 import {WASELEX_CITIES_SEED} from './seed-data/waselex-cities';
 import { aiSourceMatches, aiProductsMatch } from "@shared/ai-order-scope";
@@ -7,7 +8,7 @@ import { broadcastToStore } from "./sse";
 import { getMetaConnection, metaWindowOpen, sendMetaOrderTemplate, queueMetaContent } from "./meta-whatsapp-service";
 import { sendWhatsAppMessage, sendWhatsAppImage, sendWhatsAppFile, sendWhatsAppButtons, isGreenApiConfigured } from "./whatsapp-service";
 import { db } from "./db";
-import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
+import { products, productVariants, orderItems, orders, stores, aiConversations } from "@shared/schema";
 import { eq, and, sql } from "drizzle-orm";
 import type { AiConversation } from "@shared/schema";
 
@@ -611,6 +612,7 @@ async function processWaQueue(storeId: number): Promise<void> {
 
 /* ── Data helpers ────────────────────────────────────────────── */
 interface OrderContext {
+  quantity?: number;
   productName: string | null;
   productVariant: string | null;
   totalPrice: number | null;
@@ -641,6 +643,7 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
   try {
     const [order] = await db.select({
       totalPrice: orders.totalPrice,
+      rawQuantity: orders.rawQuantity,
       customerCity: orders.customerCity,
       customerAddress: orders.customerAddress,
       customerPhone: orders.customerPhone,
@@ -653,6 +656,8 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
 
     const items = await db.select({
       productId: orderItems.productId,
+      quantity: orderItems.quantity,
+      sku: orderItems.sku,
       rawProductName: orderItems.rawProductName,
       variantInfo: orderItems.variantInfo,
     }).from(orderItems).where(eq(orderItems.orderId, orderId));
@@ -678,6 +683,7 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       if (item.productId) {
         const [p] = await db.select({
           name: products.name,
+          storeId: products.storeId,
           stock: products.stock,
           description: products.description,
           descriptionDarija: products.descriptionDarija,
@@ -693,7 +699,10 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
         }).from(products).where(eq(products.id, item.productId));
         if (p) {
           if (!productName) productName = p.name ?? null;
-          stockQty = p.stock ?? null;
+          const variants = await db.select().from(productVariants)
+            .where(and(eq(productVariants.productId,item.productId),eq(productVariants.storeId,p.storeId)));
+          const match = variants.filter(v => item.sku ? v.sku?.trim() === item.sku.trim() : v.name === item.variantInfo);
+          stockQty = variants.length ? (match.length === 1 ? match[0].stock : null) : p.stock ?? null;
           // Prefer the dedicated WhatsApp content (Produits WhatsApp) over the
           // general product-page fields when set — that's what's actually
           // curated for the AI to send, e.g. a Darija-specific description.
@@ -721,6 +730,7 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
 
     return {
       productName,
+      quantity: items.reduce((n,i)=>n+(i.quantity || 1),0) || order?.rawQuantity || 1,
       productVariant,
       totalPrice: order?.totalPrice ?? null,
       customerCity: order?.customerCity ?? null,
@@ -865,7 +875,7 @@ function buildStepPrompt(
     ? (ctx!.stockQty! <= 0
         ? " (IMPORTANT: Stock is ZERO — do not promise delivery, say team will confirm availability)"
         : ctx!.stockQty! <= 5
-          ? ` (URGENCY: Only ${ctx!.stockQty} units left — use scarcity to close the sale faster)`
+          ? ` (Verified available quantity for this exact item: ${ctx!.stockQty}. Do not create artificial urgency.)`
           : "")
     : (ctx?.productName
         ? " (WARNING: this product name is not linked to a verified catalog entry — real-time stock is unknown. Discuss it ONLY as this specific customer's own order item. NEVER offer or recommend it to answer a general \"what do you have\" question, since we cannot confirm it's actually sellable.)"
@@ -904,16 +914,15 @@ PATIENCE MODE — NO-STOP RULE:
 - If undecided, always end with: "واش عندك أي سؤال آخر ${address.formal}؟ كنا هنا دايما 🙏"
 - Your goal is to CLOSE THE SALE by being helpful, not by rushing
 
-HUMAN REQUEST RULE (CRITICAL — NEVER BREAK):
-- If the customer says "بغيت واحد حقيقي" / "مسؤول" / "مدير" / "بشر" / "إنسان" / "human" / "admin" or anything similar:
-  → NEVER say "wait for our team" or "someone will contact you"
-  → ALWAYS respond: "أنا هنا ${address.formal}! أنا المسؤول ومعاك دابا شخصياً 🙏 قولي شنو المشكل وغنحلها ليك فـ الحين."
-  → Then immediately continue the conversation and try to resolve their concern
-- You are the ONLY agent. There is no human team. Solve everything yourself in Darija.
+HUMAN REQUEST RULE:
+- Be honest that you are the store's automated assistant. Never claim to be human.
+- When a customer asks for a human or a change needs manual review, flag the conversation for the team.
+- Never invent shipment dates, delivery fees or delivery promises; use only verified order/store information.
 
 ORDER DETAILS:
 - Customer: ${customerName ?? "⚠️ NAME NOT PROVIDED — you must ask for their full name"} (${genderNote})
 - Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}
+- Quantity: ${ctx?.quantity ?? 1}
 - City: ${city ?? "⚠️ CITY NOT PROVIDED — you must ask for their city"}
 - Address: ${streetAddress ?? "⚠️ ADDRESS NOT PROVIDED — you must ask for their street address/neighborhood"}
 - Delivery phone: ${deliveryPhone ?? "⚠️ PHONE NOT CONFIRMED — you must ask them to confirm a delivery phone number (may differ from the WhatsApp number)"}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
@@ -1032,7 +1041,7 @@ Write ONLY in natural Moroccan Darija. Keep replies SHORT (1-2 lines).
 Your goal: win back the customer who abandoned their cart.
 - If they say price is too high: "الله يحفظك، هادا أرخص ثمن — ودابا كاين تخفيض"
 - If they ask about quality: respond with full confidence
-- If they ask about delivery: "التوصيل مجاني من 24 لـ 48 ساعة إن شاء الله"
+- If they ask about delivery: use only verified merchant information; otherwise say the team will verify fees and timing.
 - If they confirm (واخا / ok / صيفطوه): set is_confirmed=true and tell them order is confirmed
 - If they cancel explicitly: set is_cancelled=true and respond kindly
 - Never reveal you are an AI
@@ -1484,6 +1493,22 @@ export async function handleIncomingMessage(
       return;
     }
 
+    if (conv.orderId && !mediaRequest(customerMessage) && !FRIEND_ORDER_KEYWORDS.some(kw => customerMessage.includes(kw))) {
+      const recent = await storage.getAiLogs(storeId, conv.orderId);
+      const lastQuestion = recent.filter(l => l.role === 'assistant' && !/^\[(IMAGE|VIDEO|AUDIO)\]/.test(l.message || '')).at(-1)?.message || '';
+      const change = await handleOrderChange(db, storeId, conv.id, customerMessage,
+        [...MOROCCAN_CITIES, ...WASELEX_CITIES_SEED.map(c => c[1])], lastQuestion);
+      if (change) {
+        await storage.createAiLog({storeId,orderId:conv.orderId,customerPhone,role:'assistant',message:change.reply});
+        await storage.updateAiConversationLastMessage(conv.id,change.reply);
+        broadcastToStore(storeId,'message',{conversationId:conv.id,role:'assistant',content:change.reply,ts:Date.now()});
+        if(change.attention) broadcastToStore(storeId,'needs_attention',{conversationId:conv.id,customerPhone,trigger:'Order change needs review',ts:Date.now()});
+        if(change.changed) broadcastToStore(storeId,'ORDER_STATUS_UPDATED',{conversationId:conv.id,orderId:conv.orderId,status:'nouveau',ts:Date.now()});
+        await queueWhatsApp(storeId,customerPhone,change.reply);
+        return;
+      }
+    }
+
     // ── Fast intent detection — works at any step ─────────────────
     let intent = detectIntent(customerMessage);
 
@@ -1827,8 +1852,9 @@ export async function handleIncomingMessage(
       const recentLogs = conv.orderId
         ? await storage.getAiLogs(storeId, conv.orderId)
         : await storage.getAiLogs(storeId, undefined, conv.id);
+      const verifiedOffers = conv.orderId ? await orderOfferContext(db,storeId,conv.orderId) : '';
       const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-        { role: "system", content: systemPrompt },
+        { role: "system", content: `${systemPrompt}\n\n${verifiedOffers}` },
         ...recentLogs
           .filter(l => l.message && l.message.trim().length > 0)
           .slice(-14)

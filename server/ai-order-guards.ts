@@ -3,7 +3,7 @@ export function mediaRequest(message:string):'image'|'video'|'audio'|null {
  const s=norm(message);
  if(new RegExp("(?:^| )(?:video|videos|فيديو|الفيديو)(?: |$)","u").test(s))return 'video';
  if(new RegExp("(?:^| )(?:audio|vocal|vocale|voice|sawt|sout|صوت|الصوت|صوتية|اوديو)(?: |$)","u").test(s))return 'audio';
- if(new RegExp("(?:^| )(?:tswira|tswra|taswira|swira|tsawer|soura|photo|photos|image|images|صورة|الصورة|تصويرة|التصويرة|تصاور)(?: |$)","u").test(s))return 'image';
+ if(new RegExp("(?:^| )(?:tswira|tswra|taswira|swira|tsawer|tsawr|soura|photo|photos|pic|pics|pictures|image|images|صور|الصور|صورة|الصورة|تصويرة|التصويرة|تصاور)(?: |$)","u").test(s))return 'image';
  return null;
 }
 export function explicitConfirmation(message:string):boolean {

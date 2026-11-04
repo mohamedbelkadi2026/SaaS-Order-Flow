@@ -1036,6 +1036,7 @@ export const aiConversations = pgTable("ai_conversations", {
   collectedName: text("collected_name"),    // full name confirmed by customer
   collectedAddress: text("collected_address"), // street address confirmed by customer
   collectedPhone: text("collected_phone"), // delivery phone confirmed by customer (may differ from the WhatsApp sender's number)
+  orderChangeState: jsonb("order_change_state").$type<Record<string, unknown>>(),
   confirmButtonsSent: integer("confirm_buttons_sent").default(0), // avoid re-sending Confirme/Annule buttons every message
   lastShownProductList: jsonb("last_shown_product_list").$type<number[]>(), // product IDs, in the order last listed to this customer (for numbered selection)
   collectedVariant: text("collected_variant"), // size/color confirmed by customer
