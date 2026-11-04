@@ -34,7 +34,7 @@ export function requestedQuantity(message: string, lastQuestion = ''): number | 
     if (!intent) return null;
     text=text.replace(/[0-9]+(?:[.,][0-9]{1,2})?\s*(?:درهم|دراهم|dh|dhs|mad)/g,'');
   }
-  const matches = Array.from(text.matchAll(new RegExp(`(?:^| )(${quantityToken})(?= |$|${units}|ب|pour)`, 'gu'))).map(m => count(m[1]));
+  const matches = Array.from(text.matchAll(new RegExp(`(?:^| )(?:ل|الى )?(${quantityToken})(?= |$|${units}|ب|pour)`, 'gu'))).map(m => count(m[1]));
   return new Set(matches).size === 1 ? matches[0] : null;
 }
 const cityKey = (city: string) => {
@@ -45,6 +45,7 @@ const cityKey = (city: string) => {
 export function cityChangeIntent(message:string):boolean {
   if(mediaRequest(message))return false;
   const text=normalize(message);
+  if (/(?:كمية|quantit|qte|العنوان|adresse|address|الهاتف|phone|numero|الاسم|السمية|المقاس|taille|اللون)/i.test(text) && !/(?:مدينة|ville|city)/i.test(text))return false;
   const explicit=/(?:بدل|نبدل|تغيير|غير المدينة|صيفطها|صيفط |سيفط|sift|sft|bdel|bdl|changer|modifier|envoyez|livrez|المدينة:|ville:|city:)/i.test(text);
   return explicit && (!/(?:واش|wach|كتوصلو|katwsl|livrez vous)/i.test(text) || /(?:بدل|نبدل|تغيير|bdel|bdl|changer|modifier|ماشي|machi|pas a)/i.test(text));
 }
@@ -130,7 +131,7 @@ export async function handleOrderChange(database: any, storeId: number, conversa
       await tx.execute(sql`INSERT INTO ai_order_change_audit(store_id,order_id,conversation_id,before_state,after_state) VALUES (${storeId},${order.id},${conv.id},${JSON.stringify(before)}::jsonb,${JSON.stringify({...before,status:'nouveau',city:patch.city || before.city,address:patch.city?null:before.address,quantity:patch.quantity ?? before.quantity,total})}::jsonb)`);
       return {changed:true,reply:`تحفظ التعديل ✅${patch.city ? ` المدينة: ${patch.city}.` : ''}${patch.quantity!==undefined ? ` الكمية: ${patch.quantity}. المجموع: ${money(total)}.` : ''}${patch.city ? ' صيفط لينا العنوان بالتفصيل فالمدينة الجديدة بهاد الشكل: العنوان: ...' : ' واش نأكدو ليك الطلب بهاد المعلومات والثمن؟'}`};
     }
-    if(cityChangeIntent(message) && !city){
+    if(cityChangeIntent(message) && !city && (quantity===null || /(?:المدينة|مدينة|ville|city)/i.test(normalize(message)))){
       const mentioned=requestedCity(message,null,cities);
       if(!mentioned || cityKey(mentioned)!==cityKey(order.customerCity || ''))return review('ما قدرناش نحدد مدينة التوصيل الجديدة بدقة. كتب لينا اسم المدينة بوحدو أو غادي يراجعها الفريق معاك.');
       if(quantity===null){await clear();return {reply:`مدينة التوصيل مسجلة أصلاً: ${order.customerCity}.`};}

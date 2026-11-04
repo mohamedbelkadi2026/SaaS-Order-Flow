@@ -138,3 +138,15 @@ test('switching the conversation to a new order cannot reuse an older price or p
  const proposal=await f.say('بغيت واحد');assert.match(proposal.reply,/319.00/);
  assert.equal((await f.pg.query('SELECT total_price FROM orders WHERE id=56152')).rows[0].total_price,51900);
  }finally{await f.pg.close();}});
+
+test('generic edit verbs with quantity labels do not get mistaken for unknown city edits',async()=>{const f=await fixture();try{
+ for(const message of ['بدل الكمية ل3','modifier la quantité à 3','changer la quantite: 3']){
+  const proposal=await f.say(message);assert.match(proposal.reply,/519.00/,message);assert.match(proposal.reply,/الكمية/);
+ }
+ await f.say('نعم');assert.equal((await f.pg.query('SELECT raw_quantity FROM orders')).rows[0].raw_quantity,3);
+ }finally{await f.pg.close();}});
+
+test('address and phone edits retain their existing workflow instead of an unknown-city handoff',async()=>{const f=await fixture();try{
+ for(const message of ['modifier adresse: Hay Riad','بدل العنوان: حي السلام','modifier numero: 0612345678'])assert.equal(await f.say(message),null,message);
+ assert.equal((await f.pg.query('SELECT needs_attention FROM ai_conversations')).rows[0].needs_attention,0);
+ }finally{await f.pg.close();}});
