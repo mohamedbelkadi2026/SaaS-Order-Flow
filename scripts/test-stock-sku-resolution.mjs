@@ -104,3 +104,13 @@ test('verified missed shipment correction links and deducts once, and skips chan
  assert.equal((await t.pg.query('SELECT count(*)::int n FROM stock_movements')).rows[0].n,0);
  }finally{await t.pg.close();}
 });
+
+test('exact-price bundle split lines ship their combined quantity once for the same variant SKU',async()=>{
+ const t=await setup();try{
+ await t.pg.exec("INSERT INTO order_items(order_id,product_id,sku,variant_info,quantity) VALUES(54963,2374,'74750007674781','marron',2)");
+ await t.decrement(54963,106);
+ assert.equal((await t.pg.query('SELECT stock FROM product_variants WHERE id=2617')).rows[0].stock,32);
+ await t.decrement(54963,106);
+ assert.equal((await t.pg.query('SELECT stock FROM product_variants WHERE id=2617')).rows[0].stock,32);
+ }finally{await t.pg.close();}
+});

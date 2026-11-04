@@ -2281,6 +2281,9 @@ function WhatsappProductsTab() {
               className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-300 resize-none"
               data-testid="textarea-whatsapp-description"
             />
+            <p className="text-[11px] text-zinc-400">
+              Pour les offres de quantité, indiquez le prix total du lot : « 2 pour 299 DH » ou « جوج ب 299 درهم ». L’IA propose l’offre et demande l’accord du client avant de modifier la commande.
+            </p>
           </div>
 
           <p className="text-xs text-zinc-500">Vérifiez que les images, vidéos et audios correspondent au produit sélectionné. Les fichiers enregistrés sont envoyés automatiquement avec la confirmation. Avec WhatsApp officiel, si le client n'a pas encore répondu, les médias attendent son premier message. Les fichiers téléversés sont préparés au format Meta lors de l'envoi.</p>
