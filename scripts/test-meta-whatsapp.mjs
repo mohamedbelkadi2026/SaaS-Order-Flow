@@ -46,6 +46,24 @@ test('order template revisions preserve eight parameter meanings and reject unap
  assert.equal(core.usableMetaOrderTemplate(missing),false);
 });
 
+test('credential expiry is distinct from customer service windows and unknown is never permanent',()=>{
+ const now=Date.parse('2026-11-05T12:00:00Z'), seconds=ms=>Math.floor(ms/1000);
+ assert.equal(core.metaTokenMetadata({is_valid:true,expires_at:seconds(now-1000)},now).valid,false);
+ assert.equal(core.metaTokenMetadata({is_valid:true,expires_at:0,data_access_expires_at:seconds(now-1000)},now).valid,false);
+ assert.equal(core.metaTokenMetadata({is_valid:true,expires_at:0},now).expiresAt,null);
+ assert.equal(core.metaTokenMetadata({is_valid:false,expires_at:seconds(now+100000)},now).valid,false);
+ assert.equal(core.metaTokenMetadata({is_valid:true,expires_at:'never'},now).expiresAt,null);
+ assert.equal(core.metaTokenMetadata({is_valid:true,expires_at:Infinity},now).expiresAt,null);
+ assert.equal(core.metaConnectionHealth(null,now).state,'disconnected');
+ assert.equal(core.metaConnectionHealth({active:true},now).state,'unknown');
+ assert.equal(core.metaConnectionHealth({active:false,token_valid:true},now).state,'disconnected');
+ assert.equal(core.metaConnectionHealth({active:true,token_valid:true},now).state,'verified');
+ assert.equal(core.metaConnectionHealth({active:true,token_valid:false},now).state,'reconnect_required');
+ assert.equal(core.metaConnectionHealth({active:true,token_valid:true,token_expires_at:new Date(now+86400000)},now).state,'expiring');
+ assert.equal(core.metaConnectionHealth({active:true,token_valid:true,data_access_expires_at:new Date(now)},now).state,'reconnect_required');
+ assert.equal(core.metaConnectionHealth({active:true,token_valid:true,token_expires_at:new Date(now+8*86400000)},now).state,'verified');
+});
+
 test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload ownership and signed webhook dedupe',async()=>{
  const pg=new PGlite(),disk=await mkdtemp(path.join(tmpdir(),'meta-wa-'));
  try{
@@ -53,11 +71,11 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  await pg.exec(META_WHATSAPP_SCHEMA_SQL);await pg.exec('CREATE TABLE ai_logs(id serial PRIMARY KEY,store_id int,order_id int,customer_phone text,role text,message text);');await pg.exec(META_WHATSAPP_SCHEMA_SQL);
  const pool={query:async(sql,args)=>{if(sql.startsWith('SELECT pg_advisory_xact_lock'))return {rows:[],rowCount:0};const r=await pg.query(sql,args);return {...r,rowCount:r.affectedRows || r.rows.length};}};
  pool.connect=async()=>({...pool,release(){}});
- const requests=[];let rejected=false,grantedScopes=[],templateApproved=false;
+ const requests=[];let rejected=false,grantedScopes=[],templateApproved=false,debugValid=true,debugExpiry=0;
  const graph=async(token,endpoint,options={})=>{
   requests.push({token,endpoint,options});
   if(rejected)throw new core.MetaApiError(190);
-  if(endpoint.startsWith('debug_token'))return {data:{is_valid:true,app_id:'123456',granular_scopes:grantedScopes}};
+  if(endpoint.startsWith('debug_token'))return {data:{is_valid:debugValid,app_id:'123456',expires_at:debugExpiry,granular_scopes:grantedScopes}};
   if(endpoint.includes('/message_templates'))return {data:[{name:core.META_ORDER_TEMPLATE,language:'ar',status:templateApproved?'APPROVED':'PENDING',category:'UTILITY',components:[{type:'BODY',text:core.META_ORDER_TEMPLATE_BODY},{type:'BUTTONS',buttons:core.META_ORDER_BUTTONS.map(b=>({type:'QUICK_REPLY',text:b.text}))}]}]};
   if(endpoint==='oauth/access_token')return {access_token:'token-91'};
   if(endpoint.endsWith('/register'))return {success:true};
@@ -69,8 +87,25 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  const env={META_APP_ID:'123456',META_APP_SECRET:'secret',META_WEBHOOK_VERIFY_TOKEN:'verify',ENCRYPTION_KEY:'test-key',DATA_DIR:disk};
  const context={...core,...media,broadcastToStore(){},metaGraph:graph,pool,encrypt:x=>'encrypted:'+x,decrypt:x=>x.replace('encrypted:',''),process:{env,cwd:()=>disk},path,Date,URLSearchParams,
   readFile,stat:(await import('node:fs/promises')).stat,createHash,URL,FormData,Blob,Buffer,console};
- const service=vm.runInNewContext(clean(await read('server/meta-whatsapp-service.ts'))+'\n({getMetaConnection,saveMetaConnection,sendMetaMessage,sendMetaOrderTemplate,sendMetaFile,queueMetaContent,flushMetaContent})',context);
+ const service=vm.runInNewContext(clean(await read('server/meta-whatsapp-service.ts'))+'\n({getMetaConnection,saveMetaConnection,checkMetaConnection,sendMetaMessage,sendMetaOrderTemplate,sendMetaFile,queueMetaContent,flushMetaContent})',context);
  await service.saveMetaConnection(91,'999991','111111','token-91');await service.saveMetaConnection(92,'999992','222222','token-92');
+ const sendsBeforeCheck=requests.filter(r=>r.endpoint.endsWith('/messages')).length;
+ assert.equal((await service.checkMetaConnection(91)).state,'verified');
+ debugValid=false;
+ assert.equal((await service.checkMetaConnection(91)).state,'reconnect_required');
+ assert.equal((await service.getMetaConnection(92)).token_valid,true); // tenant-local diagnostic
+ rejected=true;
+ await assert.rejects(()=>service.checkMetaConnection(92),/Réessayez sans remplacer/);
+ assert.equal((await service.getMetaConnection(92)).token_valid,true); // a failing app-token call proves nothing about merchant auth
+ rejected=false;debugValid=true;debugExpiry=Math.floor(Date.now()/1000)-1;
+ await assert.rejects(()=>service.saveMetaConnection(91,'999991','111111','token-91'));
+ assert.equal((await service.getMetaConnection(91)).token_valid,false); // failed save leaves saved credential untouched
+ debugExpiry=Math.floor(Date.now()/1000)+86400;
+ await service.saveMetaConnection(91,'999991','111111','token-91');
+ assert.equal(core.metaConnectionHealth(await service.getMetaConnection(91)).state,'expiring');
+ assert.equal((await service.getMetaConnection(91)).token_expires_at.getTime(),debugExpiry*1000);
+ assert.equal(requests.filter(r=>r.endpoint.endsWith('/messages')).length,sendsBeforeCheck);
+ debugExpiry=0;
  assert.equal((await service.getMetaConnection(91)).token_cipher,'encrypted:token-91');assert.equal(await service.getMetaConnection(93),null);
  await assert.rejects(()=>service.saveMetaConnection(92,'999991','111111','token-91'));
  const parameters=['Store','Test','212612345678','City','Address','Product','1','199'];
@@ -90,6 +125,8 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  assert.equal(await service.sendMetaMessage(91,'0612345678',{type:'text',text:{body:'offline'}}),false);assert.equal(requests.length,before);
  await pool.query('UPDATE meta_whatsapp_connections SET active=true WHERE store_id=91');
  rejected=true;const failure={};assert.equal(await service.sendMetaMessage(91,'0612345678',{type:'text',text:{body:'expired'}},failure),false);assert.match(failure.error,/jeton/);rejected=false;
+ assert.equal((await service.getMetaConnection(91)).token_valid,false);
+ assert.equal((await service.getMetaConnection(92)).token_valid,true);
  await mkdir(path.join(disk,'uploads/whatsapp/91'),{recursive:true});await writeFile(path.join(disk,'uploads/whatsapp/91/test.jpg'),Buffer.from('image'));
  assert.equal(await service.sendMetaFile(91,'0612345678','/uploads/whatsapp/92/test.jpg','image.jpg',''),false);
  assert.equal(await service.sendMetaFile(91,'0612345678','/uploads/whatsapp/91/test.jpg','image.jpg',''),true);

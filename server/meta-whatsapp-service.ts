@@ -5,9 +5,9 @@ import { pool } from './db';
 import {broadcastToStore} from './sse';
 import {prepareMetaMedia,MetaMediaError} from './meta-media';
 import { encrypt, decrypt } from './crypto';
-import { metaGraph, metaPhone, MetaApiError, metaTemplate, usableMetaOrderTemplate } from './meta-whatsapp-core';
+import { metaGraph, metaPhone, MetaApiError, metaTemplate, usableMetaOrderTemplate, metaTokenMetadata, metaConnectionHealth } from './meta-whatsapp-core';
 
-export interface MetaConnection {store_id:number;waba_id:string;phone_number_id:string;display_phone:string;token_cipher:string;active:boolean;template_name:string;template_language:string;}
+export interface MetaConnection {store_id:number;waba_id:string;phone_number_id:string;display_phone:string;token_cipher:string;active:boolean;template_name:string;template_language:string;token_valid?:boolean|null;token_checked_at?:string|null;token_expires_at?:string|null;data_access_expires_at?:string|null;}
 export interface MetaOutcome {error?:string;uncertain?:boolean;messageId?:string;}
 export async function getMetaConnection(storeId:number):Promise<MetaConnection|null> {
  if (!Number.isSafeInteger(storeId) || storeId<=0) throw new Error('Magasin invalide.');
@@ -24,9 +24,12 @@ export async function saveMetaConnection(storeId:number,waba:string,phoneId:stri
  if (!/^\d{5,25}$/.test(waba) || !/^\d{5,25}$/.test(phoneId) || !token || token.length>4096) throw new Error('Identifiants Meta invalides.');
  const occupied=await pool.query('SELECT store_id FROM meta_whatsapp_connections WHERE phone_number_id=$1 AND store_id<>$2',[phoneId,storeId]);
  if(occupied.rowCount)throw new Error('Ce numéro est déjà lié à un autre compte TajerGrow.');
+ let metadata:{valid:boolean;expiresAt:string|null;dataAccessExpiresAt:string|null}|null=null;
  if(process.env.META_APP_ID && process.env.META_APP_SECRET){
   const debug=await metaGraph(`${process.env.META_APP_ID}|${process.env.META_APP_SECRET}`,`debug_token?input_token=${encodeURIComponent(token)}`);
-  if(!debug.data?.is_valid || String(debug.data.app_id)!==process.env.META_APP_ID)throw new Error('Autorisation Meta issue d’une autre application. Utilisez TajerGrow.');
+  metadata=metaTokenMetadata(debug.data);
+  if(!metadata.valid)throw new Error('Autorisation Meta expirée ou invalide. Reconnectez ce compte.');
+  if(String(debug.data.app_id)!==process.env.META_APP_ID)throw new Error('Autorisation Meta issue d’une autre application. Utilisez TajerGrow.');
  }
  // The token must actually grant access to the selected WABA and its phone.
  const phones=await metaGraph(token,`${waba}/phone_numbers?fields=id,display_phone_number&limit=100`);
@@ -45,19 +48,47 @@ export async function saveMetaConnection(storeId:number,waba:string,phoneId:stri
    await client.query("UPDATE meta_whatsapp_content_queue SET state='cancelled' WHERE store_id=$1 AND state='pending'",[storeId]);
    await client.query("UPDATE meta_whatsapp_inbox SET state='paused' WHERE store_id=$1 AND state='pending'",[storeId]);
   }
-  await client.query(`INSERT INTO meta_whatsapp_connections(store_id,waba_id,phone_number_id,display_phone,token_cipher)
-   VALUES($1,$2,$3,$4,$5) ON CONFLICT(store_id) DO UPDATE SET waba_id=excluded.waba_id,
+  await client.query(`INSERT INTO meta_whatsapp_connections(store_id,waba_id,phone_number_id,display_phone,token_cipher,token_valid,token_checked_at,token_expires_at,data_access_expires_at)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(store_id) DO UPDATE SET waba_id=excluded.waba_id,
    phone_number_id=excluded.phone_number_id,display_phone=excluded.display_phone,token_cipher=excluded.token_cipher,
-   active=true,updated_at=now()`,[storeId,waba,phoneId,phone.display_phone_number || '',encrypt(token)]);
+   token_valid=excluded.token_valid,token_checked_at=excluded.token_checked_at,token_expires_at=excluded.token_expires_at,
+   data_access_expires_at=excluded.data_access_expires_at,active=true,updated_at=now()`,
+   [storeId,waba,phoneId,phone.display_phone_number || '',encrypt(token),metadata?.valid ?? null,metadata?new Date():null,metadata?.expiresAt ?? null,metadata?.dataAccessExpiresAt ?? null]);
   await client.query('COMMIT');
  } catch(error) {await client.query('ROLLBACK');throw error;}
  finally {client.release();}
  return {displayPhone:phone.display_phone_number || ''};
 }
-export async function sendMetaMessage(storeId:number,phone:string,payload:Record<string,unknown>,outcome:MetaOutcome={}):Promise<boolean> {
- let rowId:number|undefined;
+// Explicit owner diagnostic; status polling never makes a Graph call or sends a message.
+export async function checkMetaConnection(storeId:number) {
+ const c=await getMetaConnection(storeId);
+ if(!c?.active)throw new Error('Connexion Meta absente ou désactivée.');
+ if(!process.env.META_APP_ID || !process.env.META_APP_SECRET)throw new Error('Configurez l’application Meta avant de vérifier la connexion.');
+ let metadata;
  try {
-  const connection=await getMetaConnection(storeId);
+  const debug=await metaGraph(`${process.env.META_APP_ID}|${process.env.META_APP_SECRET}`,`debug_token?input_token=${encodeURIComponent(decrypt(c.token_cipher))}`);
+  metadata=metaTokenMetadata(debug.data);
+  metadata.valid=metadata.valid && String(debug.data?.app_id)===process.env.META_APP_ID;
+ } catch(error) {
+  // App-token errors and transient failures do not prove the merchant token is revoked.
+  throw new Error('Connexion impossible à vérifier maintenant. Réessayez sans remplacer votre jeton.');
+ }
+ const updated=await pool.query(`UPDATE meta_whatsapp_connections SET token_valid=$1,token_checked_at=now(),
+  token_expires_at=$2,data_access_expires_at=$3 WHERE store_id=$4 AND token_cipher=$5 RETURNING *`,
+  [metadata.valid,metadata.expiresAt,metadata.dataAccessExpiresAt,storeId,c.token_cipher]);
+ if(!updated.rows[0])throw new Error('Connexion modifiée pendant la vérification. Recommencez.');
+ return metaConnectionHealth(updated.rows[0]);
+}
+async function rememberMetaAuthFailure(connection:MetaConnection|null,error:unknown) {
+ if(!connection || !(error instanceof MetaApiError) || error.code!==190)return;
+ // A delayed failure from an old credential must not invalidate a newly saved one.
+ await pool.query(`UPDATE meta_whatsapp_connections SET token_valid=false,token_checked_at=now()
+  WHERE store_id=$1 AND token_cipher=$2`,[connection.store_id,connection.token_cipher]).catch(()=>{});
+}
+export async function sendMetaMessage(storeId:number,phone:string,payload:Record<string,unknown>,outcome:MetaOutcome={}):Promise<boolean> {
+ let rowId:number|undefined,connection:MetaConnection|null=null;
+ try {
+  connection=await getMetaConnection(storeId);
   if (!connection?.active) throw new Error('Connexion WhatsApp officielle désactivée. Reconnectez ce magasin.');
   const recipient=metaPhone(phone);
   if (payload.type==='template' && !(await pool.query('SELECT 1 FROM meta_whatsapp_consents WHERE store_id=$1 AND phone=$2',[storeId,recipient])).rowCount) {
@@ -77,6 +108,7 @@ export async function sendMetaMessage(storeId:number,phone:string,payload:Record
   catch { outcome.error='Meta a accepté le message, mais le journal local doit être vérifié.'; }
   return true;
  } catch(error) {
+  await rememberMetaAuthFailure(connection,error);
   outcome.error=error instanceof MetaApiError ? error.message : error instanceof Error && !/database|sql|constraint|column|relation|duplicate/i.test(error.message) ? error.message : 'Connexion Meta indisponible. Vérifiez les paramètres de ce magasin.';
   outcome.uncertain=error instanceof MetaApiError && error.uncertain;
   if(rowId)await pool.query(`UPDATE meta_whatsapp_messages SET status=$1,error_code=$2,updated_at=now() WHERE id=$3 AND store_id=$4`,[outcome.uncertain?'uncertain':'failed',error instanceof MetaApiError?error.code:0,rowId,storeId]).catch(()=>{});
@@ -92,12 +124,13 @@ export async function sendMetaOrderTemplate(storeId:number,phone:string,paramete
   const template=templates.data?.find((t:any)=>t.name===c.template_name && t.language===c.template_language && usableMetaOrderTemplate(t));
   if(!template){outcome.error='Le modèle de confirmation doit être approuvé par Meta avant le premier envoi.';return false;}
   return await sendMetaMessage(storeId,phone,metaTemplate(parameters,c.template_name,c.template_language),outcome);
- }catch(error){outcome.error=error instanceof MetaApiError?error.message:'Impossible de vérifier le modèle Meta.';return false;}
+ }catch(error){await rememberMetaAuthFailure(c,error);outcome.error=error instanceof MetaApiError?error.message:'Impossible de vérifier le modèle Meta.';return false;}
 }
 const MEDIA_TYPES:Record<string,[string,string]>={webp:['image','image/webp'],gif:['image','image/gif'],wav:['audio','audio/wav'],webm:['video','video/webm'],mov:['video','video/quicktime'],'3gp':['video','video/3gpp'],jpg:['image','image/jpeg'],jpeg:['image','image/jpeg'],png:['image','image/png'],mp3:['audio','audio/mpeg'],m4a:['audio','audio/mp4'],aac:['audio','audio/aac'],ogg:['audio','audio/ogg'],opus:['audio','audio/ogg'],amr:['audio','audio/amr'],mp4:['video','video/mp4'],pdf:['document','application/pdf']};
 export async function sendMetaFile(storeId:number,phone:string,url:string,fileName:string,caption:string,outcome:MetaOutcome={}) {
+ let c:MetaConnection|null=null;
  try{
-  const c=await getMetaConnection(storeId);if(!c?.active || !await metaWindowOpen(storeId,phone)){outcome.error='Fenêtre WhatsApp fermée ou connexion désactivée.';return false;}
+  c=await getMetaConnection(storeId);if(!c?.active || !await metaWindowOpen(storeId,phone)){outcome.error='Fenêtre WhatsApp fermée ou connexion désactivée.';return false;}
   const parsed=new URL(url,process.env.PUBLIC_APP_URL || 'https://www.tajergrow.com');
   const ext=parsed.pathname.split('.').pop()?.toLowerCase() || '';
   const media=MEDIA_TYPES[ext];if(!media){outcome.error='Format de média non pris en charge.';return false;}
@@ -128,7 +161,7 @@ export async function sendMetaFile(storeId:number,phone:string,url:string,fileNa
    ...(kind!=='audio' && caption?{caption:caption.slice(0,1024)}:{}),
    ...(kind==='document'?{filename:fileName}:{}),
   }},outcome);
- }catch(error){outcome.error=error instanceof MetaMediaError?error.message:error instanceof MetaApiError?`Meta refuse le média (code ${error.code}).`:'Fichier inaccessible ou envoi du média impossible.';return false;}
+ }catch(error){await rememberMetaAuthFailure(c,error);outcome.error=error instanceof MetaMediaError?error.message:error instanceof MetaApiError?`Meta refuse le média (code ${error.code}).`:'Fichier inaccessible ou envoi du média impossible.';return false;}
 }
 export async function queueMetaContent(storeId:number,orderId:number,phone:string,kind:string,content:string) {
  const key=createHash('sha256').update(JSON.stringify([storeId,orderId,kind,content])).digest('hex');

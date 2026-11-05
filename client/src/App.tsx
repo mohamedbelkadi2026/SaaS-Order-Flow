@@ -30,6 +30,7 @@ import TarifsPage from "@/pages/tarifs";
 import FaqPage from "@/pages/faq";
 import TermsPage from "@/pages/terms";
 import PrivacyPage from "@/pages/privacy";
+import DataDeletionPage from "@/pages/data-deletion";
 import BlogPage from "@/pages/blog";
 import TemoignagesPage from "@/pages/temoignages";
 const Dashboard = lazy(() => import("@/pages/dashboard"));
@@ -126,6 +127,7 @@ const PUBLIC_PATHS: Record<string, React.ComponentType> = {
   "/faq": FaqPage,
   "/terms": TermsPage,
   "/privacy": PrivacyPage,
+  "/data-deletion": DataDeletionPage,
   "/blog": BlogPage,
   "/temoignages": TemoignagesPage,
   "/tajerdrop/inscription": TajerDropInscription,

@@ -5,9 +5,9 @@ import { requireAuth, requireAdmin } from './auth';
 import { pool } from './db';
 import { decrypt } from './crypto';
 import { broadcastToStore } from './sse';
-import { getMetaConnection, saveMetaConnection, sendMetaMessage, sendMetaFile, sendMetaOrderTemplate, flushMetaContent } from './meta-whatsapp-service';
+import { getMetaConnection, saveMetaConnection, sendMetaMessage, sendMetaFile, sendMetaOrderTemplate, flushMetaContent, checkMetaConnection } from './meta-whatsapp-service';
 import { validMetaSignature, metaGraph, metaPhone, metaIncomingText, nextMetaDeliveryStatus,
- metaInteractive, META_ORDER_TEMPLATE, META_ORDER_TEMPLATE_BODY, META_ORDER_BUTTONS, metaGraphVersion, MetaApiError } from './meta-whatsapp-core';
+ metaInteractive, metaConnectionHealth, META_ORDER_TEMPLATE, META_ORDER_TEMPLATE_BODY, META_ORDER_BUTTONS, metaGraphVersion, MetaApiError } from './meta-whatsapp-core';
 
 const id=z.string().regex(/^\d{5,25}$/);
 const pilotAllowed=(store:number)=>String(process.env.META_WHATSAPP_PILOT_STORE_IDS || '').split(',').map(s=>Number(s.trim())).includes(store);
@@ -35,9 +35,12 @@ export function registerMetaWhatsappRoutes(app:Express){
     WHERE store_id=$1 ORDER BY id DESC LIMIT 30`,[store])).rows;
   const queue=(await pool.query(`SELECT state,count(*)::int AS count FROM meta_whatsapp_content_queue WHERE store_id=$1 GROUP BY state`,[store])).rows;
   res.json({configured:!!c,active:!!c?.active,displayPhone:c?.display_phone || '',wabaId:c?.waba_id || '',phoneNumberId:c?.phone_number_id || '',
-   appReady:ready(),pilotAllowed:pilotAllowed(store),embeddedReady:ready() && process.env.META_EMBEDDED_SIGNUP_ENABLED==='true' && !!process.env.META_EMBEDDED_SIGNUP_CONFIG_ID,
+   connectionHealth:metaConnectionHealth(c),appReady:ready(),pilotAllowed:pilotAllowed(store),embeddedReady:ready() && process.env.META_EMBEDDED_SIGNUP_ENABLED==='true' && !!process.env.META_EMBEDDED_SIGNUP_CONFIG_ID,
    appId:process.env.META_APP_ID || '',graphVersion:metaGraphVersion(),
    webhookUrl:`${new URL(process.env.PUBLIC_APP_URL || 'https://www.tajergrow.com').origin}/api/meta/whatsapp/webhook`,messages,queue});
+ }));
+ app.post('/api/automation/meta/check',requireAuth,requireAdmin,sameOrigin,safe(async(req,res)=>{
+  res.json({connectionHealth:await checkMetaConnection(req.user.storeId)});
  }));
  app.post('/api/automation/meta/pilot-connect',requireAuth,requireAdmin,sameOrigin,safe(async(req,res)=>{
   if(!ready() || !pilotAllowed(req.user.storeId))return res.status(403).json({message:'Le pilote Meta doit être activé pour ce compte par TajerGrow.'});

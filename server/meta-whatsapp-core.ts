@@ -98,3 +98,22 @@ export async function metaGraph(token: string, endpoint: string, options: {metho
   if (!response.ok || result?.error) throw new MetaApiError(Number(result?.error?.code || response.status),response.status>=500 && method==='POST');
   return result;
 }
+
+// Meta timestamps are Unix seconds. Missing metadata is unknown, never "permanent".
+export function metaTokenMetadata(data:any, now=Date.now()) {
+ const date=(value:unknown)=>typeof value==='number' && Number.isSafeInteger(value) && value>0 && value<253402300800
+  ? new Date(value*1000).toISOString() : null;
+ const expiresAt=date(data?.expires_at), dataAccessExpiresAt=date(data?.data_access_expires_at);
+ const expired=[expiresAt,dataAccessExpiresAt].some(value=>value!==null && Date.parse(value)<=now);
+ return {valid:data?.is_valid===true && !expired,expiresAt,dataAccessExpiresAt};
+}
+export function metaConnectionHealth(connection:any, now=Date.now()) {
+ if(!connection)return {state:'disconnected',checkedAt:null,expiresAt:null,dataAccessExpiresAt:null};
+ const expiry=(value:unknown)=>value && Number.isFinite(new Date(value as string).getTime()) ? new Date(value as string).toISOString() : null;
+ const expiresAt=expiry(connection.token_expires_at),dataAccessExpiresAt=expiry(connection.data_access_expires_at);
+ const dates=[expiresAt,dataAccessExpiresAt].filter((value):value is string=>value!==null).map(Date.parse);
+ const state=!connection.active?'disconnected':connection.token_valid===false || dates.some(date=>date<=now)?'reconnect_required'
+  :dates.some(date=>date<=now+7*24*60*60*1000)?'expiring'
+  :connection.token_valid===true?'verified':'unknown';
+ return {state,checkedAt:expiry(connection.token_checked_at),expiresAt,dataAccessExpiresAt};
+}

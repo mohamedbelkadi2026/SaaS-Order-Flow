@@ -7,37 +7,41 @@ const GOLD = "#C5A059";
 const commitments = [
   {
     icon: <UserX className="w-5 h-5" />,
-    title: "Zéro partage avec des tiers",
-    text: "TajerGrow ne vend, ne loue et ne partage JAMAIS vos données clients avec des tiers — ni annonceurs, ni partenaires, ni concurrents. Vos leads sont exclusivement à vous.",
+    title: "Pas de vente des données clients",
+    text: "TajerGrow ne vend ni ne loue vos données clients. Les services que vous activez, notamment Meta WhatsApp, les transporteurs et votre fournisseur d’IA, reçoivent les données nécessaires à leur fonctionnement.",
   },
   {
     icon: <Database className="w-5 h-5" />,
-    title: "Base de données isolée par boutique",
-    text: "Chaque boutique dispose de sa propre base de données cryptée, totalement isolée des autres comptes. Aucun accès croisé n'est possible entre marchands.",
+    title: "Accès limité à votre boutique",
+    text: "Les accès applicatifs sont limités à la boutique de l’utilisateur connecté. La base de données peut être partagée entre boutiques ; les intégrations WhatsApp sont rattachées au compte du marchand.",
   },
   {
     icon: <Lock className="w-5 h-5" />,
-    title: "Données cryptées de bout en bout",
-    text: "Toutes les données sont stockées avec un chiffrement AES-256 et transmises via HTTPS/TLS. Nos serveurs sont hébergés dans des datacenters sécurisés conformes aux normes ISO 27001.",
+    title: "Protection des connexions et des jetons",
+    text: "Le service utilise HTTPS. Les jetons Meta enregistrés sont chiffrés côté serveur et ne sont pas retournés au navigateur. Ces mesures ne constituent pas une certification de l’ensemble de l’infrastructure.",
   },
   {
     icon: <Eye className="w-5 h-5" />,
     title: "Accès interne strictement limité",
-    text: "Seule une équipe technique restreinte peut accéder aux données en cas de support technique critique, avec traçabilité complète de chaque accès. Ces accès sont journalisés et audités.",
+    text: "Les accès internes doivent être limités aux besoins de fonctionnement et de support. Ne communiquez jamais vos mots de passe ni vos jetons Meta au support.",
   },
   {
     icon: <Shield className="w-5 h-5" />,
-    title: "Conformité loi 09-08 (Maroc)",
-    text: "TajerGrow est conforme à la loi marocaine n° 09-08 sur la protection des données personnelles. Vous disposez d'un droit d'accès, de rectification et de suppression de vos données à tout moment.",
+    title: "Vos droits sur les données",
+    text: "Vous pouvez demander l’accès, la rectification ou la suppression de vos données en contactant contact@tajergrow.com. La demande est traitée après vérification de votre identité et du périmètre concerné.",
   },
   {
     icon: <Mail className="w-5 h-5" />,
     title: "Droit à l'oubli",
-    text: "Sur simple demande à contact@tajergrow.com, toutes vos données et celles de vos clients sont définitivement et irréversiblement supprimées de nos serveurs dans un délai de 72 heures.",
+    text: "Les instructions détaillées sont disponibles sur /data-deletion. La déconnexion WhatsApp efface le jeton ; la suppression des commandes, conversations ou du compte nécessite une demande distincte.",
   },
 ];
 
 const sections = [
+  {
+    title: "Connexion officielle WhatsApp et IA",
+    content: `Si vous activez WhatsApp officiel, TajerGrow traite les identifiants du compte WhatsApp Business, le numéro professionnel et un jeton d’accès chiffré. Les numéros des destinataires, informations de commande, messages, médias et statuts de livraison nécessaires sont échangés avec Meta. Si vous activez l’IA, le contexte de commande, la conversation et les informations produit nécessaires sont envoyés au fournisseur d’IA configuré pour votre boutique. Le marchand doit disposer de l’accord nécessaire avant de contacter un client. Déconnecter WhatsApp arrête les envois et efface le jeton sans effacer l’historique. Pour demander une suppression, consultez /data-deletion ou contactez contact@tajergrow.com.`,
+  },
   {
     title: "Quelles données collectons-nous ?",
     content: `TajerGrow collecte uniquement les données strictement nécessaires au fonctionnement du service : vos informations de compte (nom, email, numéro de téléphone), les données de vos commandes (noms, adresses, téléphones de vos clients pour la livraison), les données d'utilisation anonymisées (pages visitées, fonctionnalités utilisées) pour améliorer l'expérience utilisateur, et les données de facturation (mode de paiement, historique d'abonnement).`,
