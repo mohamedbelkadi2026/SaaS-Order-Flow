@@ -117,3 +117,21 @@ exists. The worker stays idle until Meta server configuration is present.
 Automated tests mock Meta transport and verify real database queries using PGlite;
 these do not establish that a live phone received a message. Complete the pilot
 acceptance sequence and record actual status events before enabling other stores.
+
+## Production launch preparation
+
+Use [the launch review pack](meta-whatsapp-launch-review.md) for the owner evidence,
+reviewer walkthrough and per-merchant acceptance record. No approval is inferred
+from this document or a successful local test.
+
+The owner panel provides **Vérifier la connexion**, a read-only Meta token debug
+request (no message sent). It records validity, check time, token expiry and data
+access expiry when supplied by Meta. Status polling uses these stored values and
+makes no Graph request. Unknown expiry is not labelled permanent. A seven-day
+expiry notice and a reconnect-required state are independent of the customer's
+24-hour messaging window. Transient diagnostic errors do not invalidate the
+merchant token. Old connections remain unknown until explicitly checked; saved
+connections with app configuration capture expiry metadata automatically.
+
+The public `/data-deletion` route describes the support request process and the
+separate effect of disconnecting WhatsApp. It is not an automatic erasure endpoint.
