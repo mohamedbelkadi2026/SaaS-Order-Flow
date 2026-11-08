@@ -104,7 +104,11 @@ export function registerMetaWhatsappRoutes(app:Express){
  }));
  app.post('/api/automation/meta/signup/complete',requireAuth,requireAdmin,sameOrigin,safe(async(req,res)=>{
   if(!embeddedSignupConfig(req.user.storeId))return res.sendStatus(409);
-  const input=z.object({nonce:z.string().regex(/^[a-f0-9]{64}$/),code:z.string().min(10).max(4096),wabaId:id,phoneNumberId:id,pin:z.string().regex(/^\d{6}$/)}).parse(req.body);
+  const signupFields={nonce:z.string().regex(/^[a-f0-9]{64}$/),code:z.string().min(10).max(4096),wabaId:id,phoneNumberId:id};
+  const input=z.union([
+   z.object({...signupFields,coexistence:z.literal(true)}),
+   z.object({...signupFields,coexistence:z.literal(false).optional(),pin:z.string().regex(/^\d{6}$/)}),
+  ]).parse(req.body);
   const nonce=await pool.query(`DELETE FROM meta_whatsapp_signup_states WHERE nonce=$1 AND store_id=$2 AND user_id=$3 AND expires_at>now() RETURNING nonce`,[input.nonce,req.user.storeId,req.user.id]);
   if(nonce.rowCount!==1)throw new Error('Autorisation expirée. Recommencez le raccordement.');
   const exchanged=await metaGraph('',`oauth/access_token`,{method:'POST',encoded:new URLSearchParams({client_id:process.env.META_APP_ID!,client_secret:process.env.META_APP_SECRET!,code:input.code})});
@@ -116,8 +120,13 @@ export function registerMetaWhatsappRoutes(app:Express){
    !['whatsapp_business_management','whatsapp_business_messaging'].every(scope=>scopes.some((s:any)=>s.scope===scope && s.target_ids?.includes(input.wabaId))))throw new Error('Autorisation WhatsApp incomplète pour ce compte.');
   const phones=await metaGraph(token,`${input.wabaId}/phone_numbers?fields=id&limit=100`);
   if(!phones.data?.some((p:any)=>p.id===input.phoneNumberId))throw new Error('Ce numéro n’appartient pas au compte autorisé.');
-  const registered=await metaGraph(token,`${input.phoneNumberId}/register`,{method:'POST',body:{messaging_product:'whatsapp',pin:input.pin}});
-  if(registered?.success!==true)throw new Error('Configuration du numéro Meta non confirmée.');
+  if(input.coexistence){
+   const phone=await metaGraph(token,`${input.phoneNumberId}?fields=is_on_biz_app,platform_type`);
+   if(phone.is_on_biz_app!==true || phone.platform_type!=='CLOUD_API')throw new Error('Configuration Coexistence non confirmée par Meta.');
+  }else{
+   const registered=await metaGraph(token,`${input.phoneNumberId}/register`,{method:'POST',body:{messaging_product:'whatsapp',pin:input.pin}});
+   if(registered?.success!==true)throw new Error('Configuration du numéro Meta non confirmée.');
+  }
   res.json({connected:true,...await saveMetaConnection(req.user.storeId,input.wabaId,input.phoneNumberId,token)});
  }));
  app.get('/api/meta/whatsapp/webhook',(req,res)=>{
