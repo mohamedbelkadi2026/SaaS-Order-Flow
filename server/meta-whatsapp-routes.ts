@@ -12,6 +12,13 @@ import { validMetaSignature, metaGraph, metaPhone, metaIncomingText, nextMetaDel
 const id=z.string().regex(/^\d{5,25}$/);
 const pilotAllowed=(store:number)=>String(process.env.META_WHATSAPP_PILOT_STORE_IDS || '').split(',').map(s=>Number(s.trim())).includes(store);
 const ready=()=>!!(process.env.META_APP_ID && process.env.META_APP_SECRET && process.env.META_WEBHOOK_VERIFY_TOKEN && (process.env.ENCRYPTION_KEY || process.env.SESSION_SECRET));
+function embeddedSignupConfig(storeId: number) {
+ const configId=process.env.META_EMBEDDED_SIGNUP_CONFIG_ID?.trim();
+ if(!ready() || !configId)return undefined;
+ if(process.env.META_EMBEDDED_SIGNUP_ENABLED==='true')return configId;
+ const pilotStores=(process.env.META_EMBEDDED_SIGNUP_PILOT_STORE_IDS || '').split(',');
+ return pilotStores.some(id=>id.trim()===String(storeId)) ? configId : undefined;
+}
 function sameOrigin(req:any,res:any,next:any){
  const origin=req.headers.origin;
  const expected=new URL(process.env.PUBLIC_APP_URL || 'https://www.tajergrow.com').origin;
@@ -35,7 +42,7 @@ export function registerMetaWhatsappRoutes(app:Express){
     WHERE store_id=$1 ORDER BY id DESC LIMIT 30`,[store])).rows;
   const queue=(await pool.query(`SELECT state,count(*)::int AS count FROM meta_whatsapp_content_queue WHERE store_id=$1 GROUP BY state`,[store])).rows;
   res.json({configured:!!c,active:!!c?.active,displayPhone:c?.display_phone || '',wabaId:c?.waba_id || '',phoneNumberId:c?.phone_number_id || '',
-   connectionHealth:metaConnectionHealth(c),appReady:ready(),pilotAllowed:pilotAllowed(store),embeddedReady:ready() && process.env.META_EMBEDDED_SIGNUP_ENABLED==='true' && !!process.env.META_EMBEDDED_SIGNUP_CONFIG_ID,
+   connectionHealth:metaConnectionHealth(c),appReady:ready(),pilotAllowed:pilotAllowed(store),embeddedReady:!!embeddedSignupConfig(store),
    appId:process.env.META_APP_ID || '',graphVersion:metaGraphVersion(),
    webhookUrl:`${new URL(process.env.PUBLIC_APP_URL || 'https://www.tajergrow.com').origin}/api/meta/whatsapp/webhook`,messages,queue});
  }));
@@ -88,14 +95,15 @@ export function registerMetaWhatsappRoutes(app:Express){
   res.json({status:result.status || 'PENDING',name:META_ORDER_TEMPLATE});
  }));
  app.post('/api/automation/meta/signup/start',requireAuth,requireAdmin,sameOrigin,safe(async(req,res)=>{
-  if(!ready() || process.env.META_EMBEDDED_SIGNUP_ENABLED!=='true' || !process.env.META_EMBEDDED_SIGNUP_CONFIG_ID)return res.status(409).json({message:'Le raccordement public sera disponible après validation Meta et configuration de TajerGrow.'});
+  const configId=embeddedSignupConfig(req.user.storeId);
+  if(!configId)return res.status(409).json({message:'Le raccordement public sera disponible après validation Meta et configuration de TajerGrow.'});
   const nonce=randomBytes(32).toString('hex');
   await pool.query('DELETE FROM meta_whatsapp_signup_states WHERE expires_at<now()');
   await pool.query(`INSERT INTO meta_whatsapp_signup_states VALUES($1,$2,$3,now()+interval '10 minutes')`,[nonce,req.user.storeId,req.user.id]);
-  res.json({nonce,appId:process.env.META_APP_ID,configId:process.env.META_EMBEDDED_SIGNUP_CONFIG_ID,graphVersion:metaGraphVersion()});
+  res.json({nonce,appId:process.env.META_APP_ID,configId,graphVersion:metaGraphVersion()});
  }));
  app.post('/api/automation/meta/signup/complete',requireAuth,requireAdmin,sameOrigin,safe(async(req,res)=>{
-  if(!ready() || process.env.META_EMBEDDED_SIGNUP_ENABLED!=='true')return res.sendStatus(409);
+  if(!embeddedSignupConfig(req.user.storeId))return res.sendStatus(409);
   const input=z.object({nonce:z.string().regex(/^[a-f0-9]{64}$/),code:z.string().min(10).max(4096),wabaId:id,phoneNumberId:id,pin:z.string().regex(/^\d{6}$/)}).parse(req.body);
   const nonce=await pool.query(`DELETE FROM meta_whatsapp_signup_states WHERE nonce=$1 AND store_id=$2 AND user_id=$3 AND expires_at>now() RETURNING nonce`,[input.nonce,req.user.storeId,req.user.id]);
   if(nonce.rowCount!==1)throw new Error('Autorisation expirée. Recommencez le raccordement.');
