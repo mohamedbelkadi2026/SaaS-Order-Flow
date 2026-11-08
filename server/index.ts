@@ -183,7 +183,12 @@ app.use(cors({
 
 // ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet({
-  contentSecurityPolicy: isProduction,
+  contentSecurityPolicy: isProduction ? {
+    directives: {
+      scriptSrc: ["'self'", "https://connect.facebook.net"],
+      frameSrc: ["'self'", "https://www.facebook.com", "https://web.facebook.com"],
+    },
+  } : false,
   crossOriginEmbedderPolicy: false,
 }));
 
