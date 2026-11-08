@@ -78,6 +78,7 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
   if(endpoint.startsWith('debug_token'))return {data:{is_valid:debugValid,app_id:'123456',expires_at:debugExpiry,granular_scopes:grantedScopes}};
   if(endpoint.includes('/message_templates'))return {data:[{name:core.META_ORDER_TEMPLATE,language:'ar',status:templateApproved?'APPROVED':'PENDING',category:'UTILITY',components:[{type:'BODY',text:core.META_ORDER_TEMPLATE_BODY},{type:'BUTTONS',buttons:core.META_ORDER_BUTTONS.map(b=>({type:'QUICK_REPLY',text:b.text}))}]}]};
   if(endpoint==='oauth/access_token')return {access_token:'token-91'};
+  if(endpoint==='111111?fields=is_on_biz_app,platform_type')return {is_on_biz_app:true,platform_type:'CLOUD_API'};
   if(endpoint.endsWith('/register'))return {success:true};
   if(endpoint.includes('/phone_numbers'))return {data:[{id:token==='token-91'?'111111':'222222',display_phone_number:'+212600000000'}]};
   if(endpoint.endsWith('/subscribed_apps'))return {success:true};
@@ -151,7 +152,7 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  const completion=mounted.get('POST /api/automation/meta/signup/complete');
  const nonce='a'.repeat(64);
  await pool.query("INSERT INTO meta_whatsapp_signup_states VALUES($1,91,10,now()+interval '10 minutes')",[nonce]);
- const complete=async(store,user,n=nonce)=>{let status=200,body;await completion({user:{storeId:store,id:user},body:{nonce:n,code:'valid-test-code',wabaId:'999991',phoneNumberId:'111111',pin:'123456'}},{status(n){status=n;return this;},json(v){body=v;return this;},sendStatus(n){status=n;}});return {status,body};};
+ const complete=async(store,user,n=nonce,extra={})=>{let status=200,body;await completion({user:{storeId:store,id:user},body:{nonce:n,code:'valid-test-code',wabaId:'999991',phoneNumberId:'111111',pin:'123456',...extra}},{status(n){status=n;return this;},json(v){body=v;return this;},sendStatus(n){status=n;}});return {status,body};};
  assert.equal((await complete(92,10)).status,400);assert.equal((await complete(91,11)).status,400);
  assert.equal((await pool.query('SELECT count(*)::int AS n FROM meta_whatsapp_signup_states')).rows[0].n,1);
  assert.equal((await complete(91,10)).status,400); // no granted WABA scopes
@@ -177,6 +178,11 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  assert.equal(pilotSignup.body.configId,'777777');
  assert.equal((await complete(92,10,pilotSignup.body.nonce)).status,409);
  assert.equal((await complete(91,10,pilotSignup.body.nonce)).status,200);
+ const coexistenceSignup=await startSignup(91);
+ const registrations=requests.filter(r=>r.endpoint==='111111/register').length;
+ assert.equal((await complete(91,10,coexistenceSignup.body.nonce,{coexistence:true,pin:undefined})).status,200);
+ assert.equal(requests.filter(r=>r.endpoint==='111111/register').length,registrations);
+
  delete env.META_EMBEDDED_SIGNUP_PILOT_STORE_IDS;
  assert.equal((await startSignup(91)).status,409);
 
