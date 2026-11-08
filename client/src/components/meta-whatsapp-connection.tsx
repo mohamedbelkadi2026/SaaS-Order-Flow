@@ -28,7 +28,7 @@ export default function MetaWhatsappConnection(){
  const [signup,setSignup]=useState<any>(null),[signupRound,setSignupRound]=useState(0);
  const [busy,setBusy]=useState(''),[waba,setWaba]=useState(''),[phoneId,setPhoneId]=useState(''),[token,setToken]=useState(''),[pin,setPin]=useState('');
  const [testPhone,setTestPhone]=useState(''),[testType,setTestType]=useState('template'),[url,setUrl]=useState(''),[consent,setConsent]=useState(false);
- const attempt=useRef<{nonce:string;code?:string;wabaId?:string;phoneNumberId?:string;finishing?:boolean}|null>(null);
+ const attempt=useRef<{nonce:string;coexistence:boolean;code?:string;wabaId?:string;phoneNumberId?:string;finishing?:boolean}|null>(null);
  const finish=useRef<()=>void>(()=>{});
  // Restore public identifiers from the saved connection; never return its token to the browser.
  // Stable dependencies preserve in-progress edits during the status polling interval.
@@ -40,14 +40,15 @@ export default function MetaWhatsappConnection(){
  finish.current=()=>{
   const a=attempt.current;if(!a?.code||!a.wabaId||!a.phoneNumberId||a.finishing)return;
   a.finishing=true;
-  void post('signup/complete',{...a,pin}).then(async()=>{toast({title:'WhatsApp officiel connecté'});await refresh();}).catch(notify).finally(()=>{attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);});
+  void post('signup/complete',{...a,pin:a.coexistence?undefined:pin}).then(async()=>{toast({title:'WhatsApp officiel connecté'});await refresh();}).catch(notify).finally(()=>{attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);});
  };
  useEffect(()=>{
   const listener=(event:MessageEvent)=>{
    if(!['https://www.facebook.com','https://web.facebook.com'].includes(event.origin)||!attempt.current)return;
    let message;try{message=typeof event.data==='string'?JSON.parse(event.data):event.data;}catch{return;}
    if(message?.type!=='WA_EMBEDDED_SIGNUP')return;
-   if(message.event==='FINISH' || message.event==='FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING'){
+   const expectedEvent=attempt.current.coexistence?'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING':'FINISH';
+   if(message.event===expectedEvent){
     attempt.current.wabaId=String(message.data?.waba_id || '');attempt.current.phoneNumberId=String(message.data?.phone_number_id || '');finish.current();
    }else if(message.event==='CANCEL'||message.event==='ERROR'){attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);toast({title:'Connexion interrompue. Vous pouvez recommencer.'});}
   };
@@ -61,16 +62,16 @@ export default function MetaWhatsappConnection(){
   void prepare();const timer=setInterval(()=>void prepare(),8*60*1000);
   return()=>{cancelled=true;clearInterval(timer);};
  },[s?.embeddedReady,s?.appId,s?.graphVersion,signupRound]);
- function connect(){
-  if(!/^\d{6}$/.test(pin)){notify(Error('Choisissez un code de sécurité de six chiffres pour votre numéro WhatsApp.'));return;}
+ function connect(coexistence=false){
+  if(!coexistence && !/^\d{6}$/.test(pin)){notify(Error('Choisissez un code de sécurité de six chiffres pour votre numéro WhatsApp.'));return;}
   if(!signup)return;
-  setBusy('connect');attempt.current={nonce:signup.nonce};
+  setBusy('connect');attempt.current={nonce:signup.nonce,coexistence};
   // Launch synchronously within the click gesture so browsers allow Meta's popup.
   signup.fb.login((response:any)=>{
    if(!attempt.current)return;
    if(!response.authResponse?.code){attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);return;}
    attempt.current.code=response.authResponse.code;finish.current();
-  },{config_id:signup.configId,auth_type:'rerequest',response_type:'code',override_default_response_type:true,extras:{}});
+  },{config_id:signup.configId,auth_type:'rerequest',response_type:'code',override_default_response_type:true,extras:coexistence?{featureType:'whatsapp_business_app_onboarding',sessionInfoVersion:'3',version:'v4'}:{}});
  }
  async function action(name:string,fn:()=>Promise<unknown>){setBusy(name);try{await fn();await refresh();}catch(error){notify(error);}finally{setBusy('');}}
  const input='w-full rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400';
@@ -91,6 +92,7 @@ export default function MetaWhatsappConnection(){
     {!s.embeddedReady&&<div className="rounded-xl bg-amber-50 border border-amber-100 p-4 text-sm text-amber-900">Le raccordement des utilisateurs sera ouvert après la validation Meta et la configuration de TajerGrow. {s.appReady?'Le pilote peut être testé sur les comptes autorisés.':'La configuration de l’application Meta reste à terminer.'}</div>}
     {s.embeddedReady&&<label className="block text-sm font-medium">Code de sécurité WhatsApp à conserver<input type="password" inputMode="numeric" autoComplete="new-password" maxLength={6} value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,''))} placeholder="6 chiffres" className={input+' mt-2'}/></label>}
     <button type="button" disabled={!s.embeddedReady||!signup||!!busy} onClick={()=>void connect()} className="w-full rounded-xl bg-indigo-700 text-white font-semibold py-3 disabled:opacity-40 flex items-center justify-center gap-2" data-testid="meta-embedded-connect">{busy==='connect'?<Loader2 className="w-4 h-4 animate-spin"/>:<Link2 className="w-4 h-4"/>}ربط WhatsApp الرسمي</button>
+    {s.embeddedReady&&<button type="button" disabled={!signup||!!busy} onClick={()=>connect(true)} className="w-full rounded-xl border border-indigo-700 text-indigo-700 font-semibold py-3 disabled:opacity-40">Connecter mon numéro WhatsApp Business existant</button>}
     {s.pilotAllowed&&<details className="border rounded-xl p-4"><summary className="cursor-pointer font-semibold text-sm">Connexion pilote — compte de test</summary>
      <div className="mt-4 space-y-3">
       {s.active&&<p role="status" className="rounded-lg bg-emerald-50 border border-emerald-100 p-3 text-sm text-emerald-800">Connexion enregistrée. Votre jeton est conservé chiffré : vous n’avez pas besoin de le saisir à nouveau pour utiliser WhatsApp.</p>}
