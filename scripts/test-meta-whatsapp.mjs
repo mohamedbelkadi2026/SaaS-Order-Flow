@@ -162,6 +162,24 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  assert.equal((await complete(91,10,nonce2)).status,200);
  assert.equal((await complete(91,10,nonce2)).status,400); // nonce cannot be replayed
  assert.equal(requests.filter(r=>r.endpoint==='111111/register').length,1);
+ env.META_EMBEDDED_SIGNUP_ENABLED='false';
+ env.META_WHATSAPP_PILOT_STORE_IDS='92';
+ env.META_EMBEDDED_SIGNUP_PILOT_STORE_IDS=' 91 ';
+ const start=mounted.get('POST /api/automation/meta/signup/start');
+ const startSignup=async(storeId)=>{
+  let status=200,body;
+  await start({user:{storeId,id:10}},{status(n){status=n;return this;},json(v){body=v;}});
+  return {status,body};
+ };
+ assert.equal((await startSignup(92)).status,409);
+ const pilotSignup=await startSignup(91);
+ assert.equal(pilotSignup.status,200);
+ assert.equal(pilotSignup.body.configId,'777777');
+ assert.equal((await complete(92,10,pilotSignup.body.nonce)).status,409);
+ assert.equal((await complete(91,10,pilotSignup.body.nonce)).status,200);
+ delete env.META_EMBEDDED_SIGNUP_PILOT_STORE_IDS;
+ assert.equal((await startSignup(91)).status,409);
+
  const handler=mounted.get('POST /api/meta/whatsapp/webhook');
  const deliver=async(body,valid=true)=>{const raw=Buffer.from(JSON.stringify(body));let code;await handler({rawBody:raw,headers:{'x-hub-signature-256':valid?'sha256='+createHmac('sha256','secret').update(raw).digest('hex'):'invalid'},body},{sendStatus(n){code=n;}});return code;};
  const event=(waba,number)=>({object:'whatsapp_business_account',entry:[{id:waba,changes:[{value:{metadata:{phone_number_id:number},messages:[{id:'inbound-1',from:'212612345678',timestamp:String(Math.floor(Date.now()/1000)),type:'interactive',interactive:{button_reply:{id:'confirm'}}}]}}]}]});
