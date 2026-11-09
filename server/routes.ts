@@ -17389,10 +17389,15 @@ function ensureHeaders(sheet) {
       if (!targetUser) return res.status(404).json({ message: "Utilisateur introuvable" });
       if (targetUser.isSuperAdmin) return res.status(400).json({ message: "Impossible d'impersonner un Super Admin" });
       const originalId = req.user!.id;
-      (req.session as any).originalSuperAdminId = originalId;
       req.logIn(targetUser, (err) => {
         if (err) return res.status(500).json({ message: "Erreur d'impersonation" });
-        res.json({ message: `Connecté en tant que ${targetUser.username}`, username: targetUser.username });
+        // Passport regenerates the session on login. Store the return account
+        // on the new session without copying data from the previous account.
+        (req.session as any).originalSuperAdminId = originalId;
+        req.session.save((saveErr) => {
+          if (saveErr) return res.status(500).json({ message: "Erreur d'impersonation" });
+          res.json({ message: `Connecté en tant que ${targetUser.username}`, username: targetUser.username });
+        });
       });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Erreur" });
@@ -17404,8 +17409,7 @@ function ensureHeaders(sheet) {
       const originalId = (req.session as any).originalSuperAdminId;
       if (!originalId) return res.status(400).json({ message: "Pas en mode impersonation" });
       const superAdmin = await storage.getUser(originalId);
-      if (!superAdmin) return res.status(404).json({ message: "Super Admin introuvable" });
-      (req.session as any).originalSuperAdminId = undefined;
+      if (!superAdmin?.isSuperAdmin) return res.status(404).json({ message: "Super Admin introuvable" });
       req.logIn(superAdmin, (err) => {
         if (err) return res.status(500).json({ message: "Erreur de retour" });
         res.json({ message: "Retour au compte Super Admin" });

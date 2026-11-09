@@ -481,11 +481,8 @@ export default function SuperAdminPage() {
 
   const impersonateMutation = useMutation({
     mutationFn: (userId: number) => apiRequest("POST", `/api/admin/impersonate/${userId}`, {}),
-    onSuccess: async (res: any) => {
-      const data = await res.json();
-      queryClient.invalidateQueries({ queryKey: ["/api/user"] });
-      toast({ title: `✓ Connecté en tant que ${data.username}`, description: "Redirection vers le tableau de bord..." });
-      setTimeout(() => { window.location.href = "/"; }, 600);
+    onSuccess: () => {
+      window.location.replace("/");
     },
     onError: () => toast({ title: "Erreur d'impersonation", description: "Impossible de se connecter en tant que cet utilisateur", variant: "destructive" }),
   });
