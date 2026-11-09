@@ -1,8 +1,8 @@
-import { teamPeriodRange, validTeamRange, type TeamPeriod } from "@shared/team-period";
+import { teamPeriodRange, validTeamRange, type TeamPeriod, type TeamDateType } from "@shared/team-period";
 import { moroccoToday } from "@shared/morocco-time";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useAgents, useCreateAgent, useAgentPerformance, useAgentPerformanceByAssignment, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages, useAgentComparisonByProduct } from "@/hooks/use-store-data";
+import { useAgents, useCreateAgent, useAgentPerformanceByAssignment, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages, useAgentComparisonByProduct } from "@/hooks/use-store-data";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { queryClient } from "@/lib/queryClient";
@@ -369,10 +369,6 @@ export default function Team() {
   const { data: products } = useProducts();
   const { data: agentSettings = [] } = useAgentStoreSettings();
   const { data: magasins = [] } = useMagasins();
-  // ── "Actions du jour" filter state ──────────────────────────────────────
-  // Default: today, all magasins. The owner can narrow to one magasin or
-  // pick another date to audit a specific day's work. The hook re-fetches
-  // automatically on change because both values are part of the query key.
   const todayStr = moroccoToday();
   const [perfDate, setPerfDate] = useState<string>(todayStr);
   const [perfPeriod,setPerfPeriod] = useState<TeamPeriod>('today');
@@ -382,13 +378,11 @@ export default function Team() {
   const perfRange = teamPeriodRange(perfPeriod,todayStr,perfDate,appliedCustom);
   const rangeLabel = perfRange.from===perfRange.to ? perfRange.from : `${perfRange.from} → ${perfRange.to}`;
   const customValid = validTeamRange(customFrom,customTo) && customTo<=todayStr;
+  const [dateType, setDateType] = useState<TeamDateType>("creation");
+  const cohortLabel = dateType === "shipping" ? "Expédiées" : dateType === "delivery" ? "Livrées" : "Assignées";
   const [perfMagasinId, setPerfMagasinId] = useState<string>("all");
-  const { data: performance } = useAgentPerformance(
-    perfMagasinId === "all" ? null : Number(perfMagasinId),
-    perfRange.from, perfRange.to,
-  );
   const { data: assignmentPerformance, isPending: performancePending, isError: performanceError } = useAgentPerformanceByAssignment(
-    perfMagasinId === "all" ? null : Number(perfMagasinId), perfRange.from, perfRange.to, true, 30_000,
+    perfMagasinId === "all" ? null : Number(perfMagasinId), perfRange.from, perfRange.to, true, 30_000, dateType,
   );
   const { data: comparisonByProduct } = useAgentComparisonByProduct();
 
@@ -665,7 +659,7 @@ export default function Team() {
   };
 
   const getAgentStats = (agentId: number) => {
-    const stats = performance?.find((p: any) => p.agentId === agentId);
+    const stats = assignmentPerformance?.find((p: any) => p.agentId === agentId);
     return stats || { total: 0, confirmed: 0, delivered: 0, cancelled: 0, avgResponseMinutes: null };
   };
 
@@ -751,7 +745,7 @@ export default function Team() {
           <p className="text-muted-foreground mt-1">Gestion de l'équipe / Membres</p>
           {lastResetLabel && (
             <p className="text-xs text-muted-foreground mt-1" data-testid="text-distribution-epoch">
-              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — cette date concerne les compteurs de distribution. Les performances ci-dessous suivent la période de création sélectionnée.
+              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — cette date concerne les compteurs de distribution. Les performances ci-dessous suivent le type de date et la période sélectionnés.
             </p>
           )}
         </div>
@@ -1008,10 +1002,6 @@ export default function Team() {
         </div>
       </div>
 
-      {/* ── "Actions du jour" filters ──────────────────────────────────────
-          Owner picks a date and (optionally) narrows to one magasin. The
-          stats cards + the agent table's "ACTIONS DU JOUR" column both
-          react to this filter. */}
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-end gap-3 sm:gap-4">
         <div className="flex flex-col gap-1">
           <Label htmlFor="perf-period" className="text-[11px] font-bold text-muted-foreground uppercase">Période</Label>
@@ -1023,6 +1013,17 @@ export default function Team() {
               <SelectItem value="month">Ce mois</SelectItem>
               <SelectItem value="last_month">Mois dernier</SelectItem>
               <SelectItem value="custom">Personnalisé</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="perf-date-type" className="text-[11px] font-bold text-muted-foreground uppercase">Type de date</Label>
+          <Select value={dateType} onValueChange={value => setDateType(value as TeamDateType)}>
+            <SelectTrigger id="perf-date-type" className="h-9 w-[200px]" data-testid="select-perf-date-type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="creation">Date de création</SelectItem>
+              <SelectItem value="shipping">Date d'expédition</SelectItem>
+              <SelectItem value="delivery">Date de livraison</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -1062,12 +1063,12 @@ export default function Team() {
             </SelectContent>
           </Select>
         </div>
-        {(perfPeriod !== "today" || perfMagasinId !== "all") && (
+        {(perfPeriod !== "today" || perfMagasinId !== "all" || dateType !== "creation") && (
           <Button
             variant="ghost"
             size="sm"
             className="h-9 text-xs gap-1"
-            onClick={() => { setPerfPeriod("today"); setPerfDate(todayStr); setCustomFrom(todayStr); setCustomTo(todayStr); setAppliedCustom({from:todayStr,to:todayStr}); setPerfMagasinId("all"); }}
+            onClick={() => { setPerfPeriod("today"); setPerfDate(todayStr); setCustomFrom(todayStr); setCustomTo(todayStr); setAppliedCustom({from:todayStr,to:todayStr}); setPerfMagasinId("all"); setDateType("creation"); }}
             data-testid="button-perf-reset"
           >
             <RotateCcw className="w-3.5 h-3.5" /> Réinitialiser
@@ -1186,7 +1187,7 @@ export default function Team() {
         </Card>
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold text-muted-foreground uppercase">Total Assignées</p>
+            <p className="text-xs font-bold text-muted-foreground uppercase">Total {cohortLabel}</p>
             <p className="text-2xl font-bold mt-1" data-testid="text-total-assigned">{performancePending || performanceError ? "—" : totalAssigned}</p>
           </div>
           <div className="w-10 h-10 bg-blue-100 text-blue-500 dark:bg-blue-900/30 dark:text-blue-400 rounded-lg flex items-center justify-center"><Activity className="w-5 h-5" /></div>
@@ -1205,7 +1206,7 @@ export default function Team() {
               <TableHead>RÔLE</TableHead>
               <TableHead>PAIEMENT</TableHead>
               <TableHead>RÉPARTITION</TableHead>
-              <TableHead>{perfRange.from===perfRange.to ? "ACTIONS DU JOUR" : "ACTIONS DE LA PÉRIODE"}</TableHead>
+              <TableHead>COMMANDES DE LA PÉRIODE</TableHead>
               <TableHead>TEMPS MOY.</TableHead>
               <TableHead>STATUT</TableHead>
               <TableHead className="text-right">ACTIONS</TableHead>
@@ -1221,7 +1222,7 @@ export default function Team() {
             ) : visibleAgents.map((agent: any) => {
               const stats = getAgentStats(agent.id);
               const confirmRate = stats.total > 0 ? Math.round((stats.confirmed / stats.total) * 100) : 0;
-              const deliveryRate = stats.total > 0 ? Math.round((stats.delivered / stats.total) * 100) : 0;
+              const deliveryRate = stats.confirmed > 0 ? Math.round((stats.delivered / stats.confirmed) * 100) : 0;
               const roleInStore = getAgentRole(agent.id);
               const setting = agentSettingsMap.get(agent.id);
 
@@ -1338,10 +1339,10 @@ export default function Team() {
                     ) : <span className="text-xs text-muted-foreground">-</span>}
                   </TableCell>
                   <TableCell>
-                    {agent.role === 'agent' && stats.total > 0 ? (
+                    {agent.role === 'agent' && !performancePending && !performanceError ? (
                       <div className="space-y-1 text-xs">
                         <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
-                          <span className="text-muted-foreground">Traitées:</span>
+                          <span className="text-muted-foreground">{cohortLabel}:</span>
                           <span className="font-semibold" data-testid={`text-actions-total-${agent.id}`}>{stats.total}</span>
                           <span className="text-muted-foreground">Confirmées:</span>
                           <Badge variant="outline" className="text-[10px] bg-green-50 text-green-700 border-green-200 h-4 w-fit" data-testid={`text-confirm-rate-${agent.id}`}>{confirmRate}%</Badge>
@@ -1350,7 +1351,7 @@ export default function Team() {
                         </div>
                       </div>
                     ) : (
-                      <span className="text-xs text-muted-foreground">{agent.role === 'owner' ? '-' : 'Aucune action'}</span>
+                      <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </TableCell>
                   <TableCell>
@@ -1423,7 +1424,7 @@ export default function Team() {
         <div className="space-y-4">
           <div>
             <h2 className="text-base font-bold uppercase tracking-wide">Performance des Agents</h2>
-            <p className="text-xs text-muted-foreground mt-1">Commandes créées {perfRange.from===perfRange.to ? `le ${perfRange.from}` : `du ${perfRange.from} au ${perfRange.to}`} (heure du Maroc), actuellement assignées à chaque agent. Confirmées inclut les commandes expédiées, livrées et retournées.</p>
+            <p className="text-xs text-muted-foreground mt-1">Commandes {dateType === "creation" ? "créées" : cohortLabel.toLowerCase()} {perfRange.from===perfRange.to ? `le ${perfRange.from}` : `du ${perfRange.from} au ${perfRange.to}`} (heure du Maroc), actuellement assignées à chaque agent. Confirmées inclut les commandes expédiées, livrées et retournées.</p>
           </div>
           {performanceError ? <p role="alert" className="text-sm text-destructive">Impossible de charger les performances. Réessayez dans quelques instants.</p> : performancePending ? <p className="text-sm text-muted-foreground">Chargement des performances…</p> : <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-5">
             {visibleAgents.filter((a: any) => a.role === 'agent').map((agent: any) => {
@@ -1471,7 +1472,7 @@ export default function Team() {
 
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 px-5 pb-5">
                     {[
-                      { label: "Assignées", value: stats.total, icon: Package, cls: "bg-slate-50 text-slate-700 dark:bg-slate-900/40" },
+                      { label: dateType === "delivery" ? "Assignées" : cohortLabel, value: stats.total, icon: Package, cls: "bg-slate-50 text-slate-700 dark:bg-slate-900/40" },
                       { label: "Nouveaux", value: stats.nouveaux, icon: Sparkles, cls: "bg-blue-50 text-blue-700 dark:bg-blue-950/20" },
                       { label: "Confirmées", value: stats.confirmed, icon: CheckCircle, cls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20" },
                       { label: "Livrées", value: stats.delivered, icon: Truck, cls: "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/20" },
