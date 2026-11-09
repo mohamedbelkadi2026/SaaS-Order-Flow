@@ -360,13 +360,35 @@ export default function Dashboard() {
     enabled: isAdminUser && adminView === 'personal',
   });
 
+  const { data: commissionsSummary } = useQuery<{
+    agentId: number; agentName: string; paymentType: "fixed" | "commission";
+    paymentAmount: number; monthsCount: number; commissionRate: number;
+    deliveredTotal: number; totalOwed: number;
+  }[]>({
+    queryKey: ['/api/stats/commissions-summary', activeFilters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (activeFilters.dateFrom) params.set('dateFrom', activeFilters.dateFrom);
+      if (activeFilters.dateTo) params.set('dateTo', activeFilters.dateTo);
+      const r = await fetch(`/api/stats/commissions-summary?${params}`, { credentials: 'include' });
+      return r.json();
+    },
+    // Owners/admins only — route is requireAdmin on the server. Previously
+    // `!isAgent` also let media buyers fire this and trip the error boundary
+    // on the 403. The dedicated commissions card is hidden from media buyers
+    // anyway (line ~1175 sits inside !isAgent && !isMediaBuyer blocks).
+    enabled: isAdminUser,
+    retry: false,
+    throwOnError: false,
+  });
+  const totalCommissionsOwed = commissionsSummary?.reduce((sum, a) => sum + Number(a.totalOwed), 0) ?? 0;
+
+
   // Skip admin-only queries entirely for media buyers — those endpoints 403
   // for them, and an unhandled 403 throws inside React Query and trips the
   // global error boundary ("Une erreur inattendue"). The media buyer view is
   // rendered separately at line ~349 from a dedicated /api/media-buyer/stats.
   const { data: stats, isLoading } = useFilteredStats(activeFilters, !isMediaBuyer);
-  const agentCompensation = stats?.agentCompensation as
-    { totalCostCents: number; lines: { agentId: number; agentName: string; paymentType: "fixed" | "commission"; monthsCount: number; deliveredCount: number; totalCostCents: number }[] } | undefined;
   // Pass selected magasin so dropdown options match what the magasin actually has.
   const { data: filterOptions } = useFilterOptions(
     filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
@@ -1400,7 +1422,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {isAdminUser && agentCompensation && (
+      {isAdminUser && totalCommissionsOwed > 0 && (
         <Card className="rounded-xl border-0 shadow-md overflow-hidden" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 100%)' }} data-testid="card-commissions-summary">
           <CardContent className="p-4 flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
@@ -1409,21 +1431,21 @@ export default function Dashboard() {
               </div>
               <div>
                 <p className="text-white/80 text-xs font-semibold uppercase tracking-wider">Total Rémunérations à Payer</p>
-                <p className="text-white text-2xl font-bold">{(agentCompensation.totalCostCents / 100).toFixed(2)} DH</p>
+                <p className="text-white text-2xl font-bold">{totalCommissionsOwed.toFixed(2)} DH</p>
                 <p className="text-xs text-white/70 mt-1">
                   {filters.dateFrom && filters.dateTo
                     ? `Période du ${parseLocalYMD(filters.dateFrom).toLocaleDateString('fr-FR')} au ${parseLocalYMD(filters.dateTo).toLocaleDateString('fr-FR')}`
-                    : 'Période sélectionnée'}
+                    : `Période de ${new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}`}
                 </p>
               </div>
             </div>
             <div className="flex gap-4">
-              {agentCompensation.lines.filter(a => a.totalCostCents > 0).map(a => (
+              {commissionsSummary?.filter(a => a.totalOwed > 0).map(a => (
                 <div key={a.agentId} className="text-center">
                   <p className="text-white/70 text-xs">{a.agentName}</p>
-                  <p className="text-white font-semibold text-sm">{(a.totalCostCents / 100).toFixed(2)} DH</p>
+                  <p className="text-white font-semibold text-sm">{Number(a.totalOwed).toFixed(2)} DH</p>
                   <p className="text-white/60 text-xs">
-                    {a.paymentType === "fixed" ? `${a.monthsCount} mois` : `${a.deliveredCount} livrées`}
+                    {a.paymentType === "fixed" ? `${a.monthsCount} mois` : `${a.deliveredTotal} livrées`}
                   </p>
                 </div>
               ))}

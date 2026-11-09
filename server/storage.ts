@@ -1,4 +1,3 @@
-import type { TeamDateType } from "@shared/team-period";
 import { CARRIER_REFUSAL_CODES } from "@shared/carrier-refusal";
 import { assertSenditShipmentTransition } from "@shared/sendit-status";
 import { resolveStockSkuItems, linkStockSkuItems } from "./services/stock-sku-resolution";
@@ -211,7 +210,7 @@ export interface IStorage {
   // of `created_at`. Powers the Dashboard's "Performance de l'Équipe" panel
   // where the question is "out of all orders ASSIGNED to this agent in the
   // window, how many are confirmed/delivered?" — not "what did they touch today".
-  getAgentPerformanceByAssignment(storeId: number, options?: { magasinId?: number | null; dateFrom?: string | null; dateTo?: string | null; dateType?: TeamDateType }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
+  getAgentPerformanceByAssignment(storeId: number, options?: { magasinId?: number | null; dateFrom?: string | null; dateTo?: string | null }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
 
   getAgentProducts(agentId: number): Promise<AgentProduct[]>;
   setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]>;
@@ -4561,25 +4560,20 @@ export class DatabaseStorage implements IStorage {
 
   async getAgentPerformanceByAssignment(
     storeId: number,
-    options?: { magasinId?: number | null; dateFrom?: string | null; dateTo?: string | null; dateType?: TeamDateType },
+    options?: { magasinId?: number | null; dateFrom?: string | null; dateTo?: string | null },
   ): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number; nouveaux: number; rappels: number; injoignables: number; boiteVocale: number; pasDeReponse: number; avgResponseMinutes: number | null }[]> {
-    // Counts orders assigned to each agent in the selected date window.
+    // Counts orders ASSIGNED to each agent in a created_at window.
     // Different question than getAgentPerformance (which counts today's actions):
     // here the denominator is the agent's full assignment pool in the date range,
     // so the Dashboard's confirmation rate doesn't read 0% just because nobody
     // touched anything today.
-    const dateColumn = options?.dateType === "shipping" ? orders.pickupDate
-      : options?.dateType === "delivery" ? orders.deliveredAt : orders.createdAt;
-    const conditions = [
+    const conditions: any[] = [
       eq(orders.storeId, storeId),
       sql`${orders.assignedToId} IS NOT NULL`,
     ];
-    if (options?.dateType === "shipping" || options?.dateType === "delivery") {
-      conditions.push(sql`${dateColumn} IS NOT NULL`);
-    }
     if (options?.magasinId != null) conditions.push(eq(orders.magasinId, options.magasinId));
-    if (options?.dateFrom)          conditions.push(gte(dateColumn, moroccoDayStart(options.dateFrom)));
-    if (options?.dateTo)            conditions.push(lte(dateColumn, moroccoDayEnd(options.dateTo)));
+    if (options?.dateFrom)          conditions.push(gte(orders.createdAt, moroccoDayStart(options.dateFrom)));
+    if (options?.dateTo)            conditions.push(lte(orders.createdAt, moroccoDayEnd(options.dateTo)));
 
     // 'confirmed' counts every order that progressed past confirmation, using
     // the subtractive definition: everything except new/uncontacted/cancelled/
@@ -4592,7 +4586,6 @@ export class DatabaseStorage implements IStorage {
     const boiteVocale = sql`${status} like 'boite vocale%'`;
     const pasDeReponse = sql`${status} like 'pas de reponse%' or ${status} like 'pas reponse%'`;
     const delivered = sql`${status} in ('delivered', 'livre', 'livree', 'livre au client', 'livree au client')`;
-    if (options?.dateType === "delivery") conditions.push(delivered);
     const confirmed = sql`${status} <> '' and ${status} not in ('nouveau', 'en cours') and not (${cancelled} or ${rappels} or ${injoignables} or ${boiteVocale} or ${pasDeReponse})`;
     const nouveaux = sql`${status} = 'nouveau' and nullif(trim(${orders.trackNumber}), '') is null
       and coalesce(${orders.commentStatus}, '') not in (${sql.join(Array.from(SHIPPED_STATUS_SET).map(s => sql`${s}`), sql`, `)})`;
