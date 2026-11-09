@@ -877,7 +877,7 @@ export async function registerRoutes(
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let pasReponse = 0, rappel = 0, confirmeReporte = 0;
-    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0;
+    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0, totalAgentCommissions = 0;
 
     // Independent read-only lookups can run concurrently; profit formulas remain unchanged.
     const [agentSettingsList, storeUsers, storeProducts] = await Promise.all([
@@ -891,7 +891,7 @@ export async function registerRoutes(
 
     // Real COGS: use order_items × products.cost_price, fallback to orders.product_cost
     const deliveredInFilter = allOrders.filter(o => isDeliveredStatus(o.status));
-    const agentCompensation = calculateAgentCompensation({
+    totalAgentCommissions = calculateAgentCompensation({
       agents: storeAgents,
       settings: agentSettingsList,
       deliveredOrders: deliveredInFilter,
@@ -1242,8 +1242,7 @@ export async function registerRoutes(
       totalShipping: canProfit ? totalShipping : undefined,
       totalPackaging: canProfit ? totalPackaging : undefined,
       totalConfirmationCost: canProfit ? totalConfirmationCost : undefined,
-      totalAgentCommissions: canProfit ? agentCompensation.totalCostCents : undefined,
-      agentCompensation: currentUser.role === "owner" ? agentCompensation : undefined,
+      totalAgentCommissions: canProfit ? totalAgentCommissions : undefined,
       daily: canCharts ? daily : [],
       topProducts: canProducts ? topProducts.map(p => ({ ...p, share: 100 })) : [],
       productPerformance: canProducts
@@ -12794,11 +12793,7 @@ function ensureHeaders(sheet) {
     const dateFrom = (req.query.dateFrom as string | undefined) || null;
     const dateTo   = (req.query.dateTo   as string | undefined) || null;
     if ((dateFrom && !isCalendarDate(dateFrom)) || (dateTo && !isCalendarDate(dateTo)) || (dateFrom && dateTo && !validTeamRange(dateFrom,dateTo))) return res.status(400).json({message:'Période invalide'});
-    const { dateType } = req.query;
-    if (dateType !== undefined && dateType !== "creation" && dateType !== "shipping" && dateType !== "delivery") {
-      return res.status(400).json({ message: "Type de date invalide" });
-    }
-    res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo, dateType }));
+    res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo }));
   });
 
   // Agent comparison by product — rows=products, columns=agents, value=confirmation rate
@@ -17389,15 +17384,10 @@ function ensureHeaders(sheet) {
       if (!targetUser) return res.status(404).json({ message: "Utilisateur introuvable" });
       if (targetUser.isSuperAdmin) return res.status(400).json({ message: "Impossible d'impersonner un Super Admin" });
       const originalId = req.user!.id;
+      (req.session as any).originalSuperAdminId = originalId;
       req.logIn(targetUser, (err) => {
         if (err) return res.status(500).json({ message: "Erreur d'impersonation" });
-        // Passport regenerates the session on login. Store the return account
-        // on the new session without copying data from the previous account.
-        (req.session as any).originalSuperAdminId = originalId;
-        req.session.save((saveErr) => {
-          if (saveErr) return res.status(500).json({ message: "Erreur d'impersonation" });
-          res.json({ message: `Connecté en tant que ${targetUser.username}`, username: targetUser.username });
-        });
+        res.json({ message: `Connecté en tant que ${targetUser.username}`, username: targetUser.username });
       });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Erreur" });
@@ -17409,7 +17399,8 @@ function ensureHeaders(sheet) {
       const originalId = (req.session as any).originalSuperAdminId;
       if (!originalId) return res.status(400).json({ message: "Pas en mode impersonation" });
       const superAdmin = await storage.getUser(originalId);
-      if (!superAdmin?.isSuperAdmin) return res.status(404).json({ message: "Super Admin introuvable" });
+      if (!superAdmin) return res.status(404).json({ message: "Super Admin introuvable" });
+      (req.session as any).originalSuperAdminId = undefined;
       req.logIn(superAdmin, (err) => {
         if (err) return res.status(500).json({ message: "Erreur de retour" });
         res.json({ message: "Retour au compte Super Admin" });

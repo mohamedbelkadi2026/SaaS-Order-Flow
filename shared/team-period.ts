@@ -1,4 +1,3 @@
-export type TeamDateType = 'creation' | 'shipping' | 'delivery';
 export type TeamPeriod = 'today' | 'day' | 'month' | 'last_month' | 'custom';
 export function isCalendarDate(value:string):boolean {
  if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;

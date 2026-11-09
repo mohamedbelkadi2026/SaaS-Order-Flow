@@ -11,9 +11,9 @@ const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
 const asModule=source=>import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source,{mode:'transform'})).toString('base64'));
 const {moroccoDayStart,moroccoDayEnd}=await asModule(await read('shared/morocco-time.ts'));
 const {SHIPPED_STATUS_SET}=await asModule(await read('shared/order-status-sets.ts'));
-const orders=pgTable('orders',{id:serial('id').primaryKey(),storeId:integer('store_id'),magasinId:integer('magasin_id'),assignedToId:integer('assigned_to_id'),status:text('status'),trackNumber:text('track_number'),commentStatus:text('comment_status'),createdAt:timestamp('created_at'),updatedAt:timestamp('updated_at'),pickupDate:timestamp('pickup_date'),deliveredAt:timestamp('delivered_at',{withTimezone:true}),lastActionBy:integer('last_action_by'),lastActionAt:timestamp('last_action_at')});
+const orders=pgTable('orders',{id:serial('id').primaryKey(),storeId:integer('store_id'),magasinId:integer('magasin_id'),assignedToId:integer('assigned_to_id'),status:text('status'),trackNumber:text('track_number'),commentStatus:text('comment_status'),createdAt:timestamp('created_at'),updatedAt:timestamp('updated_at'),lastActionBy:integer('last_action_by'),lastActionAt:timestamp('last_action_at')});
 async function setup(){
-  const pg=new PGlite();await pg.exec(`CREATE TABLE orders(id serial PRIMARY KEY,store_id int,magasin_id int,assigned_to_id int,status text,track_number text,comment_status text,created_at timestamp,updated_at timestamp,pickup_date timestamp,delivered_at timestamptz,last_action_by int,last_action_at timestamp)`);
+  const pg=new PGlite();await pg.exec(`CREATE TABLE orders(id serial PRIMARY KEY,store_id int,magasin_id int,assigned_to_id int,status text,track_number text,comment_status text,created_at timestamp,updated_at timestamp,last_action_by int,last_action_at timestamp)`);
   const db=drizzle(pg),source=await read('server/storage.ts');
   const a=source.indexOf('  async getAgentPerformanceByAssignment('),b=source.indexOf('  async getAllStores()',a);
   const method=vm.runInNewContext(stripTypeScriptTypes('({'+source.slice(a,b)+'})',{mode:'transform'}),{db,orders,eq,and,sql,count,gte,lte,moroccoDayStart,moroccoDayEnd,SHIPPED_STATUS_SET}).getAgentPerformanceByAssignment;
@@ -63,26 +63,6 @@ test('status changes refresh the same assigned cohort without inflating totals',
       await t.pg.query('UPDATE orders SET status=$1',[status]);
       const [r]=await t.stats();assert.equal(r.total,1);
       assert.deepEqual([r.nouveaux,r.confirmed,r.delivered,r.cancelled],expected);
-    }
-  }finally{await t.pg.close();}
-});
-
-test('shipping and delivery use separate recorded dates and keep the assigned agent',async()=>{
-  const t=await setup();try{
-    const dateFrom='2026-10-26',dateTo=dateFrom;
-    const inRange=new Date('2026-10-26T12:00:00Z');
-    const afterRange=new Date('2026-10-27T12:00:00Z');
-    await t.add({status:'Livrée',createdAt:new Date('2026-10-20'),pickupDate:inRange,deliveredAt:afterRange});
-    await t.add({status:'delivered',assignedToId:8,pickupDate:new Date('2026-10-20'),deliveredAt:inRange,lastActionBy:99});
-    await t.add({status:'delivered'});
-    await t.add({status:'retourné',deliveredAt:inRange});
-    await t.add({status:'delivered',storeId:92,deliveredAt:inRange});
-    for(const [dateType,agentId] of [['shipping',7],['delivery',8]]){
-      const rows=await t.stats({dateFrom,dateTo,dateType});
-      assert.equal(rows.length,1);
-      assert.equal(rows[0].agentId,agentId);
-      assert.equal(rows[0].total,1);
-      assert.equal(rows[0].delivered,1);
     }
   }finally{await t.pg.close();}
 });
