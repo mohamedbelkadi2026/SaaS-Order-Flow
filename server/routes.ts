@@ -12793,7 +12793,11 @@ function ensureHeaders(sheet) {
     const dateFrom = (req.query.dateFrom as string | undefined) || null;
     const dateTo   = (req.query.dateTo   as string | undefined) || null;
     if ((dateFrom && !isCalendarDate(dateFrom)) || (dateTo && !isCalendarDate(dateTo)) || (dateFrom && dateTo && !validTeamRange(dateFrom,dateTo))) return res.status(400).json({message:'Période invalide'});
-    res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo }));
+    const { dateType } = req.query;
+    if (dateType !== undefined && dateType !== "creation" && dateType !== "shipping" && dateType !== "delivery") {
+      return res.status(400).json({ message: "Type de date invalide" });
+    }
+    res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo, dateType }));
   });
 
   // Agent comparison by product — rows=products, columns=agents, value=confirmation rate
