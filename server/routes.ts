@@ -877,7 +877,7 @@ export async function registerRoutes(
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let pasReponse = 0, rappel = 0, confirmeReporte = 0;
-    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0, totalAgentCommissions = 0;
+    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0;
 
     // Independent read-only lookups can run concurrently; profit formulas remain unchanged.
     const [agentSettingsList, storeUsers, storeProducts] = await Promise.all([
@@ -891,7 +891,7 @@ export async function registerRoutes(
 
     // Real COGS: use order_items × products.cost_price, fallback to orders.product_cost
     const deliveredInFilter = allOrders.filter(o => isDeliveredStatus(o.status));
-    totalAgentCommissions = calculateAgentCompensation({
+    const agentCompensation = calculateAgentCompensation({
       agents: storeAgents,
       settings: agentSettingsList,
       deliveredOrders: deliveredInFilter,
@@ -1242,7 +1242,8 @@ export async function registerRoutes(
       totalShipping: canProfit ? totalShipping : undefined,
       totalPackaging: canProfit ? totalPackaging : undefined,
       totalConfirmationCost: canProfit ? totalConfirmationCost : undefined,
-      totalAgentCommissions: canProfit ? totalAgentCommissions : undefined,
+      totalAgentCommissions: canProfit ? agentCompensation.totalCostCents : undefined,
+      agentCompensation: currentUser.role === "owner" ? agentCompensation : undefined,
       daily: canCharts ? daily : [],
       topProducts: canProducts ? topProducts.map(p => ({ ...p, share: 100 })) : [],
       productPerformance: canProducts
@@ -12793,7 +12794,11 @@ function ensureHeaders(sheet) {
     const dateFrom = (req.query.dateFrom as string | undefined) || null;
     const dateTo   = (req.query.dateTo   as string | undefined) || null;
     if ((dateFrom && !isCalendarDate(dateFrom)) || (dateTo && !isCalendarDate(dateTo)) || (dateFrom && dateTo && !validTeamRange(dateFrom,dateTo))) return res.status(400).json({message:'Période invalide'});
-    res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo }));
+    const { dateType } = req.query;
+    if (dateType !== undefined && dateType !== "creation" && dateType !== "shipping" && dateType !== "delivery") {
+      return res.status(400).json({ message: "Type de date invalide" });
+    }
+    res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo, dateType }));
   });
 
   // Agent comparison by product — rows=products, columns=agents, value=confirmation rate

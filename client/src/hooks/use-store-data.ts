@@ -1,3 +1,4 @@
+import type { TeamDateType } from "@shared/team-period";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -535,23 +536,23 @@ export function useUpdateSubscription() {
   });
 }
 
-// Dashboard variant: groups by `assigned_to_id` over a created_at window.
-// The Team page should keep using `useAgentPerformance` for the "Traitées"
-// column since that one is about today's actions.
+// Counts orders grouped by assigned agent for the selected date basis.
 export function useAgentPerformanceByAssignment(
   magasinId?: number | null,
   dateFrom?: string,
   dateTo?: string,
   enabled: boolean = true,
   refetchInterval: number | false = false,
+  dateType: TeamDateType = "creation",
 ) {
   const params = new URLSearchParams();
   if (magasinId != null) params.set("magasinId", String(magasinId));
   if (dateFrom)          params.set("dateFrom", dateFrom);
   if (dateTo)            params.set("dateTo", dateTo);
+  if (dateType !== "creation") params.set("dateType", dateType);
   const qs = params.toString();
   return useQuery({
-    queryKey: ["/api/agents/performance-by-assignment", magasinId ?? "all", dateFrom ?? "", dateTo ?? ""],
+    queryKey: ["/api/agents/performance-by-assignment", magasinId ?? "all", dateFrom ?? "", dateTo ?? "", dateType],
     queryFn: async () => {
       const res = await fetch(`/api/agents/performance-by-assignment${qs ? `?${qs}` : ''}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch agent performance by assignment");
@@ -568,7 +569,7 @@ export function useAgentPerformanceByAssignment(
   });
 }
 
-export function useAgentPerformance(magasinId?: number | null, date?: string, dateTo?: string) {
+export function useAgentPerformance(magasinId?: number | null, date?: string, dateTo?: string, enabled = true) {
   // Build a stable query string so React Query keys deduplicate correctly.
   // `magasinId === null` means "all magasins" (matches the server default).
   const params = new URLSearchParams();
@@ -578,6 +579,7 @@ export function useAgentPerformance(magasinId?: number | null, date?: string, da
   const qs = params.toString();
   const url = qs ? `/api/agents/performance?${qs}` : "/api/agents/performance";
   return useQuery({
+    enabled,
     queryKey: ["/api/agents/performance", magasinId ?? "all", date ?? "today", dateTo ?? ""],
     queryFn: async () => {
       const res = await fetch(url, { credentials: "include" });
