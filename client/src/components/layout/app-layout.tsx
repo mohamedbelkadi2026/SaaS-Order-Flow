@@ -332,9 +332,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const stopImpersonationMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/admin/stop-impersonation", {}),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/user"] });
-      queryClient.clear();
-      window.location.href = "/super-admin";
+      window.location.replace("/super-admin");
     },
     onError: () => toast({ title: "Erreur", description: "Impossible de revenir au compte Super Admin", variant: "destructive" }),
   });
@@ -1216,12 +1214,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             <button
               className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white px-3 py-1 rounded-lg text-xs font-bold transition-colors"
               data-testid="button-stop-impersonation"
-              onClick={async () => {
-                try {
-                  await fetch("/api/admin/stop-impersonation", { method: "POST", credentials: "include" });
-                  window.location.href = "/super-admin";
-                } catch {}
-              }}
+              onClick={() => stopImpersonationMutation.mutate()}
+              disabled={stopImpersonationMutation.isPending}
             >
               <LogOut className="w-3.5 h-3.5" />
               Retour Super Admin
