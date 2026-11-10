@@ -805,7 +805,8 @@ function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
     openpackage:  input.canOpen ? 1 : 0,
     from_stock:   0,
     try_product:  0,
-    internal_id:  String(Date.now()),
+    // TEST TEMPORAIRE internal_id — également actif (étape précédente).
+    internal_id:  `TEST-${Date.now()}`,
   };
   console.log(`[VITIPS-SHIP-OPTIONS] Order ${input.orderNumber} — openpackage=${payload.openpackage} from_stock=${payload.from_stock}`);
   console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — payload: ${JSON.stringify(payload)}`);
