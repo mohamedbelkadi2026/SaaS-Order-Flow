@@ -7151,14 +7151,19 @@ export async function registerRoutes(
       // same SaaS account (for example YC-110). Use the provider's immutable
       // order UUID for this verified shop. The name is stable across retries,
       // and legacy orders from other shops are never mistaken for duplicates.
-      // Keep all other YouCan shops' numbering unchanged.
+      // OUBAHA in the same account also reuses historical order refs
+      // (451 was already imported in October). Scope its new OAuth connection
+      // by provider order UUID, using the same retry lock as Decbox.
       const isVerifiedDecbox = storeId === 91 && integration.id === 86
         && String(payload.store_id || "").trim() === "618e30e3-3a67-41aa-83c2-e47eadb614d0";
+      const isOubaha = storeId === 91
+        && String(integration.connectionName || "").trim().toLowerCase() === "oubaha";
+      const useExternalOrderId = isVerifiedDecbox || isOubaha;
       const externalOrderId = String(payload.id || "").trim();
-      if (isVerifiedDecbox && !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(externalOrderId)) {
+      if (useExternalOrderId && !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(externalOrderId)) {
         return res.status(400).json({ message: "Missing valid YouCan order ID" });
       }
-      const youcanOrderNumber = isVerifiedDecbox
+      const youcanOrderNumber = useExternalOrderId
         ? `YC-${orderRef}-${externalOrderId}`
         : `YC-${orderRef}`;
       // A per-process mutex is insufficient: Railway may serve concurrent
@@ -7166,7 +7171,7 @@ export async function registerRoutes(
       // lock keyed by SaaS account + immutable YouCan order UUID.
       // Non-blocking acquisition asks YouCan to retry concurrent deliveries
       // rather than accepting a second insert or occupying DB pool slots.
-      if (isVerifiedDecbox) {
+      if (useExternalOrderId) {
         const digest = createHash("sha256").update(`youcan:${storeId}:${externalOrderId}`).digest("hex");
         const lockKey = BigInt.asIntN(64, BigInt(`0x${digest.slice(0, 16)}`)).toString();
         const client = await pool.connect();
