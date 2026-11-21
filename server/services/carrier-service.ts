@@ -1256,7 +1256,8 @@ export async function shipOrderToCarrier(
         cashOnDelivery: +(input.totalPrice / 100).toFixed(2),
         productName: String(input.productName || "Produit").trim(),
         commentParcel: String(input.note || "").trim(),
-        allowOpenParcel: input.canOpen ? 1 : 0,
+        // AIO v1.12: omitted openParcel defaults to NOT_ALLOWED.
+        openParcel: input.canOpen ? "ALLOWED" : "NOT_ALLOWED",
       });
       // Express Relais uses business-level codeApi even on HTTP 200.
       // Do not mark the order shipped if the carrier reported a functional error.
