@@ -25,7 +25,7 @@ export type ExpressRelaisOrder = {
   productName?: string;
   commentParcel?: string;
   weightParcel?: number;
-  allowOpenParcel?: 0 | 1;
+  openParcel?: "ALLOWED" | "NOT_ALLOWED";
   insureValue?: number;
 };
 const HOSTS = {
