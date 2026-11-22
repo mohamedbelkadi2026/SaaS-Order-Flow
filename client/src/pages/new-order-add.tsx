@@ -125,6 +125,19 @@ export default function NewOrderAdd() {
 
   const activeCarriers = useMemo(() => (allCarriers as any[]).filter((c: any) => c.isActive === 1), [allCarriers]);
 
+  // Keep each carrier's city as a separate choice, even after selecting a
+  // carrier, so the user can switch the shipment's destination and carrier together.
+  const carrierCityOptions = useMemo(() => activeCarriers.length > 1
+    ? activeCarriers.flatMap((carrier: any) => {
+        const cities: string[] = carrier.cities?.length
+          ? carrier.cities
+          : ["waselex", "waselexma"].includes(carrier.provider?.toLowerCase().replace(/[\s._-]+/g, ""))
+            ? []
+            : MOROCCAN_CITIES;
+        return cities.map(city => ({ city, carrier: carrier.provider, logo: carrier.logo }));
+      })
+    : [], [activeCarriers]);
+
   const activeCarrier = useMemo(() => {
     if (selectedCarrierProvider)
       return (allCarriers as any[]).find((c: any) => c.provider === selectedCarrierProvider) ?? null;
@@ -363,6 +376,8 @@ export default function NewOrderAdd() {
               <CityCombobox
                 value={customerCity}
                 onChange={setCustomerCity}
+                carrierOptions={carrierCityOptions.length > 0 ? carrierCityOptions : undefined}
+                onCarrierCitySelect={(_city, carrier) => setSelectedCarrierProvider(carrier)}
                 cities={activeCities}
                 priceMap={Object.keys(cityPriceMap).length > 0 ? cityPriceMap : undefined}
                 isCarrierSpecific={isCarrierSpecific}
