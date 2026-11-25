@@ -11,9 +11,28 @@ const {PGlite}=await import(process.env.PGLITE_MODULE || '@electric-sql/pglite')
 const read=p=>readFile(new URL('../'+p,import.meta.url),'utf8');
 const load=async p=>import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(await read(p),{mode:'transform'})).toString('base64'));
 const core=await load('server/meta-whatsapp-core.ts');
+const signup=await load('client/src/lib/meta-signup.ts');
 const media=await load('server/meta-media.ts');
 const {META_WHATSAPP_SCHEMA_SQL}=await load('server/meta-whatsapp-schema.ts');
 const clean=source=>stripTypeScriptTypes(source.replace(/^import\s[\s\S]*?from\s+['"][^'"]+['"];?\n/gm,''),{mode:'transform'}).replace(/^export /gm,'');
+test('signup joins OAuth and Coexistence events without requiring an omitted phone ID',()=>{
+ const event={type:'WA_EMBEDDED_SIGNUP',event:'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING',data:{waba_id:'999991'}};
+ const result=signup.metaSignupResult(event);
+ assert.equal(result.coexistence,true);assert.equal(result.phoneNumberId,undefined);
+ for(const codeFirst of [true,false]){
+  const attempt={nonce:'test',coexistence:false};
+  Object.assign(attempt,codeFirst?{code:'oauth-code'}:result);
+  assert.equal(signup.metaSignupReady(attempt),false);
+  Object.assign(attempt,codeFirst?result:{code:'oauth-code'});
+  assert.equal(signup.metaSignupReady(attempt),true);
+  attempt.finishing=true;assert.equal(signup.metaSignupReady(attempt),false);
+ }
+ assert.equal(signup.metaSignupResult({...event,type:'untrusted'}),null);
+ assert.equal(signup.metaSignupResult({...event,data:{waba_id:'invalid'}}),null);
+ assert.equal(signup.metaSignupReady({code:'oauth-code',wabaId:'999991',coexistence:false}),false);
+ const standard=signup.metaSignupResult({type:'WA_EMBEDDED_SIGNUP',event:'FINISH',data:{waba_id:'999991',phone_number_id:'111111'}});
+ assert.equal(signup.metaSignupReady({...standard,code:'oauth-code'}),true);
+});
 test('signature, buttons, templates, phone normalization and delivery order',()=>{
  const raw=Buffer.from('{"object":"whatsapp_business_account"}'),secret='app-secret';
  const signature='sha256='+createHmac('sha256',secret).update(raw).digest('hex');
@@ -72,15 +91,16 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  const pool={query:async(sql,args)=>{if(sql.startsWith('SELECT pg_advisory_xact_lock'))return {rows:[],rowCount:0};const r=await pg.query(sql,args);return {...r,rowCount:r.affectedRows || r.rows.length};}};
  pool.connect=async()=>({...pool,release(){}});
  const requests=[];let rejected=false,grantedScopes=[],templateApproved=false,debugValid=true,debugExpiry=0;
+ let phoneListOverride=null,coexistenceVerified=true;
  const graph=async(token,endpoint,options={})=>{
   requests.push({token,endpoint,options});
   if(rejected)throw new core.MetaApiError(190);
   if(endpoint.startsWith('debug_token'))return {data:{is_valid:debugValid,app_id:'123456',expires_at:debugExpiry,granular_scopes:grantedScopes}};
   if(endpoint.includes('/message_templates'))return {data:[{name:core.META_ORDER_TEMPLATE,language:'ar',status:templateApproved?'APPROVED':'PENDING',category:'UTILITY',components:[{type:'BODY',text:core.META_ORDER_TEMPLATE_BODY},{type:'BUTTONS',buttons:core.META_ORDER_BUTTONS.map(b=>({type:'QUICK_REPLY',text:b.text}))}]}]};
   if(endpoint==='oauth/access_token')return {access_token:'token-91'};
-  if(endpoint==='111111?fields=is_on_biz_app,platform_type')return {is_on_biz_app:true,platform_type:'CLOUD_API'};
+  if(endpoint==='111111?fields=is_on_biz_app,platform_type')return {is_on_biz_app:coexistenceVerified,platform_type:'CLOUD_API'};
   if(endpoint.endsWith('/register'))return {success:true};
-  if(endpoint.includes('/phone_numbers'))return {data:[{id:token==='token-91'?'111111':'222222',display_phone_number:'+212600000000'}]};
+  if(endpoint.includes('/phone_numbers'))return phoneListOverride || {data:[{id:token==='token-91'?'111111':'222222',display_phone_number:'+212600000000'}]};
   if(endpoint.endsWith('/subscribed_apps'))return {success:true};
   if(endpoint.endsWith('/media'))return {id:'333333'};
   return {messages:[{id:'wamid.'+requests.length}]};
@@ -181,6 +201,25 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  const coexistenceSignup=await startSignup(91);
  const registrations=requests.filter(r=>r.endpoint==='111111/register').length;
  assert.equal((await complete(91,10,coexistenceSignup.body.nonce,{coexistence:true,pin:undefined})).status,200);
+ assert.equal(requests.filter(r=>r.endpoint==='111111/register').length,registrations);
+
+ // The real documented Coexistence event provides waba_id without a phone ID.
+ const missingPhoneSignup=await startSignup(91);
+ assert.equal((await complete(91,10,missingPhoneSignup.body.nonce,{coexistence:true,pin:undefined,phoneNumberId:undefined})).status,200);
+ assert.equal((await service.getMetaConnection(91)).phone_number_id,'111111');
+ assert.equal(requests.filter(r=>r.endpoint==='111111/register').length,registrations);
+ const noId={coexistence:true,pin:undefined,phoneNumberId:undefined};
+ for(const list of [{data:[]},{data:[{id:'111111'},{id:'222222'}]},{data:[{id:'111111'}],paging:{next:'next-page'}}]){
+  phoneListOverride=list;const pending=await startSignup(91);
+  assert.equal((await complete(91,10,pending.body.nonce,noId)).status,400);
+  assert.equal((await service.getMetaConnection(91)).phone_number_id,'111111');
+ }
+ phoneListOverride=null;coexistenceVerified=false;
+ const invalidCoexistence=await startSignup(91);
+ assert.equal((await complete(91,10,invalidCoexistence.body.nonce,noId)).status,400);
+ coexistenceVerified=true;
+ const foreignPhone=await startSignup(91);
+ assert.equal((await complete(91,10,foreignPhone.body.nonce,{...noId,phoneNumberId:'222222'})).status,400);
  assert.equal(requests.filter(r=>r.endpoint==='111111/register').length,registrations);
 
  delete env.META_EMBEDDED_SIGNUP_PILOT_STORE_IDS;
