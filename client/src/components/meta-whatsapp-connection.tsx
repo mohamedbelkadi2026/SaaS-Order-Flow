@@ -3,6 +3,7 @@ import {useQuery} from '@tanstack/react-query';
 import {queryClient} from '@/lib/queryClient';
 import {useToast} from '@/hooks/use-toast';
 import {CheckCircle2,Link2,Loader2,ShieldCheck,Send,RefreshCw} from 'lucide-react';
+import {metaSignupReady,metaSignupResult,type MetaSignupAttempt} from '@/lib/meta-signup';
 
 type MetaStatus={connectionHealth:{state:string;checkedAt:string|null;expiresAt:string|null;dataAccessExpiresAt:string|null};configured:boolean;active:boolean;displayPhone:string;wabaId:string;phoneNumberId:string;appReady:boolean;pilotAllowed:boolean;embeddedReady:boolean;appId:string;graphVersion:string;webhookUrl:string;messages:{id:number;phone:string;kind:string;status:string;error_code:number|null;created_at:string}[];queue:{state:string;count:number}[]};
 const labels:Record<string,string>={sending:'En cours',accepted:'Accepté par Meta',sent:'Envoyé',delivered:'Livré',read:'Lu',failed:'Échec',uncertain:'À vérifier'};
@@ -28,7 +29,7 @@ export default function MetaWhatsappConnection(){
  const [signup,setSignup]=useState<any>(null),[signupRound,setSignupRound]=useState(0);
  const [busy,setBusy]=useState(''),[waba,setWaba]=useState(''),[phoneId,setPhoneId]=useState(''),[token,setToken]=useState(''),[pin,setPin]=useState('');
  const [testPhone,setTestPhone]=useState(''),[testType,setTestType]=useState('template'),[url,setUrl]=useState(''),[consent,setConsent]=useState(false);
- const attempt=useRef<{nonce:string;coexistence:boolean;code?:string;wabaId?:string;phoneNumberId?:string;finishing?:boolean}|null>(null);
+ const attempt=useRef<MetaSignupAttempt|null>(null);
  const finish=useRef<()=>void>(()=>{});
  // Restore public identifiers from the saved connection; never return its token to the browser.
  // Stable dependencies preserve in-progress edits during the status polling interval.
@@ -38,7 +39,7 @@ export default function MetaWhatsappConnection(){
  const refresh=async()=>{await refetch();await queryClient.invalidateQueries({queryKey:['/api/automation/ai-settings']});};
  const notify=(error:unknown)=>toast({title:error instanceof Error?error.message:'Connexion Meta impossible.',variant:'destructive'});
  finish.current=()=>{
-  const a=attempt.current;if(!a?.code||!a.wabaId||!a.phoneNumberId||a.finishing)return;
+  const a=attempt.current;if(!a || !metaSignupReady(a))return;
   a.finishing=true;
   void post('signup/complete',{...a,pin:a.coexistence?undefined:pin}).then(async()=>{toast({title:'WhatsApp officiel connecté'});await refresh();}).catch(notify).finally(()=>{attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);});
  };
@@ -47,14 +48,14 @@ export default function MetaWhatsappConnection(){
    if(!['https://www.facebook.com','https://web.facebook.com'].includes(event.origin)||!attempt.current)return;
    let message;try{message=typeof event.data==='string'?JSON.parse(event.data):event.data;}catch{return;}
    if(message?.type!=='WA_EMBEDDED_SIGNUP')return;
-   const expectedEvent=attempt.current.coexistence?'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING':'FINISH';
-   if(message.event===expectedEvent){
-    attempt.current.wabaId=String(message.data?.waba_id || '');attempt.current.phoneNumberId=String(message.data?.phone_number_id || '');finish.current();
+   const result=metaSignupResult(message);
+   if(result){
+    Object.assign(attempt.current,result);finish.current();
    }else if(message.event==='CANCEL'||message.event==='ERROR'){attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);toast({title:'Connexion interrompue. Vous pouvez recommencer.'});}
   };
   window.addEventListener('message',listener);return()=>window.removeEventListener('message',listener);
  },[]);
- useEffect(()=>{if(!busy)return;const timer=setTimeout(()=>{attempt.current=null;setBusy('');},10*60*1000);return()=>clearTimeout(timer);},[busy]);
+ useEffect(()=>{if(busy!=='connect')return;const timer=setTimeout(()=>{attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);toast({title:'La connexion n’a pas été enregistrée. Relancez le raccordement Meta.',variant:'destructive'});},10*60*1000);return()=>clearTimeout(timer);},[busy]);
  useEffect(()=>{
   if(!s?.embeddedReady)return;
   let cancelled=false;
@@ -71,7 +72,7 @@ export default function MetaWhatsappConnection(){
    if(!attempt.current)return;
    if(!response.authResponse?.code){attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);return;}
    attempt.current.code=response.authResponse.code;finish.current();
-  },{config_id:signup.configId,auth_type:'rerequest',response_type:'code',override_default_response_type:true,extras:coexistence?{featureType:'whatsapp_business_app_onboarding',sessionInfoVersion:'3',version:'v4'}:{}});
+  },{config_id:signup.configId,auth_type:'rerequest',response_type:'code',override_default_response_type:true,extras:{setup:{},sessionInfoVersion:'3',...(coexistence?{featureType:'whatsapp_business_app_onboarding'}:{})}});
  }
  async function action(name:string,fn:()=>Promise<unknown>){setBusy(name);try{await fn();await refresh();}catch(error){notify(error);}finally{setBusy('');}}
  const input='w-full rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400';
