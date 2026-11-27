@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 20178)
-Total output lines: 1693
-
 // Pin the process to UTC before anything reads a date. The timestamp columns
 // carry no timezone, so a process on local time would write local and read it
 // back as UTC — an hour out, and two hours out whenever Morocco drops to UTC+0
@@ -589,7 +586,570 @@ app.use((req, res, next) => {
       return;
     }
 
-    // ── Step 4: Map status ───…7178 tokens truncated… /ETIMEDOUT|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ECONNRESET|timeout|socket hang up/i.test(result.error);
+    // ── Step 4: Map status ────────────────────────────────────────────────
+    const rawLow = rawText.toLowerCase();
+    let newStatus = "in_progress";
+    if (rawLow.includes("livr") || rawLow.includes("distribu")) newStatus = "delivered";
+    else if (rawLow.includes("refus") || rawLow.includes("retour") || rawLow.includes("annul")) newStatus = "refused";
+    else if (rawLow.includes("injoignable") || rawLow.includes("pas de réponse")) newStatus = "Injoignable";
+
+    // ── Step 5: Update order ──────────────────────────────────────────────
+    try {
+      await st.updateOrder(order.id, { commentStatus: rawText || incomingTracking });
+      await st.updateOrderStatus(order.id, newStatus);
+    } catch (e) {
+      console.error('[DigylogPublic:update-error]', e);
+      return;
+    }
+
+    console.log(`[WEBHOOK-SUCCESS]: Updated Order ID ${order.id} (${order.orderNumber}) → status="${newStatus}" commentStatus="${rawText}" tracking="${incomingTracking}"`);
+
+    // ── Step 6: Journal entry + real-time broadcast ───────────────────────
+    try {
+      await st.createIntegrationLog({
+        storeId: order.storeId, integrationId: null, provider: 'digylog',
+        action: 'status_update', status: 'success',
+        message: `✅ Commande #${order.orderNumber} → "${rawText}" (statut: ${newStatus}) [tracking: ${incomingTracking}]`,
+        payload: rawBody.slice(0, 1000),
+      });
+    } catch (_) {}
+
+    try {
+      const { broadcastToStore } = await import("./sse");
+      broadcastToStore(order.storeId, "order_updated", {
+        orderId: order.id, status: newStatus, commentStatus: rawText,
+      });
+    } catch (_) {}
+  });
+
+  // Early carrier webhook logger — fires BEFORE any route handler in routes.ts.
+  // Writes an immediate DB log entry so it appears in the Journal tab even if
+  // the order-matching logic later fails. Calls next() to hand off to routes.ts.
+  app.post("/api/webhooks/carrier/:storeId/:carrierName", async (req: Request, res: Response, next: NextFunction) => {
+    console.log('=== CARRIER WEBHOOK EARLY HANDLER ===');
+    console.log('Params:', req.params);
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+
+    const storeId = Number(req.params.storeId);
+    const carrier = req.params.carrierName || 'unknown';
+    const keys    = Object.keys(req.body || {}).join(', ') || '(empty)';
+
+    if (!isNaN(storeId) && storeId > 0) {
+      try {
+        const { storage: st } = await import("./storage");
+        await st.createIntegrationLog({
+          storeId, integrationId: null, provider: carrier,
+          action: 'webhook_hit', status: 'success',
+          message: `🔔 DEBUG: Webhook Hit — carrier: ${carrier} — keys: ${keys}`,
+          payload: JSON.stringify(req.body).slice(0, 500),
+        });
+      } catch (e) {
+        console.error('[EarlyWebhook:log-error]', e);
+      }
+    } else {
+      console.warn('[EarlyWebhook]: storeId invalide ou manquant:', req.params.storeId);
+    }
+
+    next(); // pass to the real handler registered in routes.ts
+  });
+
+  // ── Early Shopify webhook pre-flight logger ────────────────────────────────
+  // Registered BEFORE setupAuth so session/passport middleware never touches it.
+  // Logs the raw hit immediately (for Railway log visibility) then calls next()
+  // to hand off processing to the full handler registered in routes.ts.
+  app.post("/api/webhooks/shopify/order/:webhookKey", async (req: Request, res: Response, next: NextFunction) => {
+    console.log('--- NEW SHOPIFY WEBHOOK ARRIVED ---');
+    console.log('Key:', req.params.webhookKey);
+    console.log('Topic:', req.headers['x-shopify-topic'] || 'n/a');
+    console.log('Body:', JSON.stringify(req.body));
+    next(); // hand off to the real handler in routes.ts
+  });
+
+  // ── Canonical public URL endpoint — used by frontend to generate correct webhook URLs ──
+  app.get("/api/system/public-url", (_req, res) => {
+    // Railway sets RAILWAY_PUBLIC_DOMAIN; fall back to custom domain then localhost
+    const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+    const customDomain = process.env.APP_PUBLIC_URL;
+    const publicUrl = railwayDomain
+      ? `https://${railwayDomain}`
+      : customDomain
+      ? customDomain
+      : null; // null → frontend uses window.location.origin
+    res.json({ publicUrl });
+  });
+
+  // 0b. Debug/diagnostic endpoint — useful for Railway log inspection
+  app.get("/api/debug", async (_req, res) => {
+    try {
+      const dbResult = await import("./db").then(m => m.pool.query("SELECT NOW() AS now, current_database() AS db"));
+      res.json({
+        status: "ok",
+        time: dbResult.rows[0].now,
+        database: dbResult.rows[0].db,
+        node: process.version,
+        env: process.env.NODE_ENV,
+        sessionSecret: process.env.SESSION_SECRET ? "SET" : "MISSING (using random fallback)",
+        databaseUrl: process.env.DATABASE_URL
+          ? process.env.DATABASE_URL.replace(/:\/\/[^@]+@/, "://***@")
+          : "NOT SET",
+      });
+    } catch (err: any) {
+      res.status(500).json({ status: "error", message: err.message });
+    }
+  });
+
+  // 0. Startup DB migrations — ensures critical tables exist on Railway prod
+  await initializeDatabase();
+
+  // 1. Auth middleware + login/logout/signup/user routes
+  setupAuth(app);
+  console.log("[Startup] Auth routes registered (/api/auth/login, /api/auth/signup, ...)");
+
+  // Magasin choices for manual order creation. This is deliberately a
+  // separate, read-only endpoint: do not broaden /api/magasins or the agent's
+  // access to existing orders and statistics.
+  app.get("/api/magasins/order-create", async (req, res) => {
+    if (!req.isAuthenticated?.() || !req.user?.storeId) {
+      return res.status(401).json({message:"Connexion requise"});
+    }
+    try {
+      const { db: dbInst } = await import("./db");
+      const { stores: storeTable } = await import("@shared/schema");
+      const { eq: equal, or: either } = await import("drizzle-orm");
+      const main = await dbInst.select({
+        id:storeTable.id, name:storeTable.name, ownerId:storeTable.ownerId,
+      }).from(storeTable).where(equal(storeTable.id, req.user.storeId)).limit(1);
+      if (!main.length) return res.status(404).json({message:"Compte magasin introuvable"});
+      const ownerId = main[0].ownerId || (req.user.role === "owner" ? req.user.id : null);
+      if (!ownerId) {
+        return res.json([{id:main[0].id,name:main[0].name}]);
+      }
+      const accessible = await dbInst.select({
+        id:storeTable.id,name:storeTable.name,
+      }).from(storeTable).where(either(
+        equal(storeTable.ownerId,ownerId),
+        equal(storeTable.id,main[0].id),
+      ));
+      return res.json(accessible.sort((a,b) => a.name.localeCompare(b.name)));
+    } catch (error:any) {
+      console.error("[ORDER-CREATE-MAGASINS]",error?.message);
+      return res.status(500).json({message:"Impossible de charger les boutiques"});
+    }
+  });
+
+  // 1b. Manual call-history routes (authenticated via the session above)
+  registerCallLogRoutes(app);
+  registerAiLandingPageRoutes(app);
+  registerExpressRelaisRoutes(app);
+  registerLivcashRoutes(app);
+  registerLightfunnelsRoutes(app);
+  registerMetaAdsRoutes(app);
+
+  // 1c. Initialize Socket.io (must be before routes so emit helpers are ready)
+  initSocket(httpServer);
+
+  // 2. All other API routes
+  await registerRoutes(httpServer, app);
+  console.log("[Startup] API routes registered");
+
+  // Never let an unhandled Lightfunnels API path fall through to the React
+  // index.html fallback. The UI would otherwise attempt to parse HTML as JSON
+  // and hide the actual routing/deploy issue.
+  app.use("/api/lightfunnels", (req, res) => {
+    console.warn("[LIGHTFUNNELS] unmatched API route", { method: req.method, path: req.path });
+    res.status(404).json({ message: "Route API Lightfunnels indisponible. Vérifiez la version déployée sur Railway." });
+  });
+
+  // 3. Global error handler (must come after routes, before static)
+  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
+    const status = err.status || err.statusCode || 500;
+    const isProd = process.env.NODE_ENV === "production";
+
+    // Always log full details — stack trace is critical for Railway debugging
+    console.error(`[SERVER_ERROR] status=${status} message=${err.message}`);
+    if (err.stack) console.error(err.stack);
+
+    if (res.headersSent) return next(err);
+
+    const message = isProd && status === 500
+      ? "Une erreur s'est produite. Veuillez réessayer."
+      : (err.message || "Internal Server Error");
+
+    return res.status(status).json({ message });
+  });
+
+  // 4. Static file serving + React Router catch-all (must be LAST)
+  if (isProduction) {
+    serveStatic(app);
+    console.log("[Startup] Static file serving enabled (production)");
+  } else {
+    const { setupVite } = await import("./vite");
+    await setupVite(httpServer, app);
+  }
+
+  // ── NOW open the port — all routes are ready ──────────────────────────────
+  const port = parseInt(process.env.PORT || "5000", 10);
+  await new Promise<void>((resolve) =>
+    httpServer.listen({ port, host: "0.0.0.0", reusePort: true }, () => {
+      console.log(`HEALTHCHECK_READY: Port ${port} is now open.`);
+      log(`serving on port ${port}`);
+      resolve();
+    })
+  );
+
+  // ── One-shot Ameex CSV backfill (Railway only, gated on env var) ────────
+  if (process.env.RUN_AMEEX_CSV_BACKFILL === "1") {
+    console.log("[AMEEX-CSV-BACKFILL] Env flag detected — running in 3 s…");
+    setTimeout(async () => {
+      try {
+        const { runAmeexCsvBackfill } = await import("./ameex-csv-backfill-once");
+        await runAmeexCsvBackfill();
+      } catch (err: any) {
+        console.error("[AMEEX-CSV-BACKFILL] FATAL:", err?.message ?? err);
+      }
+    }, 3000);
+  }
+
+  // ── One-shot Ameex carrier correction (Railway only, gated on env var) ───
+  // =1        → dry-run: logs which orders need correction, writes nothing
+  // =apply    → applies corrections (shippingProvider/carrierName → 'ameex')
+  if (process.env.RUN_AMEEX_CARRIER_CORRECTION) {
+    const mode = process.env.RUN_AMEEX_CARRIER_CORRECTION;
+    console.log(`[AMEEX-CARRIER-FIX] Env flag detected (mode=${mode}) — running in 4 s…`);
+    setTimeout(async () => {
+      try {
+        const { runAmeexCarrierCorrection } = await import("./ameex-carrier-correction");
+        await runAmeexCarrierCorrection();
+      } catch (err: any) {
+        console.error("[AMEEX-CARRIER-FIX] FATAL:", err?.message ?? err);
+      }
+    }, 4000);
+  }
+
+  // ── DB keepalive — ping every 4 min to prevent idle connection drops ─────
+  const dbKeepalive = setInterval(async () => {
+    try {
+      await pool.query("SELECT 1");
+    } catch (err: any) {
+      console.error("[Keepalive] DB ping failed:", err.message);
+    }
+  }, 4 * 60 * 1000);
+  intervals.push(dbKeepalive);
+
+  // ── Background jobs — start after port is open ────────────────────────────
+  await ensureSuperAdmin();
+  startWooCommerceSync(intervals);
+  startRecoveryJob(intervals);
+  startAiConfirmationJob(intervals);
+
+  // Prevent long-running carrier polls from overlapping their next scheduled run.
+  // A slow carrier API must not multiply concurrent jobs and saturate the DB pool.
+  const activeCarrierPolls = new Set<string>();
+  async function runCarrierPollOnce(name: string, job: () => Promise<void>): Promise<void> {
+    if (activeCarrierPolls.has(name)) {
+      console.warn(`[CARRIER-POLL] Skipping overlapping ${name} run`);
+      return;
+    }
+    activeCarrierPolls.add(name);
+    try { await job(); }
+    finally { activeCarrierPolls.delete(name); }
+  }
+
+  // Ameex: fill missing fees on already delivered orders and future deliveries.
+  // This is an idempotent, bounded DB-only backfill; never changes a non-zero
+  // fee, shipping provider, order status or another carrier's orders.
+  // Amounts are stored in centimes: Casablanca 20 DH, everywhere else 35 DH.
+  async function fillMissingAmeexDeliveredFees() {
+    try {
+      const { sql } = await import("drizzle-orm");
+      const { db } = await import("./db");
+      const { broadcastToStore } = await import("./sse");
+      const result: any = await db.execute(sql`
+        WITH eligible AS (
+          SELECT id,
+                 CASE
+                   WHEN LOWER(TRIM(REGEXP_REPLACE(TRANSLATE(
+                        COALESCE(customer_city, ''),
+                        'ÀÂÄÁàâäáÉÈÊËéèêëÎÏÍîïíÔÖÓôöóÙÛÜÚùûüúÇç',
+                        'AAAAaaaaEEEEeeeeIIIiiiOOOoooUUUUuuuuCc'
+                      ), '[^a-zA-Z0-9ء-ي]+', ' ', 'g'))) IN
+                        ('casablanca', 'casa', 'dar el beida', 'dar beida', 'الدار البيضاء', 'الدارالبيضاء')
+                     THEN 2000 ELSE 3500
+                 END AS delivery_fee
+          FROM orders
+          WHERE LOWER(TRIM(COALESCE(shipping_provider, carrier_name, ''))) = 'ameex'
+            AND LOWER(TRIM(COALESCE(status, ''))) IN ('delivered','livré','livrée','livre','livree','livraison effectuée')
+            AND COALESCE(shipping_cost, 0) <= 0
+          ORDER BY id
+          LIMIT 200
+        )
+        UPDATE orders AS o
+        SET shipping_cost = eligible.delivery_fee
+        FROM eligible
+        WHERE o.id = eligible.id AND COALESCE(o.shipping_cost, 0) <= 0
+        RETURNING o.id, o.store_id, o.shipping_cost
+      `);
+      const rows: any[] = Array.isArray(result) ? result : result?.rows || [];
+      for (const order of rows) {
+        broadcastToStore(Number(order.store_id), "order_updated", {
+          orderId: Number(order.id), shippingCost: Number(order.shipping_cost),
+        });
+      }
+      if (rows.length) console.info("[AMEEX-FEE-BACKFILL]", {updated:rows.length, casablanca20:rows.filter(r=>Number(r.shipping_cost)===2000).length, other35:rows.filter(r=>Number(r.shipping_cost)===3500).length});
+    } catch (err:any) {
+      console.error("[AMEEX-FEE-BACKFILL] Error:", String(err?.message || err).slice(0,220));
+    }
+  }
+  let ameexFeeRunning = false;
+  async function runAmeexFeeBackfill() {
+    if (ameexFeeRunning) return;
+    ameexFeeRunning = true;
+    try { await fillMissingAmeexDeliveredFees(); }
+    finally { ameexFeeRunning = false; }
+  }
+  setTimeout(() => void runAmeexFeeBackfill(), 45_000);
+  intervals.push(setInterval(() => void runAmeexFeeBackfill(), 10 * 60 * 1000));
+
+  // ── Auto Digylog status sync ───────────────────────────────────────────────
+  async function runDigylogSync(label: string) {
+    try {
+      const { storage: st } = await import('./storage');
+      const { trackDigylogShipment } = await import('./services/carrier-service');
+      const { db: dbInst } = await import('./db');
+      const { carrierAccounts: caTable } = await import('@shared/schema');
+      const { eq: eqFn } = await import('drizzle-orm');
+
+      const accounts = await dbInst.select().from(caTable)
+        .where(eqFn(caTable.carrierName, 'digylog'));
+
+      for (const account of accounts) {
+        const storeId = (account as any).storeId;
+        const apiKey  = (account as any).apiKey;
+        // Query only active Digylog parcels, without hydrating every store order.
+        // NearYa fee backfill runs in the dedicated NearYa sync job.
+        const toSync = await st.getCarrierOrdersForSync(storeId, 'digylog');
+        if (!toSync.length) continue;
+
+        console.log(`[AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
+        for (const order of toSync) {
+          const result = await trackDigylogShipment(order.trackNumber!, apiKey);
+          console.log(`[DIGYLOG-SYNC-DEBUG] order=${(order as any).orderNumber} result.deliveryCost=${result.deliveryCost} order.shippingCost=${(order as any).shippingCost}`);
+
+          // Save deliveryCost from tracking result if available and not yet set
+          if (result.deliveryCost && result.deliveryCost > 0 && !(order as any).shippingCost) {
+            await st.updateOrder(order.id, { shippingCost: result.deliveryCost });
+            console.log(`[AUTO-SYNC] DeliveryCost saved for #${(order as any).orderNumber}: ${result.deliveryCost}`);
+          }
+
+          if (result.status && result.status !== order.status) {
+            await st.updateOrderStatus(order.id, result.status);
+            await st.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+
+            // Fallback: set shippingCost from static deliveryFee if not already set
+            if (result.status === 'delivered' && !(order as any).shippingCost) {
+              const fee = (account as any).deliveryFee || 0;
+              if (fee > 0) {
+                await st.updateOrder(order.id, { shippingCost: fee });
+              }
+            }
+
+            await st.createOrderFollowUpLog({
+              orderId: order.id,
+              agentId: null,
+              agentName: 'Digylog Auto-Sync',
+              note: `📦 Statut mis à jour automatiquement: ${result.rawStatus} → ${result.status}`,
+            });
+            console.log(`[AUTO-SYNC][${label}] Order #${(order as any).orderNumber} → ${result.rawStatus} (${result.status})`);
+            try {
+              const { broadcastToStore } = await import('./sse');
+              broadcastToStore(storeId, 'order_updated', {
+                orderId: order.id,
+                status: result.status,
+                commentStatus: result.rawStatus,
+              });
+            } catch {}
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[AUTO-SYNC][${label}] Error:`, err?.message);
+    }
+  }
+
+  // Scheduled carrier polling is enabled by default for backward compatibility.
+  // When deploying a dedicated scheduler service, set CARRIER_SYNC_ROLE=web on
+  // the HTTP service and CARRIER_SYNC_ROLE=worker on ONE scheduler instance.
+  // This only separates scheduled polling; webhooks remain on the HTTP service.
+  const carrierSyncRole = process.env.CARRIER_SYNC_ROLE || 'both';
+  const runScheduledCarrierSync = carrierSyncRole !== 'web';
+  if (!['web', 'worker', 'both'].includes(carrierSyncRole)) {
+    console.warn('[CARRIER-SYNC] Unknown CARRIER_SYNC_ROLE; scheduled polling remains enabled');
+  }
+
+  // Run once after 2 minutes on startup, then every 15 minutes
+  if (runScheduledCarrierSync) {
+    setTimeout(() => runCarrierPollOnce("digylog", () => runDigylogSync('initial')), 2 * 60 * 1000);
+    const autoDigylogSync = setInterval(() => runCarrierPollOnce("digylog", () => runDigylogSync('interval')), 15 * 60 * 1000);
+    intervals.push(autoDigylogSync);
+  }
+
+  if (runScheduledCarrierSync) {
+    const pollLivcash = () => runCarrierPollOnce("livcash", async () => {
+      const { syncLivcash } = await import("./jobs/livcash-sync");
+      await syncLivcash();
+    });
+    setTimeout(pollLivcash, 90 * 1000);
+    intervals.push(setInterval(pollLivcash, 15 * 60 * 1000));
+  }
+
+  // ── Express Relais AIO: poll parcel statuses (no shipping side effects) ──
+  async function runExpressRelaisSync(label: string) {
+    try {
+      const { db: dbInst } = await import("./db");
+      const { carrierAccounts, orders: orderTable } = await import("@shared/schema");
+      const { eq, and, sql, asc, gt } = await import("drizzle-orm");
+      const { ExpressRelaisClient } = await import("./integrations/express-relais");
+      const { storage: st } = await import("./storage");
+      const { broadcastToStore } = await import("./sse");
+      const accounts = await dbInst.select().from(carrierAccounts).where(
+        sql`LOWER(REGEXP_REPLACE(${carrierAccounts.carrierName}, '[^a-zA-Z]', '', 'g')) = 'expressrelais'`
+      );
+      for (const account of accounts) {
+        if (account.isActive === 0 || !account.apiKey || !account.apiSecret) continue;
+        const storeId = account.storeId;
+        const allowUnscopedLegacy = accounts.filter(a =>
+          a.storeId === storeId && a.isActive !== 0 && a.apiKey && a.apiSecret
+        ).length === 1;
+        // Backfill missing delivery fees for already delivered Express Relais
+        // parcels. Never overwrite a positive fee entered by the merchant.
+        const deliveredWithoutFee = await dbInst.select({
+          id: orderTable.id, customerCity: orderTable.customerCity,
+        }).from(orderTable).where(and(
+          eq(orderTable.storeId, storeId),
+          sql`LOWER(REGEXP_REPLACE(COALESCE(NULLIF(TRIM(${orderTable.shippingProvider}), ''), ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
+          sql`LOWER(TRIM(COALESCE(${orderTable.status}, ''))) IN ('delivered','livré','livrée','livré *','livrée *','livraison effectuée')`,
+          sql`COALESCE(${orderTable.shippingCost}, 0) <= 0`
+        )).limit(250);
+        for (const shipped of deliveredWithoutFee) {
+          const city = String(shipped.customerCity || "").toLowerCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g," ").trim();
+          const isCasa = /^(casablanca|casa|dar beida|dar el beida)$/.test(city);
+          const fee = isCasa ? 1800 : 2800; // centimes
+          await dbInst.update(orderTable).set({shippingCost:fee}).where(and(
+            eq(orderTable.id, shipped.id),
+            sql`COALESCE(${orderTable.shippingCost},0) <= 0`
+          ));
+          broadcastToStore(storeId, "order_updated", {orderId:shipped.id,shippingCost:fee});
+        }
+        if (deliveredWithoutFee.length) console.info("[EXPRESS-RELAIS-FEE]", {storeId, updated:deliveredWithoutFee.length});
+        // Only this transporter's parcels, scoped to the owning merchant.
+        // Terminal deliveries are left untouched; returns/refusals are still
+        // polled while they await final confirmation.
+        const state: any = await dbInst.execute(sql`SELECT last_order_id FROM express_relais_sync_cursors WHERE account_id = ${account.id}`);
+        const cursor = Number(state.rows?.[0]?.last_order_id ?? 0);
+        const loadPage = (afterId: number) => dbInst.select({
+          id: orderTable.id, orderNumber: orderTable.orderNumber,
+          trackNumber: orderTable.trackNumber, status: orderTable.status,
+          commentStatus: orderTable.commentStatus,
+          carrierId: orderTable.carrierId,
+        }).from(orderTable).where(and(
+          eq(orderTable.storeId, storeId),
+          sql`LOWER(REGEXP_REPLACE(COALESCE(NULLIF(TRIM(${orderTable.shippingProvider}), ''), ${orderTable.carrierName}, ''), '[^a-zA-Z]', '', 'g')) = 'expressrelais'`,
+          gt(orderTable.id, afterId),
+          sql`(${orderTable.carrierId} = ${account.id} OR (${orderTable.carrierId} IS NULL AND (${account.magasinId ?? null}::integer IS NULL OR ${orderTable.magasinId} = ${account.magasinId ?? null} OR (${allowUnscopedLegacy} AND ${orderTable.magasinId} IS NULL))))`,
+          sql`LOWER(COALESCE(${orderTable.status}, '')) NOT IN ('delivered','livré','livrée','retour recu','retour reçu','returned','retourné','retournée')`
+        )).orderBy(asc(orderTable.id)).limit(150);
+        let parcels = await loadPage(cursor);
+        if (!parcels.length && cursor > 0) parcels = await loadPage(0);
+        if (!parcels.length) continue;
+        const client = new ExpressRelaisClient({ login: account.apiKey, password: account.apiSecret, environment: "prod" });
+        let updated = 0;
+        let lastCheckedId = cursor;
+        for (const parcel of parcels) {
+          const previousCursor = lastCheckedId;
+          lastCheckedId = parcel.id;
+          try {
+            // createAioOrder used idParcelClient=orderNumber, not trackNumber.
+            const response: any = await client.getStatus(String(parcel.orderNumber || parcel.id));
+            const verified = readExpressRelaisStatus(response, String(parcel.orderNumber || parcel.id));
+            if (!verified) {
+              console.warn("[EXPRESS-RELAIS-SYNC] Unverified response", {storeId,orderId:parcel.id});
+              continue;
+            }
+            const { raw, status: nextStatus } = verified;
+            if (parcel.carrierId == null) await st.updateOrder(parcel.id, {carrierId:account.id});
+            // An unknown code/label must never modify the business status.
+            if (!nextStatus) {
+              console.info("[EXPRESS-RELAIS-SYNC] unmapped status", {storeId, orderId:parcel.id, raw:raw.slice(0,100)});
+              if (raw !== parcel.commentStatus) {
+                await st.updateOrder(parcel.id, {commentStatus: raw});
+                broadcastToStore(storeId, "order_updated", {orderId:parcel.id, status:parcel.status, commentStatus:raw});
+                updated++;
+              }
+              continue;
+            }
+            if (nextStatus === parcel.status && raw === parcel.commentStatus) continue;
+            if (nextStatus !== parcel.status) await st.updateOrderStatus(parcel.id, nextStatus);
+            if (raw !== parcel.commentStatus) await st.updateOrder(parcel.id, {commentStatus: raw});
+            await st.createOrderFollowUpLog({
+              orderId: parcel.id, agentId: null, agentName: "Express Relais Auto-Sync",
+              note: `📦 Express Relais: ${raw} → ${nextStatus}`,
+            });
+            broadcastToStore(storeId, "order_updated", {orderId:parcel.id, status:nextStatus, commentStatus:raw});
+            updated++;
+          } catch (error:any) {
+            console.warn("[EXPRESS-RELAIS-SYNC] tracking error", {storeId, orderId:parcel.id, error:String(error?.message || error).slice(0,140)});
+            if (/401|403|WAF_BLOCKED/.test(String(error?.message || ""))) { lastCheckedId = previousCursor; break; }
+          } finally {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+        }
+        if (lastCheckedId !== cursor) await dbInst.execute(sql`
+          INSERT INTO express_relais_sync_cursors (account_id, last_order_id, updated_at)
+          VALUES (${account.id}, ${lastCheckedId}, now())
+          ON CONFLICT (account_id) DO UPDATE SET last_order_id = EXCLUDED.last_order_id, updated_at = now()
+        `);
+        console.info("[EXPRESS-RELAIS-SYNC]", {label, storeId, checked:parcels.length, updated});
+      }
+    } catch (error:any) {
+      console.error("[EXPRESS-RELAIS-SYNC] failed", error?.message);
+    }
+  }
+  if (runScheduledCarrierSync) {
+    setTimeout(() => void runCarrierPollOnce("expressrelais", () => runExpressRelaisSync("initial")), 60 * 1000);
+    const expressRelaisTimer = setInterval(() => void runCarrierPollOnce("expressrelais", () => runExpressRelaisSync("interval")), 15 * 60 * 1000);
+    intervals.push(expressRelaisTimer);
+  }
+
+  // ── Auto Vitipsexpress status sync ─────────────────────────────────────────
+  async function runVitipsSync(label: string) {
+    try {
+      const { storage: st } = await import('./storage');
+      const { trackVitipsShipment } = await import('./services/carrier-service');
+      const { db: dbInst } = await import('./db');
+      const { carrierAccounts: caTable } = await import('@shared/schema');
+      const { eq: eqFn } = await import('drizzle-orm');
+
+      const accounts = await dbInst.select().from(caTable)
+        .where(eqFn(caTable.carrierName, 'vitipsexpress'));
+
+      for (const account of accounts) {
+        const storeId = (account as any).storeId;
+        const apiKey  = (account as any).apiKey;
+        // Avoid full-store order hydration for scheduled carrier polling.
+        const toSync = await st.getCarrierOrdersForSync(storeId, 'vitipsexpress');
+        if (!toSync.length) continue;
+
+        console.log(`[VITIPS-AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
+        // Circuit breaker per account: an unreachable carrier must not keep
+        // dozens of 15-second HTTP requests alive during peak user traffic.
+        // Successful responses (including empty tracking data) reset the streak.
+        let consecutiveNetworkFailures = 0;
+        for (const order of toSync) {
+          try {
+            const result = await trackVitipsShipment(order.trackNumber!, apiKey);
+            const networkFailure = !!result.error &&
+              /ETIMEDOUT|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ECONNRESET|timeout|socket hang up/i.test(result.error);
             consecutiveNetworkFailures = networkFailure ? consecutiveNetworkFailures + 1 : 0;
             if (consecutiveNetworkFailures >= 3) {
               console.warn(`[VITIPS-AUTO-SYNC] store=${storeId}: carrier network unavailable (3 consecutive failures); deferring remaining parcels until next scheduled sync`);
