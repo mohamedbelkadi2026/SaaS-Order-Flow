@@ -2086,37 +2086,15 @@ function WhatsappTab() {
     </div>
   );
 
-  // ── Baileys (QR/pairing code) never actually connects — the underlying
-  // @whiskeysockets/baileys package isn't installed in this environment
-  // (see server/baileys-service.ts, a stub that always returns idle/false).
-  // Rather than showing an infinite "Connexion en cours..." spinner that can
-  // never resolve, tell the user directly where the REAL, working WhatsApp
-  // connection lives (Green API, per-store, set up in IA Confirmation).
   return (
     <div className="max-w-3xl mx-auto space-y-4">
       <MetaWhatsappConnection />
       {ControlPanel}
-      <div className="bg-white rounded-2xl border border-amber-200 p-6 space-y-4" style={{ borderLeftWidth: 4, borderLeftColor: GOLD }}>
-        <div className="flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" style={{ color: GOLD }} />
-          <div>
-            <p className="text-sm font-bold text-zinc-800 mb-1">Cette méthode de connexion n'est pas disponible</p>
-            <p className="text-xs text-zinc-500 leading-relaxed">
-              La connexion par QR code / code d'appairage sur cette page ne fonctionne pas dans cet environnement.
-              Utilisez <strong>Green API</strong> à la place — c'est la méthode qui fonctionne réellement, et chaque
-              magasin y connecte son propre numéro WhatsApp.
-            </p>
-          </div>
-        </div>
-        <a
-          href="#"
-          onClick={(e) => { e.preventDefault(); (document.querySelector('[data-tab="ai"]') as HTMLElement)?.click(); }}
-          className="flex items-center justify-center gap-2 w-full rounded-xl py-2.5 text-sm font-semibold text-white"
-          style={{ background: NAVY }}
-        >
-          Aller à IA Confirmation → Connexion WhatsApp (Green API)
-        </a>
-      </div>
+      <details className="rounded-2xl border border-zinc-200 bg-white p-4 text-sm">
+        <summary className="cursor-pointer font-medium text-zinc-600">Autre méthode de connexion</summary>
+        <p className="mt-3 text-xs text-zinc-500">Vous utilisez déjà Green API ? Retrouvez votre connexion dans IA Confirmation.</p>
+        <a href="#" onClick={(e) => { e.preventDefault(); (document.querySelector('[data-tab="ai"]') as HTMLElement)?.click(); }} className="mt-3 inline-block text-indigo-700 font-medium">Gérer ma connexion Green API</a>
+      </details>
     </div>
   );
 }
