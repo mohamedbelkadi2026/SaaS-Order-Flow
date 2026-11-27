@@ -5,9 +5,9 @@ import { pool } from './db';
 import {broadcastToStore} from './sse';
 import {prepareMetaMedia,MetaMediaError} from './meta-media';
 import { encrypt, decrypt } from './crypto';
-import { metaGraph, metaPhone, MetaApiError, metaTemplate, usableMetaOrderTemplate, metaTokenMetadata, metaConnectionHealth } from './meta-whatsapp-core';
+import { metaGraph, metaPhone, MetaApiError, metaTemplate, usableMetaOrderTemplate, metaTokenMetadata, metaConnectionHealth, META_ORDER_TEMPLATE_BODY, META_ORDER_BUTTONS } from './meta-whatsapp-core';
 
-export interface MetaConnection {store_id:number;waba_id:string;phone_number_id:string;display_phone:string;token_cipher:string;active:boolean;template_name:string;template_language:string;token_valid?:boolean|null;token_checked_at?:string|null;token_expires_at?:string|null;data_access_expires_at?:string|null;}
+export interface MetaConnection {store_id:number;waba_id:string;phone_number_id:string;display_phone:string;token_cipher:string;active:boolean;template_name:string;template_language:string;template_status?:string;template_checked_at?:string|null;template_error?:string|null;token_valid?:boolean|null;token_checked_at?:string|null;token_expires_at?:string|null;data_access_expires_at?:string|null;}
 export interface MetaOutcome {error?:string;uncertain?:boolean;messageId?:string;}
 export async function getMetaConnection(storeId:number):Promise<MetaConnection|null> {
  if (!Number.isSafeInteger(storeId) || storeId<=0) throw new Error('Magasin invalide.');
@@ -52,12 +52,65 @@ export async function saveMetaConnection(storeId:number,waba:string,phoneId:stri
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(store_id) DO UPDATE SET waba_id=excluded.waba_id,
    phone_number_id=excluded.phone_number_id,display_phone=excluded.display_phone,token_cipher=excluded.token_cipher,
    token_valid=excluded.token_valid,token_checked_at=excluded.token_checked_at,token_expires_at=excluded.token_expires_at,
-   data_access_expires_at=excluded.data_access_expires_at,active=true,updated_at=now()`,
+   data_access_expires_at=excluded.data_access_expires_at,template_status='NOT_CREATED',template_checked_at=NULL,template_error=NULL,active=true,updated_at=now()`,
    [storeId,waba,phoneId,phone.display_phone_number || '',encrypt(token),metadata?.valid ?? null,metadata?new Date():null,metadata?.expiresAt ?? null,metadata?.dataAccessExpiresAt ?? null]);
   await client.query('COMMIT');
  } catch(error) {await client.query('ROLLBACK');throw error;}
  finally {client.release();}
- return {displayPhone:phone.display_phone_number || ''};
+ // The connection remains saved even if Meta temporarily refuses template setup.
+ // Preparing a template never sends a message or enables the merchant's automation.
+ const template=await prepareMetaOrderTemplate(storeId).catch(()=>({status:'ERROR',ready:false}));
+ return {displayPhone:phone.display_phone_number || '',template};
+}
+export function metaTemplateSetup(c:MetaConnection|null) {
+ return {status:c?.template_status || 'NOT_CREATED',ready:!!c?.active && c.token_valid!==false && c?.template_status==='APPROVED',
+  checkedAt:c?.template_checked_at || null,error:c?.template_error || null};
+}
+export async function prepareMetaOrderTemplate(storeId:number,refresh=false) {
+ const initial=await getMetaConnection(storeId);
+ if(!initial?.active)throw new Error('Connexion Meta absente ou désactivée.');
+ const client=await pool.connect();
+ try {
+  await client.query('BEGIN');
+  // Serialize creation for the WABA, including accounts sharing that WABA.
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['meta-template:'+initial.waba_id]);
+  const c=(await client.query('SELECT * FROM meta_whatsapp_connections WHERE store_id=$1 FOR UPDATE',[storeId])).rows[0] as MetaConnection;
+  if(!c?.active || c.waba_id!==initial.waba_id || c.token_cipher!==initial.token_cipher)throw new Error('Connexion modifiée. Actualisez la page.');
+  const age=c.template_checked_at ? Date.now()-new Date(c.template_checked_at).getTime() : Infinity;
+  if(age<(refresh?15000:60000)){await client.query('COMMIT');return metaTemplateSetup(c);}
+  let status='UNKNOWN',error:string|null=null;
+  try {
+   const token=decrypt(c.token_cipher);
+   const templates=await metaGraph(token,`${c.waba_id}/message_templates?name=${encodeURIComponent(c.template_name)}&limit=100`);
+   const existing=templates.data?.find((t:any)=>t.name===c.template_name && t.language===c.template_language);
+   if(existing){
+    status=existing.status==='APPROVED' ? (usableMetaOrderTemplate(existing)?'APPROVED':'INCOMPATIBLE') : String(existing.status || 'UNKNOWN');
+   }else{
+    if(!Array.isArray(templates.data) || templates.paging?.next)throw new Error('Liste des modèles incomplète.');
+    const created=await metaGraph(token,`${c.waba_id}/message_templates`,{method:'POST',body:{name:c.template_name,language:c.template_language,category:'UTILITY',
+     components:[{type:'BODY',text:META_ORDER_TEMPLATE_BODY,example:{body_text:[['TajerGrow','محمد','0612345678','الدار البيضاء','شارع المثال','شاحن السيارة','1','199']]}},
+      {type:'BUTTONS',buttons:META_ORDER_BUTTONS.map(b=>({type:'QUICK_REPLY',text:b.text}))}],
+    }});
+    // A creation response alone cannot confirm that the approved body is usable.
+    status=created.status==='REJECTED'?'REJECTED':'PENDING';
+   }
+  }catch(failure){status='ERROR';error=failure instanceof MetaApiError?failure.message:'La préparation du message est momentanément indisponible. Réessayez.';}
+  const updated=(await client.query(`UPDATE meta_whatsapp_connections SET template_status=$1,template_error=$2,template_checked_at=now()
+   WHERE store_id=$3 RETURNING *`,[status,error,storeId])).rows[0];
+  await client.query('COMMIT');return metaTemplateSetup(updated);
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}
+let templateRefreshBusy=false;
+export async function refreshPendingMetaTemplates() {
+ if(templateRefreshBusy)return;templateRefreshBusy=true;
+ try {
+  // Only accounts which have started setup; never submit templates for untouched accounts.
+  const due=(await pool.query(`SELECT store_id FROM meta_whatsapp_connections WHERE active=true AND token_valid IS DISTINCT FROM false
+   AND template_checked_at IS NOT NULL AND template_checked_at<now()-interval '5 minutes'
+   AND template_status IN ('PENDING','UNKNOWN','ERROR') ORDER BY template_checked_at LIMIT 3`)).rows;
+  for(const c of due)await prepareMetaOrderTemplate(c.store_id).catch(()=>{});
+ }catch{ /* A temporary database outage must not affect order or carrier workers. */ }
+ finally{templateRefreshBusy=false;}
 }
 // Explicit owner diagnostic; status polling never makes a Graph call or sends a message.
 export async function checkMetaConnection(storeId:number) {
