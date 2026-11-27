@@ -108,7 +108,7 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  const env={META_APP_ID:'123456',META_APP_SECRET:'secret',META_WEBHOOK_VERIFY_TOKEN:'verify',ENCRYPTION_KEY:'test-key',DATA_DIR:disk};
  const context={...core,...media,broadcastToStore(){},metaGraph:graph,pool,encrypt:x=>'encrypted:'+x,decrypt:x=>x.replace('encrypted:',''),process:{env,cwd:()=>disk},path,Date,URLSearchParams,
   readFile,stat:(await import('node:fs/promises')).stat,createHash,URL,FormData,Blob,Buffer,console};
- const service=vm.runInNewContext(clean(await read('server/meta-whatsapp-service.ts'))+'\n({getMetaConnection,saveMetaConnection,checkMetaConnection,sendMetaMessage,sendMetaOrderTemplate,sendMetaFile,queueMetaContent,flushMetaContent})',context);
+ const service=vm.runInNewContext(clean(await read('server/meta-whatsapp-service.ts'))+'\n({getMetaConnection,saveMetaConnection,checkMetaConnection,sendMetaMessage,sendMetaOrderTemplate,sendMetaFile,queueMetaContent,flushMetaContent,metaTemplateSetup,prepareMetaOrderTemplate,refreshPendingMetaTemplates})',context);
  await service.saveMetaConnection(91,'999991','111111','token-91');await service.saveMetaConnection(92,'999992','222222','token-92');
  const sendsBeforeCheck=requests.filter(r=>r.endpoint.endsWith('/messages')).length;
  assert.equal((await service.checkMetaConnection(91)).state,'verified');
@@ -168,6 +168,11 @@ test('Cloud API isolation, 24-hour window, acknowledgement, failures, upload own
  const mounted=new Map();const app={get:(url,...handlers)=>mounted.set('GET '+url,handlers.at(-1)),post:(url,...handlers)=>mounted.set('POST '+url,handlers.at(-1))};
  const routeContext={...context,...service,z,randomBytes,requireAuth(){},requireAdmin(){},broadcastToStore(){},setInterval:()=>({unref(){}})};
  const routes=vm.runInNewContext(clean(await read('server/meta-whatsapp-routes.ts'))+'\n({registerMetaWhatsappRoutes})',routeContext);routes.registerMetaWhatsappRoutes(app);
+ // A test must target a different number, without adding consent or sending.
+ const selfTest=mounted.get('POST /api/automation/meta/test');let selfStatus=200,selfBody;
+ const selfBefore=requests.length;
+ await selfTest({user:{storeId:91},body:{phone:'+212600000000',type:'template',consent:true}},{status(n){selfStatus=n;return this;},json(v){selfBody=v;return this;}});
+ assert.equal(selfStatus,400);assert.match(selfBody.message,/autre numéro/);assert.equal(requests.length,selfBefore);
  env.META_EMBEDDED_SIGNUP_ENABLED='true';env.META_EMBEDDED_SIGNUP_CONFIG_ID='777777';
  const completion=mounted.get('POST /api/automation/meta/signup/complete');
  const nonce='a'.repeat(64);
@@ -251,4 +256,67 @@ test('Graph transport sanitizes rejection and uncertain outcomes without retryin
   globalThis.fetch=async(_url,options)=>{assert.equal(options.headers.Authorization,undefined);assert.equal(options.headers['Content-Type'],'application/x-www-form-urlencoded');return Response.json({access_token:'token'});};
   assert.equal((await core.metaGraph('','oauth/access_token',{method:'POST',encoded:new URLSearchParams({code:'test-code'})})).access_token,'token');
  }finally{globalThis.fetch=original;}
+});
+
+test('merchant setup submits once per WABA, tracks review in background and preserves a connection on setup failure',async()=>{
+ const pg=new PGlite();
+ try{
+  await pg.exec('CREATE TABLE stores(id integer PRIMARY KEY);CREATE TABLE orders(id integer PRIMARY KEY);INSERT INTO stores VALUES(91),(92);');
+  await pg.exec(META_WHATSAPP_SCHEMA_SQL);
+  const pool={query:async(sql,args)=>{
+   if(sql.startsWith('SELECT pg_advisory_xact_lock'))return {rows:[],rowCount:0};
+   const r=await pg.query(sql,args);return {...r,rowCount:r.affectedRows||r.rows.length};
+  }};pool.connect=async()=>({...pool,release(){}});
+  const templates=new Map(),requests=[];let failTemplates=false,incomplete=false;
+  const approved=()=>({status:'APPROVED',category:'UTILITY',components:[{type:'BODY',text:core.META_ORDER_TEMPLATE_BODY},{type:'BUTTONS',buttons:core.META_ORDER_BUTTONS.map(b=>({type:'QUICK_REPLY',text:b.text}))}]});
+  const graph=async(token,endpoint,options={})=>{
+   requests.push({token,endpoint,options});
+   if(endpoint.includes('/phone_numbers'))return {data:[{id:token==='token91'?'111111':'222222',display_phone_number:token==='token91'?'+212600000091':'+212600000092'}]};
+   if(endpoint.endsWith('/subscribed_apps'))return {success:true};
+   if(endpoint.includes('/message_templates')){
+    if(failTemplates)throw new core.MetaApiError(100);
+    const waba=endpoint.split('/')[0];
+    if(options.method==='POST'){
+     assert.equal(templates.has(waba),false,'must not create an existing template');
+     assert.equal(options.body.category,'UTILITY');assert.equal(options.body.language,'ar');
+     assert.equal(options.body.components[1].buttons.length,3);
+     templates.set(waba,{...options.body,status:'PENDING'});return {id:'987654',status:'PENDING'};
+    }
+    return {data:templates.has(waba)?[templates.get(waba)]:[],...(incomplete?{paging:{next:'more'}}:{})};
+   }
+   throw Error('Unexpected Graph request '+endpoint);
+  };
+  const context={...core,pool,metaGraph:graph,encrypt:x=>'encrypted:'+x,decrypt:x=>x.replace('encrypted:',''),process:{env:{ENCRYPTION_KEY:'test'}},Date};
+  const service=vm.runInNewContext(clean(await read('server/meta-whatsapp-service.ts'))+'\n({saveMetaConnection,getMetaConnection,metaTemplateSetup,prepareMetaOrderTemplate,refreshPendingMetaTemplates})',context);
+  const a=await service.saveMetaConnection(91,'999991','111111','token91');
+  assert.equal(a.template.status,'PENDING');assert.equal(a.template.ready,false);
+  assert.equal((await service.getMetaConnection(91)).active,true);
+  const posts=()=>requests.filter(r=>r.options.method==='POST'&&r.endpoint.endsWith('/message_templates'));
+  assert.equal(posts().length,1);
+  const beforeCache=requests.length;await service.prepareMetaOrderTemplate(91);await service.prepareMetaOrderTemplate(91,true);
+  assert.equal(requests.length,beforeCache,'page polling and repeated clicks use the status cache');
+  await service.saveMetaConnection(92,'999992','222222','token92');assert.equal(posts().length,2);
+  assert.equal(posts()[1].token,'token92');
+  templates.set('999991',{...templates.get('999991'),...approved()});
+  await pool.query("UPDATE meta_whatsapp_connections SET template_checked_at=now()-interval '6 minutes' WHERE store_id=91");
+  await service.refreshPendingMetaTemplates();
+  assert.equal(service.metaTemplateSetup(await service.getMetaConnection(91)).ready,true,'approval is detected with the merchant page closed');
+  assert.equal(service.metaTemplateSetup(await service.getMetaConnection(92)).ready,false,'other account remains pending');
+  templates.set('999991',{...templates.get('999991'),status:'REJECTED'});
+  await pool.query("UPDATE meta_whatsapp_connections SET template_checked_at=now()-interval '1 minute' WHERE store_id=91");
+  assert.equal((await service.prepareMetaOrderTemplate(91,true)).status,'REJECTED');assert.equal(posts().length,2);
+  templates.set('999991',{...templates.get('999991'),...approved(),category:'MARKETING'});
+  await pool.query("UPDATE meta_whatsapp_connections SET template_checked_at=now()-interval '1 minute' WHERE store_id=91");
+  assert.equal((await service.prepareMetaOrderTemplate(91,true)).status,'INCOMPATIBLE');
+  failTemplates=true;
+  const failed=await service.saveMetaConnection(91,'999993','111111','token91');
+  assert.equal(failed.template.status,'ERROR');assert.equal((await service.getMetaConnection(91)).active,true);
+  assert.equal((await service.getMetaConnection(91)).waba_id,'999993','new connection is retained even if template provisioning fails');
+  failTemplates=false;incomplete=true;
+  await pool.query("UPDATE meta_whatsapp_connections SET template_checked_at=now()-interval '1 minute' WHERE store_id=91");
+  assert.equal((await service.prepareMetaOrderTemplate(91,true)).status,'ERROR');assert.equal(posts().length,2,'incomplete listing must not create a duplicate');
+  await pool.query('UPDATE meta_whatsapp_connections SET active=false WHERE store_id=91');
+  await assert.rejects(()=>service.prepareMetaOrderTemplate(91));
+  assert.equal(requests.some(r=>r.endpoint.endsWith('/messages')||r.endpoint.endsWith('/register')),false,'setup neither messages customers nor registers the number');
+ }finally{await pg.close();}
 });
