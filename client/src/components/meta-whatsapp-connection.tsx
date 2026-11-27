@@ -21,7 +21,7 @@ function loadSDK(appId:string,version:string):Promise<any>{
   if(!existing){const script=document.createElement('script');script.id='tajergrow-meta-sdk';script.src='https://connect.facebook.net/fr_FR/sdk.js';script.async=true;script.onerror=()=>reject(new Error('Chargement Meta impossible.'));document.body.appendChild(script);}
  });
 }
-export default function MetaWhatsappConnection(){
+export default function MetaWhatsappConnection({confirmationEnabled=false}:{confirmationEnabled?:boolean}){
  const {toast}=useToast();
  const {data:s,refetch,isLoading}=useQuery<MetaStatus>({queryKey:['/api/automation/meta/status'],queryFn:async()=>{
   const r=await fetch('/api/automation/meta/status',{credentials:'include',cache:'no-store'});if(!r.ok)throw Error('Connexion réservée au propriétaire du compte.');return r.json();
@@ -97,13 +97,13 @@ export default function MetaWhatsappConnection(){
     <div className="flex items-center gap-2 text-sm font-semibold"><span className={`h-2.5 w-2.5 rounded-full ${s.connectionHealth.state==='reconnect_required'?'bg-red-500':s.active?'bg-emerald-500':'bg-zinc-300'}`}/>{s.active?(s.connectionHealth.state==='reconnect_required'?`À reconnecter · ${s.displayPhone}`:`Connecté · ${s.displayPhone}`):s.configured?'Connexion désactivée':'Aucun numéro officiel connecté'}</div>
     {s.active&&<div className={`rounded-xl border p-4 text-sm space-y-2 ${needsReconnect?'bg-amber-50 border-amber-200 text-amber-950':'bg-emerald-50 border-emerald-100 text-emerald-900'}`} role="status">
      <p className="font-semibold">{needsReconnect?'Votre compte doit être reconnecté.':'Votre numéro WhatsApp est connecté.'}</p>
-     <p>{needsReconnect?'Renouvelez l’autorisation avec Meta pour reprendre les envois.':templateReady?'Le message de confirmation est prêt. Activez la Confirmation IA ci-dessous pour les nouvelles commandes.':'TajerGrow prépare votre message de confirmation. Votre numéro reste connecté pendant cette étape.'}</p>
+     <p>{needsReconnect?'Renouvelez l’autorisation avec Meta pour reprendre les envois.':templateReady?(confirmationEnabled?'La Confirmation IA est activée pour les nouvelles commandes.':'Le message de confirmation est prêt. Activez la Confirmation IA ci-dessous pour les nouvelles commandes.'):'TajerGrow prépare votre message de confirmation. Votre numéro reste connecté pendant cette étape.'}</p>
     </div>}
     <div className="grid gap-3 sm:grid-cols-3" aria-label="Étapes de configuration WhatsApp">
      {[
       {title:'1. Connecter WhatsApp',done:!!s.active&&!needsReconnect,text:s.active&&!needsReconnect?'Numéro connecté':'Autorisez la connexion avec Meta'},
       {title:'2. Préparer le message',done:templateReady,text:s.active?(templateLabels[s.template?.status]||'Vérification en cours'):'Préparé automatiquement après connexion'},
-      {title:'3. Confirmer les commandes',done:templateReady,text:templateReady?'Message prêt pour la Confirmation IA':'Disponible après validation du message'},
+      {title:'3. Confirmer les commandes',done:templateReady&&confirmationEnabled,text:templateReady?(confirmationEnabled?'Confirmation IA activée':'Activez la Confirmation IA ci-dessous'):'Disponible après validation du message'},
      ].map(step=><div key={step.title} className={`rounded-xl border p-3 ${step.done?'border-emerald-100 bg-emerald-50':'border-zinc-200 bg-zinc-50'}`}><p className="text-xs font-semibold flex gap-2 items-center">{step.done&&<CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600"/>}{step.title}</p><p className="text-xs text-zinc-600 mt-2">{step.text}</p></div>)}
     </div>
     {s.active&&!needsReconnect&&<div className="rounded-xl border border-zinc-200 p-4 space-y-3" data-testid="meta-template-setup">
