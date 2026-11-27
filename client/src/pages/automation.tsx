@@ -2088,7 +2088,7 @@ function WhatsappTab() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-4">
-      <MetaWhatsappConnection />
+      <MetaWhatsappConnection confirmationEnabled={autoSettings.aiConfirmation} />
       {ControlPanel}
       <details className="rounded-2xl border border-zinc-200 bg-white p-4 text-sm">
         <summary className="cursor-pointer font-medium text-zinc-600">Autre méthode de connexion</summary>
