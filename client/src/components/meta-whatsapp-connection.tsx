@@ -27,6 +27,7 @@ export default function MetaWhatsappConnection(){
   const r=await fetch('/api/automation/meta/status',{credentials:'include',cache:'no-store'});if(!r.ok)throw Error('Connexion réservée au propriétaire du compte.');return r.json();
  },refetchInterval:15000,retry:false});
  const [signup,setSignup]=useState<any>(null),[signupRound,setSignupRound]=useState(0);
+ const [signupError,setSignupError]=useState('');
  const [busy,setBusy]=useState(''),[waba,setWaba]=useState(''),[phoneId,setPhoneId]=useState(''),[token,setToken]=useState(''),[pin,setPin]=useState('');
  const [testPhone,setTestPhone]=useState(''),[testType,setTestType]=useState('template'),[url,setUrl]=useState(''),[consent,setConsent]=useState(false);
  const attempt=useRef<MetaSignupAttempt|null>(null);
@@ -41,7 +42,7 @@ export default function MetaWhatsappConnection(){
  finish.current=()=>{
   const a=attempt.current;if(!a || !metaSignupReady(a))return;
   a.finishing=true;
-  void post('signup/complete',{...a,pin:a.coexistence?undefined:pin}).then(async()=>{toast({title:'WhatsApp officiel connecté'});await refresh();}).catch(notify).finally(()=>{attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);});
+  void post('signup/complete',{...a,pin:a.coexistence?undefined:pin}).then(async()=>{setSignupError('');toast({title:'WhatsApp officiel connecté'});await refresh();}).catch(error=>{setSignupError(error instanceof Error?error.message:'Connexion Meta impossible.');notify(error);}).finally(()=>{attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);});
  };
  useEffect(()=>{
   const listener=(event:MessageEvent)=>{
@@ -66,11 +67,12 @@ export default function MetaWhatsappConnection(){
  function connect(coexistence=false){
   if(!coexistence && !/^\d{6}$/.test(pin)){notify(Error('Choisissez un code de sécurité de six chiffres pour votre numéro WhatsApp.'));return;}
   if(!signup)return;
-  setBusy('connect');attempt.current={nonce:signup.nonce,coexistence};
+  setSignupError('');setBusy('connect');
+  const currentAttempt:MetaSignupAttempt={nonce:signup.nonce,coexistence};attempt.current=currentAttempt;
   // Launch synchronously within the click gesture so browsers allow Meta's popup.
   signup.fb.login((response:any)=>{
-   if(!attempt.current)return;
-   if(!response.authResponse?.code){attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);return;}
+   if(attempt.current!==currentAttempt)return;
+   if(!response.authResponse?.code){setSignupError('Meta n’a pas renvoyé l’autorisation à TajerGrow. La connexion n’a pas été enregistrée. Relancez le raccordement et terminez toutes les étapes.');attempt.current=null;setBusy('');setSignup(null);setSignupRound(n=>n+1);return;}
    attempt.current.code=response.authResponse.code;finish.current();
   },{config_id:signup.configId,auth_type:'rerequest',response_type:'code',override_default_response_type:true,extras:{setup:{},sessionInfoVersion:'3',...(coexistence?{featureType:'whatsapp_business_app_onboarding'}:{})}});
  }
@@ -94,6 +96,7 @@ export default function MetaWhatsappConnection(){
     {s.embeddedReady&&<label className="block text-sm font-medium">Code de sécurité WhatsApp à conserver<input type="password" inputMode="numeric" autoComplete="new-password" maxLength={6} value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,''))} placeholder="6 chiffres" className={input+' mt-2'}/></label>}
     <button type="button" disabled={!s.embeddedReady||!signup||!!busy} onClick={()=>void connect()} className="w-full rounded-xl bg-indigo-700 text-white font-semibold py-3 disabled:opacity-40 flex items-center justify-center gap-2" data-testid="meta-embedded-connect">{busy==='connect'?<Loader2 className="w-4 h-4 animate-spin"/>:<Link2 className="w-4 h-4"/>}ربط WhatsApp الرسمي</button>
     {s.embeddedReady&&<button type="button" disabled={!signup||!!busy} onClick={()=>connect(true)} className="w-full rounded-xl border border-indigo-700 text-indigo-700 font-semibold py-3 disabled:opacity-40">Connecter mon numéro WhatsApp Business existant</button>}
+    {signupError&&<p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{signupError}</p>}
     {s.pilotAllowed&&<details className="border rounded-xl p-4"><summary className="cursor-pointer font-semibold text-sm">Connexion pilote — compte de test</summary>
      <div className="mt-4 space-y-3">
       {s.active&&<p role="status" className="rounded-lg bg-emerald-50 border border-emerald-100 p-3 text-sm text-emerald-800">Connexion enregistrée. Votre jeton est conservé chiffré : vous n’avez pas besoin de le saisir à nouveau pour utiliser WhatsApp.</p>}
