@@ -3,11 +3,10 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { requireAuth, requireAdmin } from './auth';
 import { pool } from './db';
-import { decrypt } from './crypto';
 import { broadcastToStore } from './sse';
-import { getMetaConnection, saveMetaConnection, sendMetaMessage, sendMetaFile, sendMetaOrderTemplate, flushMetaContent, checkMetaConnection } from './meta-whatsapp-service';
+import { getMetaConnection, saveMetaConnection, sendMetaMessage, sendMetaFile, sendMetaOrderTemplate, flushMetaContent, checkMetaConnection, prepareMetaOrderTemplate, metaTemplateSetup, refreshPendingMetaTemplates } from './meta-whatsapp-service';
 import { validMetaSignature, metaGraph, metaPhone, metaIncomingText, nextMetaDeliveryStatus,
- metaInteractive, metaConnectionHealth, META_ORDER_TEMPLATE, META_ORDER_TEMPLATE_BODY, META_ORDER_BUTTONS, metaGraphVersion, MetaApiError } from './meta-whatsapp-core';
+ metaInteractive, metaConnectionHealth, metaGraphVersion, MetaApiError } from './meta-whatsapp-core';
 
 const id=z.string().regex(/^\d{5,25}$/);
 const pilotAllowed=(store:number)=>String(process.env.META_WHATSAPP_PILOT_STORE_IDS || '').split(',').map(s=>Number(s.trim())).includes(store);
@@ -42,7 +41,7 @@ export function registerMetaWhatsappRoutes(app:Express){
     WHERE store_id=$1 ORDER BY id DESC LIMIT 30`,[store])).rows;
   const queue=(await pool.query(`SELECT state,count(*)::int AS count FROM meta_whatsapp_content_queue WHERE store_id=$1 GROUP BY state`,[store])).rows;
   res.json({configured:!!c,active:!!c?.active,displayPhone:c?.display_phone || '',wabaId:c?.waba_id || '',phoneNumberId:c?.phone_number_id || '',
-   connectionHealth:metaConnectionHealth(c),appReady:ready(),pilotAllowed:pilotAllowed(store),embeddedReady:!!embeddedSignupConfig(store),
+   connectionHealth:metaConnectionHealth(c),template:metaTemplateSetup(c),appReady:ready(),pilotAllowed:pilotAllowed(store),embeddedReady:!!embeddedSignupConfig(store),
    appId:process.env.META_APP_ID || '',graphVersion:metaGraphVersion(),
    webhookUrl:`${new URL(process.env.PUBLIC_APP_URL || 'https://www.tajergrow.com').origin}/api/meta/whatsapp/webhook`,messages,queue});
  }));
@@ -69,6 +68,8 @@ export function registerMetaWhatsappRoutes(app:Express){
  app.post('/api/automation/meta/test',requireAuth,requireAdmin,sameOrigin,safe(async(req,res)=>{
   const input=z.object({phone:z.string().min(8).max(30),type:z.enum(['text','buttons','image','audio','video','template']),url:z.string().max(2048).optional(),consent:z.literal(true)}).parse(req.body);
   const phone=metaPhone(input.phone),store=req.user.storeId,outcome:{error?:string;uncertain?:boolean;messageId?:string}={};
+  const connection=await getMetaConnection(store);
+  if(connection?.display_phone && phone===metaPhone(connection.display_phone))return res.status(400).json({message:'Choisissez un autre numéro pour recevoir le test : le numéro connecté est l’expéditeur.'});
   await pool.query(`INSERT INTO meta_whatsapp_consents(store_id,phone,source) VALUES($1,$2,'owner_test_consent') ON CONFLICT(store_id,phone) DO NOTHING`,[store,phone]);
   let accepted=false;
   if(input.type==='template')accepted=await sendMetaOrderTemplate(store,phone,['TajerGrow','اختبار',phone,'مدينة الاختبار','عنوان الاختبار','منتج تجريبي','1','199'],outcome);
@@ -83,16 +84,7 @@ export function registerMetaWhatsappRoutes(app:Express){
   res.json({accepted:true,messageId:outcome.messageId || null});
  }));
  app.post('/api/automation/meta/template',requireAuth,requireAdmin,sameOrigin,safe(async(req,res)=>{
-  const c=await getMetaConnection(req.user.storeId);if(!c?.active)throw new Error('Connexion Meta absente.');
-  const token=decrypt(c.token_cipher);
-  const templates=await metaGraph(token,`${c.waba_id}/message_templates?name=${META_ORDER_TEMPLATE}&limit=100`);
-  const existing=templates.data?.find((t:any)=>t.name===META_ORDER_TEMPLATE && t.language==='ar');
-  if(existing)return res.json({status:existing.status,name:existing.name});
-  const result=await metaGraph(token,`${c.waba_id}/message_templates`,{method:'POST',body:{name:META_ORDER_TEMPLATE,language:'ar',category:'UTILITY',
-   components:[{type:'BODY',text:META_ORDER_TEMPLATE_BODY,example:{body_text:[['TajerGrow','محمد','0612345678','الدار البيضاء','شارع المثال','شاحن السيارة','1','199']]}},
-    {type:'BUTTONS',buttons:META_ORDER_BUTTONS.map(b=>({type:'QUICK_REPLY',text:b.text}))}],
-  }});
-  res.json({status:result.status || 'PENDING',name:META_ORDER_TEMPLATE});
+  res.json(await prepareMetaOrderTemplate(req.user.storeId,req.body?.refresh===true));
  }));
  app.post('/api/automation/meta/signup/start',requireAuth,requireAdmin,sameOrigin,safe(async(req,res)=>{
   const configId=embeddedSignupConfig(req.user.storeId);
@@ -166,7 +158,10 @@ export function registerMetaWhatsappRoutes(app:Express){
    void processMetaJobs();
   }catch{res.sendStatus(500);}
  });
- if(!workerStarted){workerStarted=true;const timer=setInterval(()=>{void processMetaJobs();},5000);timer.unref();}
+ if(!workerStarted){
+  workerStarted=true;const timer=setInterval(()=>{void processMetaJobs();},5000);timer.unref();
+  const templates=setInterval(()=>{void refreshPendingMetaTemplates();},60000);templates.unref();
+ }
 }
 export async function processMetaJobs(){
  if(!ready() || workerBusy)return;workerBusy=true;

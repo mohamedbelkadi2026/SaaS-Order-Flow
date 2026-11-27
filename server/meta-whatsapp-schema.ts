@@ -10,6 +10,9 @@ ALTER TABLE meta_whatsapp_connections ADD COLUMN IF NOT EXISTS token_valid boole
 ALTER TABLE meta_whatsapp_connections ADD COLUMN IF NOT EXISTS token_checked_at timestamptz;
 ALTER TABLE meta_whatsapp_connections ADD COLUMN IF NOT EXISTS token_expires_at timestamptz;
 ALTER TABLE meta_whatsapp_connections ADD COLUMN IF NOT EXISTS data_access_expires_at timestamptz;
+ALTER TABLE meta_whatsapp_connections ADD COLUMN IF NOT EXISTS template_status text NOT NULL DEFAULT 'NOT_CREATED';
+ALTER TABLE meta_whatsapp_connections ADD COLUMN IF NOT EXISTS template_checked_at timestamptz;
+ALTER TABLE meta_whatsapp_connections ADD COLUMN IF NOT EXISTS template_error text;
 CREATE TABLE IF NOT EXISTS meta_whatsapp_consents (
  store_id integer NOT NULL REFERENCES stores(id) ON DELETE CASCADE, phone text NOT NULL,
  source text NOT NULL, granted_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(store_id,phone)
