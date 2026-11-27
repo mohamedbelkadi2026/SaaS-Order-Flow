@@ -190,6 +190,9 @@ app.use(helmet({
     },
   } : false,
   crossOriginEmbedderPolicy: false,
+  // Keep the opener relationship used by Meta's OAuth popup to return its code.
+  // The SPA can open signup after client-side navigation from any page.
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
 }));
 
 // ── Brute-force protection on auth endpoints ──────────────────────────────────
